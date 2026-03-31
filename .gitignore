@@ -1,0 +1,6 @@
+opencode-dashboard
+.issue
+docs
+.idea
+build
+internal/web/dist
