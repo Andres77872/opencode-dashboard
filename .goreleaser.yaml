@@ -1,0 +1,54 @@
+project_name: opencode-dashboard
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: opencode-dashboard
+    main: ./cmd/opencode-dashboard
+    binary: opencode-dashboard
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -tags=embedassets
+    ldflags:
+      - -s -w
+      - -X 'opencode-dashboard/internal/version.Version={{ .Version }}'
+      - -X 'opencode-dashboard/internal/version.GitCommit={{ .Commit }}'
+
+archives:
+  - id: release-archives
+    ids: [opencode-dashboard]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: ["tar.gz"]
+    files:
+      - LICENSE*
+      - README*
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - "merge conflict"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: Andres77872
+    name: opencode-dashboard
