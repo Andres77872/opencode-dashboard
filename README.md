@@ -27,7 +27,7 @@ No OpenCode server required. No configuration needed. Works with any channel (st
 Install the latest release binary:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Andres77872/opencode-dashboard/main/scripts/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/Andres77872/opencode-dashboard/master/scripts/install.sh | bash
 ```
 
 This fetches a **release binary** from GitHub Releases and installs it to `~/.local/bin`.
@@ -55,7 +55,7 @@ The installer compares the installed version with the target version:
 To install a specific version:
 
 ```bash
-VERSION=v1.0.0 curl -sSL https://raw.githubusercontent.com/Andres77872/opencode-dashboard/main/scripts/install.sh | bash
+VERSION=v1.0.0 curl -sSL https://raw.githubusercontent.com/Andres77872/opencode-dashboard/master/scripts/install.sh | bash
 ```
 
 ### Build from source
