@@ -1,3 +1,5 @@
+version: 2
+
 project_name: opencode-dashboard
 
 before:
@@ -25,9 +27,9 @@ builds:
 
 archives:
   - id: release-archives
-    ids: [opencode-dashboard]
+    ids: [ opencode-dashboard ]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    formats: ["tar.gz"]
+    formats: [ "tar.gz" ]
     files:
       - LICENSE*
       - README*

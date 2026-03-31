@@ -1,26 +1,38 @@
-name: Build Release
+name: release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [ master ]
   workflow_dispatch:
+    inputs:
+      release_as:
+        description: "Optional minor cut, e.g. v0.2.0"
+        required: false
+        type: string
+
+permissions:
+  contents: read
 
 concurrency:
   group: release-${{ github.workflow }}-${{ github.sha }}
   cancel-in-progress: false
 
-permissions:
-  contents: write
-
 jobs:
-  goreleaser:
+  release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Enforce master branch
+        if: github.ref != 'refs/heads/master'
+        run: |
+          echo "releases are only allowed from master; got ${GITHUB_REF}" >&2
+          exit 1
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -31,9 +43,16 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version-file: web/package.json
+          node-version: '22.12.0'
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
+
+      - name: Validate GoReleaser config
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
 
       - name: Build frontend
         run: |
@@ -44,11 +63,97 @@ jobs:
           rm -rf internal/web/dist
           cp -r web/dist internal/web/dist
 
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Determine release tag
+        id: tag
+        env:
+          RELEASE_AS: ${{ github.event.inputs.release_as || '' }}
+          GITHUB_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+
+          existing="$(git tag --points-at "${GITHUB_SHA}" 'v*' | sort -V | tail -n1 || true)"
+          if [[ -n "${existing}" ]]; then
+            echo "tag=${existing}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          bump_patch() {
+            tag="$1"
+            if [[ "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              major="${BASH_REMATCH[1]}"
+              minor="${BASH_REMATCH[2]}"
+              patch="${BASH_REMATCH[3]}"
+              printf 'v%s.%s.%s\n' "$major" "$minor" "$((patch + 1))"
+            else
+              echo "unsupported tag format: $tag" >&2
+              exit 1
+            fi
+          }
+
+          if [[ -n "${RELEASE_AS}" ]]; then
+            tag="${RELEASE_AS}"
+            [[ "$tag" == v* ]] || tag="v${tag}"
+
+            if ! [[ "$tag" =~ ^v0\.([1-9][0-9]*)\.0$ ]]; then
+              echo "ERROR: release_as must be v0.x.0 (minor cut). Got: ${tag}" >&2
+              echo "  - v0.0.0 is invalid (first release is v0.1.0)" >&2
+              echo "  - v0.x.y where y>0 is invalid (patch bumps are automatic)" >&2
+              echo "  - v1.x.x is blocked until stability declaration" >&2
+              exit 1
+            fi
+
+            latest="$(git tag --list 'v0.*' | grep -E '^v0\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
+            if [[ -n "$latest" ]]; then
+              cur_minor=$(echo "$latest" | sed 's/^v0\.\([0-9]*\)\..*/\1/')
+              new_minor=$(echo "$tag" | sed 's/^v0\.\([0-9]*\)\..*/\1/')
+              if [[ "$new_minor" -le "$cur_minor" ]]; then
+                echo "ERROR: ${tag} minor (${new_minor}) must exceed latest (${latest}) minor (${cur_minor})" >&2
+                exit 1
+              fi
+            fi
+
+            git tag -a "${tag}" "${GITHUB_SHA}" -m "Release ${tag}"
+            git push origin "refs/tags/${tag}"
+            echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          for attempt in $(seq 1 20); do
+            latest="$(git tag --list 'v0.*' | grep -E '^v0\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
+            if [[ -z "${latest}" ]]; then
+              tag="v0.1.0"
+            else
+              tag="$(bump_patch "${latest}")"
+            fi
+
+            git tag -a "${tag}" "${GITHUB_SHA}" -m "Release ${tag}"
+
+            if git push origin "refs/tags/${tag}"; then
+              echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+
+            git tag -d "${tag}" >/dev/null 2>&1 || true
+            sleep $((attempt * 2))
+            git fetch --force --tags origin
+          done
+
+          echo "Failed to create unique release tag after 20 attempts" >&2
+          exit 1
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
-          version: '~> v2'
+          version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ steps.tag.outputs.tag }}
