@@ -6,9 +6,9 @@ import { Alert } from '../components/ui/alert'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
+import { SortButton } from '../components/ui/sort-button'
 import { getTools } from '../lib/api'
 import { formatCompactInteger, formatInteger, formatPercentage, safeDivide } from '../lib/format'
-import { cn } from '../lib/utils'
 import type { ToolEntry, ToolStats } from '../types/api'
 
 type SortKey = 'invocations' | 'sessions' | 'tool' | 'successRate' | 'failures'
@@ -48,32 +48,6 @@ function getFailureTone(failures: number) {
   }
 
   return 'danger' as const
-}
-
-function SortButton({
-  active,
-  label,
-  onClick,
-}: {
-  active: boolean
-  label: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'inline-flex items-center gap-2 rounded-md px-1 py-1 text-left text-[11px] font-medium uppercase tracking-[0.16em] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70',
-        active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
-      )}
-    >
-      <span>{label}</span>
-      <span aria-hidden="true" className={cn('text-[10px]', active ? 'text-accent' : 'text-muted-foreground/70')}>
-        ↓
-      </span>
-    </button>
-  )
 }
 
 export function ToolsView() {
