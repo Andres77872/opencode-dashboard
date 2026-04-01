@@ -21,21 +21,21 @@ func renderDaily(s styles, width, height int, daily stats.DailyStats, period str
 		}
 	}
 
-	barWidth := maxInt(width-32, 8)
+	barWidth := max(width-32, 8)
 	lines := []string{
 		s.PanelTitle.Render(fmt.Sprintf("Daily activity • %s • %s", period, renderDailyMetricLabel(metric))),
 		s.Muted.Render(renderDailySummary(daily, metric)),
 		"",
 	}
 
-	maxRows := maxInt(height-5, 5)
-	start := maxInt(len(daily.Days)-maxRows, 0)
+	maxRows := max(height-5, 5)
+	start := max(len(daily.Days)-maxRows, 0)
 	visible := daily.Days[start:]
 	for i, day := range visible {
 		value := dailyMetricValue(day, metric)
 		bar := asciiBar(value, maxValue, barWidth)
 		if bar == "" {
-			bar = strings.Repeat("·", minInt(3, barWidth))
+			bar = strings.Repeat("·", min(3, barWidth))
 		}
 
 		trend := renderDailyTrendGlyph(s, visible, i, metric)

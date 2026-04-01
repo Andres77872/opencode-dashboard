@@ -6,6 +6,22 @@ import { Alert } from '../components/ui/alert'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
+import { Progress } from '../components/ui/progress'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '../components/ui/sheet'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '../components/ui/table'
 import { getSessionDetail, getSessions } from '../lib/api'
 import {
   formatCompactCurrency,
@@ -93,57 +109,111 @@ function DetailMetric({ label, value, hint }: { label: string; value: string; hi
   return (
     <div className="rounded-2xl border border-border/70 bg-background/45 px-4 py-4">
       <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
-      <div className="mt-2 font-mono text-lg text-foreground">{value}</div>
-      <div className="mt-1 text-sm text-muted-foreground">{hint}</div>
+      <div className="mt-2 font-mono text-xl text-foreground">{value}</div>
+      <div className="mt-2 text-sm leading-6 text-muted-foreground">{hint}</div>
     </div>
   )
 }
 
-function SessionMessageRow({ message }: { message: SessionMessage }) {
+function DetailFact({ label, value, subtle = false }: { label: string; value: string; subtle?: boolean }) {
+  return (
+    <div className="rounded-xl border border-border/70 bg-background/40 px-3 py-3">
+      <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
+      <div className={cn('mt-2 break-all font-mono text-sm text-foreground', subtle && 'text-muted-foreground')}>{value}</div>
+    </div>
+  )
+}
+
+function SessionMetaChip({ label, value }: { label: string; value: string }) {
+  return (
+    <span
+      className="inline-flex max-w-full items-center gap-1 overflow-hidden rounded-full border border-border/60 bg-background/35 px-2.5 py-1 text-[11px] text-muted-foreground"
+      title={`${label}: ${value}`}
+    >
+      <span className="shrink-0 uppercase tracking-[0.14em]">{label}</span>
+      <span className="max-w-[16rem] truncate font-mono text-foreground sm:max-w-[20rem]">{value}</span>
+    </span>
+  )
+}
+
+function SessionMessageRow({
+  message,
+  isHighestCost = false,
+  isHighestTokens = false,
+}: {
+  message: SessionMessage
+  isHighestCost?: boolean
+  isHighestTokens?: boolean
+}) {
   const tokenTotal = getTokenTotal(message.tokens)
+  const hasSpendSignal = (message.cost ?? 0) > 0 || tokenTotal > 0
+  const cacheTotal = (message.tokens?.cache.read ?? 0) + (message.tokens?.cache.write ?? 0)
+  const hasSecondaryTokenBreakdown = (message.tokens?.reasoning ?? 0) > 0 || cacheTotal > 0
 
   return (
-    <div className="rounded-2xl border border-border/70 bg-background/40 px-4 py-4">
-      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={getRoleTone(message.role)}>{message.role || 'unknown'}</Badge>
-            <Badge>{formatDateTime(message.time_created)}</Badge>
-            {message.agent ? <Badge tone="warning">agent · {message.agent}</Badge> : null}
+    <div
+      className={cn(
+        'min-w-0 rounded-2xl border border-border/70 bg-background/40 px-4 py-4 transition-colors',
+        hasSpendSignal && 'bg-panel/35',
+        (isHighestCost || isHighestTokens) && 'border-accent/40 bg-panel/45',
+      )}
+    >
+      <div className="space-y-4">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+          <div className="min-w-0 space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={getRoleTone(message.role)}>{message.role || 'unknown'}</Badge>
+              <span className="font-mono text-sm text-foreground">{formatDateTime(message.time_created)}</span>
+              {isHighestCost ? <Badge tone="accent">highest cost</Badge> : null}
+              {isHighestTokens ? <Badge tone="warning">highest tokens</Badge> : null}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+              <span>
+                <span className="uppercase tracking-[0.14em]">Input</span>{' '}
+                <span className="font-mono text-foreground">{formatTokenCount(message.tokens?.input ?? 0)}</span>
+              </span>
+              <span>
+                <span className="uppercase tracking-[0.14em]">Output</span>{' '}
+                <span className="font-mono text-foreground">{formatTokenCount(message.tokens?.output ?? 0)}</span>
+              </span>
+              {hasSecondaryTokenBreakdown ? (
+                <>
+                  {(message.tokens?.reasoning ?? 0) > 0 ? (
+                    <span>
+                      <span className="uppercase tracking-[0.14em]">Reasoning</span>{' '}
+                      <span className="font-mono text-foreground">{formatTokenCount(message.tokens?.reasoning ?? 0)}</span>
+                    </span>
+                  ) : null}
+                  {cacheTotal > 0 ? (
+                    <span>
+                      <span className="uppercase tracking-[0.14em]">Cache</span>{' '}
+                      <span className="font-mono text-foreground">{formatTokenCount(cacheTotal)}</span>
+                    </span>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
           </div>
 
-          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-            <span className="rounded-full border border-border/70 bg-panel/55 px-2.5 py-1 font-mono">id {message.id.slice(0, 12)}</span>
-            {message.model_id ? (
-              <span className="rounded-full border border-border/70 bg-panel/55 px-2.5 py-1 font-mono">
-                model {message.model_id}
-              </span>
-            ) : null}
-            {message.provider_id ? (
-              <span className="rounded-full border border-border/70 bg-panel/55 px-2.5 py-1 font-mono">
-                provider {message.provider_id}
-              </span>
-            ) : null}
+          <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:min-w-[15rem]">
+            <div className="rounded-xl border border-border/60 bg-panel/60 px-3 py-3">
+              <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Cost</div>
+              <div className="mt-1 font-mono text-lg text-foreground">{formatCurrency(message.cost ?? 0)}</div>
+            </div>
+
+            <div className="rounded-xl border border-border/60 bg-panel/60 px-3 py-3">
+              <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Total tokens</div>
+              <div className="mt-1 font-mono text-lg text-foreground">{formatTokenCount(tokenTotal)}</div>
+            </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-4 xl:min-w-[22rem]">
-          <div className="rounded-xl bg-panel/55 px-3 py-2">
-            <div className="uppercase tracking-[0.14em]">Cost</div>
-            <div className="mt-1 font-mono text-sm text-foreground">{formatCurrency(message.cost ?? 0)}</div>
-          </div>
-          <div className="rounded-xl bg-panel/55 px-3 py-2">
-            <div className="uppercase tracking-[0.14em]">Tokens</div>
-            <div className="mt-1 font-mono text-sm text-foreground">{formatTokenCount(tokenTotal)}</div>
-          </div>
-          <div className="rounded-xl bg-panel/55 px-3 py-2">
-            <div className="uppercase tracking-[0.14em]">Input</div>
-            <div className="mt-1 font-mono text-sm text-foreground">{formatTokenCount(message.tokens?.input ?? 0)}</div>
-          </div>
-          <div className="rounded-xl bg-panel/55 px-3 py-2">
-            <div className="uppercase tracking-[0.14em]">Output</div>
-            <div className="mt-1 font-mono text-sm text-foreground">{formatTokenCount(message.tokens?.output ?? 0)}</div>
-          </div>
+        <div className="flex flex-wrap gap-2">
+          {message.agent ? <SessionMetaChip label="agent" value={message.agent} /> : null}
+          <SessionMetaChip label="id" value={message.id.slice(0, 12)} />
+          {message.model_id ? <SessionMetaChip label="model" value={message.model_id} /> : null}
+          {message.provider_id ? <SessionMetaChip label="provider" value={message.provider_id} /> : null}
         </div>
       </div>
     </div>
@@ -236,27 +306,7 @@ export function SessionsView() {
     return () => controller.abort()
   }, [detailRequestNonce, selectedSessionId])
 
-  useEffect(() => {
-    if (!selectedSessionId) {
-      return
-    }
-
-    const previousOverflow = document.body.style.overflow
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        setSelectedSessionId(null)
-      }
-    }
-
-    document.body.style.overflow = 'hidden'
-    window.addEventListener('keydown', handleKeyDown)
-
-    return () => {
-      document.body.style.overflow = previousOverflow
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [selectedSessionId])
+  const triggerButtonRef = useRef<HTMLButtonElement | null>(null)
 
   const summary = useMemo(() => {
     if (!data) {
@@ -302,6 +352,37 @@ export function SessionsView() {
       },
       { assistant: 0, user: 0, other: 0 },
     )
+  }, [detail])
+
+  const detailMessageStats = useMemo(() => {
+    if (!detail) {
+      return {
+        hottestMessageId: null as string | null,
+        hottestMessageCost: 0,
+        heaviestTokenMessageId: null as string | null,
+        heaviestTokenTotal: 0,
+      }
+    }
+
+    let hottestMessage: SessionMessage | null = null
+    let heaviestTokenMessage: SessionMessage | null = null
+
+    for (const message of detail.messages) {
+      if (!hottestMessage || (message.cost ?? 0) > (hottestMessage.cost ?? 0)) {
+        hottestMessage = message
+      }
+
+      if (!heaviestTokenMessage || getTokenTotal(message.tokens) > getTokenTotal(heaviestTokenMessage.tokens)) {
+        heaviestTokenMessage = message
+      }
+    }
+
+    return {
+      hottestMessageId: hottestMessage?.id ?? null,
+      hottestMessageCost: hottestMessage?.cost ?? 0,
+      heaviestTokenMessageId: heaviestTokenMessage?.id ?? null,
+      heaviestTokenTotal: heaviestTokenMessage ? getTokenTotal(heaviestTokenMessage.tokens) : 0,
+    }
   }, [detail])
 
   const handleRetry = () => {
@@ -421,63 +502,73 @@ export function SessionsView() {
 
                 <CardContent className="space-y-4">
                   <div className="grid gap-4 xl:grid-cols-[1.45fr_20rem]">
-                    <div className="space-y-3">
-                      <div className="hidden overflow-hidden rounded-2xl border border-border/70 lg:block">
-                        <div className="grid grid-cols-[minmax(18rem,1.7fr)_8rem_8rem_6rem_7rem_5.5rem] gap-3 border-b border-border/70 bg-panel/75 px-4 py-3">
-                          <div className="px-1 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Session</div>
-                          <div className="px-1 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Created</div>
-                          <div className="px-1 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Updated</div>
-                          <div className="px-1 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Msgs</div>
-                          <div className="px-1 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Cost</div>
-                          <div className="px-1 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Detail</div>
-                        </div>
+<div className="space-y-3">
+                       <Table className="hidden overflow-hidden rounded-2xl border border-border/70 lg:block">
+                         <TableHeader className="bg-panel/75">
+                           <TableRow className="border-b border-border/70 hover:bg-transparent">
+                             <TableHead className="min-w-[18rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Session</TableHead>
+                             <TableHead className="w-[8rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Created</TableHead>
+                             <TableHead className="w-[8rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Updated</TableHead>
+                             <TableHead className="w-[6rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Msgs</TableHead>
+                             <TableHead className="w-[7rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Cost</TableHead>
+                             <TableHead className="w-[5.5rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Detail</TableHead>
+                           </TableRow>
+                         </TableHeader>
+                         <TableBody className="divide-y divide-border/60">
+                           {data?.sessions.map((session) => {
+                             const share = safeDivide(session.cost, summary.visibleCost) * 100
 
-                        <div className="divide-y divide-border/60">
-                          {data?.sessions.map((session) => {
-                            const share = safeDivide(session.cost, summary.visibleCost) * 100
+                             return (
+                               <TableRow key={session.id} className="bg-card/40 hover:bg-white/4">
+                                 <TableCell className="min-w-[18rem] px-4 py-3">
+                                   <div className="min-w-0 space-y-2">
+                                     <div className="truncate font-medium text-foreground">{getSessionLabel(session)}</div>
+                                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                       <Badge className="px-2 py-0.5 text-[10px] tracking-[0.16em]">{getSessionProjectLabel(session)}</Badge>
+                                       <span className="font-mono">id {session.id.slice(0, 10)}</span>
+                                     </div>
+                                     <div className="flex items-center gap-3">
+                                       <Progress className="h-1.5" value={Math.max(share, session.cost > 0 ? 3 : 0)} />
+                                       <span className="font-mono text-[11px] text-muted-foreground">{Math.round(share || 0)}%</span>
+                                     </div>
+                                   </div>
+                                 </TableCell>
+                                 <TableCell className="w-[8rem] px-4 py-3 font-mono text-sm text-foreground">{formatDateTime(session.time_created)}</TableCell>
+                                 <TableCell className="w-[8rem] px-4 py-3 font-mono text-sm text-foreground">{formatDateTime(session.time_updated)}</TableCell>
+                                 <TableCell className="w-[6rem] px-4 py-3 font-mono text-sm text-foreground">{formatCompactInteger(session.message_count)}</TableCell>
+                                 <TableCell className="w-[7rem] px-4 py-3 font-mono text-sm text-foreground">{formatCompactCurrency(session.cost)}</TableCell>
+                                 <TableCell className="w-[5.5rem] px-4 py-3">
+                                   <Button
+                                     variant="ghost"
+                                     size="sm"
+                                     onClick={(e) => {
+                                       triggerButtonRef.current = e.currentTarget
+                                       setSelectedSessionId(session.id)
+                                     }}
+                                     aria-label={`View details for ${getSessionLabel(session)}`}
+                                     className="text-accent"
+                                   >
+                                     View
+                                   </Button>
+                                 </TableCell>
+                               </TableRow>
+                             )
+                           })}
+                         </TableBody>
+                       </Table>
 
-                            return (
-                              <button
-                                key={session.id}
-                                type="button"
-                                onClick={() => setSelectedSessionId(session.id)}
-                                className="grid w-full grid-cols-[minmax(18rem,1.7fr)_8rem_8rem_6rem_7rem_5.5rem] gap-3 bg-card/40 px-4 py-3 text-left transition-colors hover:bg-white/4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
-                              >
-                                <div className="min-w-0 space-y-2">
-                                  <div className="truncate font-medium text-foreground">{getSessionLabel(session)}</div>
-                                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                    <Badge className="px-2 py-0.5 text-[10px] tracking-[0.16em]">{getSessionProjectLabel(session)}</Badge>
-                                    <span className="font-mono">id {session.id.slice(0, 10)}</span>
-                                  </div>
-                                  <div className="flex items-center gap-3">
-                                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-background/80">
-                                      <div
-                                        className="h-full rounded-full bg-linear-to-r from-accent/60 to-accent"
-                                        style={{ width: `${Math.max(share, session.cost > 0 ? 3 : 0)}%` }}
-                                      />
-                                    </div>
-                                    <span className="font-mono text-[11px] text-muted-foreground">{Math.round(share || 0)}%</span>
-                                  </div>
-                                </div>
-                                <div className="font-mono text-sm text-foreground">{formatDateTime(session.time_created)}</div>
-                                <div className="font-mono text-sm text-foreground">{formatDateTime(session.time_updated)}</div>
-                                <div className="font-mono text-sm text-foreground">{formatCompactInteger(session.message_count)}</div>
-                                <div className="font-mono text-sm text-foreground">{formatCompactCurrency(session.cost)}</div>
-                                <div className="pt-1 text-sm font-medium text-accent">Open</div>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </div>
-
-                      <div className="space-y-3 lg:hidden">
+                       <div className="space-y-3 lg:hidden">
                         {data?.sessions.map((session) => (
-                          <button
-                            key={session.id}
-                            type="button"
-                            onClick={() => setSelectedSessionId(session.id)}
-                            className="w-full rounded-2xl border border-border/70 bg-panel/65 p-4 text-left transition-colors hover:bg-panel/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
-                          >
+<button
+                             key={session.id}
+                             type="button"
+                             onClick={(e) => {
+                               triggerButtonRef.current = e.currentTarget
+                               setSelectedSessionId(session.id)
+                             }}
+                             className="w-full rounded-2xl border border-border/70 bg-panel/65 p-4 text-left transition-colors hover:bg-panel/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                             aria-label={`View details for ${getSessionLabel(session)}`}
+                           >
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0">
                                 <div className="truncate font-medium text-foreground">{getSessionLabel(session)}</div>
@@ -593,151 +684,168 @@ export function SessionsView() {
         ) : null}
       </section>
 
-      {selectedSessionId ? (
-        <div className="fixed inset-0 z-40 bg-black/72 backdrop-blur-sm" onClick={() => setSelectedSessionId(null)}>
-          <div className="flex min-h-full justify-end">
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="session-detail-title"
-              aria-describedby="session-detail-description"
-              className="flex h-full w-full max-w-4xl flex-col border-l border-border/70 bg-background shadow-[0_24px_100px_-32px_rgba(0,0,0,0.95)]"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <div className="sticky top-0 z-10 border-b border-border/70 bg-background/95 px-5 py-4 backdrop-blur-xl sm:px-6">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge tone="accent">Session detail</Badge>
-                      {detail ? <Badge>{getSessionProjectLabel(detail)}</Badge> : null}
-                    </div>
-                    <div>
-                      <h3 id="session-detail-title" className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
-                        {detail ? getSessionLabel(detail) : 'Loading session detail'}
-                      </h3>
-                      <p id="session-detail-description" className="text-sm text-muted-foreground">
-                        Live metadata from the detail endpoint. Transcript bodies are not available in the current API contract.
-                      </p>
-                    </div>
-                  </div>
+      <Sheet
+        open={selectedSessionId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedSessionId(null)
+          }
+        }}
+      >
+        <SheetContent
+          side="right"
+          className="flex h-full w-full max-w-[calc(100vw-1rem)] flex-col overflow-hidden border-l border-border/70 bg-background shadow-[0_24px_100px_-32px_rgba(0,0,0,0.95)] sm:max-w-2xl lg:max-w-4xl xl:max-w-5xl"
+          onCloseAutoFocus={(e) => {
+            // Prevent default focus return and manually focus trigger
+            e.preventDefault()
+            if (triggerButtonRef.current) {
+              triggerButtonRef.current.focus()
+            }
+          }}
+        >
+          <SheetHeader className="sticky top-0 z-10 border-b border-border/70 bg-background/95 px-4 py-4 pr-14 backdrop-blur-xl sm:px-6 sm:pr-16">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone="accent">Telemetry inspector</Badge>
+                {detail ? <Badge>{getSessionProjectLabel(detail)}</Badge> : null}
+                {detail ? <span className="font-mono text-xs text-muted-foreground">id {detail.id.slice(0, 12)}</span> : null}
+              </div>
 
-                  <Button variant="ghost" onClick={() => setSelectedSessionId(null)}>
-                    Close
-                  </Button>
+              <div className="space-y-2">
+                <div>
+                  <SheetTitle className="sr-only">Session Detail</SheetTitle>
+                  <h3 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
+                    {detail ? getSessionLabel(detail) : 'Loading session detail'}
+                  </h3>
+                  <SheetDescription className="sr-only">Session metadata drawer for a single recorded session.</SheetDescription>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                  {detail ? (
+                    <>
+                      <span className="font-mono text-foreground">{formatDateTime(detail.time_created)}</span>
+                      <span aria-hidden="true">•</span>
+                      <span>{formatSessionWindow(detail.time_created, detail.time_updated)}</span>
+                      <span aria-hidden="true">•</span>
+                      <span>{formatInteger(detail.message_count)} recorded messages</span>
+                    </>
+                  ) : (
+                    <span>Fetching live session telemetry…</span>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-border/70 bg-panel/40 px-3 py-2 text-sm text-muted-foreground">
+                  Telemetry inspector only — transcript text is not available from this endpoint.
                 </div>
               </div>
-
-              <div className="flex-1 overflow-y-auto px-5 py-5 sm:px-6">
-                {detailLoading ? (
-                  <div className="space-y-4">
-                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                      {Array.from({ length: 4 }).map((_, index) => (
-                        <div key={index} className="rounded-2xl border border-border/70 bg-panel/45 px-4 py-4">
-                          <div className="h-3 w-24 rounded bg-white/8" />
-                          <div className="mt-3 h-8 w-28 rounded bg-white/8" />
-                          <div className="mt-3 h-4 w-40 rounded bg-white/8" />
-                        </div>
-                      ))}
-                    </div>
-                    {Array.from({ length: 5 }).map((_, index) => (
-                      <div key={index} className="h-28 rounded-2xl border border-border/70 bg-panel/45" />
-                    ))}
-                  </div>
-                ) : detailError ? (
-                  <Alert tone="danger" className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <div className="font-medium text-foreground">Session detail failed to load</div>
-                      <div className="text-sm opacity-90">{detailError}</div>
-                    </div>
-                    <Button variant="ghost" onClick={handleDetailRetry}>
-                      Retry detail
-                    </Button>
-                  </Alert>
-                ) : detail ? (
-                  <div className="space-y-6">
-                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                      <DetailMetric
-                        label="Messages"
-                        value={formatInteger(detail.message_count)}
-                        hint={`${formatInteger(detailMessageMix.user)} user · ${formatInteger(detailMessageMix.assistant)} assistant`}
-                      />
-                      <DetailMetric
-                        label="Assistant cost"
-                        value={formatCurrency(detail.total_cost)}
-                        hint={detail.messages.length > 0 ? `${formatCurrency(safeDivide(detail.total_cost, detail.messages.length))} per recorded message` : 'No message rows'}
-                      />
-                      <DetailMetric
-                        label="Token load"
-                        value={formatTokenCount(getTokenTotal(detail.total_tokens))}
-                        hint={`${formatTokenCount(detail.total_tokens.input)} input · ${formatTokenCount(detail.total_tokens.output)} output`}
-                      />
-                      <DetailMetric
-                        label="Session span"
-                        value={formatSessionWindow(detail.time_created, detail.time_updated)}
-                        hint={`Created ${formatDateTime(detail.time_created)}`}
-                      />
-                    </div>
-
-                    <div className="grid gap-4 xl:grid-cols-[1.25fr_22rem]">
-                      <div className="space-y-4">
-                        <Card className="border-border/70 bg-panel/45">
-                          <CardHeader>
-                            <CardDescription>Timeline metadata</CardDescription>
-                            <CardTitle>Message rows</CardTitle>
-                          </CardHeader>
-                          <CardContent className="space-y-3">
-                            {detail.messages.length === 0 ? (
-                              <div className="rounded-2xl border border-border/70 bg-background/45 px-4 py-5 text-sm text-muted-foreground">
-                                This session exists, but the detail endpoint returned no message rows.
-                              </div>
-                            ) : (
-                              detail.messages.map((message) => <SessionMessageRow key={message.id} message={message} />)
-                            )}
-                          </CardContent>
-                        </Card>
-                      </div>
-
-                      <div className="space-y-4">
-                        <Card className="border-border/70 bg-panel/45">
-                          <CardHeader>
-                            <CardDescription>Session facts</CardDescription>
-                            <CardTitle>What the API actually gives you</CardTitle>
-                          </CardHeader>
-                          <CardContent className="space-y-3 text-sm text-muted-foreground">
-                            <div className="rounded-xl border border-border/70 bg-background/40 px-3 py-3">
-                              <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Project</div>
-                              <div className="mt-2 font-mono text-base text-foreground">{getSessionProjectLabel(detail)}</div>
-                            </div>
-
-                            <div className="rounded-xl border border-border/70 bg-background/40 px-3 py-3">
-                              <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Directory</div>
-                              <div className={cn('mt-2 break-all font-mono text-sm text-foreground', !detail.directory && 'text-muted-foreground')}>
-                                {detail.directory || 'No directory recorded'}
-                              </div>
-                            </div>
-
-                            <div className="rounded-xl border border-border/70 bg-background/40 px-3 py-3">
-                              <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Last update</div>
-                              <div className="mt-2 font-mono text-sm text-foreground">{formatDateTime(detail.time_updated)}</div>
-                            </div>
-
-                            <div className="rounded-xl border border-border/70 bg-background/40 px-3 py-3">
-                              <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Deliberate limitation</div>
-                              <div className="mt-2 leading-6 text-muted-foreground">
-                                There is no message text/content field in the current endpoint. You are looking at session telemetry, not a transcript viewer. If you want transcript rendering, the backend contract has to grow up first.
-                              </div>
-                            </div>
-                          </CardContent>
-                        </Card>
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
             </div>
+          </SheetHeader>
+
+          <div className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-5 sm:px-6">
+            {detailLoading ? (
+              <div className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  {Array.from({ length: 4 }).map((_, index) => (
+                    <div key={index} className="rounded-2xl border border-border/70 bg-panel/45 px-4 py-4">
+                      <div className="h-3 w-24 rounded bg-white/8" />
+                      <div className="mt-3 h-8 w-28 rounded bg-white/8" />
+                      <div className="mt-3 h-4 w-40 rounded bg-white/8" />
+                    </div>
+                  ))}
+                </div>
+                {Array.from({ length: 5 }).map((_, index) => (
+                  <div key={index} className="h-28 rounded-2xl border border-border/70 bg-panel/45" />
+                ))}
+              </div>
+            ) : detailError ? (
+              <Alert tone="danger" className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="font-medium text-foreground">Session detail failed to load</div>
+                  <div className="text-sm opacity-90">{detailError}</div>
+                </div>
+                <Button variant="ghost" onClick={handleDetailRetry}>
+                  Retry detail
+                </Button>
+              </Alert>
+            ) : detail ? (
+              <div className="space-y-6">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <DetailMetric
+                    label="Recorded rows"
+                    value={formatInteger(detail.messages.length)}
+                    hint={`${formatInteger(detail.message_count)} total messages reported · ${formatInteger(detailMessageMix.user)} user · ${formatInteger(detailMessageMix.assistant)} assistant`}
+                  />
+                  <DetailMetric
+                    label="Session spend"
+                    value={formatCurrency(detail.total_cost)}
+                    hint={detail.messages.length > 0 ? `Peak row ${formatCurrency(detailMessageStats.hottestMessageCost)} · ${formatCurrency(safeDivide(detail.total_cost, detail.messages.length))} average per recorded row` : 'No message rows'}
+                  />
+                  <DetailMetric
+                    label="Token load"
+                    value={formatTokenCount(getTokenTotal(detail.total_tokens))}
+                    hint={detailMessageStats.heaviestTokenTotal > 0 ? `Heaviest row ${formatTokenCount(detailMessageStats.heaviestTokenTotal)} · ${formatTokenCount(detail.total_tokens.input)} input · ${formatTokenCount(detail.total_tokens.output)} output` : 'No token activity recorded'}
+                  />
+                  <DetailMetric
+                    label="Capture window"
+                    value={formatSessionWindow(detail.time_created, detail.time_updated)}
+                    hint={`Created ${formatDateTime(detail.time_created)} · updated ${formatDateTime(detail.time_updated)}`}
+                  />
+                </div>
+
+                <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
+                  <div className="min-w-0 space-y-4">
+                    <Card className="border-border/70 bg-panel/45">
+                      <CardHeader className="gap-3 md:flex-row md:items-end md:justify-between">
+                        <CardDescription>Primary review surface</CardDescription>
+                        <div className="space-y-1.5">
+                          <CardTitle>Message timeline</CardTitle>
+                          <p className="text-sm text-muted-foreground">Scan role, time, spend, and total tokens first. Model, provider, agent, and ids stay demoted but available.</p>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {detail.messages.length === 0 ? (
+                          <div className="rounded-2xl border border-border/70 bg-background/45 px-4 py-5 text-sm text-muted-foreground">
+                            This session exists, but the detail endpoint returned no message rows.
+                          </div>
+                        ) : (
+                          detail.messages.map((message) => (
+                            <SessionMessageRow
+                              key={message.id}
+                              message={message}
+                              isHighestCost={detailMessageStats.hottestMessageId === message.id}
+                              isHighestTokens={detailMessageStats.heaviestTokenMessageId === message.id}
+                            />
+                          ))
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <div className="order-last min-w-0 space-y-4 xl:order-none xl:pt-1">
+                    <Card className="border-border/60 bg-background/25 shadow-none">
+                      <CardHeader>
+                        <CardDescription>Secondary context</CardDescription>
+                        <CardTitle>Session facts</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3 text-sm text-muted-foreground">
+                        <div className="rounded-xl border border-border/60 bg-background/35 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                          Secondary facts stay compact so the timeline remains the primary review surface.
+                        </div>
+
+                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                          <DetailFact label="Project" value={getSessionProjectLabel(detail)} />
+                          <DetailFact label="Directory" value={detail.directory || 'No directory recorded'} subtle={!detail.directory} />
+                          <DetailFact label="Last update" value={formatDateTime(detail.time_updated)} />
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
-        </div>
-      ) : null}
+        </SheetContent>
+      </Sheet>
     </>
   )
 }

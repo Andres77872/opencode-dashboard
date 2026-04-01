@@ -21,7 +21,7 @@ func renderSessionDetailOverlay(s styles, width, height int, state sessionOverla
 		if state.err == sql.ErrNoRows {
 			message = "Session no longer matches the current list state. Close this overlay and adjust the filter/page."
 		}
-		lines = append(lines, "", s.Danger.Render(truncateWithEllipsis(message, maxInt(width-8, 20))))
+		lines = append(lines, "", s.Danger.Render(truncateWithEllipsis(message, max(width-8, 20))))
 		return s.OverlayPanel.Width(width).Height(height).Render(joinLines(lines...))
 	}
 
@@ -32,12 +32,12 @@ func renderSessionDetailOverlay(s styles, width, height int, state sessionOverla
 
 	detail := state.detail
 	lines = append(lines,
-		s.Accent.Render(truncateWithEllipsis(detail.Title, maxInt(width-8, 24))),
+		s.Accent.Render(truncateWithEllipsis(detail.Title, max(width-8, 24))),
 		s.Muted.Render(fmt.Sprintf("project %s • messages %s • cost %s", fallbackString(detail.ProjectName, "-"), formatInt(detail.MessageCount), formatMoney(detail.TotalCost))),
 		s.Muted.Render(fmt.Sprintf("created %s • updated %s", detail.TimeCreated.Format("2006-01-02 15:04"), detail.TimeUpdated.Format("2006-01-02 15:04"))),
 	)
 	if detail.Directory != "" {
-		lines = append(lines, s.Muted.Render("dir      "+truncateWithEllipsis(detail.Directory, maxInt(width-8, 24))))
+		lines = append(lines, s.Muted.Render("dir      "+truncateWithEllipsis(detail.Directory, max(width-8, 24))))
 	}
 	lines = append(lines,
 		"",
@@ -48,7 +48,7 @@ func renderSessionDetailOverlay(s styles, width, height int, state sessionOverla
 		s.Text.Render("Recent message flow"),
 	)
 
-	messageRows := maxInt(height-len(lines)-3, 3)
+	messageRows := max(height-len(lines)-3, 3)
 	for _, row := range renderSessionMessageRows(s, detail.Messages, width-6, messageRows) {
 		lines = append(lines, row)
 	}
@@ -61,8 +61,8 @@ func renderSessionMessageRows(s styles, messages []stats.SessionMessage, width, 
 	if len(messages) == 0 {
 		return []string{s.Muted.Render("No messages recorded.")}
 	}
-	start := maxInt(len(messages)-limit, 0)
-	rows := make([]string, 0, minInt(len(messages), limit)+1)
+	start := max(len(messages)-limit, 0)
+	rows := make([]string, 0, min(len(messages), limit)+1)
 	for _, msg := range messages[start:] {
 		meta := []string{msg.Role}
 		if msg.ModelID != "" {

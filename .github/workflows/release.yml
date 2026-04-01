@@ -54,10 +54,17 @@ jobs:
           version: "~> v2"
           args: check
 
-      - name: Build frontend
+      - name: Run backend tests
+        run: go test -short -race ./...
+
+      - name: Install frontend dependencies
         run: |
           cd web
           npm ci --silent
+
+      - name: Build frontend
+        run: |
+          cd web
           npm run build
           cd ..
           rm -rf internal/web/dist

@@ -7,6 +7,8 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { SortButton } from '../components/ui/sort-button'
+import { Progress } from '../components/ui/progress'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { getTools } from '../lib/api'
 import { formatCompactInteger, formatInteger, formatPercentage, safeDivide } from '../lib/format'
 import type { ToolEntry, ToolStats } from '../types/api'
@@ -246,49 +248,60 @@ export function ToolsView() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid gap-4 xl:grid-cols-[1.25fr_20rem]">
-                  <div className="hidden overflow-hidden rounded-2xl border border-border/70 lg:block">
-                    <div className="grid grid-cols-[minmax(15rem,1.7fr)_6rem_7rem_8rem_6rem_10rem] gap-3 border-b border-border/70 bg-panel/75 px-4 py-3">
-                      <SortButton active={sortKey === 'tool'} label="Tool" onClick={() => setSortKey('tool')} />
-                      <SortButton active={sortKey === 'sessions'} label="Sessions" onClick={() => setSortKey('sessions')} />
-                      <SortButton active={sortKey === 'invocations'} label="Runs" onClick={() => setSortKey('invocations')} />
-                      <SortButton active={sortKey === 'successRate'} label="Success" onClick={() => setSortKey('successRate')} />
-                      <SortButton active={sortKey === 'failures'} label="Errors" onClick={() => setSortKey('failures')} />
-                      <div className="px-1 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Share</div>
-                    </div>
-
-                    <div className="divide-y divide-border/60">
-                      {summary.rows.map((row) => (
-                        <div
-                          key={row.name}
-                          className="grid grid-cols-[minmax(15rem,1.7fr)_6rem_7rem_8rem_6rem_10rem] gap-3 bg-card/40 px-4 py-3 transition-colors hover:bg-white/4"
-                        >
-                          <div className="min-w-0 space-y-2">
-                            <div className="truncate font-medium text-foreground">{getToolLabel(row)}</div>
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <Badge tone={getFailureTone(row.failures)} className="px-2 py-0.5 text-[10px] tracking-[0.16em]">
-                                {row.failures === 0 ? 'stable' : row.failures < 5 ? 'watch' : 'hot'}
-                              </Badge>
-                              <span>{formatCompactInteger(row.successes)} ok</span>
-                              <span aria-hidden="true">•</span>
-                              <span>{formatCompactInteger(row.failures)} failed</span>
-                            </div>
-                          </div>
-                          <div className="font-mono text-sm text-foreground">{formatCompactInteger(row.sessions)}</div>
-                          <div className="font-mono text-sm text-foreground">{formatCompactInteger(row.invocations)}</div>
-                          <div className="font-mono text-sm text-foreground">{formatPercentage(row.successRate)}</div>
-                          <div className="font-mono text-sm text-foreground">{formatCompactInteger(row.failures)}</div>
-                          <div className="space-y-2">
-                            <div className="h-2 overflow-hidden rounded-full bg-background/80">
-                              <div
-                                className="h-full rounded-full bg-linear-to-r from-accent/60 to-accent"
-                                style={{ width: `${Math.max(row.share, row.invocations > 0 ? 4 : 0)}%` }}
-                              />
-                            </div>
-                            <div className="font-mono text-xs text-muted-foreground">{formatPercentage(row.share)}</div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                  <div className="hidden lg:block">
+                    <Table className="overflow-hidden rounded-2xl border border-border/70">
+                      <TableHeader className="bg-panel/75">
+                        <TableRow className="border-b border-border/70 hover:bg-transparent">
+                          <TableHead className="min-w-[15rem]" aria-sort={sortKey === 'tool' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'tool'} label="Tool" onClick={() => setSortKey('tool')} />
+                          </TableHead>
+                          <TableHead className="w-[6rem]" aria-sort={sortKey === 'sessions' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'sessions'} label="Sessions" onClick={() => setSortKey('sessions')} />
+                          </TableHead>
+                          <TableHead className="w-[7rem]" aria-sort={sortKey === 'invocations' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'invocations'} label="Runs" onClick={() => setSortKey('invocations')} />
+                          </TableHead>
+                          <TableHead className="w-[8rem]" aria-sort={sortKey === 'successRate' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'successRate'} label="Success" onClick={() => setSortKey('successRate')} />
+                          </TableHead>
+                          <TableHead className="w-[6rem]" aria-sort={sortKey === 'failures' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'failures'} label="Errors" onClick={() => setSortKey('failures')} />
+                          </TableHead>
+                          <TableHead className="w-[10rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                            Share
+                          </TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {summary.rows.map((row) => (
+                          <TableRow key={row.name} className="bg-card/40 hover:bg-white/4">
+                            <TableCell className="min-w-[15rem]">
+                              <div className="space-y-2">
+                                <div className="truncate font-medium text-foreground">{getToolLabel(row)}</div>
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <Badge tone={getFailureTone(row.failures)} className="px-2 py-0.5 text-[10px] tracking-[0.16em]">
+                                    {row.failures === 0 ? 'stable' : row.failures < 5 ? 'watch' : 'hot'}
+                                  </Badge>
+                                  <span>{formatCompactInteger(row.successes)} ok</span>
+                                  <span aria-hidden="true">•</span>
+                                  <span>{formatCompactInteger(row.failures)} failed</span>
+                                </div>
+                              </div>
+                            </TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatCompactInteger(row.sessions)}</TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatCompactInteger(row.invocations)}</TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatPercentage(row.successRate)}</TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatCompactInteger(row.failures)}</TableCell>
+                            <TableCell className="w-[10rem]">
+                              <div className="space-y-2">
+                                <Progress value={Math.max(row.share, row.invocations > 0 ? 4 : 0)} />
+                                <div className="font-mono text-xs text-muted-foreground">{formatPercentage(row.share)}</div>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
                   </div>
 
                   <Card className="border-border/70 bg-panel/55">
@@ -348,12 +361,10 @@ export function ToolsView() {
                         <Badge tone={getFailureTone(row.failures)}>{row.failures === 0 ? 'stable' : `${formatCompactInteger(row.failures)} errors`}</Badge>
                       </div>
 
-                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-background/80">
-                        <div
-                          className="h-full rounded-full bg-linear-to-r from-accent/60 to-accent"
-                          style={{ width: `${Math.max(row.share, row.invocations > 0 ? 4 : 0)}%` }}
-                        />
-                      </div>
+<Progress
+                         className="mt-3"
+                         value={Math.max(row.share, row.invocations > 0 ? 4 : 0)}
+                       />
 
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                         <div className="rounded-lg bg-background/40 px-2.5 py-2">

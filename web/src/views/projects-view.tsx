@@ -7,6 +7,8 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { SortButton } from '../components/ui/sort-button'
+import { Progress } from '../components/ui/progress'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { getProjects } from '../lib/api'
 import {
   formatCompactCurrency,
@@ -256,45 +258,56 @@ export function ProjectsView() {
 
               <CardContent className="space-y-4">
                 <div className="grid gap-4 xl:grid-cols-[1.35fr_20rem]">
-                  <div className="hidden overflow-hidden rounded-2xl border border-border/70 lg:block">
-                    <div className="grid grid-cols-[minmax(16rem,1.7fr)_8rem_6rem_7rem_7rem_9rem] gap-3 border-b border-border/70 bg-panel/75 px-4 py-3">
-                      <SortButton active={sortKey === 'project'} label="Project" onClick={() => setSortKey('project')} />
-                      <SortButton active={sortKey === 'sessions'} label="Sessions" onClick={() => setSortKey('sessions')} />
-                      <SortButton active={sortKey === 'messages'} label="Messages" onClick={() => setSortKey('messages')} />
-                      <SortButton active={sortKey === 'tokens'} label="Tokens" onClick={() => setSortKey('tokens')} />
-                      <SortButton active={sortKey === 'cost'} label="Cost" onClick={() => setSortKey('cost')} />
-                      <div className="px-1 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Share</div>
-                    </div>
-
-                    <div className="divide-y divide-border/60">
-                      {summary.rows.map((row) => (
-                        <div
-                          key={row.project_id}
-                          className="grid grid-cols-[minmax(16rem,1.7fr)_8rem_6rem_7rem_7rem_9rem] gap-3 bg-card/40 px-4 py-3 transition-colors hover:bg-white/4"
-                        >
-                          <div className="min-w-0 space-y-2">
-                            <div className="truncate font-medium text-foreground">{getProjectLabel(row)}</div>
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <Badge className="px-2 py-0.5 text-[10px] tracking-[0.16em]">id {getProjectIdentifier(row)}</Badge>
-                              <span>{formatCurrency(row.avgCostPerSession)} / session</span>
-                            </div>
-                          </div>
-                          <div className="font-mono text-sm text-foreground">{formatCompactInteger(row.sessions)}</div>
-                          <div className="font-mono text-sm text-foreground">{formatCompactInteger(row.messages)}</div>
-                          <div className="font-mono text-sm text-foreground">{formatTokenCount(row.totalTokens)}</div>
-                          <div className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</div>
-                          <div className="space-y-2">
-                            <div className="h-2 overflow-hidden rounded-full bg-background/80">
-                              <div
-                                className="h-full rounded-full bg-linear-to-r from-accent/60 to-accent"
-                                style={{ width: `${Math.max(row.costShare, row.cost > 0 ? 4 : 0)}%` }}
-                              />
-                            </div>
-                            <div className="font-mono text-xs text-muted-foreground">{formatPercentage(row.costShare)}</div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                  <div className="hidden lg:block">
+                    <Table className="overflow-hidden rounded-2xl border border-border/70">
+                      <TableHeader className="bg-panel/75">
+                        <TableRow className="border-b border-border/70 hover:bg-transparent">
+                          <TableHead className="min-w-[16rem]" aria-sort={sortKey === 'project' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'project'} label="Project" onClick={() => setSortKey('project')} />
+                          </TableHead>
+                          <TableHead className="w-[8rem]" aria-sort={sortKey === 'sessions' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'sessions'} label="Sessions" onClick={() => setSortKey('sessions')} />
+                          </TableHead>
+                          <TableHead className="w-[6rem]" aria-sort={sortKey === 'messages' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'messages'} label="Messages" onClick={() => setSortKey('messages')} />
+                          </TableHead>
+                          <TableHead className="w-[7rem]" aria-sort={sortKey === 'tokens' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'tokens'} label="Tokens" onClick={() => setSortKey('tokens')} />
+                          </TableHead>
+                          <TableHead className="w-[7rem]" aria-sort={sortKey === 'cost' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'cost'} label="Cost" onClick={() => setSortKey('cost')} />
+                          </TableHead>
+                          <TableHead className="w-[9rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                            Share
+                          </TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {summary.rows.map((row) => (
+                          <TableRow key={row.project_id} className="bg-card/40 hover:bg-white/4">
+                            <TableCell className="min-w-[16rem]">
+                              <div className="space-y-2">
+                                <div className="truncate font-medium text-foreground">{getProjectLabel(row)}</div>
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <Badge className="px-2 py-0.5 text-[10px] tracking-[0.16em]">id {getProjectIdentifier(row)}</Badge>
+                                  <span>{formatCurrency(row.avgCostPerSession)} / session</span>
+                                </div>
+                              </div>
+                            </TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatCompactInteger(row.sessions)}</TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatCompactInteger(row.messages)}</TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatTokenCount(row.totalTokens)}</TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</TableCell>
+                            <TableCell className="w-[9rem]">
+                              <div className="space-y-2">
+                                <Progress value={Math.max(row.costShare, row.cost > 0 ? 4 : 0)} />
+                                <div className="font-mono text-xs text-muted-foreground">{formatPercentage(row.costShare)}</div>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
                   </div>
 
                   <Card className="border-border/70 bg-panel/55">
@@ -364,12 +377,10 @@ export function ProjectsView() {
                         <div className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</div>
                       </div>
 
-                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-background/80">
-                        <div
-                          className="h-full rounded-full bg-linear-to-r from-accent/60 to-accent"
-                          style={{ width: `${Math.max(row.costShare, row.cost > 0 ? 4 : 0)}%` }}
-                        />
-                      </div>
+<Progress
+                         className="mt-3"
+                         value={Math.max(row.costShare, row.cost > 0 ? 4 : 0)}
+                       />
 
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                         <div className="rounded-lg bg-background/40 px-2.5 py-2">

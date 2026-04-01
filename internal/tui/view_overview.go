@@ -13,7 +13,7 @@ func renderOverview(s styles, width, _ int, data dashboardData) string {
 		return s.EmptyState.Render("No OpenCode activity found in the selected database yet.")
 	}
 
-	cardWidth := maxInt((width-6)/4, 18)
+	cardWidth := max((width-6)/4, 18)
 	cards := []string{
 		metricCard(s, "Sessions", formatInt(data.Overview.Sessions), fmt.Sprintf("%d active days", data.Overview.Days), cardWidth),
 		metricCard(s, "Messages", formatInt(data.Overview.Messages), fmt.Sprintf("%s per session", formatInt(avgPerSession(data.Overview.Messages, data.Overview.Sessions))), cardWidth),
@@ -57,7 +57,7 @@ func renderOverview(s styles, width, _ int, data dashboardData) string {
 		if i >= 5 {
 			break
 		}
-		recent = append(recent, fmt.Sprintf("%s  %s  %s", session.TimeCreated.Format("Jan 02 15:04"), truncateWithEllipsis(session.Title, maxInt(width-34, 18)), formatMoney(session.Cost)))
+		recent = append(recent, fmt.Sprintf("%s  %s  %s", session.TimeCreated.Format("Jan 02 15:04"), truncateWithEllipsis(session.Title, max(width-34, 18)), formatMoney(session.Cost)))
 	}
 	if len(data.Sessions.Sessions) == 0 {
 		recent = append(recent, s.Muted.Render("No sessions on current page"))
@@ -67,8 +67,8 @@ func renderOverview(s styles, width, _ int, data dashboardData) string {
 		row,
 		"",
 		lipgloss.JoinHorizontal(lipgloss.Top,
-			s.Panel.Width(maxInt(width/2-2, 30)).Render(joinLines(secondary...)),
-			s.Panel.Width(maxInt(width/2-2, 30)).Render(joinLines(recent...)),
+			s.Panel.Width(max(width/2-2, 30)).Render(joinLines(secondary...)),
+			s.Panel.Width(max(width/2-2, 30)).Render(joinLines(recent...)),
 		),
 	)
 }

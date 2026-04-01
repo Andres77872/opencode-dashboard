@@ -2,23 +2,40 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { DailyChart } from '../components/daily/daily-chart'
+import { getDailyMetricMeta, getDailyMetricValue, type DailyMetric } from '../components/daily/daily-metrics'
 import { DailySkeleton } from '../components/daily/daily-skeleton'
 import { PeriodToggle } from '../components/daily/period-toggle'
 import { MetricCard } from '../components/overview/metric-card'
+import { TokenBreakdownCard } from '../components/overview/token-breakdown-card'
 import { Alert } from '../components/ui/alert'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { getDaily } from '../lib/api'
 import { formatCompactInteger, formatCurrency, formatInteger, formatShortDate, formatTokenCount, safeDivide } from '../lib/format'
+import { getTokenBreakdownItems, getTokenTotal } from '../lib/token-breakdown'
 import type { DailyPeriod, DailyStats, DayStats } from '../types/api'
 
-function getDayTokenTotal(day: DayStats) {
-  return day.tokens.input + day.tokens.output + day.tokens.reasoning + day.tokens.cache.read + day.tokens.cache.write
+const dailyMetricCopy: Record<DailyMetric, { detailTitle: string; detailDescription: string; metricLabel: string }> = {
+  cost: {
+    detailTitle: 'Window detail',
+    detailDescription: 'Track which days are actually driving spend in the selected range.',
+    metricLabel: 'Cost',
+  },
+  requests: {
+    detailTitle: 'Request cadence',
+    detailDescription: 'Requests are represented by message volume because that is the daily API signal available now.',
+    metricLabel: 'Requests',
+  },
+  tokens: {
+    detailTitle: 'Token distribution',
+    detailDescription: 'Token mode highlights how input, cache, output, reasoning, and writes move day by day.',
+    metricLabel: 'Tokens',
+  },
 }
 
 function hasActivity(day: DayStats) {
-  return day.sessions > 0 || day.messages > 0 || day.cost > 0 || getDayTokenTotal(day) > 0
+  return day.sessions > 0 || day.messages > 0 || day.cost > 0 || getTokenTotal(day.tokens) > 0
 }
 
 function compareDayActivity(current: DayStats, candidate: DayStats) {
@@ -34,7 +51,27 @@ function compareDayActivity(current: DayStats, candidate: DayStats) {
     return candidate.sessions > current.sessions
   }
 
-  return getDayTokenTotal(candidate) > getDayTokenTotal(current)
+  return getTokenTotal(candidate.tokens) > getTokenTotal(current.tokens)
+}
+
+function getWindowTokens(data: DailyStats) {
+  return data.days.reduce(
+    (accumulator, day) => ({
+      input: accumulator.input + day.tokens.input,
+      output: accumulator.output + day.tokens.output,
+      reasoning: accumulator.reasoning + day.tokens.reasoning,
+      cache: {
+        read: accumulator.cache.read + day.tokens.cache.read,
+        write: accumulator.cache.write + day.tokens.cache.write,
+      },
+    }),
+    {
+      input: 0,
+      output: 0,
+      reasoning: 0,
+      cache: { read: 0, write: 0 },
+    },
+  )
 }
 
 export function DailyView() {
@@ -43,7 +80,7 @@ export function DailyView() {
   const [dataByPeriod, setDataByPeriod] = useState<Partial<Record<DailyPeriod, DailyStats>>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const hasLoadedOnceRef = useRef(false)
+  const [metric, setMetric] = useState<DailyMetric>('cost')
   const dataByPeriodRef = useRef<Partial<Record<DailyPeriod, DailyStats>>>({})
 
   const rawPeriod = searchParams.get('period')
@@ -67,7 +104,6 @@ export function DailyView() {
 
         dataByPeriodRef.current = nextDataByPeriod
         setDataByPeriod(nextDataByPeriod)
-        hasLoadedOnceRef.current = true
         setLastUpdatedAt(new Date())
       } catch (caught) {
         if (controller.signal.aborted) {
@@ -98,7 +134,7 @@ export function DailyView() {
         accumulator.sessions += day.sessions
         accumulator.messages += day.messages
         accumulator.cost += day.cost
-        accumulator.tokens += getDayTokenTotal(day)
+        accumulator.tokens += getTokenTotal(day.tokens)
 
         if (hasActivity(day)) {
           accumulator.activeDays += 1
@@ -124,10 +160,15 @@ export function DailyView() {
       ...totals,
       averageCostPerDay: safeDivide(totals.cost, dataForPeriod.days.length),
       averageMessagesPerSession: safeDivide(totals.messages, totals.sessions),
+      averageTokensPerDay: safeDivide(totals.tokens, dataForPeriod.days.length),
       recentDays: [...dataForPeriod.days].reverse(),
       empty: totals.activeDays === 0,
+      windowTokens: getWindowTokens(dataForPeriod),
     }
   }, [dataForPeriod])
+
+  const metricMeta = getDailyMetricMeta(metric)
+  const metricDetailCopy = dailyMetricCopy[metric]
 
   const handleRetry = () => {
     requestRefresh()
@@ -154,7 +195,7 @@ export function DailyView() {
             <h2 className="text-2xl font-semibold tracking-tight text-foreground">Daily</h2>
             <p className="max-w-3xl text-sm text-muted-foreground">
               Trend view backed by <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/daily</code>
-              , with a compact 7d/30d window toggle.
+              , with shareable 7d/30d windows and switchable cost, request, and token lenses.
             </p>
           </div>
           <PeriodToggle value={period} onChange={handlePeriodChange} disabled />
@@ -171,7 +212,7 @@ export function DailyView() {
           <Badge tone="accent">Live route</Badge>
           <h2 className="text-2xl font-semibold tracking-tight text-foreground">Daily</h2>
           <p className="max-w-3xl text-sm text-muted-foreground">
-            Compact daily trend monitoring for spend and activity. The URL period toggle stays shareable and maps directly to the Go API.
+            Switch between spend, request volume, and token flow without leaving the same daily window. The URL period toggle stays shareable and maps directly to the Go API.
           </p>
         </div>
 
@@ -210,15 +251,15 @@ export function DailyView() {
               hint={`${formatCompactInteger(summary.activeDays)} active days in the selected range`}
             />
             <MetricCard
-              label="Messages"
+              label="Requests"
               value={formatInteger(summary.messages)}
-              hint={`${summary.averageMessagesPerSession.toFixed(1)} messages per session`}
+              hint={`${summary.averageMessagesPerSession.toFixed(1)} messages per session in the current API model`}
             />
-            <MetricCard
-              label="Token load"
-              value={formatTokenCount(summary.tokens)}
-              hint={`${formatCurrency(summary.averageCostPerDay)} average cost per calendar day`}
-            />
+              <MetricCard
+                label="Token load"
+                value={formatTokenCount(summary.tokens)}
+                hint={`${formatTokenCount(Math.round(summary.averageTokensPerDay))} average tokens per calendar day`}
+              />
           </div>
 
           {summary.empty ? (
@@ -232,40 +273,49 @@ export function DailyView() {
                   The backend still returns a full {period} window, but every day is zero-filled until OpenCode records real sessions and assistant messages.
                 </p>
                 <p>
-                  Once data exists, this screen will light up with spend bars, active-day summaries, and a newest-first ledger automatically.
+                  Once data exists, this screen will light up with switchable daily charts, token mix context, and a newest-first ledger automatically.
                 </p>
               </CardContent>
             </Card>
           ) : (
-            <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
-              <DailyChart days={dataForPeriod?.days ?? []} />
+            <div className="grid gap-4 xl:grid-cols-[1.55fr_1fr]">
+              <div className="space-y-4">
+                <DailyChart days={dataForPeriod?.days ?? []} metric={metric} onMetricChange={setMetric} />
+
+                {metric === 'tokens' ? (
+                  <TokenBreakdownCard
+                    description="Window-level token mix"
+                    hideZeroItems
+                    title="Selected range"
+                    tokens={summary.windowTokens}
+                  />
+                ) : null}
+              </div>
 
               <Card>
                 <CardHeader>
-                  <CardDescription>Window detail</CardDescription>
+                  <CardDescription>{metricDetailCopy.detailTitle}</CardDescription>
                   <CardTitle>Newest days first</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
                     <div className="rounded-xl border border-border/70 bg-panel/75 px-3 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Peak day</div>
-                      <div className="mt-2 font-mono text-lg text-foreground">
-                        {summary.peakDay ? formatShortDate(summary.peakDay.date) : 'No data'}
-                      </div>
-                      <div className="text-sm text-muted-foreground">
-                        {summary.peakDay ? formatCurrency(summary.peakDay.cost) : 'No activity yet'}
-                      </div>
-                    </div>
-                    <div className="rounded-xl border border-border/70 bg-panel/75 px-3 py-3">
                       <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Window posture</div>
                       <div className="mt-2 font-mono text-lg text-foreground">{summary.activeDays}/{dataForPeriod?.days.length ?? 0}</div>
                       <div className="text-sm text-muted-foreground">days with non-zero activity</div>
                     </div>
+                    <div className="rounded-xl border border-border/70 bg-panel/75 px-3 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Current lens</div>
+                      <div className="mt-2 font-mono text-lg text-foreground">{metricMeta.label}</div>
+                      <div className="text-sm text-muted-foreground">{metricDetailCopy.detailDescription}</div>
+                    </div>
                   </div>
 
-                  <div className="max-h-[26rem] space-y-2 overflow-y-auto pr-1">
+                  <div className="max-h-[32rem] space-y-2 overflow-y-auto pr-1">
                     {summary.recentDays.map((day) => {
                       const active = hasActivity(day)
+                      const metricValue = getDailyMetricValue(day, metric)
+                      const tokenBreakdown = getTokenBreakdownItems(day.tokens).filter((item) => item.value > 0)
 
                       return (
                         <div
@@ -279,7 +329,18 @@ export function DailyView() {
                                 {active ? 'Activity recorded' : 'Zero-filled day'}
                               </div>
                             </div>
-                            <div className="font-mono text-sm text-foreground">{formatCurrency(day.cost)}</div>
+                            <div className="text-right">
+                              <div className="font-mono text-sm text-foreground">
+                                {metric === 'cost'
+                                  ? formatCurrency(day.cost)
+                                  : metric === 'requests'
+                                    ? formatInteger(day.messages)
+                                    : formatTokenCount(metricValue)}
+                              </div>
+                              <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                                {metricDetailCopy.metricLabel}
+                              </div>
+                            </div>
                           </div>
 
                           <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
@@ -288,14 +349,31 @@ export function DailyView() {
                               <div className="mt-1 font-mono text-sm text-foreground">{formatCompactInteger(day.sessions)}</div>
                             </div>
                             <div className="rounded-lg bg-background/40 px-2.5 py-2">
-                              <div className="uppercase tracking-[0.14em]">Messages</div>
+                              <div className="uppercase tracking-[0.14em]">Requests</div>
                               <div className="mt-1 font-mono text-sm text-foreground">{formatCompactInteger(day.messages)}</div>
                             </div>
                             <div className="rounded-lg bg-background/40 px-2.5 py-2">
                               <div className="uppercase tracking-[0.14em]">Tokens</div>
-                              <div className="mt-1 font-mono text-sm text-foreground">{formatTokenCount(getDayTokenTotal(day))}</div>
+                              <div className="mt-1 font-mono text-sm text-foreground">{formatTokenCount(getTokenTotal(day.tokens))}</div>
                             </div>
                           </div>
+
+                          {metric === 'tokens' && tokenBreakdown.length > 0 ? (
+                            <div className="mt-3 flex flex-wrap gap-x-3 gap-y-2 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                              {tokenBreakdown.map((item) => (
+                                <div key={item.key} className="inline-flex items-center gap-2">
+                                  <span
+                                    aria-hidden="true"
+                                    className="size-2 rounded-full border border-white/12"
+                                    style={{ backgroundColor: item.color }}
+                                  />
+                                  <span>
+                                    {item.label} <span className="font-mono text-foreground">{formatTokenCount(item.value)}</span>
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
                       )
                     })}

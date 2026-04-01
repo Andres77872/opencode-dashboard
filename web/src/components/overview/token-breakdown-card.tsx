@@ -1,48 +1,59 @@
 import type { TokenStats } from '../../types/api'
 import { formatPercentage, formatTokenCount } from '../../lib/format'
+import { getTokenBreakdownItems, getTokenTotal } from '../../lib/token-breakdown'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card'
+import { Progress } from '../ui/progress'
 import { Separator } from '../ui/separator'
+import { cn } from '../../lib/utils'
 
 interface TokenBreakdownCardProps {
+  className?: string
+  description?: string
+  hideZeroItems?: boolean
+  title?: string
   tokens: TokenStats
 }
 
-export function TokenBreakdownCard({ tokens }: TokenBreakdownCardProps) {
-  const data = [
-    { label: 'Input', value: tokens.input },
-    { label: 'Output', value: tokens.output },
-    { label: 'Reasoning', value: tokens.reasoning },
-    { label: 'Cache read', value: tokens.cache.read },
-    { label: 'Cache write', value: tokens.cache.write },
-  ]
-  const total = data.reduce((sum, item) => sum + item.value, 0)
+export function TokenBreakdownCard({
+  className,
+  description = 'Token breakdown',
+  hideZeroItems = false,
+  title,
+  tokens,
+}: TokenBreakdownCardProps) {
+  const data = getTokenBreakdownItems(tokens)
+  const total = getTokenTotal(tokens)
+  const visibleData = hideZeroItems && total > 0 ? data.filter((item) => item.value > 0) : data
 
   return (
-    <Card className="h-full">
+    <Card className={cn('h-full', className)}>
       <CardHeader>
-        <CardDescription>Token breakdown</CardDescription>
+        <CardDescription>{description}</CardDescription>
         <CardTitle className="font-mono text-2xl">{formatTokenCount(total)}</CardTitle>
+        {title ? <div className="text-sm font-medium text-foreground">{title}</div> : null}
       </CardHeader>
       <CardContent className="space-y-4">
-        {data.map((item, index) => {
+        {visibleData.map((item, index) => {
           const share = total === 0 ? 0 : (item.value / total) * 100
 
           return (
             <div key={item.label} className="space-y-2">
               <div className="flex items-center justify-between gap-3 text-sm">
-                <span className="text-muted-foreground">{item.label}</span>
+                <span className="flex items-center gap-2 text-muted-foreground">
+                  <span
+                    aria-hidden="true"
+                    className="size-2.5 rounded-full border border-white/12"
+                    style={{ backgroundColor: item.color }}
+                  />
+                  {item.label}
+                </span>
                 <div className="text-right">
                   <div className="font-mono text-foreground">{formatTokenCount(item.value)}</div>
                   <div className="text-xs text-muted-foreground">{formatPercentage(share)}</div>
                 </div>
               </div>
-              <div className="h-2 rounded-full bg-muted/70">
-                <div
-                  className="h-full rounded-full bg-accent transition-[width]"
-                  style={{ width: `${Math.max(share, total > 0 ? 4 : 0)}%` }}
-                />
-              </div>
-              {index < data.length - 1 ? <Separator className="mt-4" /> : null}
+              <Progress value={Math.max(share, total > 0 ? 4 : 0)} indicatorStyle={{ backgroundColor: item.color }} />
+              {index < visibleData.length - 1 ? <Separator className="mt-4" /> : null}
             </div>
           )
         })}

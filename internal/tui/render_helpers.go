@@ -146,20 +146,6 @@ func clamp(v, minV, maxV int) int {
 	return v
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 func trimCompactFloat(s string) string {
 	return strings.Replace(s, ".0", "", 1)
 }

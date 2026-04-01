@@ -176,8 +176,8 @@ func (m *model) Init() tea.Cmd {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = maxInt(msg.Width, 60)
-		m.height = maxInt(msg.Height, 18)
+		m.width = max(msg.Width, 60)
+		m.height = max(msg.Height, 18)
 		return m, nil
 
 	case snapshotLoadedMsg:
@@ -359,11 +359,11 @@ func (m *model) updateProjectsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) updateStaticTableCursorKey(key string, count int, cursor *int) (tea.Model, tea.Cmd) {
 	if matches(key, m.keys.Down...) {
-		*cursor = clamp(*cursor+1, 0, maxInt(count-1, 0))
+		*cursor = clamp(*cursor+1, 0, max(count-1, 0))
 		return m, nil
 	}
 	if matches(key, m.keys.Up...) {
-		*cursor = clamp(*cursor-1, 0, maxInt(count-1, 0))
+		*cursor = clamp(*cursor-1, 0, max(count-1, 0))
 		return m, nil
 	}
 	if matches(key, m.keys.Top...) {
@@ -371,7 +371,7 @@ func (m *model) updateStaticTableCursorKey(key string, count int, cursor *int) (
 		return m, nil
 	}
 	if matches(key, m.keys.Bottom...) {
-		*cursor = maxInt(count-1, 0)
+		*cursor = max(count-1, 0)
 		return m, nil
 	}
 	return m, nil
@@ -396,11 +396,11 @@ func (m *model) updateSessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if matches(key, m.keys.Down...) {
-		m.sessions.cursor = clamp(m.sessions.cursor+1, 0, maxInt(count-1, 0))
+		m.sessions.cursor = clamp(m.sessions.cursor+1, 0, max(count-1, 0))
 		return m, nil
 	}
 	if matches(key, m.keys.Up...) {
-		m.sessions.cursor = clamp(m.sessions.cursor-1, 0, maxInt(count-1, 0))
+		m.sessions.cursor = clamp(m.sessions.cursor-1, 0, max(count-1, 0))
 		return m, nil
 	}
 	if matches(key, m.keys.Top...) {
@@ -408,7 +408,7 @@ func (m *model) updateSessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if matches(key, m.keys.Bottom...) {
-		m.sessions.cursor = maxInt(count-1, 0)
+		m.sessions.cursor = max(count-1, 0)
 		return m, nil
 	}
 	if matches(key, m.keys.NextPage...) && hasNextSessionPage(m.data.Sessions) {
@@ -477,7 +477,7 @@ func (m *model) updateSessionOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 }
 
 func (m *model) View() tea.View {
-	bodyHeight := maxInt(m.height-6, 10)
+	bodyHeight := max(m.height-6, 10)
 	content := m.renderContent(bodyHeight)
 	if m.helpVisible {
 		content = m.renderHelp(bodyHeight)
@@ -514,9 +514,9 @@ func (m *model) renderStatusBar() string {
 		"  ",
 		m.styles.StatusAccent.Render(schemaLabel),
 		"  ",
-		m.styles.StatusMeta.Render("db: "+truncateWithEllipsis(m.opts.DBPath, maxInt(m.width/3, 24))),
+		m.styles.StatusMeta.Render("db: "+truncateWithEllipsis(m.opts.DBPath, max(m.width/3, 24))),
 		"  ",
-		m.styles.StatusMeta.Render("source: "+truncateWithEllipsis(m.opts.DBSource, maxInt(m.width/5, 16))),
+		m.styles.StatusMeta.Render("source: "+truncateWithEllipsis(m.opts.DBSource, max(m.width/5, 16))),
 		"  ",
 		m.styles.StatusMeta.Render("loaded: "+loadedLabel(m.lastLoaded, m.loaded)),
 	)
@@ -538,13 +538,13 @@ func (m *model) renderTabs() string {
 
 func (m *model) renderContent(bodyHeight int) string {
 	if m.loading && !m.loaded {
-		return m.styles.EmptyState.Width(maxInt(m.width-4, 40)).Height(bodyHeight).Render("Loading dashboard snapshot…")
+		return m.styles.EmptyState.Width(max(m.width-4, 40)).Height(bodyHeight).Render("Loading dashboard snapshot…")
 	}
 	if m.loadErr != nil && !m.loaded {
-		return m.styles.EmptyState.Width(maxInt(m.width-4, 40)).Height(bodyHeight).Render("Failed to load dashboard data\n\n" + m.loadErr.Error() + "\n\nPress r to retry.")
+		return m.styles.EmptyState.Width(max(m.width-4, 40)).Height(bodyHeight).Render("Failed to load dashboard data\n\n" + m.loadErr.Error() + "\n\nPress r to retry.")
 	}
 
-	panelWidth := maxInt(m.width-4, 40)
+	panelWidth := max(m.width-4, 40)
 	content := m.renderActiveTab(panelWidth-4, bodyHeight-2)
 	return m.styles.Panel.Width(panelWidth).Height(bodyHeight).Render(content)
 }
@@ -629,8 +629,8 @@ func (m *model) renderHelp(bodyHeight int) string {
 		"  p         toggles 7d / 30d",
 		"  t         cycles cost/sessions/messages/tokens",
 	}
-	box := m.styles.HelpPanel.Width(maxInt(minInt(m.width-8, 84), 40)).Render(joinLines(help...))
-	return lipgloss.Place(maxInt(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, box)
+	box := m.styles.HelpPanel.Width(max(min(m.width-8, 84), 40)).Render(joinLines(help...))
+	return lipgloss.Place(max(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, box)
 }
 
 func (m *model) renderFooter() string {
@@ -672,10 +672,10 @@ func (m *model) renderFooter() string {
 }
 
 func (m *model) renderSessionOverlay(base string, bodyHeight int) string {
-	panelWidth := maxInt(minInt(m.width-10, 110), 48)
-	panelHeight := maxInt(minInt(bodyHeight-2, 26), 12)
+	panelWidth := max(min(m.width-10, 110), 48)
+	panelHeight := max(min(bodyHeight-2, 26), 12)
 	overlay := renderSessionDetailOverlay(m.styles, panelWidth, panelHeight, m.sessionDetail)
-	return lipgloss.Place(maxInt(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, overlay)
+	return lipgloss.Place(max(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, overlay)
 }
 
 func (m *model) currentDaily() stats.DailyStats {
@@ -699,16 +699,16 @@ func (m *model) applyLoadedSessions(list stats.SessionList) {
 	if list.Page > 0 {
 		m.sessions.page = list.Page
 	}
-	m.sessions.cursor = clamp(m.sessions.cursor, 0, maxInt(len(list.Sessions)-1, 0))
+	m.sessions.cursor = clamp(m.sessions.cursor, 0, max(len(list.Sessions)-1, 0))
 	if len(list.Sessions) == 0 {
 		m.sessions.cursor = 0
 	}
 }
 
 func (m *model) reconcileTableCursors() {
-	m.models.cursor = clamp(m.models.cursor, 0, maxInt(len(m.visibleModelEntries())-1, 0))
-	m.tools.cursor = clamp(m.tools.cursor, 0, maxInt(len(m.visibleToolEntries())-1, 0))
-	m.projects.cursor = clamp(m.projects.cursor, 0, maxInt(len(m.visibleProjectEntries())-1, 0))
+	m.models.cursor = clamp(m.models.cursor, 0, max(len(m.visibleModelEntries())-1, 0))
+	m.tools.cursor = clamp(m.tools.cursor, 0, max(len(m.visibleToolEntries())-1, 0))
+	m.projects.cursor = clamp(m.projects.cursor, 0, max(len(m.visibleProjectEntries())-1, 0))
 }
 
 func (m *model) reconcileSessionOverlay() {

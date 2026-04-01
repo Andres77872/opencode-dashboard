@@ -18,6 +18,7 @@ const toneClasses: Record<BadgeTone, string> = {
 export function Badge({ className, tone = 'default', ...props }: BadgeProps) {
   return (
     <span
+      data-slot="badge"
       className={cn(
         'inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em]',
         toneClasses[tone],

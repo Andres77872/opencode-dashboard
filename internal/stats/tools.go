@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"opencode-dashboard/internal/store"
 )
@@ -38,12 +39,12 @@ func Tools(ctx context.Context, st *store.Store) (ToolStats, error) {
 		var dataJSON string
 
 		if err := rows.Scan(&sessionID, &dataJSON); err != nil {
-			continue
+			return ToolStats{}, fmt.Errorf("failed to scan part row: %w", err)
 		}
 
-		var data toolPartData
-		if err := json.Unmarshal([]byte(dataJSON), &data); err != nil {
-			continue
+		data, err := parseToolPartData(dataJSON)
+		if err != nil {
+			return ToolStats{}, fmt.Errorf("failed to parse tool part for session %s: %w", sessionID, err)
 		}
 
 		if data.Type != "tool" || data.Tool == "" {
@@ -93,6 +94,29 @@ func Tools(ctx context.Context, st *store.Store) (ToolStats, error) {
 	})
 
 	return ToolStats{Tools: tools}, nil
+}
+
+func parseToolPartData(dataJSON string) (toolPartData, error) {
+	var data toolPartData
+
+	trimmed := strings.TrimSpace(dataJSON)
+	if trimmed == "" {
+		return data, fmt.Errorf("empty part data")
+	}
+
+	if err := json.Unmarshal([]byte(trimmed), &data); err != nil {
+		return data, fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	if data.Type == "" {
+		return data, fmt.Errorf("missing part type")
+	}
+
+	if data.Type == "tool" && data.Tool == "" {
+		return data, fmt.Errorf("missing tool name")
+	}
+
+	return data, nil
 }
 
 type toolAggregate struct {

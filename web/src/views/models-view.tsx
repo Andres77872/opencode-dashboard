@@ -6,6 +6,8 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { SortButton } from '../components/ui/sort-button'
+import { Progress } from '../components/ui/progress'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { getModels } from '../lib/api'
 import {
   formatCompactCurrency,
@@ -320,46 +322,55 @@ export function ModelsView() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="hidden overflow-hidden rounded-2xl border border-border/70 lg:block">
-                    <div className="grid grid-cols-[minmax(14rem,1.6fr)_9rem_5.5rem_6rem_7rem_7rem_7rem_8rem] gap-3 border-b border-border/70 bg-panel/75 px-4 py-3">
-                      <SortButton active={sortKey === 'model'} label="Model" onClick={() => setSortKey('model')} />
-                      <SortButton active={sortKey === 'provider'} label="Provider" onClick={() => setSortKey('provider')} />
-                      <SortButton active={sortKey === 'sessions'} label="Sessions" onClick={() => setSortKey('sessions')} />
-                      <SortButton active={sortKey === 'messages'} label="Messages" onClick={() => setSortKey('messages')} />
-                      <div className="px-1 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Input</div>
-                      <div className="px-1 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Output</div>
-                      <SortButton active={sortKey === 'cost'} label="Cost" onClick={() => setSortKey('cost')} />
-                      <SortButton active={sortKey === 'avgCostPerMessage'} label="Avg / msg" onClick={() => setSortKey('avgCostPerMessage')} />
-                    </div>
-
-                    <div className="divide-y divide-border/60">
-                      {summary.rows.map((row) => (
-                        <div
-                          key={`${row.provider_id}:${row.model_id}`}
-                          className="grid grid-cols-[minmax(14rem,1.6fr)_9rem_5.5rem_6rem_7rem_7rem_7rem_8rem] gap-3 bg-card/40 px-4 py-3 transition-colors hover:bg-white/4"
-                        >
-                          <div className="min-w-0 space-y-2">
-                            <div className="truncate font-medium text-foreground">{getModelLabel(row)}</div>
-                            <div className="flex items-center gap-3">
-                              <div className="h-2 flex-1 overflow-hidden rounded-full bg-background/80">
-                                <div
-                                  className="h-full rounded-full bg-linear-to-r from-accent/60 to-accent"
-                                  style={{ width: `${Math.max(row.costShare, row.cost > 0 ? 4 : 0)}%` }}
-                                />
+                  <div className="hidden lg:block">
+                    <Table className="overflow-hidden rounded-2xl border border-border/70">
+                      <TableHeader className="bg-panel/75">
+                        <TableRow className="border-b border-border/70 hover:bg-transparent">
+                          <TableHead className="min-w-[14rem]" aria-sort={sortKey === 'model' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'model'} label="Model" onClick={() => setSortKey('model')} />
+                          </TableHead>
+                          <TableHead className="w-[9rem]" aria-sort={sortKey === 'provider' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'provider'} label="Provider" onClick={() => setSortKey('provider')} />
+                          </TableHead>
+                          <TableHead className="w-[5.5rem]" aria-sort={sortKey === 'sessions' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'sessions'} label="Sessions" onClick={() => setSortKey('sessions')} />
+                          </TableHead>
+                          <TableHead className="w-[6rem]" aria-sort={sortKey === 'messages' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'messages'} label="Messages" onClick={() => setSortKey('messages')} />
+                          </TableHead>
+                          <TableHead className="w-[7rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Input</TableHead>
+                          <TableHead className="w-[7rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Output</TableHead>
+                          <TableHead className="w-[7rem]" aria-sort={sortKey === 'cost' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'cost'} label="Cost" onClick={() => setSortKey('cost')} />
+                          </TableHead>
+                          <TableHead className="w-[8rem]" aria-sort={sortKey === 'avgCostPerMessage' ? 'descending' : 'none'}>
+                            <SortButton active={sortKey === 'avgCostPerMessage'} label="Avg / msg" onClick={() => setSortKey('avgCostPerMessage')} />
+                          </TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {summary.rows.map((row) => (
+                          <TableRow key={`${row.provider_id}:${row.model_id}`} className="bg-card/40 hover:bg-white/4">
+                            <TableCell className="min-w-[14rem]">
+                              <div className="space-y-2">
+                                <div className="truncate font-medium text-foreground">{getModelLabel(row)}</div>
+                                <div className="flex items-center gap-3">
+                                  <Progress value={Math.max(row.costShare, row.cost > 0 ? 4 : 0)} className="flex-1" />
+                                  <span className="font-mono text-xs text-muted-foreground">{formatPercentage(row.costShare)}</span>
+                                </div>
                               </div>
-                              <span className="font-mono text-xs text-muted-foreground">{formatPercentage(row.costShare)}</span>
-                            </div>
-                          </div>
-                          <div className="truncate font-mono text-sm text-muted-foreground">{getProviderLabel(row)}</div>
-                          <div className="font-mono text-sm text-foreground">{formatCompactInteger(row.sessions)}</div>
-                          <div className="font-mono text-sm text-foreground">{formatCompactInteger(row.messages)}</div>
-                          <div className="font-mono text-sm text-foreground">{formatTokenCount(row.tokens.input)}</div>
-                          <div className="font-mono text-sm text-foreground">{formatTokenCount(row.tokens.output)}</div>
-                          <div className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</div>
-                          <div className="font-mono text-sm text-foreground">{formatCurrency(row.avgCostPerMessage)}</div>
-                        </div>
-                      ))}
-                    </div>
+                            </TableCell>
+                            <TableCell className="truncate font-mono text-sm text-muted-foreground">{getProviderLabel(row)}</TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatCompactInteger(row.sessions)}</TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatCompactInteger(row.messages)}</TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatTokenCount(row.tokens.input)}</TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatTokenCount(row.tokens.output)}</TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</TableCell>
+                            <TableCell className="font-mono text-sm text-foreground">{formatCurrency(row.avgCostPerMessage)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
                   </div>
 
                   <div className="space-y-3 lg:hidden">
@@ -378,12 +389,10 @@ export function ModelsView() {
                           <div className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</div>
                         </div>
 
-                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-background/80">
-                          <div
-                            className="h-full rounded-full bg-linear-to-r from-accent/60 to-accent"
-                            style={{ width: `${Math.max(row.costShare, row.cost > 0 ? 4 : 0)}%` }}
-                          />
-                        </div>
+<Progress
+                           className="mt-3"
+                           value={Math.max(row.costShare, row.cost > 0 ? 4 : 0)}
+                         />
 
                         <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                           <div className="rounded-lg bg-background/40 px-2.5 py-2">

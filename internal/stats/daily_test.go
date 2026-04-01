@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -31,7 +32,7 @@ func TestParsePeriod(t *testing.T) {
 					t.Errorf("parsePeriod(%q) expected error, got nil", tt.input)
 					return
 				}
-				if tt.errContains != "" && !containsString(err.Error(), tt.errContains) {
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
 					t.Errorf("parsePeriod(%q) error = %q, want error containing %q", tt.input, err.Error(), tt.errContains)
 				}
 				return
@@ -47,8 +48,4 @@ func TestParsePeriod(t *testing.T) {
 			}
 		})
 	}
-}
-
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && s[:len(substr)] == substr || len(s) > len(substr) && containsString(s[1:], substr)
 }

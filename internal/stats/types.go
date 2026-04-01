@@ -158,5 +158,8 @@ func (p Pagination) Offset() int {
 	if p.Page < 1 {
 		p.Page = 1
 	}
+	if p.PageSize < 1 {
+		return 0
+	}
 	return (p.Page - 1) * p.PageSize
 }

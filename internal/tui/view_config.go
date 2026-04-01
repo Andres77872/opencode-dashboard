@@ -26,13 +26,13 @@ func renderConfig(s styles, width, height int, cfg stats.ConfigView, opts Option
 	}
 
 	previewLines := strings.Split(cfg.Content, "\n")
-	maxPreview := maxInt(height-10, 6)
+	maxPreview := max(height-10, 6)
 	for i, line := range previewLines {
 		if i >= maxPreview {
 			lines = append(lines, s.Muted.Render("…truncated in TUI core; full grouped config view lands in Phase 6."))
 			break
 		}
-		lines = append(lines, truncateWithEllipsis(line, maxInt(width-2, 20)))
+		lines = append(lines, truncateWithEllipsis(line, max(width-2, 20)))
 	}
 
 	return joinLines(lines...)

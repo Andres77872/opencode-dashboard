@@ -30,10 +30,10 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 		s.PanelTitle.Render("Models"),
 		s.Muted.Render("Dense browse flow with cursor, sort, and inline filter."),
 		"",
-		s.TableHeader.Render(fmt.Sprintf("%s %s %s %s %s", padRight("MODEL", maxInt(width-42, 16)), padRight("PROVIDER", 12), padLeft("SESS", 6), padLeft("MSG", 6), padLeft("COST", 10))),
+		s.TableHeader.Render(fmt.Sprintf("%s %s %s %s %s", padRight("MODEL", max(width-42, 16)), padRight("PROVIDER", 12), padLeft("SESS", 6), padLeft("MSG", 6), padLeft("COST", 10))),
 	}
-	limit := minInt(len(items), maxInt(height-6, 5))
-	nameWidth := maxInt(width-42, 16)
+	limit := min(len(items), max(height-6, 5))
+	nameWidth := max(width-42, 16)
 	if len(items) == 0 {
 		message := "No assistant model usage found."
 		if state.filter != "" {
@@ -61,10 +61,10 @@ func renderTools(s styles, width, height int, items []stats.ToolEntry, total int
 		s.PanelTitle.Render("Tools"),
 		s.Muted.Render("Top tool usage with cursor, sort, and inline filter."),
 		"",
-		s.TableHeader.Render(fmt.Sprintf("%s %s %s %s %s", padRight("TOOL", maxInt(width-34, 16)), padLeft("RUNS", 7), padLeft("OK", 7), padLeft("ERR", 7), padLeft("SESS", 7))),
+		s.TableHeader.Render(fmt.Sprintf("%s %s %s %s %s", padRight("TOOL", max(width-34, 16)), padLeft("RUNS", 7), padLeft("OK", 7), padLeft("ERR", 7), padLeft("SESS", 7))),
 	}
-	limit := minInt(len(items), maxInt(height-6, 5))
-	nameWidth := maxInt(width-34, 16)
+	limit := min(len(items), max(height-6, 5))
+	nameWidth := max(width-34, 16)
 	if len(items) == 0 {
 		message := "No tool invocation data found."
 		if state.filter != "" {
@@ -92,10 +92,10 @@ func renderProjects(s styles, width, height int, items []stats.ProjectEntry, tot
 		s.PanelTitle.Render("Projects"),
 		s.Muted.Render("Project concentration with cursor, sort, and inline filter."),
 		"",
-		s.TableHeader.Render(fmt.Sprintf("%s %s %s %s", padRight("PROJECT", maxInt(width-31, 16)), padLeft("SESS", 7), padLeft("MSG", 7), padLeft("COST", 10))),
+		s.TableHeader.Render(fmt.Sprintf("%s %s %s %s", padRight("PROJECT", max(width-31, 16)), padLeft("SESS", 7), padLeft("MSG", 7), padLeft("COST", 10))),
 	}
-	limit := minInt(len(items), maxInt(height-6, 5))
-	nameWidth := maxInt(width-31, 16)
+	limit := min(len(items), max(height-6, 5))
+	nameWidth := max(width-31, 16)
 	if len(items) == 0 {
 		message := "No project activity found."
 		if state.filter != "" {
@@ -123,7 +123,7 @@ func renderSessions(s styles, width, height int, list stats.SessionList, state s
 		s.PanelTitle.Render("Sessions"),
 		s.Muted.Render("Dense browse flow with filter, sort, and Enter drill-down."),
 		"",
-		s.TableHeader.Render(fmt.Sprintf("%s %s %s %s %s", padRight("TITLE", maxInt(width-45, 16)), padRight("PROJECT", 12), padRight("UPDATED", 12), padLeft("MSG", 5), padLeft("COST", 10))),
+		s.TableHeader.Render(fmt.Sprintf("%s %s %s %s %s", padRight("TITLE", max(width-45, 16)), padRight("PROJECT", 12), padRight("UPDATED", 12), padLeft("MSG", 5), padLeft("COST", 10))),
 	}
 
 	if len(list.Sessions) == 0 {
@@ -133,8 +133,8 @@ func renderSessions(s styles, width, height int, list stats.SessionList, state s
 		}
 		rows = append(rows, s.Muted.Render(message))
 	} else {
-		limit := minInt(len(list.Sessions), maxInt(height-6, 5))
-		titleWidth := maxInt(width-45, 16)
+		limit := min(len(list.Sessions), max(height-6, 5))
+		titleWidth := max(width-45, 16)
 		for i, item := range list.Sessions[:limit] {
 			line := fmt.Sprintf("%s %s %s %s %s", padRight(truncateWithEllipsis(item.Title, titleWidth), titleWidth), padRight(truncateWithEllipsis(item.ProjectName, 12), 12), padRight(item.TimeUpdated.Format("2006-01-02"), 12), padLeft(formatInt(item.MessageCount), 5), padLeft(formatMoney(item.Cost), 10))
 			if i == state.cursor {
@@ -145,7 +145,7 @@ func renderSessions(s styles, width, height int, list stats.SessionList, state s
 		}
 	}
 
-	status := fmt.Sprintf("Page %d/%d • showing %d of %d sessions • sort:%s", maxInt(list.Page, 1), totalSessionPages(list), len(list.Sessions), list.Total, renderSessionSortLabel(state.sort))
+	status := fmt.Sprintf("Page %d/%d • showing %d of %d sessions • sort:%s", max(list.Page, 1), totalSessionPages(list), len(list.Sessions), list.Total, renderSessionSortLabel(state.sort))
 	if state.filter != "" {
 		status += " • filter:" + state.filter
 	}
@@ -178,8 +178,8 @@ func tableWindow(total, cursor, limit int) (int, int) {
 	if total <= 0 || limit <= 0 || total <= limit {
 		return 0, total
 	}
-	start := clamp(cursor-(limit/2), 0, maxInt(total-limit, 0))
-	end := minInt(start+limit, total)
+	start := clamp(cursor-(limit/2), 0, max(total-limit, 0))
+	end := min(start+limit, total)
 	return start, end
 }
 

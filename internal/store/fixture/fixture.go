@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS part (
 	tool TEXT,
 	input TEXT,
 	output TEXT,
+	data TEXT,
 	time_created TEXT NOT NULL,
 	time_updated TEXT NOT NULL,
 	metadata TEXT,
@@ -220,6 +221,7 @@ func (p *ProjectBuilder) Name(name string) *ProjectBuilder {
 type Builder struct {
 	sessions []*SessionBuilder
 	projects []*ProjectBuilder
+	parts    []*PartBuilder
 }
 
 // NewBuilder creates a new fixture builder.
@@ -234,6 +236,11 @@ func (b *Builder) AddProject(p *ProjectBuilder) *Builder {
 
 func (b *Builder) AddSession(s *SessionBuilder) *Builder {
 	b.sessions = append(b.sessions, s)
+	return b
+}
+
+func (b *Builder) AddPart(p *PartBuilder) *Builder {
+	b.parts = append(b.parts, p)
 	return b
 }
 
@@ -306,6 +313,14 @@ func (b *Builder) Build(ctx context.Context) (string, error) {
 		}
 	}
 
+	for _, p := range b.parts {
+		if err := insertPart(ctx, db, p); err != nil {
+			db.Close()
+			os.RemoveAll(tmpDir)
+			return "", err
+		}
+	}
+
 	if err := db.Close(); err != nil {
 		os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("failed to close database: %w", err)
@@ -356,6 +371,58 @@ func insertMessage(ctx context.Context, db *sql.DB, m *MessageBuilder) error {
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert message %q: %w", m.id, err)
+	}
+	return nil
+}
+
+// PartBuilder provides a fluent API for constructing part rows.
+type PartBuilder struct {
+	id        string
+	sessionID string
+	data      string
+	tool      string
+	createdAt time.Time
+	updatedAt time.Time
+}
+
+// NewPart creates a new part builder with required fields.
+func NewPart(id, sessionID, data string) *PartBuilder {
+	return &PartBuilder{
+		id:        id,
+		sessionID: sessionID,
+		data:      data,
+		createdAt: time.Now().UTC(),
+		updatedAt: time.Now().UTC(),
+	}
+}
+
+func (p *PartBuilder) Tool(tool string) *PartBuilder {
+	p.tool = tool
+	return p
+}
+
+func (p *PartBuilder) CreatedAt(t time.Time) *PartBuilder {
+	p.createdAt = t
+	return p
+}
+
+func (p *PartBuilder) UpdatedAt(t time.Time) *PartBuilder {
+	p.updatedAt = t
+	return p
+}
+
+func insertPart(ctx context.Context, db *sql.DB, p *PartBuilder) error {
+	query := `INSERT OR REPLACE INTO part (id, session_id, tool, data, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)`
+	_, err := db.ExecContext(ctx, query,
+		p.id,
+		p.sessionID,
+		p.tool,
+		p.data,
+		p.createdAt.UnixMilli(),
+		p.updatedAt.UnixMilli(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to insert part %q: %w", p.id, err)
 	}
 	return nil
 }
