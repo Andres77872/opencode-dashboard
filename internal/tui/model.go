@@ -55,14 +55,13 @@ const (
 )
 
 type dashboardData struct {
-	Overview stats.OverviewStats
-	Daily7   stats.DailyStats
-	Daily30  stats.DailyStats
-	Models   stats.ModelStats
-	Tools    stats.ToolStats
-	Projects stats.ProjectStats
-	Sessions stats.SessionList
-	Config   stats.ConfigView
+	Overview      stats.OverviewStats
+	DailyByPeriod map[string]stats.DailyStats
+	Models        stats.ModelStats
+	Tools         stats.ToolStats
+	Projects      stats.ProjectStats
+	Sessions      stats.SessionList
+	Config        stats.ConfigView
 }
 
 type filterState struct {
@@ -117,6 +116,12 @@ type sessionDetailLoadedMsg struct {
 	err    error
 }
 
+type dailyPeriodLoadedMsg struct {
+	period string
+	data   stats.DailyStats
+	err    error
+}
+
 type model struct {
 	store *store.Store
 	opts  Options
@@ -130,6 +135,7 @@ type model struct {
 	activeTab     tabID
 	helpVisible   bool
 	dailyPeriod   string
+	dailyLoading  bool
 	dailyMetric   dailyMetric
 	filterMode    bool
 	loading       bool
@@ -218,6 +224,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionDetail.detail = msg.detail
 		return m, nil
 
+	case dailyPeriodLoadedMsg:
+		m.dailyLoading = false
+		if msg.err != nil {
+			m.loadErr = msg.err
+			return m, nil
+		}
+		if m.data.DailyByPeriod == nil {
+			m.data.DailyByPeriod = make(map[string]stats.DailyStats)
+		}
+		m.data.DailyByPeriod[msg.period] = msg.data
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.updateKey(msg)
 	}
@@ -281,7 +299,12 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.activeTab {
 	case tabDaily:
 		if matches(key, m.keys.PrevPage...) {
-			m.dailyPeriod = toggleDailyPeriod(m.dailyPeriod)
+			nextPeriod := nextDailyPeriod(m.dailyPeriod)
+			m.dailyPeriod = nextPeriod
+			if m.data.DailyByPeriod == nil || m.data.DailyByPeriod[nextPeriod].Days == nil {
+				m.dailyLoading = true
+				return m, loadDailyPeriodCmd(m.store, nextPeriod)
+			}
 		}
 		if matches(key, m.keys.Metric...) {
 			m.dailyMetric = nextDailyMetric(m.dailyMetric)
@@ -554,7 +577,7 @@ func (m *model) renderActiveTab(width, height int) string {
 	case tabOverview:
 		return renderOverview(m.styles, width, height, m.data)
 	case tabDaily:
-		return renderDaily(m.styles, width, height, m.currentDaily(), m.dailyPeriod, m.dailyMetric)
+		return renderDaily(m.styles, width, height, m.currentDaily(), m.dailyPeriod, m.dailyMetric, m.dailyLoading)
 	case tabModels:
 		return renderModels(m.styles, width, height, m.visibleModelEntries(), len(m.data.Models.Models), tableViewState{
 			cursor:      m.models.cursor,
@@ -626,7 +649,7 @@ func (m *model) renderHelp(bodyHeight int) string {
 		"  s         cycle table sort",
 		"",
 		m.styles.Text.Render("Daily"),
-		"  p         toggles 7d / 30d",
+		"  p         cycles 1d/7d/30d/1y/all",
 		"  t         cycles cost/sessions/messages/tokens",
 	}
 	box := m.styles.HelpPanel.Width(max(min(m.width-8, 84), 40)).Render(joinLines(help...))
@@ -636,7 +659,11 @@ func (m *model) renderHelp(bodyHeight int) string {
 func (m *model) renderFooter() string {
 	contextKeys := "1-7 tabs • h/l switch • r refresh • ? help • q quit"
 	if m.activeTab == tabDaily {
-		contextKeys += fmt.Sprintf(" • p period:%s • t metric:%s", m.dailyPeriod, renderDailyMetricLabel(m.dailyMetric))
+		periodLabel := m.dailyPeriod
+		if m.dailyLoading {
+			periodLabel += " (loading)"
+		}
+		contextKeys += fmt.Sprintf(" • p period:%s • t metric:%s", periodLabel, renderDailyMetricLabel(m.dailyMetric))
 	}
 	if m.activeTab == tabModels {
 		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s", renderModelSortLabel(m.models.sort))
@@ -679,10 +706,13 @@ func (m *model) renderSessionOverlay(base string, bodyHeight int) string {
 }
 
 func (m *model) currentDaily() stats.DailyStats {
-	if m.dailyPeriod == "30d" {
-		return m.data.Daily30
+	if m.data.DailyByPeriod == nil {
+		return stats.DailyStats{}
 	}
-	return m.data.Daily7
+	if daily, ok := m.data.DailyByPeriod[m.dailyPeriod]; ok {
+		return daily
+	}
+	return stats.DailyStats{}
 }
 
 func (m *model) currentSessionQuery() stats.SessionQuery {
@@ -747,11 +777,11 @@ func loadSnapshotCmd(st *store.Store, query stats.SessionQuery) tea.Cmd {
 		if data.Overview, err = stats.Overview(ctx, st); err != nil {
 			return snapshotLoadedMsg{err: err}
 		}
-		if data.Daily7, err = stats.Daily(ctx, st, "7d"); err != nil {
+		data.DailyByPeriod = make(map[string]stats.DailyStats)
+		if daily7, err := stats.Daily(ctx, st, "7d"); err != nil {
 			return snapshotLoadedMsg{err: err}
-		}
-		if data.Daily30, err = stats.Daily(ctx, st, "30d"); err != nil {
-			return snapshotLoadedMsg{err: err}
+		} else {
+			data.DailyByPeriod["7d"] = daily7
 		}
 		if data.Models, err = stats.Models(ctx, st); err != nil {
 			return snapshotLoadedMsg{err: err}
@@ -793,9 +823,23 @@ func loadSessionDetailCmd(st *store.Store, id string) tea.Cmd {
 	}
 }
 
-func toggleDailyPeriod(current string) string {
-	if current == "7d" {
-		return "30d"
+func loadDailyPeriodCmd(st *store.Store, period string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		data, err := stats.Daily(ctx, st, period)
+		return dailyPeriodLoadedMsg{period: period, data: data, err: err}
+	}
+}
+
+func nextDailyPeriod(current string) string {
+	periods := []string{"1d", "7d", "30d", "1y", "all"}
+	for i, p := range periods {
+		if p == current {
+			nextIdx := (i + 1) % len(periods)
+			return periods[nextIdx]
+		}
 	}
 	return "7d"
 }

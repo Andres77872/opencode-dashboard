@@ -1,5 +1,5 @@
-import type { DayStats, TokenStats } from '../../types/api'
-import { formatCompactInteger, formatPercentage, formatShortDate, formatShortWeekday, formatTokenCount } from '../../lib/format'
+import type { DayStats, Granularity, TokenStats } from '../../types/api'
+import { formatCompactInteger, formatHour, formatPercentage, formatShortDate, formatShortWeekday, formatTokenCount } from '../../lib/format'
 import { getTokenBreakdownItems, getTokenTotal } from '../../lib/token-breakdown'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
@@ -10,7 +10,13 @@ import { SegmentedControl } from './segmented-control'
 interface DailyChartProps {
   days: DayStats[]
   metric: DailyMetric
+  granularity?: Granularity
   onMetricChange: (value: DailyMetric) => void
+}
+
+interface AxisLabelParts {
+  primary: string
+  secondary?: string
 }
 
 const EMPTY_TOKENS: TokenStats = {
@@ -31,7 +37,25 @@ const EMPTY_DAY: DayStats = {
   tokens: EMPTY_TOKENS,
 }
 
-function shouldShowLabel(index: number, total: number) {
+const shortMonthFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  timeZone: 'UTC',
+})
+
+const shortYearFormatter = new Intl.DateTimeFormat('en-US', {
+  year: '2-digit',
+  timeZone: 'UTC',
+})
+
+const CHART_HEIGHT_REM = 18
+const AXIS_LABEL_ROW_REM = 2.5
+const AXIS_LABEL_GAP_REM = 0.75
+
+function shouldShowLabel(index: number, total: number, granularity?: Granularity) {
+  if (granularity === 'hour') {
+    return index === 0 || index === total - 1 || index % 6 === 0
+  }
+  
   if (total <= 7) {
     return true
   }
@@ -40,14 +64,62 @@ function shouldShowLabel(index: number, total: number) {
     return true
   }
 
-  return index % 5 === 0
+  const step = total <= 14 ? 2 : total <= 31 ? 5 : total <= 90 ? 14 : total <= 366 ? 30 : 60
+  return index % step === 0
+}
+
+function getUtcDate(value: string) {
+  return new Date(`${value}T00:00:00Z`)
+}
+
+function formatAxisLabel(date: string, total: number, granularity?: Granularity): AxisLabelParts {
+  if (granularity === 'hour') {
+    return { primary: formatHour(date) }
+  }
+  
+  if (total <= 14) {
+    return { primary: formatShortWeekday(date) }
+  }
+
+  if (total <= 90) {
+    const [month, day] = formatShortDate(date).split(' ')
+
+    if (month && day) {
+      return {
+        primary: month,
+        secondary: day,
+      }
+    }
+  }
+
+  if (total <= 366) {
+    return { primary: shortMonthFormatter.format(getUtcDate(date)) }
+  }
+
+  return {
+    primary: shortMonthFormatter.format(getUtcDate(date)),
+    secondary: shortYearFormatter.format(getUtcDate(date)),
+  }
+}
+
+function getChartMinWidth(total: number, granularity?: Granularity) {
+  if (granularity === 'hour') {
+    return `${Math.max(total * 32, 320)}px`
+  }
+  
+  if (total <= 7) {
+    return undefined
+  }
+
+  const pixelsPerDay = total <= 31 ? 48 : total <= 90 ? 28 : total <= 366 ? 18 : 14
+  return `${Math.max(total * pixelsPerDay, 320)}px`
 }
 
 function hasActivity(day: DayStats) {
   return day.cost > 0 || day.messages > 0 || day.sessions > 0 || getTokenTotal(day.tokens) > 0
 }
 
-function getLatestDeltaLabel(days: DayStats[], metric: DailyMetric) {
+function getLatestDeltaLabel(days: DayStats[], metric: DailyMetric, isHourly?: boolean) {
   if (days.length < 2) {
     return 'No comparison yet'
   }
@@ -56,11 +128,13 @@ function getLatestDeltaLabel(days: DayStats[], metric: DailyMetric) {
   const previousDay = days[days.length - 2]
   const delta = getDailyMetricValue(latestDay, metric) - getDailyMetricValue(previousDay, metric)
 
+  const previousLabel = isHourly ? formatHour(previousDay.date) : formatShortDate(previousDay.date)
+  
   if (delta === 0) {
-    return `Flat vs ${formatShortDate(previousDay.date)}`
+    return `Flat vs ${previousLabel}`
   }
 
-  return `${delta > 0 ? 'Up' : 'Down'} ${formatDailyMetricValue(metric, Math.abs(delta), true)} vs ${formatShortDate(previousDay.date)}`
+  return `${delta > 0 ? 'Up' : 'Down'} ${formatDailyMetricValue(metric, Math.abs(delta), true)} vs ${previousLabel}`
 }
 
 function getTooltipMetricRows(day: DayStats, metric: DailyMetric) {
@@ -109,7 +183,7 @@ function getWindowTokens(days: DayStats[]) {
   )
 }
 
-export function DailyChart({ days, metric, onMetricChange }: DailyChartProps) {
+export function DailyChart({ days, metric, granularity, onMetricChange }: DailyChartProps) {
   const meta = getDailyMetricMeta(metric)
   const values = days.map((day) => getDailyMetricValue(day, metric))
   const maxValue = Math.max(...values, 0)
@@ -118,7 +192,13 @@ export function DailyChart({ days, metric, onMetricChange }: DailyChartProps) {
   const latestDay = days[days.length - 1] ?? EMPTY_DAY
   const peakDay = days.find((day) => getDailyMetricValue(day, metric) === maxValue) ?? latestDay
   const windowTokenLegend = getTokenBreakdownItems(getWindowTokens(days)).filter((item) => item.value > 0)
-  const chartMinWidth = days.length > 7 ? `${days.length * 44}px` : undefined
+  const chartMinWidth = getChartMinWidth(days.length, granularity)
+  const isHourly = granularity === 'hour'
+  const axisReservedSpace = `calc(${AXIS_LABEL_ROW_REM}rem + ${AXIS_LABEL_GAP_REM}rem)`
+
+  const peakLabel = isHourly ? 'Peak hour' : 'Peak day'
+  const averageLabel = isHourly ? 'Average / hour' : 'Average / day'
+  const latestLabel = isHourly ? 'Latest hour' : 'Latest day'
 
   return (
     <Card className="border-border/70 bg-linear-to-b from-card to-panel">
@@ -146,21 +226,21 @@ export function DailyChart({ days, metric, onMetricChange }: DailyChartProps) {
       <CardContent className="space-y-5">
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="rounded-xl border border-border/70 bg-panel/75 px-3 py-3">
-            <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Peak day</div>
+            <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{peakLabel}</div>
             <div className="mt-2 font-mono text-lg text-foreground">{formatDailyMetricValue(metric, getDailyMetricValue(peakDay, metric), true)}</div>
             <div className="text-sm text-muted-foreground">{peakDay.date ? formatShortDate(peakDay.date) : 'No data'}</div>
           </div>
 
           <div className="rounded-xl border border-border/70 bg-panel/75 px-3 py-3">
-            <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Average / day</div>
+            <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{averageLabel}</div>
             <div className="mt-2 font-mono text-lg text-foreground">{formatDailyMetricValue(metric, averageValue, true)}</div>
-            <div className="text-sm text-muted-foreground">Inactive days stay in the window for honest pacing</div>
+            <div className="text-sm text-muted-foreground">Inactive hours stay in the window for honest pacing</div>
           </div>
 
           <div className="rounded-xl border border-border/70 bg-panel/75 px-3 py-3">
-            <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Latest day</div>
+            <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{latestLabel}</div>
             <div className="mt-2 font-mono text-lg text-foreground">{formatDailyMetricValue(metric, getDailyMetricValue(latestDay, metric), true)}</div>
-            <div className="text-sm text-muted-foreground">{latestDay.date ? getLatestDeltaLabel(days, metric) : 'No data yet'}</div>
+            <div className="text-sm text-muted-foreground">{latestDay.date ? getLatestDeltaLabel(days, metric, isHourly) : 'No data yet'}</div>
           </div>
         </div>
 
@@ -172,24 +252,42 @@ export function DailyChart({ days, metric, onMetricChange }: DailyChartProps) {
 
           <TooltipProvider>
             <div className="-mx-1 overflow-x-auto px-1 pb-2">
-              <div className="relative min-w-full" style={chartMinWidth ? { minWidth: chartMinWidth } : undefined}>
-                <div className="pointer-events-none absolute inset-x-0 top-0 flex h-64 flex-col justify-between pb-7">
+              <div
+                className="relative min-w-full"
+                style={{
+                  ...(chartMinWidth ? { minWidth: chartMinWidth } : {}),
+                  height: `${CHART_HEIGHT_REM}rem`,
+                }}
+              >
+                <div
+                  className="pointer-events-none absolute inset-x-0 top-0 flex flex-col justify-between"
+                  style={{ bottom: axisReservedSpace }}
+                >
                   {Array.from({ length: 4 }).map((_, index) => (
                     <div key={index} className="border-t border-dashed border-border/55" />
                   ))}
                 </div>
 
-                <div className="flex h-64 items-end gap-2">
+                <div className="flex h-full items-stretch gap-2">
                   {days.map((day, index) => {
                     const total = getDailyMetricValue(day, metric)
                     const height = maxValue > 0 ? Math.max((total / maxValue) * 100, total > 0 ? 8 : 2) : 2
                     const active = hasActivity(day)
                     const stackSegments = getStackSegments(day)
                     const tooltipRows = getTooltipMetricRows(day, metric)
+                    const showLabel = shouldShowLabel(index, days.length, granularity)
+                    const axisLabel = formatAxisLabel(day.date, days.length, granularity)
 
                     return (
-                      <div key={day.date} className="flex h-full min-w-0 flex-1 flex-col justify-end">
-                        <div className="relative flex h-full items-end justify-center">
+                      <div
+                        key={day.date}
+                        className="grid h-full min-w-0 flex-1"
+                        style={{
+                          gridTemplateRows: `minmax(0, 1fr) ${AXIS_LABEL_ROW_REM}rem`,
+                          rowGap: `${AXIS_LABEL_GAP_REM}rem`,
+                        }}
+                      >
+                        <div className="relative flex min-h-0 items-end justify-center">
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <button
@@ -273,8 +371,19 @@ export function DailyChart({ days, metric, onMetricChange }: DailyChartProps) {
                           </Tooltip>
                         </div>
 
-                        <div className="mt-3 text-center text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-                          {shouldShowLabel(index, days.length) ? formatShortWeekday(day.date) : '·'}
+                        <div className="flex h-full items-start justify-center px-1 text-center text-[10px] uppercase leading-none tracking-[0.08em] text-muted-foreground">
+                          {showLabel ? (
+                            axisLabel.secondary ? (
+                              <span className="flex flex-col items-center whitespace-nowrap pt-0.5">
+                                <span>{axisLabel.primary}</span>
+                                <span className="mt-1 font-mono text-[10px] tracking-normal">{axisLabel.secondary}</span>
+                              </span>
+                            ) : (
+                              <span className="whitespace-nowrap pt-1.5">{axisLabel.primary}</span>
+                            )
+                          ) : (
+                            <span aria-hidden="true" className="opacity-0">00</span>
+                          )}
                         </div>
                       </div>
                     )

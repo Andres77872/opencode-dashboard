@@ -33,6 +33,20 @@ const dateTimeFormatter = new Intl.DateTimeFormat('en-US', {
   hour12: false,
   timeZone: 'UTC',
 })
+const hourFormatter = new Intl.DateTimeFormat('en-US', {
+  hour: '2-digit',
+  hour12: false,
+  timeZone: 'UTC',
+})
+
+export function isHourlyDate(value: string): boolean {
+  return value.includes('T') && value.endsWith('Z')
+}
+
+export function formatHour(value: string): string {
+  const date = new Date(value)
+  return hourFormatter.format(date)
+}
 
 export function formatInteger(value: number) {
   return integerFormatter.format(value)
@@ -59,6 +73,9 @@ export function formatCompactCurrency(value: number) {
 }
 
 export function formatShortDate(value: string) {
+  if (isHourlyDate(value)) {
+    return formatHour(value)
+  }
   return shortDateFormatter.format(new Date(`${value}T00:00:00Z`))
 }
 

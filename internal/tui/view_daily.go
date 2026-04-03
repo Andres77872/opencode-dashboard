@@ -8,10 +8,15 @@ import (
 	"opencode-dashboard/internal/stats"
 )
 
-func renderDaily(s styles, width, height int, daily stats.DailyStats, period string, metric dailyMetric) string {
+func renderDaily(s styles, width, height int, daily stats.DailyStats, period string, metric dailyMetric, loading bool) string {
+	if loading {
+		return s.EmptyState.Render("Loading period data...")
+	}
 	if len(daily.Days) == 0 {
 		return s.EmptyState.Render("No daily activity is available yet.")
 	}
+
+	isHourly := daily.Granularity == stats.GranularityHour
 
 	maxValue := 0.0
 	for _, day := range daily.Days {
@@ -22,9 +27,15 @@ func renderDaily(s styles, width, height int, daily stats.DailyStats, period str
 	}
 
 	barWidth := max(width-32, 8)
+	var periodLabel string
+	if isHourly {
+		periodLabel = "hourly distribution"
+	} else {
+		periodLabel = period
+	}
 	lines := []string{
-		s.PanelTitle.Render(fmt.Sprintf("Daily activity • %s • %s", period, renderDailyMetricLabel(metric))),
-		s.Muted.Render(renderDailySummary(daily, metric)),
+		s.PanelTitle.Render(fmt.Sprintf("Daily activity • %s • %s", periodLabel, renderDailyMetricLabel(metric))),
+		s.Muted.Render(renderDailySummary(daily, metric, isHourly)),
 		"",
 	}
 
@@ -41,11 +52,25 @@ func renderDaily(s styles, width, height int, daily stats.DailyStats, period str
 		trend := renderDailyTrendGlyph(s, visible, i, metric)
 		primary := padLeft(renderDailyMetricValue(metric, value, true), 8)
 		secondary := s.Muted.Render(renderDailySecondary(day, metric))
-		lines = append(lines, fmt.Sprintf("%s %s %s %s %s", day.Date[5:], trend, padRight(s.Accent.Render(bar), barWidth), primary, secondary))
+		dateLabel := renderDateLabel(day.Date, isHourly)
+		lines = append(lines, fmt.Sprintf("%s %s %s %s %s", dateLabel, trend, padRight(s.Accent.Render(bar), barWidth), primary, secondary))
 	}
 
-	lines = append(lines, "", s.Muted.Render(renderDailyFooter(daily)))
+	lines = append(lines, "", s.Muted.Render(renderDailyFooter(daily, isHourly)))
 	return joinLines(lines...)
+}
+
+func renderDateLabel(date string, isHourly bool) string {
+	if isHourly {
+		if len(date) >= 16 {
+			return date[11:13] + "h"
+		}
+		return date
+	}
+	if len(date) >= 10 {
+		return date[5:10]
+	}
+	return date
 }
 
 func renderDailyMetricLabel(metric dailyMetric) string {
@@ -86,7 +111,7 @@ func renderDailyMetricValue(metric dailyMetric, value float64, compact bool) str
 	return formatInt(rounded)
 }
 
-func renderDailySummary(daily stats.DailyStats, metric dailyMetric) string {
+func renderDailySummary(daily stats.DailyStats, metric dailyMetric, isHourly bool) string {
 	if len(daily.Days) == 0 {
 		return ""
 	}
@@ -103,26 +128,36 @@ func renderDailySummary(daily stats.DailyStats, metric dailyMetric) string {
 		}
 	}
 
+	avgLabel := "Avg/day"
+	peakLabel := "Peak"
+	if isHourly {
+		avgLabel = "Avg/hour"
+		peakLabel = "Peak hour"
+	}
+
 	parts := []string{
 		fmt.Sprintf("Total %s", renderDailyMetricValue(metric, total, true)),
-		fmt.Sprintf("Avg/day %s", renderDailyMetricValue(metric, total/float64(len(daily.Days)), true)),
+		fmt.Sprintf("%s %s", avgLabel, renderDailyMetricValue(metric, total/float64(len(daily.Days)), true)),
 	}
 
 	if len(daily.Days) > 1 {
 		latest := daily.Days[len(daily.Days)-1]
 		previous := daily.Days[len(daily.Days)-2]
-		parts = append(parts, fmt.Sprintf("Latest %s %s vs %s", latest.Date[5:], renderDailyDelta(latest, previous, metric), previous.Date[5:]))
+		latestLabel := renderDateLabel(latest.Date, isHourly)
+		previousLabel := renderDateLabel(previous.Date, isHourly)
+		parts = append(parts, fmt.Sprintf("Latest %s %s vs %s", latestLabel, renderDailyDelta(latest, previous, metric), previousLabel))
 	}
 
-	parts = append(parts, fmt.Sprintf("Peak %s %s", peak.Date[5:], renderDailyMetricValue(metric, peakValue, true)))
+	parts = append(parts, fmt.Sprintf("%s %s %s", peakLabel, renderDateLabel(peak.Date, isHourly), renderDailyMetricValue(metric, peakValue, true)))
 	return strings.Join(parts, " • ")
 }
 
-func renderDailyFooter(daily stats.DailyStats) string {
+func renderDailyFooter(daily stats.DailyStats, isHourly bool) string {
 	latest := daily.Days[len(daily.Days)-1]
+	latestLabel := renderDateLabel(latest.Date, isHourly)
 	return fmt.Sprintf(
 		"Latest %s • %s • %s sessions • %s messages • %s tokens",
-		latest.Date,
+		latestLabel,
 		formatMoney(latest.Cost),
 		formatInt(latest.Sessions),
 		formatInt(latest.Messages),

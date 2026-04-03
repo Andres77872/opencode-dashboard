@@ -10,7 +10,15 @@ export interface TokenStats {
   cache: CacheStats
 }
 
-export type DailyPeriod = '7d' | '30d'
+export const DAILY_PERIOD_VALUES = ['1d', '7d', '30d', '1y', 'all'] as const
+
+export type DailyPeriod = (typeof DAILY_PERIOD_VALUES)[number]
+
+export type Granularity = 'day' | 'hour'
+
+export function isDailyPeriod(value: string | null): value is DailyPeriod {
+  return value !== null && DAILY_PERIOD_VALUES.includes(value as DailyPeriod)
+}
 
 export interface DayStats {
   date: string
@@ -22,6 +30,7 @@ export interface DayStats {
 
 export interface DailyStats {
   days: DayStats[]
+  granularity: Granularity
 }
 
 export interface ModelEntry {

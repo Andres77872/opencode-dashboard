@@ -6,23 +6,26 @@ import (
 	"opencode-dashboard/internal/stats"
 )
 
-func TestToggleDailyPeriod(t *testing.T) {
+func TestNextDailyPeriod(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
 		expected string
 	}{
-		{name: "7d toggles to 30d", input: "7d", expected: "30d"},
-		{name: "30d toggles to 7d", input: "30d", expected: "7d"},
+		{name: "1d cycles to 7d", input: "1d", expected: "7d"},
+		{name: "7d cycles to 30d", input: "7d", expected: "30d"},
+		{name: "30d cycles to 1y", input: "30d", expected: "1y"},
+		{name: "1y cycles to all", input: "1y", expected: "all"},
+		{name: "all cycles to 1d", input: "all", expected: "1d"},
 		{name: "unknown defaults to 7d", input: "14d", expected: "7d"},
 		{name: "empty defaults to 7d", input: "", expected: "7d"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := toggleDailyPeriod(tt.input)
+			result := nextDailyPeriod(tt.input)
 			if result != tt.expected {
-				t.Errorf("toggleDailyPeriod(%q) = %q, want %q", tt.input, result, tt.expected)
+				t.Errorf("nextDailyPeriod(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
 	}

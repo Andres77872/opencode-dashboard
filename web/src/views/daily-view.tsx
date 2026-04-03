@@ -14,7 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { getDaily } from '../lib/api'
 import { formatCompactInteger, formatCurrency, formatInteger, formatShortDate, formatTokenCount, safeDivide } from '../lib/format'
 import { getTokenBreakdownItems, getTokenTotal } from '../lib/token-breakdown'
-import type { DailyPeriod, DailyStats, DayStats } from '../types/api'
+import { isDailyPeriod, type DailyPeriod, type DailyStats, type DayStats } from '../types/api'
 
 const dailyMetricCopy: Record<DailyMetric, { detailTitle: string; detailDescription: string; metricLabel: string }> = {
   cost: {
@@ -74,6 +74,31 @@ function getWindowTokens(data: DailyStats) {
   )
 }
 
+function getPeriodWindowHint(period: DailyPeriod, dayCount: number, granularity?: string) {
+  if (granularity === 'hour') {
+    return `Current UTC day with ${dayCount} hourly buckets`
+  }
+  
+  switch (period) {
+    case '1d':
+      return 'Current UTC day only'
+    case '1y':
+      return `${formatCompactInteger(dayCount)} calendar days in the trailing year`
+    case 'all':
+      return `All historic spans ${formatCompactInteger(dayCount)} calendar days since first recorded activity`
+    default:
+      return `${formatCompactInteger(dayCount)}-day inclusive window`
+  }
+}
+
+function getEmptyWindowCopy(period: DailyPeriod) {
+  if (period === 'all') {
+    return 'All historic stretches from the first recorded activity day through today when data exists, otherwise the view falls back to today.'
+  }
+
+  return 'The backend returns a zero-filled calendar window for the selected period until OpenCode records real sessions and assistant messages.'
+}
+
 export function DailyView() {
   const { refreshNonce, requestRefresh, setLastUpdatedAt, setRefreshing } = useDashboardContext()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -84,7 +109,7 @@ export function DailyView() {
   const dataByPeriodRef = useRef<Partial<Record<DailyPeriod, DailyStats>>>({})
 
   const rawPeriod = searchParams.get('period')
-  const period: DailyPeriod = rawPeriod === '30d' ? '30d' : '7d'
+  const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
   const dataForPeriod = dataByPeriod[period] ?? null
 
   useEffect(() => {
@@ -129,6 +154,8 @@ export function DailyView() {
       return null
     }
 
+    const isHourly = dataForPeriod.granularity === 'hour'
+
     const totals = dataForPeriod.days.reduce(
       (accumulator, day) => {
         accumulator.sessions += day.sessions
@@ -158,6 +185,7 @@ export function DailyView() {
 
     return {
       ...totals,
+      isHourly,
       averageCostPerDay: safeDivide(totals.cost, dataForPeriod.days.length),
       averageMessagesPerSession: safeDivide(totals.messages, totals.sessions),
       averageTokensPerDay: safeDivide(totals.tokens, dataForPeriod.days.length),
@@ -193,10 +221,10 @@ export function DailyView() {
           <div className="space-y-2">
             <Badge tone="accent">Live route</Badge>
             <h2 className="text-2xl font-semibold tracking-tight text-foreground">Daily</h2>
-            <p className="max-w-3xl text-sm text-muted-foreground">
-              Trend view backed by <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/daily</code>
-              , with shareable 7d/30d windows and switchable cost, request, and token lenses.
-            </p>
+             <p className="max-w-3xl text-sm text-muted-foreground">
+               Trend view backed by <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/daily</code>
+               , with shareable 1d-to-all windows and switchable cost, request, and token lenses.
+             </p>
           </div>
           <PeriodToggle value={period} onChange={handlePeriodChange} disabled />
         </div>
@@ -243,7 +271,7 @@ export function DailyView() {
             <MetricCard
               label="Spend in window"
               value={formatCurrency(summary.cost)}
-              hint={`${period === '7d' ? 'Seven' : 'Thirty'}-day inclusive window`}
+              hint={getPeriodWindowHint(period, dataForPeriod?.days.length ?? 0, dataForPeriod?.granularity)}
             />
             <MetricCard
               label="Sessions"
@@ -270,7 +298,7 @@ export function DailyView() {
               </CardHeader>
               <CardContent className="space-y-3 text-sm text-muted-foreground">
                 <p>
-                  The backend still returns a full {period} window, but every day is zero-filled until OpenCode records real sessions and assistant messages.
+                  {getEmptyWindowCopy(period)}
                 </p>
                 <p>
                   Once data exists, this screen will light up with switchable daily charts, token mix context, and a newest-first ledger automatically.
@@ -280,7 +308,7 @@ export function DailyView() {
           ) : (
             <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,1fr)]">
               <div className="min-w-0 space-y-4">
-                <DailyChart days={dataForPeriod?.days ?? []} metric={metric} onMetricChange={setMetric} />
+                <DailyChart days={dataForPeriod?.days ?? []} metric={metric} granularity={dataForPeriod?.granularity} onMetricChange={setMetric} />
 
                 {metric === 'tokens' ? (
                   <TokenBreakdownCard
@@ -295,14 +323,14 @@ export function DailyView() {
               <Card className="min-w-0">
                 <CardHeader>
                   <CardDescription>{metricDetailCopy.detailTitle}</CardDescription>
-                  <CardTitle>Newest days first</CardTitle>
+                  <CardTitle>{summary.isHourly ? 'Newest hours first' : 'Newest days first'}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
                     <div className="rounded-xl border border-border/70 bg-panel/75 px-3 py-3">
                       <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Window posture</div>
                       <div className="mt-2 font-mono text-lg text-foreground">{summary.activeDays}/{dataForPeriod?.days.length ?? 0}</div>
-                      <div className="text-sm text-muted-foreground">days with non-zero activity</div>
+                      <div className="text-sm text-muted-foreground">{summary.isHourly ? 'hours' : 'days'} with non-zero activity</div>
                     </div>
                     <div className="rounded-xl border border-border/70 bg-panel/75 px-3 py-3">
                       <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Current lens</div>
@@ -326,7 +354,7 @@ export function DailyView() {
                             <div>
                               <div className="font-medium text-foreground">{formatShortDate(day.date)}</div>
                               <div className="text-xs uppercase tracking-[0.14em] text-muted-foreground">
-                                {active ? 'Activity recorded' : 'Zero-filled day'}
+                                {active ? 'Activity recorded' : summary.isHourly ? 'Zero-filled hour' : 'Zero-filled day'}
                               </div>
                             </div>
                             <div className="text-right">

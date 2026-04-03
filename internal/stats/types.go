@@ -33,8 +33,16 @@ type DayStats struct {
 	Tokens   TokenStats `json:"tokens"`
 }
 
+type Granularity string
+
+const (
+	GranularityDay  Granularity = "day"
+	GranularityHour Granularity = "hour"
+)
+
 type DailyStats struct {
-	Days []DayStats `json:"days"`
+	Days        []DayStats  `json:"days"`
+	Granularity Granularity `json:"granularity"`
 }
 
 type ModelEntry struct {
