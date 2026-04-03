@@ -278,8 +278,8 @@ export function DailyView() {
               </CardContent>
             </Card>
           ) : (
-            <div className="grid gap-4 xl:grid-cols-[1.55fr_1fr]">
-              <div className="space-y-4">
+            <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,1fr)]">
+              <div className="min-w-0 space-y-4">
                 <DailyChart days={dataForPeriod?.days ?? []} metric={metric} onMetricChange={setMetric} />
 
                 {metric === 'tokens' ? (
@@ -292,13 +292,13 @@ export function DailyView() {
                 ) : null}
               </div>
 
-              <Card>
+              <Card className="min-w-0">
                 <CardHeader>
                   <CardDescription>{metricDetailCopy.detailTitle}</CardDescription>
                   <CardTitle>Newest days first</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                  <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
                     <div className="rounded-xl border border-border/70 bg-panel/75 px-3 py-3">
                       <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Window posture</div>
                       <div className="mt-2 font-mono text-lg text-foreground">{summary.activeDays}/{dataForPeriod?.days.length ?? 0}</div>

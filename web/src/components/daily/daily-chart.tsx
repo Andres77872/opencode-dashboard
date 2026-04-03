@@ -2,6 +2,7 @@ import type { DayStats, TokenStats } from '../../types/api'
 import { formatCompactInteger, formatPercentage, formatShortDate, formatShortWeekday, formatTokenCount } from '../../lib/format'
 import { getTokenBreakdownItems, getTokenTotal } from '../../lib/token-breakdown'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
 import { cn } from '../../lib/utils'
 import { dailyMetricOptions, formatDailyMetricValue, getDailyMetricMeta, getDailyMetricValue, type DailyMetric } from './daily-metrics'
 import { SegmentedControl } from './segmented-control'
@@ -117,6 +118,7 @@ export function DailyChart({ days, metric, onMetricChange }: DailyChartProps) {
   const latestDay = days[days.length - 1] ?? EMPTY_DAY
   const peakDay = days.find((day) => getDailyMetricValue(day, metric) === maxValue) ?? latestDay
   const windowTokenLegend = getTokenBreakdownItems(getWindowTokens(days)).filter((item) => item.value > 0)
+  const chartMinWidth = days.length > 7 ? `${days.length * 44}px` : undefined
 
   return (
     <Card className="border-border/70 bg-linear-to-b from-card to-panel">
@@ -168,110 +170,119 @@ export function DailyChart({ days, metric, onMetricChange }: DailyChartProps) {
             <span className="font-mono text-foreground">{formatDailyMetricValue(metric, maxValue, true)} max</span>
           </div>
 
-          <div className="relative">
-            <div className="pointer-events-none absolute inset-x-0 top-0 flex h-64 flex-col justify-between pb-7">
-              {Array.from({ length: 4 }).map((_, index) => (
-                <div key={index} className="border-t border-dashed border-border/55" />
-              ))}
-            </div>
+          <TooltipProvider>
+            <div className="-mx-1 overflow-x-auto px-1 pb-2">
+              <div className="relative min-w-full" style={chartMinWidth ? { minWidth: chartMinWidth } : undefined}>
+                <div className="pointer-events-none absolute inset-x-0 top-0 flex h-64 flex-col justify-between pb-7">
+                  {Array.from({ length: 4 }).map((_, index) => (
+                    <div key={index} className="border-t border-dashed border-border/55" />
+                  ))}
+                </div>
 
-            <div className="flex h-64 items-end gap-2">
-              {days.map((day, index) => {
-                const total = getDailyMetricValue(day, metric)
-                const height = maxValue > 0 ? Math.max((total / maxValue) * 100, total > 0 ? 8 : 2) : 2
-                const active = hasActivity(day)
-                const stackSegments = getStackSegments(day)
-                const tooltipRows = getTooltipMetricRows(day, metric)
+                <div className="flex h-64 items-end gap-2">
+                  {days.map((day, index) => {
+                    const total = getDailyMetricValue(day, metric)
+                    const height = maxValue > 0 ? Math.max((total / maxValue) * 100, total > 0 ? 8 : 2) : 2
+                    const active = hasActivity(day)
+                    const stackSegments = getStackSegments(day)
+                    const tooltipRows = getTooltipMetricRows(day, metric)
 
-                return (
-                  <div key={day.date} className="group flex h-full min-w-0 flex-1 flex-col justify-end">
-                    <div className="relative flex h-full items-end justify-center">
-                      <div
-                        className={cn(
-                          'pointer-events-none absolute bottom-full left-1/2 z-10 mb-3 hidden -translate-x-1/2 rounded-xl border border-border/70 bg-card/96 p-3 text-left shadow-2xl backdrop-blur group-hover:block group-focus-within:block',
-                          metric === 'tokens' ? 'w-56' : 'w-48',
-                        )}
-                      >
-                        <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{formatShortDate(day.date)}</div>
+                    return (
+                      <div key={day.date} className="flex h-full min-w-0 flex-1 flex-col justify-end">
+                        <div className="relative flex h-full items-end justify-center">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                aria-label={`${formatShortDate(day.date)} ${meta.label.toLowerCase()} ${formatDailyMetricValue(metric, total)}, ${day.sessions} sessions, ${day.messages} requests, ${getTokenTotal(day.tokens)} tokens`}
+                                className={cn(
+                                  'relative flex w-full appearance-none items-end justify-center overflow-hidden rounded-t-xl border border-b-0 px-1 outline-none transition-[filter,background-color] focus-visible:ring-2 focus-visible:ring-accent/70',
+                                  metric === 'tokens'
+                                    ? active
+                                      ? 'border-border/70 bg-background/25 hover:brightness-110 focus-visible:brightness-110'
+                                      : 'border-border/70 bg-linear-to-t from-muted/80 to-muted/25'
+                                    : active
+                                      ? 'border-accent/35 bg-linear-to-t from-accent/90 via-accent/60 to-accent/20 hover:brightness-110 focus-visible:brightness-110'
+                                      : 'border-border/70 bg-linear-to-t from-muted/80 to-muted/25',
+                                )}
+                                style={{ height: `${height}%` }}
+                              >
+                                {metric === 'tokens' && stackSegments.length > 0 ? (
+                                  <div className="absolute inset-0 flex flex-col justify-end">
+                                    {stackSegments.map((segment) => (
+                                      <div
+                                        key={segment.key}
+                                        className="w-full"
+                                        style={{
+                                          backgroundColor: segment.color,
+                                          height: `${segment.percentage}%`,
+                                        }}
+                                      />
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div className="absolute inset-x-[18%] top-1 h-3 rounded-full bg-white/18 blur-sm" />
+                                    <div className="absolute inset-x-0 bottom-0 top-[55%] bg-linear-to-t from-black/10 to-transparent" />
+                                  </>
+                                )}
+                              </button>
+                            </TooltipTrigger>
 
-                        <div className="mt-2 space-y-1.5 text-sm">
-                          {tooltipRows.map((row) => (
-                            <div key={row.label} className="flex items-center justify-between gap-3">
-                              <span className={cn('text-muted-foreground', row.label === meta.label && 'text-foreground/80')}>{row.label}</span>
-                              <span className="font-mono text-foreground">{row.value}</span>
-                            </div>
-                          ))}
+                            <TooltipContent
+                              side="top"
+                              align="center"
+                              sideOffset={12}
+                              collisionPadding={16}
+                              className={metric === 'tokens' ? 'w-56' : 'w-48'}
+                            >
+                              <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{formatShortDate(day.date)}</div>
+
+                              <div className="mt-2 space-y-1.5 text-sm">
+                                {tooltipRows.map((row) => (
+                                  <div key={row.label} className="flex items-center justify-between gap-3">
+                                    <span className={cn('text-muted-foreground', row.label === meta.label && 'text-foreground/80')}>{row.label}</span>
+                                    <span className="font-mono text-foreground">{row.value}</span>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {metric === 'tokens' && stackSegments.length > 0 ? (
+                                <div className="mt-3 border-t border-border/60 pt-3">
+                                  <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Token mix</div>
+                                  <div className="space-y-1.5 text-sm">
+                                    {stackSegments.map((segment) => (
+                                      <div key={segment.key} className="flex items-center justify-between gap-3">
+                                        <span className="flex items-center gap-2 text-muted-foreground">
+                                          <span
+                                            aria-hidden="true"
+                                            className="size-2 rounded-full border border-white/12"
+                                            style={{ backgroundColor: segment.color }}
+                                          />
+                                          {segment.label}
+                                        </span>
+                                        <span className="font-mono text-foreground">
+                                          {formatTokenCount(segment.value)} · {formatPercentage(segment.percentage)}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+                            </TooltipContent>
+                          </Tooltip>
                         </div>
 
-                        {metric === 'tokens' && stackSegments.length > 0 ? (
-                          <div className="mt-3 border-t border-border/60 pt-3">
-                            <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Token mix</div>
-                            <div className="space-y-1.5 text-sm">
-                              {stackSegments.map((segment) => (
-                                <div key={segment.key} className="flex items-center justify-between gap-3">
-                                  <span className="flex items-center gap-2 text-muted-foreground">
-                                    <span
-                                      aria-hidden="true"
-                                      className="size-2 rounded-full border border-white/12"
-                                      style={{ backgroundColor: segment.color }}
-                                    />
-                                    {segment.label}
-                                  </span>
-                                  <span className="font-mono text-foreground">
-                                    {formatTokenCount(segment.value)} · {formatPercentage(segment.percentage)}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
+                        <div className="mt-3 text-center text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                          {shouldShowLabel(index, days.length) ? formatShortWeekday(day.date) : '·'}
+                        </div>
                       </div>
-
-                      <div
-                        tabIndex={0}
-                        aria-label={`${formatShortDate(day.date)} ${meta.label.toLowerCase()} ${formatDailyMetricValue(metric, total)}, ${day.sessions} sessions, ${day.messages} requests, ${getTokenTotal(day.tokens)} tokens`}
-                        className={cn(
-                          'relative flex w-full items-end justify-center overflow-hidden rounded-t-xl border border-b-0 px-1 outline-none transition-[filter,background-color] focus-visible:ring-2 focus-visible:ring-accent/70',
-                          metric === 'tokens'
-                            ? active
-                              ? 'border-border/70 bg-background/25 group-hover:brightness-110 group-focus-within:brightness-110'
-                              : 'border-border/70 bg-linear-to-t from-muted/80 to-muted/25'
-                            : active
-                              ? 'border-accent/35 bg-linear-to-t from-accent/90 via-accent/60 to-accent/20 group-hover:brightness-110 group-focus-within:brightness-110'
-                              : 'border-border/70 bg-linear-to-t from-muted/80 to-muted/25',
-                        )}
-                        style={{ height: `${height}%` }}
-                      >
-                        {metric === 'tokens' && stackSegments.length > 0 ? (
-                          <div className="absolute inset-0 flex flex-col justify-end">
-                            {stackSegments.map((segment) => (
-                              <div
-                                key={segment.key}
-                                className="w-full"
-                                style={{
-                                  backgroundColor: segment.color,
-                                  height: `${segment.percentage}%`,
-                                }}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <>
-                            <div className="absolute inset-x-[18%] top-1 h-3 rounded-full bg-white/18 blur-sm" />
-                            <div className="absolute inset-x-0 bottom-0 top-[55%] bg-linear-to-t from-black/10 to-transparent" />
-                          </>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="mt-3 text-center text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-                      {shouldShowLabel(index, days.length) ? formatShortWeekday(day.date) : '·'}
-                    </div>
-                  </div>
-                )
-              })}
+                    )
+                  })}
+                </div>
+              </div>
             </div>
-          </div>
+          </TooltipProvider>
 
           {metric === 'tokens' && windowTokenLegend.length > 0 ? (
             <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-xs text-muted-foreground">
