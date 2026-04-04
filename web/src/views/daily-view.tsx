@@ -6,14 +6,14 @@ import { getDailyMetricMeta, getDailyMetricValue, type DailyMetric } from '../co
 import { DailySkeleton } from '../components/daily/daily-skeleton'
 import { PeriodToggle } from '../components/daily/period-toggle'
 import { MetricCard } from '../components/overview/metric-card'
-import { TokenBreakdownCard } from '../components/overview/token-breakdown-card'
+import { TokenBreakdownList } from '../components/overview/token-breakdown-card'
 import { Alert } from '../components/ui/alert'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { getDaily } from '../lib/api'
 import { formatCompactInteger, formatCurrency, formatInteger, formatShortDate, formatTokenCount, safeDivide } from '../lib/format'
-import { getTokenBreakdownItems, getTokenTotal } from '../lib/token-breakdown'
+import { getTokenTotal } from '../lib/token-breakdown'
 import { isDailyPeriod, type DailyPeriod, type DailyStats, type DayStats } from '../types/api'
 
 const dailyMetricCopy: Record<DailyMetric, { detailTitle: string; detailDescription: string; metricLabel: string }> = {
@@ -191,6 +191,7 @@ export function DailyView() {
       averageTokensPerDay: safeDivide(totals.tokens, dataForPeriod.days.length),
       recentDays: [...dataForPeriod.days].reverse(),
       empty: totals.activeDays === 0,
+      peakDay: totals.peakDay,
       windowTokens: getWindowTokens(dataForPeriod),
     }
   }, [dataForPeriod])
@@ -309,24 +310,14 @@ export function DailyView() {
             <div className="grid items-start gap-4 2xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,1fr)]">
               <div className="min-w-0 space-y-4">
                 <DailyChart days={dataForPeriod?.days ?? []} metric={metric} granularity={dataForPeriod?.granularity} onMetricChange={setMetric} />
-
-                {metric === 'tokens' ? (
-                  <TokenBreakdownCard
-                    description="Window-level token mix"
-                    hideZeroItems
-                    title="Selected range"
-                    tokens={summary.windowTokens}
-                  />
-                ) : null}
               </div>
 
-              <Card className="min-w-0 2xl:self-start">
+              <Card className="min-w-0 border-border/70 bg-panel/55 2xl:self-start">
                 <CardHeader className="pb-3">
                   <CardDescription>{metricDetailCopy.detailTitle}</CardDescription>
                   <CardTitle>{summary.isHourly ? 'Newest hours first' : 'Newest days first'}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  {/* Compact summary strip */}
                   <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-panel/50 px-3 py-2 text-sm text-muted-foreground">
                     <span className="font-mono text-foreground">{summary.activeDays}/{dataForPeriod?.days.length ?? 0}</span>
                     <span>active {summary.isHourly ? 'hours' : 'days'}</span>
@@ -334,42 +325,59 @@ export function DailyView() {
                     <span>{metricMeta.label} lens</span>
                   </div>
 
-                  {/* Compact activity ledger */}
-                  <div className="max-h-[32rem] space-y-1 overflow-y-auto pr-1">
+                  {metric === 'tokens' ? (
+                    <div className="rounded-xl border border-border/60 bg-background/35 px-3 py-3">
+                      <div className="flex flex-wrap items-end justify-between gap-3">
+                        <div>
+                          <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Window token mix</div>
+                          <div className="mt-2 font-mono text-lg text-foreground">{formatTokenCount(summary.tokens)}</div>
+                        </div>
+                        <div className="text-right text-xs text-muted-foreground">
+                          <div className="uppercase tracking-[0.14em]">Peak {summary.isHourly ? 'hour' : 'day'}</div>
+                          <div className="mt-1 font-mono text-foreground">
+                            {summary.peakDay ? formatShortDate(summary.peakDay.date) : 'No data'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <TokenBreakdownList
+                        className="mt-3 border-t border-border/50 pt-3"
+                        hideZeroItems
+                        tokens={summary.windowTokens}
+                        variant="compact"
+                      />
+                    </div>
+                  ) : null}
+
+                  <div className="max-h-[32rem] divide-y divide-border/40 overflow-y-auto">
                     {summary.recentDays.map((day) => {
                       const active = hasActivity(day)
                       const metricValue = getDailyMetricValue(day, metric)
-                      const tokenBreakdown = getTokenBreakdownItems(day.tokens).filter((item) => item.value > 0)
 
                       if (!active) {
                         return (
                           <div
                             key={day.date}
-                            className="flex items-center gap-3 rounded-md px-3 py-1.5 text-xs text-muted-foreground/60"
+                            className="flex items-center gap-3 px-2 py-1.5 text-xs text-muted-foreground/50"
                           >
-                            <span className="min-w-[4.5rem] font-medium">{formatShortDate(day.date)}</span>
+                            <span className="min-w-[4rem] font-medium">{formatShortDate(day.date)}</span>
                             <span className="italic">No activity</span>
                           </div>
                         )
                       }
 
                       return (
-                        <div
-                          key={day.date}
-                          className="rounded-md border-l-2 border-l-accent/60 border border-border/50 bg-panel/50 px-3 py-2 transition-colors hover:bg-panel/80"
-                        >
+                        <div key={day.date} className="px-2 py-2">
                           <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-3 min-w-0">
-                              <span className="text-sm font-medium text-foreground whitespace-nowrap">{formatShortDate(day.date)}</span>
-                              <span className="text-xs text-muted-foreground truncate">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-sm font-semibold text-foreground whitespace-nowrap">{formatShortDate(day.date)}</span>
+                              <span className="text-[11px] text-muted-foreground truncate">
                                 {formatCompactInteger(day.sessions)} sess
-                                <span className="mx-1 text-border">·</span>
+                                <span className="mx-0.5 text-border/60">·</span>
                                 {formatCompactInteger(day.messages)} req
-                                <span className="mx-1 text-border">·</span>
-                                {formatTokenCount(getTokenTotal(day.tokens))} tok
                               </span>
                             </div>
-                            <span className="font-mono text-sm text-foreground whitespace-nowrap">
+                            <span className="font-mono text-sm font-medium text-foreground whitespace-nowrap">
                               {metric === 'cost'
                                 ? formatCurrency(day.cost)
                                 : metric === 'requests'
@@ -378,20 +386,13 @@ export function DailyView() {
                             </span>
                           </div>
 
-                          {metric === 'tokens' && tokenBreakdown.length > 0 ? (
-                            <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-muted-foreground">
-                              {tokenBreakdown.map((item) => (
-                                <span key={item.key} className="inline-flex items-center gap-1.5">
-                                  <span
-                                    aria-hidden="true"
-                                    className="size-1.5 rounded-full"
-                                    style={{ backgroundColor: item.color }}
-                                  />
-                                  <span>{item.label}</span>
-                                  <span className="font-mono text-foreground/80">{formatTokenCount(item.value)}</span>
-                                </span>
-                              ))}
-                            </div>
+                          {metric === 'tokens' && getTokenTotal(day.tokens) > 0 ? (
+                            <TokenBreakdownList
+                              className="mt-1.5"
+                              hideZeroItems
+                              tokens={day.tokens}
+                              variant="compact"
+                            />
                           ) : null}
                         </div>
                       )

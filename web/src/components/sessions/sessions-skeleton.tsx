@@ -24,8 +24,8 @@ export function SessionsSkeleton() {
           <Skeleton className="mt-3 h-8 w-56" />
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="hidden grid-cols-[minmax(18rem,1.7fr)_8rem_8rem_6rem_7rem_5.5rem] gap-3 rounded-xl border border-border/60 bg-panel/60 px-4 py-3 lg:grid">
-            {Array.from({ length: 6 }).map((_, index) => (
+          <div className="hidden grid-cols-[minmax(15rem,1.8fr)_11rem_9rem_5rem] gap-3 rounded-xl border border-border/60 bg-panel/60 px-4 py-3 md:grid">
+            {Array.from({ length: 4 }).map((_, index) => (
               <Skeleton key={index} className="h-4 w-full" />
             ))}
           </div>
