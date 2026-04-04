@@ -68,14 +68,15 @@ func renderSessionMessageRows(s styles, messages []stats.SessionMessage, width, 
 		if msg.ModelID != "" {
 			meta = append(meta, truncateWithEllipsis(msg.ModelID, 18))
 		}
+		if msg.ProviderID != "" {
+			meta = append(meta, truncateWithEllipsis(msg.ProviderID, 14))
+		}
 		if msg.Agent != "" {
 			meta = append(meta, truncateWithEllipsis(msg.Agent, 12))
 		}
-		if msg.Cost > 0 {
-			meta = append(meta, formatMoney(msg.Cost))
-		}
+		meta = append(meta, formatMoney(msg.Cost))
 		if msg.Tokens != nil {
-			meta = append(meta, fmt.Sprintf("%s tok", formatInt(msg.Tokens.Input+msg.Tokens.Output+msg.Tokens.Reasoning)))
+			meta = append(meta, fmt.Sprintf("%s tok", formatInt(msg.Tokens.Input+msg.Tokens.Output+msg.Tokens.Reasoning+msg.Tokens.Cache.Read+msg.Tokens.Cache.Write)))
 		}
 		line := fmt.Sprintf("%s  %s", msg.TimeCreated.Format("01-02 15:04"), strings.Join(meta, " • "))
 		rows = append(rows, truncateWithEllipsis(line, width))

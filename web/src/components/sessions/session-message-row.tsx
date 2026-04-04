@@ -37,10 +37,13 @@ export function SessionMessageRow({
   const cost = message.cost ?? 0
   const isHighlight = isHighestCost || isHighestTokens
 
-  const sameModel = previousMessage?.model_id === message.model_id && previousMessage?.agent === message.agent
+  const sameMeta = previousMessage?.model_id === message.model_id 
+    && previousMessage?.agent === message.agent
+    && previousMessage?.provider_id === message.provider_id
   const metaParts = [
-    !sameModel && message.model_id ? message.model_id : null,
-    !sameModel && message.agent ? message.agent : null,
+    !sameMeta && message.model_id ? message.model_id : null,
+    !sameMeta && message.provider_id ? message.provider_id : null,
+    !sameMeta && message.agent ? message.agent : null,
   ].filter(Boolean)
 
   return (
