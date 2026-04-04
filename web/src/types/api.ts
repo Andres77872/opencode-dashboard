@@ -10,7 +10,15 @@ export interface TokenStats {
   cache: CacheStats
 }
 
-export type DailyPeriod = '7d' | '30d'
+export const DAILY_PERIOD_VALUES = ['1d', '7d', '30d', '1y', 'all'] as const
+
+export type DailyPeriod = (typeof DAILY_PERIOD_VALUES)[number]
+
+export type Granularity = 'day' | 'hour'
+
+export function isDailyPeriod(value: string | null): value is DailyPeriod {
+  return value !== null && DAILY_PERIOD_VALUES.includes(value as DailyPeriod)
+}
 
 export interface DayStats {
   date: string
@@ -22,6 +30,7 @@ export interface DayStats {
 
 export interface DailyStats {
   days: DayStats[]
+  granularity: Granularity
 }
 
 export interface ModelEntry {
@@ -109,6 +118,63 @@ export interface SessionDetail {
   total_cost: number
   total_tokens: TokenStats
   message_count: number
+}
+
+export interface MessageEntry {
+  id: string
+  session_id: string
+  session_title: string
+  role: string
+  time_created: string
+  cost: number
+  tokens?: TokenStats
+  model_id?: string
+  provider_id?: string
+}
+
+export interface MessageList {
+  messages: MessageEntry[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface MessagePart {
+  type: 'text' | 'reasoning'
+  text: string
+}
+
+export interface ToolTime {
+  start?: number
+  end?: number
+  compacted?: number
+}
+
+export interface ToolState {
+  status: 'pending' | 'running' | 'completed' | 'error'
+  input?: Record<string, unknown>
+  output?: string
+  title?: string
+  error?: string
+  metadata?: Record<string, unknown>
+  time?: ToolTime
+}
+
+export interface ToolPart {
+  type: 'tool'
+  call_id: string
+  tool: string
+  state: ToolState
+}
+
+export interface MessageContent {
+  text_parts: MessagePart[]
+  reasoning_parts: MessagePart[]
+  tool_parts: ToolPart[]
+}
+
+export interface MessageDetail extends MessageEntry {
+  content: MessageContent
 }
 
 export interface OverviewStats {

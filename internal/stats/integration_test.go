@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -343,15 +344,39 @@ func TestDailyWithFixture(t *testing.T) {
 	}
 	defer st.Close()
 
+	// Test 1d period (hourly distribution)
+	daily1, err := Daily(ctx, st, "1d")
+	if err != nil {
+		t.Fatalf("Daily(1d) failed: %v", err)
+	}
+
+	if len(daily1.Days) != 24 {
+		t.Errorf("DailyStats(1d) has %d days, want 24 (hourly buckets)", len(daily1.Days))
+	}
+
+	if daily1.Granularity != GranularityHour {
+		t.Errorf("DailyStats(1d) granularity = %q, want %q", daily1.Granularity, GranularityHour)
+	}
+
+	// Check hourly date format
+	for _, hour := range daily1.Days {
+		if !strings.Contains(hour.Date, "T") || !strings.HasSuffix(hour.Date, "Z") {
+			t.Errorf("Hourly date format incorrect: %s (want YYYY-MM-DDTHH:00:00Z)", hour.Date)
+		}
+	}
+
 	// Test 7d period
 	daily7, err := Daily(ctx, st, "7d")
 	if err != nil {
 		t.Fatalf("Daily(7d) failed: %v", err)
 	}
 
-	// Should have exactly 7 days
 	if len(daily7.Days) != 7 {
 		t.Errorf("DailyStats(7d) has %d days, want 7", len(daily7.Days))
+	}
+
+	if daily7.Granularity != GranularityDay {
+		t.Errorf("DailyStats(7d) granularity = %q, want %q", daily7.Granularity, GranularityDay)
 	}
 
 	// Days should be consecutive and in order
@@ -370,6 +395,26 @@ func TestDailyWithFixture(t *testing.T) {
 
 	if len(daily30.Days) != 30 {
 		t.Errorf("DailyStats(30d) has %d days, want 30", len(daily30.Days))
+	}
+
+	// Test 1y period
+	daily1Y, err := Daily(ctx, st, "1y")
+	if err != nil {
+		t.Fatalf("Daily(1y) failed: %v", err)
+	}
+
+	if len(daily1Y.Days) != 365 {
+		t.Errorf("DailyStats(1y) has %d days, want 365", len(daily1Y.Days))
+	}
+
+	// Test all historic period
+	dailyAll, err := Daily(ctx, st, "all")
+	if err != nil {
+		t.Fatalf("Daily(all) failed: %v", err)
+	}
+
+	if len(dailyAll.Days) != 7 {
+		t.Errorf("DailyStats(all) has %d days, want 7", len(dailyAll.Days))
 	}
 
 	// Test invalid period

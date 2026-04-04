@@ -28,12 +28,53 @@ type tableViewState struct {
 func renderModels(s styles, width, height int, items []stats.ModelEntry, total int, state tableViewState) string {
 	rows := []string{
 		s.PanelTitle.Render("Models"),
-		s.Muted.Render("Dense browse flow with cursor, sort, and inline filter."),
-		"",
-		s.TableHeader.Render(fmt.Sprintf("%s %s %s %s %s", padRight("MODEL", max(width-42, 16)), padRight("PROVIDER", 12), padLeft("SESS", 6), padLeft("MSG", 6), padLeft("COST", 10))),
+		s.Muted.Render("Top usage with leader summary, cost share, and avg/msg."),
 	}
-	limit := min(len(items), max(height-6, 5))
+
+	// Leader section (top 3 by cost) - reusable helper
+	if len(items) >= 2 {
+		totalCost := 0.0
+		for _, item := range items {
+			totalCost += item.Cost
+		}
+		leaders := make([]LeaderEntry, min(3, len(items)))
+		for i := 0; i < len(leaders); i++ {
+			leaders[i] = LeaderEntry{Name: items[i].ModelID, Value: items[i].Cost}
+		}
+		leaderSection := renderLeaderSection(s, width, leaders, totalCost, "#%d", formatMoney)
+		if leaderSection != "" {
+			rows = append(rows, "", leaderSection)
+		}
+	}
+
+	rows = append(rows, "")
+
+	// Width thresholds for progressive column drop
+	showAvgPerMsg := width >= 95
+	showCostShare := width >= 110
+
+	// Calculate dynamic widths
 	nameWidth := max(width-42, 16)
+	if showAvgPerMsg && !showCostShare {
+		nameWidth = max(width-50, 16)
+	} else if showAvgPerMsg && showCostShare {
+		nameWidth = max(width-74, 16)
+	} else if showCostShare {
+		nameWidth = max(width-62, 16)
+	}
+
+	// Build header based on available columns
+	headerParts := []string{padRight("MODEL", nameWidth), padRight("PROVIDER", 12), padLeft("SESS", 6), padLeft("MSG", 6)}
+	if showAvgPerMsg {
+		headerParts = append(headerParts, padLeft("AVG$", 8))
+	}
+	headerParts = append(headerParts, padLeft("COST", 10))
+	if showCostShare {
+		headerParts = append(headerParts, padLeft("SHARE", 12))
+	}
+	rows = append(rows, s.TableHeader.Render(strings.Join(headerParts, " ")))
+
+	limit := min(len(items), max(height-len(rows)-4, 5))
 	if len(items) == 0 {
 		message := "No assistant model usage found."
 		if state.filter != "" {
@@ -41,10 +82,35 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 		}
 		rows = append(rows, s.Muted.Render(message))
 	} else {
+		totalCost := 0.0
+		for _, item := range items {
+			totalCost += item.Cost
+		}
+
 		start, end := tableWindow(len(items), state.cursor, limit)
 		for i := start; i < end; i++ {
 			item := items[i]
-			line := fmt.Sprintf("%s %s %s %s %s", padRight(truncateWithEllipsis(item.ModelID, nameWidth), nameWidth), padRight(truncateWithEllipsis(item.ProviderID, 12), 12), padLeft(formatInt(item.Sessions), 6), padLeft(formatInt(item.Messages), 6), padLeft(formatMoney(item.Cost), 10))
+			avgPerMsg := 0.0
+			if item.Messages > 0 {
+				avgPerMsg = item.Cost / float64(item.Messages)
+			}
+
+			lineParts := []string{
+				padRight(truncateWithEllipsis(item.ModelID, nameWidth), nameWidth),
+				padRight(truncateWithEllipsis(item.ProviderID, 12), 12),
+				padLeft(formatInt(item.Sessions), 6),
+				padLeft(formatInt(item.Messages), 6),
+			}
+			if showAvgPerMsg {
+				lineParts = append(lineParts, padLeft(formatMoney(avgPerMsg), 8))
+			}
+			lineParts = append(lineParts, padLeft(formatMoney(item.Cost), 10))
+			if showCostShare {
+				shareBar := progressBarWithPercent(s, item.Cost, totalCost, 12)
+				lineParts = append(lineParts, padLeft(shareBar, 12))
+			}
+
+			line := strings.Join(lineParts, " ")
 			if i == state.cursor {
 				rows = append(rows, s.TableRowActive.Render("> "+line))
 				continue
@@ -59,12 +125,59 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 func renderTools(s styles, width, height int, items []stats.ToolEntry, total int, state tableViewState) string {
 	rows := []string{
 		s.PanelTitle.Render("Tools"),
-		s.Muted.Render("Top tool usage with cursor, sort, and inline filter."),
-		"",
-		s.TableHeader.Render(fmt.Sprintf("%s %s %s %s %s", padRight("TOOL", max(width-34, 16)), padLeft("RUNS", 7), padLeft("OK", 7), padLeft("ERR", 7), padLeft("SESS", 7))),
+		s.Muted.Render("Top tool usage with leader summary, success rate, and status."),
 	}
-	limit := min(len(items), max(height-6, 5))
+
+	// Leader section (top 2 by invocations) - reusable helper
+	if len(items) >= 2 {
+		totalInvocations := int64(0)
+		for _, item := range items {
+			totalInvocations += item.Invocations
+		}
+		leaders := make([]LeaderEntry, min(2, len(items)))
+		for i := 0; i < len(leaders); i++ {
+			leaders[i] = LeaderEntry{Name: items[i].Name, Value: float64(items[i].Invocations)}
+		}
+		leaderSection := renderLeaderSection(s, width, leaders, float64(totalInvocations), "#%d", func(v float64) string { return formatInt(int64(v)) })
+		if leaderSection != "" {
+			rows = append(rows, "", leaderSection)
+		}
+	}
+
+	rows = append(rows, "")
+
+	// Width thresholds for progressive column drop
+	showSuccessRate := width >= 100
+	showShare := width >= 120
+	showStatus := width >= 130
+
+	// Calculate dynamic widths
 	nameWidth := max(width-34, 16)
+	if showSuccessRate && !showShare && !showStatus {
+		nameWidth = max(width-42, 16)
+	} else if showSuccessRate && showShare && !showStatus {
+		nameWidth = max(width-64, 16)
+	} else if showSuccessRate && showShare && showStatus {
+		nameWidth = max(width-72, 16)
+	} else if showShare {
+		nameWidth = max(width-52, 16)
+	}
+
+	// Build header based on available columns
+	headerParts := []string{padRight("TOOL", nameWidth), padLeft("RUNS", 7), padLeft("OK", 7), padLeft("ERR", 7)}
+	if showSuccessRate {
+		headerParts = append(headerParts, padLeft("RATE", 8))
+	}
+	headerParts = append(headerParts, padLeft("SESS", 7))
+	if showShare {
+		headerParts = append(headerParts, padLeft("SHARE", 12))
+	}
+	if showStatus {
+		headerParts = append(headerParts, padLeft("STATUS", 8))
+	}
+	rows = append(rows, s.TableHeader.Render(strings.Join(headerParts, " ")))
+
+	limit := min(len(items), max(height-len(rows)-4, 5))
 	if len(items) == 0 {
 		message := "No tool invocation data found."
 		if state.filter != "" {
@@ -72,10 +185,48 @@ func renderTools(s styles, width, height int, items []stats.ToolEntry, total int
 		}
 		rows = append(rows, s.Muted.Render(message))
 	} else {
+		totalInvocations := int64(0)
+		for _, item := range items {
+			totalInvocations += item.Invocations
+		}
+
 		start, end := tableWindow(len(items), state.cursor, limit)
 		for i := start; i < end; i++ {
 			item := items[i]
-			line := fmt.Sprintf("%s %s %s %s %s", padRight(truncateWithEllipsis(item.Name, nameWidth), nameWidth), padLeft(formatInt(item.Invocations), 7), padLeft(formatInt(item.Successes), 7), padLeft(formatInt(item.Failures), 7), padLeft(formatInt(item.Sessions), 7))
+			successRate := 0.0
+			if item.Invocations > 0 {
+				successRate = (float64(item.Successes) / float64(item.Invocations)) * 100
+			}
+
+			lineParts := []string{
+				padRight(truncateWithEllipsis(item.Name, nameWidth), nameWidth),
+				padLeft(formatInt(item.Invocations), 7),
+				padLeft(formatInt(item.Successes), 7),
+				padLeft(formatInt(item.Failures), 7),
+			}
+			if showSuccessRate {
+				rateText := "--"
+				if item.Invocations > 0 {
+					rateText = fmt.Sprintf("%.1f%%", successRate)
+				}
+				lineParts = append(lineParts, padLeft(rateText, 8))
+			}
+			lineParts = append(lineParts, padLeft(formatInt(item.Sessions), 7))
+			if showShare {
+				shareBar := progressBarWithPercent(s, float64(item.Invocations), float64(totalInvocations), 12)
+				lineParts = append(lineParts, padLeft(shareBar, 12))
+			}
+			if showStatus {
+				// Pass -1 for no-data case (invocations=0) per spec
+				badgeRate := successRate
+				if item.Invocations == 0 {
+					badgeRate = -1
+				}
+				statusBadge := renderStatusBadge(s, badgeRate)
+				lineParts = append(lineParts, padLeft(statusBadge, 8))
+			}
+
+			line := strings.Join(lineParts, " ")
 			if i == state.cursor {
 				rows = append(rows, s.TableRowActive.Render("> "+line))
 				continue
@@ -90,12 +241,59 @@ func renderTools(s styles, width, height int, items []stats.ToolEntry, total int
 func renderProjects(s styles, width, height int, items []stats.ProjectEntry, total int, state tableViewState) string {
 	rows := []string{
 		s.PanelTitle.Render("Projects"),
-		s.Muted.Render("Project concentration with cursor, sort, and inline filter."),
-		"",
-		s.TableHeader.Render(fmt.Sprintf("%s %s %s %s", padRight("PROJECT", max(width-31, 16)), padLeft("SESS", 7), padLeft("MSG", 7), padLeft("COST", 10))),
+		s.Muted.Render("Project concentration with leader summary, tokens, and share."),
 	}
-	limit := min(len(items), max(height-6, 5))
+
+	// Leader section (top 3 by cost) - reusable helper
+	if len(items) >= 2 {
+		totalCost := 0.0
+		for _, item := range items {
+			totalCost += item.Cost
+		}
+		leaders := make([]LeaderEntry, min(3, len(items)))
+		for i := 0; i < len(leaders); i++ {
+			leaders[i] = LeaderEntry{Name: items[i].ProjectName, Value: items[i].Cost}
+		}
+		leaderSection := renderLeaderSection(s, width, leaders, totalCost, "#%d", formatMoney)
+		if leaderSection != "" {
+			rows = append(rows, "", leaderSection)
+		}
+	}
+
+	rows = append(rows, "")
+
+	// Width thresholds for progressive column drop
+	showTokens := width >= 100
+	showShare := width >= 120
+	showAvgSession := width >= 130
+
+	// Calculate dynamic widths
 	nameWidth := max(width-31, 16)
+	if showTokens && !showShare && !showAvgSession {
+		nameWidth = max(width-42, 16)
+	} else if showTokens && showShare && !showAvgSession {
+		nameWidth = max(width-64, 16)
+	} else if showTokens && showShare && showAvgSession {
+		nameWidth = max(width-72, 16)
+	} else if showShare {
+		nameWidth = max(width-53, 16)
+	}
+
+	// Build header based on available columns
+	headerParts := []string{padRight("PROJECT", nameWidth), padLeft("SESS", 7), padLeft("MSG", 7)}
+	if showTokens {
+		headerParts = append(headerParts, padLeft("TOK", 7))
+	}
+	headerParts = append(headerParts, padLeft("COST", 10))
+	if showShare {
+		headerParts = append(headerParts, padLeft("SHARE", 12))
+	}
+	if showAvgSession {
+		headerParts = append(headerParts, padLeft("AVG/S", 8))
+	}
+	rows = append(rows, s.TableHeader.Render(strings.Join(headerParts, " ")))
+
+	limit := min(len(items), max(height-len(rows)-4, 5))
 	if len(items) == 0 {
 		message := "No project activity found."
 		if state.filter != "" {
@@ -103,10 +301,38 @@ func renderProjects(s styles, width, height int, items []stats.ProjectEntry, tot
 		}
 		rows = append(rows, s.Muted.Render(message))
 	} else {
+		totalCost := 0.0
+		for _, item := range items {
+			totalCost += item.Cost
+		}
+
 		start, end := tableWindow(len(items), state.cursor, limit)
 		for i := start; i < end; i++ {
 			item := items[i]
-			line := fmt.Sprintf("%s %s %s %s", padRight(truncateWithEllipsis(item.ProjectName, nameWidth), nameWidth), padLeft(formatInt(item.Sessions), 7), padLeft(formatInt(item.Messages), 7), padLeft(formatMoney(item.Cost), 10))
+			totalTokens := item.Tokens.Input + item.Tokens.Output + item.Tokens.Reasoning + item.Tokens.Cache.Read + item.Tokens.Cache.Write
+			avgPerSession := 0.0
+			if item.Sessions > 0 {
+				avgPerSession = item.Cost / float64(item.Sessions)
+			}
+
+			lineParts := []string{
+				padRight(truncateWithEllipsis(item.ProjectName, nameWidth), nameWidth),
+				padLeft(formatInt(item.Sessions), 7),
+				padLeft(formatInt(item.Messages), 7),
+			}
+			if showTokens {
+				lineParts = append(lineParts, padLeft(formatCompactInt(totalTokens), 7))
+			}
+			lineParts = append(lineParts, padLeft(formatMoney(item.Cost), 10))
+			if showShare {
+				shareBar := progressBarWithPercent(s, item.Cost, totalCost, 12)
+				lineParts = append(lineParts, padLeft(shareBar, 12))
+			}
+			if showAvgSession {
+				lineParts = append(lineParts, padLeft(formatMoney(avgPerSession), 8))
+			}
+
+			line := strings.Join(lineParts, " ")
 			if i == state.cursor {
 				rows = append(rows, s.TableRowActive.Render("> "+line))
 				continue
@@ -121,10 +347,25 @@ func renderProjects(s styles, width, height int, items []stats.ProjectEntry, tot
 func renderSessions(s styles, width, height int, list stats.SessionList, state sessionsViewState) string {
 	rows := []string{
 		s.PanelTitle.Render("Sessions"),
-		s.Muted.Render("Dense browse flow with filter, sort, and Enter drill-down."),
+		s.Muted.Render("Dense browse flow with filter, sort, cost share, and Enter drill-down."),
 		"",
-		s.TableHeader.Render(fmt.Sprintf("%s %s %s %s %s", padRight("TITLE", max(width-45, 16)), padRight("PROJECT", 12), padRight("UPDATED", 12), padLeft("MSG", 5), padLeft("COST", 10))),
 	}
+
+	// Width threshold for share column
+	showCostShare := width >= 110
+
+	// Calculate dynamic widths
+	titleWidth := max(width-45, 16)
+	if showCostShare {
+		titleWidth = max(width-67, 16)
+	}
+
+	// Build header based on available columns
+	headerParts := []string{padRight("TITLE", titleWidth), padRight("PROJECT", 12), padRight("UPDATED", 12), padLeft("MSG", 5), padLeft("COST", 10)}
+	if showCostShare {
+		headerParts = append(headerParts, padLeft("SHARE", 12))
+	}
+	rows = append(rows, s.TableHeader.Render(strings.Join(headerParts, " ")))
 
 	if len(list.Sessions) == 0 {
 		message := "No sessions match the current view."
@@ -134,9 +375,27 @@ func renderSessions(s styles, width, height int, list stats.SessionList, state s
 		rows = append(rows, s.Muted.Render(message))
 	} else {
 		limit := min(len(list.Sessions), max(height-6, 5))
-		titleWidth := max(width-45, 16)
+
+		// Calculate page total for share percentage
+		pageTotalCost := 0.0
+		for _, item := range list.Sessions[:limit] {
+			pageTotalCost += item.Cost
+		}
+
 		for i, item := range list.Sessions[:limit] {
-			line := fmt.Sprintf("%s %s %s %s %s", padRight(truncateWithEllipsis(item.Title, titleWidth), titleWidth), padRight(truncateWithEllipsis(item.ProjectName, 12), 12), padRight(item.TimeUpdated.Format("2006-01-02"), 12), padLeft(formatInt(item.MessageCount), 5), padLeft(formatMoney(item.Cost), 10))
+			lineParts := []string{
+				padRight(truncateWithEllipsis(item.Title, titleWidth), titleWidth),
+				padRight(truncateWithEllipsis(item.ProjectName, 12), 12),
+				padRight(item.TimeUpdated.Format("2006-01-02"), 12),
+				padLeft(formatInt(item.MessageCount), 5),
+				padLeft(formatMoney(item.Cost), 10),
+			}
+			if showCostShare {
+				shareBar := progressBarWithPercent(s, item.Cost, pageTotalCost, 12)
+				lineParts = append(lineParts, padLeft(shareBar, 12))
+			}
+
+			line := strings.Join(lineParts, " ")
 			if i == state.cursor {
 				rows = append(rows, s.TableRowActive.Render("> "+line))
 				continue

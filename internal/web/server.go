@@ -70,6 +70,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/projects", s.handlers.Projects)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/sessions", s.handlers.Sessions)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/sessions/{id}", s.handlers.SessionByID)
+	s.mux.HandleFunc("GET "+apiV1Prefix+"/messages", s.handlers.Messages)
+	s.mux.HandleFunc("GET "+apiV1Prefix+"/messages/{id}", s.handlers.MessageByID)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/config", s.handlers.Config)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/version", s.handlers.Version)
 	s.mux.HandleFunc("GET /health", s.healthHandler)

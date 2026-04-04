@@ -55,14 +55,13 @@ const (
 )
 
 type dashboardData struct {
-	Overview stats.OverviewStats
-	Daily7   stats.DailyStats
-	Daily30  stats.DailyStats
-	Models   stats.ModelStats
-	Tools    stats.ToolStats
-	Projects stats.ProjectStats
-	Sessions stats.SessionList
-	Config   stats.ConfigView
+	Overview      stats.OverviewStats
+	DailyByPeriod map[string]stats.DailyStats
+	Models        stats.ModelStats
+	Tools         stats.ToolStats
+	Projects      stats.ProjectStats
+	Sessions      stats.SessionList
+	Config        stats.ConfigView
 }
 
 type filterState struct {
@@ -100,6 +99,24 @@ type sessionOverlayState struct {
 	err     error
 }
 
+type dayMessagesOverlayState struct {
+	visible  bool
+	date     string
+	messages stats.MessageList
+	cursor   int
+	page     int
+	loading  bool
+	err      error
+}
+
+type messageDetailOverlayState struct {
+	visible bool
+	id      string
+	detail  *stats.MessageDetail
+	loading bool
+	err     error
+}
+
 type snapshotLoadedMsg struct {
 	data     dashboardData
 	loadedAt time.Time
@@ -117,6 +134,24 @@ type sessionDetailLoadedMsg struct {
 	err    error
 }
 
+type dailyPeriodLoadedMsg struct {
+	period string
+	data   stats.DailyStats
+	err    error
+}
+
+type dayMessagesLoadedMsg struct {
+	date string
+	list stats.MessageList
+	err  error
+}
+
+type messageDetailLoadedMsg struct {
+	id     string
+	detail *stats.MessageDetail
+	err    error
+}
+
 type model struct {
 	store *store.Store
 	opts  Options
@@ -130,7 +165,11 @@ type model struct {
 	activeTab     tabID
 	helpVisible   bool
 	dailyPeriod   string
+	dailyLoading  bool
 	dailyMetric   dailyMetric
+	dailyCursor   int
+	dayMessages   dayMessagesOverlayState
+	messageDetail messageDetailOverlayState
 	filterMode    bool
 	loading       bool
 	loaded        bool
@@ -218,6 +257,40 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionDetail.detail = msg.detail
 		return m, nil
 
+	case dailyPeriodLoadedMsg:
+		m.dailyLoading = false
+		if msg.err != nil {
+			m.loadErr = msg.err
+			return m, nil
+		}
+		if m.data.DailyByPeriod == nil {
+			m.data.DailyByPeriod = make(map[string]stats.DailyStats)
+		}
+		m.data.DailyByPeriod[msg.period] = msg.data
+		return m, nil
+
+	case dayMessagesLoadedMsg:
+		if msg.date != m.dayMessages.date {
+			return m, nil
+		}
+		m.dayMessages.loading = false
+		m.dayMessages.err = msg.err
+		m.dayMessages.messages = msg.list
+		if msg.list.Page > 0 {
+			m.dayMessages.page = msg.list.Page
+		}
+		m.dayMessages.cursor = clamp(m.dayMessages.cursor, 0, max(len(msg.list.Messages)-1, 0))
+		return m, nil
+
+	case messageDetailLoadedMsg:
+		if msg.id != m.messageDetail.id {
+			return m, nil
+		}
+		m.messageDetail.loading = false
+		m.messageDetail.err = msg.err
+		m.messageDetail.detail = msg.detail
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.updateKey(msg)
 	}
@@ -230,6 +303,14 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	if matches(key, m.keys.Quit...) {
 		return m, tea.Quit
+	}
+
+	if m.messageDetail.visible {
+		return m.updateMessageDetailOverlayKey(msg)
+	}
+
+	if m.dayMessages.visible {
+		return m.updateDayMessagesOverlayKey(msg)
 	}
 
 	if m.sessionDetail.visible {
@@ -255,6 +336,8 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if matches(key, m.keys.Refresh...) {
 		m.loading = true
 		m.sessionDetail.err = nil
+		m.dayMessages.err = nil
+		m.messageDetail.err = nil
 		return m, loadSnapshotCmd(m.store, m.currentSessionQuery())
 	}
 
@@ -280,13 +363,7 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch m.activeTab {
 	case tabDaily:
-		if matches(key, m.keys.PrevPage...) {
-			m.dailyPeriod = toggleDailyPeriod(m.dailyPeriod)
-		}
-		if matches(key, m.keys.Metric...) {
-			m.dailyMetric = nextDailyMetric(m.dailyMetric)
-		}
-		return m, nil
+		return m.updateDailyKey(msg)
 	case tabModels:
 		return m.updateModelsKey(msg)
 	case tabTools:
@@ -476,11 +553,151 @@ func (m *model) updateSessionOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 	return m, nil
 }
 
+func (m *model) updateDailyKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	daily := m.currentDaily()
+	dayCount := len(daily.Days)
+
+	if matches(key, m.keys.PrevPage...) {
+		nextPeriod := nextDailyPeriod(m.dailyPeriod)
+		m.dailyPeriod = nextPeriod
+		if m.data.DailyByPeriod == nil || m.data.DailyByPeriod[nextPeriod].Days == nil {
+			m.dailyLoading = true
+			m.dailyCursor = 0
+			return m, loadDailyPeriodCmd(m.store, nextPeriod)
+		}
+		m.dailyCursor = 0
+		return m, nil
+	}
+	if matches(key, m.keys.Metric...) {
+		m.dailyMetric = nextDailyMetric(m.dailyMetric)
+		return m, nil
+	}
+	if dayCount > 0 {
+		if matches(key, m.keys.Down...) {
+			m.dailyCursor = clamp(m.dailyCursor+1, 0, dayCount-1)
+			return m, nil
+		}
+		if matches(key, m.keys.Up...) {
+			m.dailyCursor = clamp(m.dailyCursor-1, 0, dayCount-1)
+			return m, nil
+		}
+		if matches(key, m.keys.Top...) {
+			m.dailyCursor = 0
+			return m, nil
+		}
+		if matches(key, m.keys.Bottom...) {
+			m.dailyCursor = max(dayCount-1, 0)
+			return m, nil
+		}
+		if matches(key, m.keys.Toggle...) {
+			selectedDay := daily.Days[m.dailyCursor]
+			m.dayMessages = dayMessagesOverlayState{
+				visible: true,
+				date:    selectedDay.Date,
+				page:    1,
+				cursor:  0,
+				loading: true,
+			}
+			return m, loadDayMessagesCmd(m.store, selectedDay.Date, 1)
+		}
+	}
+	return m, nil
+}
+
+func (m *model) updateDayMessagesOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	count := len(m.dayMessages.messages.Messages)
+
+	if matches(key, m.keys.Close...) {
+		m.dayMessages.visible = false
+		m.dayMessages.loading = false
+		m.dayMessages.err = nil
+		m.dayMessages.messages = stats.MessageList{}
+		m.dayMessages.date = ""
+		m.dayMessages.cursor = 0
+		m.dayMessages.page = 1
+		return m, nil
+	}
+	if matches(key, m.keys.Refresh...) {
+		m.dayMessages.loading = true
+		m.dayMessages.err = nil
+		return m, loadDayMessagesCmd(m.store, m.dayMessages.date, m.dayMessages.page)
+	}
+	if count > 0 {
+		if matches(key, m.keys.Down...) {
+			m.dayMessages.cursor = clamp(m.dayMessages.cursor+1, 0, max(count-1, 0))
+			return m, nil
+		}
+		if matches(key, m.keys.Up...) {
+			m.dayMessages.cursor = clamp(m.dayMessages.cursor-1, 0, max(count-1, 0))
+			return m, nil
+		}
+		if matches(key, m.keys.Top...) {
+			m.dayMessages.cursor = 0
+			return m, nil
+		}
+		if matches(key, m.keys.Bottom...) {
+			m.dayMessages.cursor = max(count-1, 0)
+			return m, nil
+		}
+		if matches(key, m.keys.NextPage...) && hasNextMessagePage(m.dayMessages.messages) {
+			m.dayMessages.page++
+			m.dayMessages.cursor = 0
+			m.dayMessages.loading = true
+			return m, loadDayMessagesCmd(m.store, m.dayMessages.date, m.dayMessages.page)
+		}
+		if matches(key, m.keys.PrevPage...) && m.dayMessages.page > 1 {
+			m.dayMessages.page--
+			m.dayMessages.cursor = 0
+			m.dayMessages.loading = true
+			return m, loadDayMessagesCmd(m.store, m.dayMessages.date, m.dayMessages.page)
+		}
+		if matches(key, m.keys.Toggle...) {
+			if m.dayMessages.cursor >= 0 && m.dayMessages.cursor < count {
+				entry := m.dayMessages.messages.Messages[m.dayMessages.cursor]
+				m.messageDetail = messageDetailOverlayState{
+					visible: true,
+					id:      entry.ID,
+					loading: true,
+				}
+				return m, loadMessageDetailCmd(m.store, entry.ID)
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m *model) updateMessageDetailOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+
+	if matches(key, m.keys.Close...) {
+		m.messageDetail.visible = false
+		m.messageDetail.loading = false
+		m.messageDetail.err = nil
+		m.messageDetail.detail = nil
+		m.messageDetail.id = ""
+		return m, nil
+	}
+	if matches(key, m.keys.Refresh...) {
+		m.messageDetail.loading = true
+		m.messageDetail.err = nil
+		return m, loadMessageDetailCmd(m.store, m.messageDetail.id)
+	}
+	return m, nil
+}
+
 func (m *model) View() tea.View {
 	bodyHeight := max(m.height-6, 10)
 	content := m.renderContent(bodyHeight)
 	if m.helpVisible {
 		content = m.renderHelp(bodyHeight)
+	}
+	if m.dayMessages.visible {
+		content = m.renderDayMessagesOverlay(content, bodyHeight)
+	}
+	if m.messageDetail.visible {
+		content = m.renderMessageDetailOverlay(content, bodyHeight)
 	}
 	if m.sessionDetail.visible {
 		content = m.renderSessionOverlay(content, bodyHeight)
@@ -495,7 +712,7 @@ func (m *model) View() tea.View {
 	}
 
 	out := lipgloss.JoinVertical(lipgloss.Left, parts...)
-	v := tea.NewView(m.styles.App.Width(m.width).Render(out))
+	v := tea.NewView(m.styles.App.Width(m.width).Height(m.height).Render(out))
 	v.AltScreen = true
 	v.WindowTitle = "opencode-dashboard"
 	return v
@@ -546,7 +763,8 @@ func (m *model) renderContent(bodyHeight int) string {
 
 	panelWidth := max(m.width-4, 40)
 	content := m.renderActiveTab(panelWidth-4, bodyHeight-2)
-	return m.styles.Panel.Width(panelWidth).Height(bodyHeight).Render(content)
+	panel := m.styles.Panel.Width(panelWidth).Height(bodyHeight).Render(content)
+	return m.styles.ContentArea.Width(m.width).Height(bodyHeight).Render(panel)
 }
 
 func (m *model) renderActiveTab(width, height int) string {
@@ -554,7 +772,7 @@ func (m *model) renderActiveTab(width, height int) string {
 	case tabOverview:
 		return renderOverview(m.styles, width, height, m.data)
 	case tabDaily:
-		return renderDaily(m.styles, width, height, m.currentDaily(), m.dailyPeriod, m.dailyMetric)
+		return renderDaily(m.styles, width, height, m.currentDaily(), m.dailyPeriod, m.dailyMetric, m.dailyLoading, m.dailyCursor)
 	case tabModels:
 		return renderModels(m.styles, width, height, m.visibleModelEntries(), len(m.data.Models.Models), tableViewState{
 			cursor:      m.models.cursor,
@@ -626,17 +844,35 @@ func (m *model) renderHelp(bodyHeight int) string {
 		"  s         cycle table sort",
 		"",
 		m.styles.Text.Render("Daily"),
-		"  p         toggles 7d / 30d",
+		"  j/k       move cursor on bars",
+		"  g/G       jump top/bottom",
+		"  p         cycles 1d/7d/30d/1y/all",
 		"  t         cycles cost/sessions/messages/tokens",
+		"  Enter     open day messages overlay",
+		"",
+		m.styles.Text.Render("Day Messages Overlay"),
+		"  j/k       move cursor",
+		"  n/p       paginate",
+		"  Enter     open message detail",
+		"  Esc       close overlay",
+		"",
+		m.styles.Text.Render("Message Detail Overlay"),
+		"  Esc       close overlay (returns to day messages)",
+		"  r         refresh message content",
 	}
 	box := m.styles.HelpPanel.Width(max(min(m.width-8, 84), 40)).Render(joinLines(help...))
-	return lipgloss.Place(max(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, box)
+	return lipgloss.Place(max(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, box,
+		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(lipgloss.Color("#171A1F"))))
 }
 
 func (m *model) renderFooter() string {
 	contextKeys := "1-7 tabs • h/l switch • r refresh • ? help • q quit"
 	if m.activeTab == tabDaily {
-		contextKeys += fmt.Sprintf(" • p period:%s • t metric:%s", m.dailyPeriod, renderDailyMetricLabel(m.dailyMetric))
+		periodLabel := m.dailyPeriod
+		if m.dailyLoading {
+			periodLabel += " (loading)"
+		}
+		contextKeys += fmt.Sprintf(" • p period:%s • t metric:%s", periodLabel, renderDailyMetricLabel(m.dailyMetric))
 	}
 	if m.activeTab == tabModels {
 		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s", renderModelSortLabel(m.models.sort))
@@ -665,24 +901,68 @@ func (m *model) renderFooter() string {
 	if m.filterMode {
 		contextKeys = "FILTER • type to search current table • Enter apply • Esc cancel"
 	}
-	if m.sessionDetail.visible {
+	if m.messageDetail.visible {
+		contextKeys = "MESSAGE DETAIL • Esc close • r refresh"
+	}
+	if m.dayMessages.visible && !m.messageDetail.visible {
+		pageInfo := fmt.Sprintf("page %d", m.dayMessages.page)
+		if m.dayMessages.messages.Total > 0 {
+			pageInfo = fmt.Sprintf("page %d/%d", m.dayMessages.page, (m.dayMessages.messages.Total/int64(m.dayMessages.messages.PageSize))+1)
+		}
+		contextKeys = fmt.Sprintf("DAY MESSAGES • %s • j/k move • n/p pages • Enter detail • Esc close", pageInfo)
+	}
+	if m.sessionDetail.visible && !m.dayMessages.visible && !m.messageDetail.visible {
 		contextKeys = "SESSION DETAIL • Esc close • r refresh detail"
 	}
 	return m.styles.Footer.Width(m.width).Render(contextKeys)
 }
 
 func (m *model) renderSessionOverlay(base string, bodyHeight int) string {
-	panelWidth := max(min(m.width-10, 110), 48)
-	panelHeight := max(min(bodyHeight-2, 26), 12)
+	panelWidth := calculateOverlayWidth(m.width)
+	panelHeight := calculateOverlayHeight(bodyHeight)
 	overlay := renderSessionDetailOverlay(m.styles, panelWidth, panelHeight, m.sessionDetail)
-	return lipgloss.Place(max(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, overlay)
+	return lipgloss.Place(max(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, overlay,
+		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(lipgloss.Color("#171A1F"))))
+}
+
+func (m *model) renderDayMessagesOverlay(base string, bodyHeight int) string {
+	panelWidth := calculateOverlayWidth(m.width)
+	panelHeight := calculateOverlayHeight(bodyHeight)
+	overlay := renderDayMessagesOverlayContent(m.styles, panelWidth, panelHeight, m.dayMessages)
+	return lipgloss.Place(max(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, overlay,
+		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(lipgloss.Color("#171A1F"))))
+}
+
+func (m *model) renderMessageDetailOverlay(base string, bodyHeight int) string {
+	panelWidth := calculateOverlayWidth(m.width)
+	panelHeight := calculateOverlayHeight(bodyHeight)
+	overlay := renderMessageDetailOverlayContent(m.styles, panelWidth, panelHeight, m.messageDetail)
+	return lipgloss.Place(max(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, overlay,
+		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(lipgloss.Color("#171A1F"))))
+}
+
+func calculateOverlayWidth(termWidth int) int {
+	minWidth := 48
+	maxWidth := 140
+	proportionalWidth := int(float64(termWidth) * 0.85)
+	return max(min(proportionalWidth, maxWidth), minWidth)
+}
+
+func calculateOverlayHeight(bodyHeight int) int {
+	minHeight := 12
+	maxHeight := 40
+	proportionalHeight := int(float64(bodyHeight) * 0.85)
+	return max(min(proportionalHeight, maxHeight), minHeight)
 }
 
 func (m *model) currentDaily() stats.DailyStats {
-	if m.dailyPeriod == "30d" {
-		return m.data.Daily30
+	if m.data.DailyByPeriod == nil {
+		return stats.DailyStats{}
 	}
-	return m.data.Daily7
+	if daily, ok := m.data.DailyByPeriod[m.dailyPeriod]; ok {
+		return daily
+	}
+	return stats.DailyStats{}
 }
 
 func (m *model) currentSessionQuery() stats.SessionQuery {
@@ -747,11 +1027,11 @@ func loadSnapshotCmd(st *store.Store, query stats.SessionQuery) tea.Cmd {
 		if data.Overview, err = stats.Overview(ctx, st); err != nil {
 			return snapshotLoadedMsg{err: err}
 		}
-		if data.Daily7, err = stats.Daily(ctx, st, "7d"); err != nil {
+		data.DailyByPeriod = make(map[string]stats.DailyStats)
+		if daily7, err := stats.Daily(ctx, st, "7d"); err != nil {
 			return snapshotLoadedMsg{err: err}
-		}
-		if data.Daily30, err = stats.Daily(ctx, st, "30d"); err != nil {
-			return snapshotLoadedMsg{err: err}
+		} else {
+			data.DailyByPeriod["7d"] = daily7
 		}
 		if data.Models, err = stats.Models(ctx, st); err != nil {
 			return snapshotLoadedMsg{err: err}
@@ -793,9 +1073,66 @@ func loadSessionDetailCmd(st *store.Store, id string) tea.Cmd {
 	}
 }
 
-func toggleDailyPeriod(current string) string {
-	if current == "7d" {
-		return "30d"
+func loadDailyPeriodCmd(st *store.Store, period string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		data, err := stats.Daily(ctx, st, period)
+		return dailyPeriodLoadedMsg{period: period, data: data, err: err}
+	}
+}
+
+func loadDayMessagesCmd(st *store.Store, date string, page int) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		period := date
+		if len(date) == 10 {
+			period = "1d"
+		}
+		list, err := stats.MessagesByPeriod(ctx, st, period, page, 20, stats.DefaultMessageSort())
+		if err == nil && len(date) == 10 {
+			var filtered []stats.MessageEntry
+			for _, msg := range list.Messages {
+				if msg.TimeCreated.Format("2006-01-02") == date {
+					filtered = append(filtered, msg)
+				}
+			}
+			list.Messages = filtered
+			if filtered == nil {
+				list.Messages = []stats.MessageEntry{}
+			}
+		}
+		return dayMessagesLoadedMsg{date: date, list: list, err: err}
+	}
+}
+
+func loadMessageDetailCmd(st *store.Store, id string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		detail, err := stats.MessageByID(ctx, st, id)
+		return messageDetailLoadedMsg{id: id, detail: detail, err: err}
+	}
+}
+
+func hasNextMessagePage(list stats.MessageList) bool {
+	if list.PageSize <= 0 {
+		return false
+	}
+	return int64(list.Page*list.PageSize) < list.Total
+}
+
+func nextDailyPeriod(current string) string {
+	periods := []string{"1d", "7d", "30d", "1y", "all"}
+	for i, p := range periods {
+		if p == current {
+			nextIdx := (i + 1) % len(periods)
+			return periods[nextIdx]
+		}
 	}
 	return "7d"
 }

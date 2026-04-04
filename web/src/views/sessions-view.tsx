@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { MetricCard } from '../components/overview/metric-card'
+import { TokenBreakdownList } from '../components/overview/token-breakdown-card'
+import { SessionMessageRow } from '../components/sessions/session-message-row'
 import { SessionsSkeleton } from '../components/sessions/sessions-skeleton'
 import { Alert } from '../components/ui/alert'
 import { Badge } from '../components/ui/badge'
@@ -32,7 +34,6 @@ import {
   formatTokenCount,
   safeDivide,
 } from '../lib/format'
-import { cn } from '../lib/utils'
 import type { SessionDetail, SessionEntry, SessionList, SessionMessage, TokenStats } from '../types/api'
 
 const PAGE_SIZE = 12
@@ -53,19 +54,6 @@ function getTokenTotal(tokens?: TokenStats) {
   }
 
   return tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
-}
-
-function getRoleTone(role: string) {
-  switch (role) {
-    case 'assistant':
-      return 'accent' as const
-    case 'user':
-      return 'success' as const
-    case 'system':
-      return 'warning' as const
-    default:
-      return 'default' as const
-  }
 }
 
 function formatSessionWindow(createdAt: string, updatedAt: string) {
@@ -109,7 +97,7 @@ function DetailMetric({ label, value, hint }: { label: string; value: string; hi
   return (
     <div className="rounded-2xl border border-border/70 bg-background/45 px-4 py-4">
       <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
-      <div className="mt-2 font-mono text-xl text-foreground">{value}</div>
+      <div className="mt-2 font-mono text-lg text-foreground sm:text-xl">{value}</div>
       <div className="mt-2 text-sm leading-6 text-muted-foreground">{hint}</div>
     </div>
   )
@@ -119,103 +107,7 @@ function DetailFact({ label, value, subtle = false }: { label: string; value: st
   return (
     <div className="rounded-xl border border-border/70 bg-background/40 px-3 py-3">
       <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
-      <div className={cn('mt-2 break-all font-mono text-sm text-foreground', subtle && 'text-muted-foreground')}>{value}</div>
-    </div>
-  )
-}
-
-function SessionMetaChip({ label, value }: { label: string; value: string }) {
-  return (
-    <span
-      className="inline-flex max-w-full items-center gap-1 overflow-hidden rounded-full border border-border/60 bg-background/35 px-2.5 py-1 text-[11px] text-muted-foreground"
-      title={`${label}: ${value}`}
-    >
-      <span className="shrink-0 uppercase tracking-[0.14em]">{label}</span>
-      <span className="max-w-[16rem] truncate font-mono text-foreground sm:max-w-[20rem]">{value}</span>
-    </span>
-  )
-}
-
-function SessionMessageRow({
-  message,
-  isHighestCost = false,
-  isHighestTokens = false,
-}: {
-  message: SessionMessage
-  isHighestCost?: boolean
-  isHighestTokens?: boolean
-}) {
-  const tokenTotal = getTokenTotal(message.tokens)
-  const hasSpendSignal = (message.cost ?? 0) > 0 || tokenTotal > 0
-  const cacheTotal = (message.tokens?.cache.read ?? 0) + (message.tokens?.cache.write ?? 0)
-  const hasSecondaryTokenBreakdown = (message.tokens?.reasoning ?? 0) > 0 || cacheTotal > 0
-
-  return (
-    <div
-      className={cn(
-        'min-w-0 rounded-2xl border border-border/70 bg-background/40 px-4 py-4 transition-colors',
-        hasSpendSignal && 'bg-panel/35',
-        (isHighestCost || isHighestTokens) && 'border-accent/40 bg-panel/45',
-      )}
-    >
-      <div className="space-y-4">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-          <div className="min-w-0 space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge tone={getRoleTone(message.role)}>{message.role || 'unknown'}</Badge>
-              <span className="font-mono text-sm text-foreground">{formatDateTime(message.time_created)}</span>
-              {isHighestCost ? <Badge tone="accent">highest cost</Badge> : null}
-              {isHighestTokens ? <Badge tone="warning">highest tokens</Badge> : null}
-            </div>
-
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-              <span>
-                <span className="uppercase tracking-[0.14em]">Input</span>{' '}
-                <span className="font-mono text-foreground">{formatTokenCount(message.tokens?.input ?? 0)}</span>
-              </span>
-              <span>
-                <span className="uppercase tracking-[0.14em]">Output</span>{' '}
-                <span className="font-mono text-foreground">{formatTokenCount(message.tokens?.output ?? 0)}</span>
-              </span>
-              {hasSecondaryTokenBreakdown ? (
-                <>
-                  {(message.tokens?.reasoning ?? 0) > 0 ? (
-                    <span>
-                      <span className="uppercase tracking-[0.14em]">Reasoning</span>{' '}
-                      <span className="font-mono text-foreground">{formatTokenCount(message.tokens?.reasoning ?? 0)}</span>
-                    </span>
-                  ) : null}
-                  {cacheTotal > 0 ? (
-                    <span>
-                      <span className="uppercase tracking-[0.14em]">Cache</span>{' '}
-                      <span className="font-mono text-foreground">{formatTokenCount(cacheTotal)}</span>
-                    </span>
-                  ) : null}
-                </>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:min-w-[15rem]">
-            <div className="rounded-xl border border-border/60 bg-panel/60 px-3 py-3">
-              <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Cost</div>
-              <div className="mt-1 font-mono text-lg text-foreground">{formatCurrency(message.cost ?? 0)}</div>
-            </div>
-
-            <div className="rounded-xl border border-border/60 bg-panel/60 px-3 py-3">
-              <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Total tokens</div>
-              <div className="mt-1 font-mono text-lg text-foreground">{formatTokenCount(tokenTotal)}</div>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          {message.agent ? <SessionMetaChip label="agent" value={message.agent} /> : null}
-          <SessionMetaChip label="id" value={message.id.slice(0, 12)} />
-          {message.model_id ? <SessionMetaChip label="model" value={message.model_id} /> : null}
-          {message.provider_id ? <SessionMetaChip label="provider" value={message.provider_id} /> : null}
-        </div>
-      </div>
+      <div className={`mt-2 break-all font-mono text-sm ${subtle ? 'text-muted-foreground' : 'text-foreground'}`}>{value}</div>
     </div>
   )
 }
@@ -501,99 +393,125 @@ export function SessionsView() {
                 </CardHeader>
 
                 <CardContent className="space-y-4">
-                  <div className="grid gap-4 xl:grid-cols-[1.45fr_20rem]">
-<div className="space-y-3">
-                       <Table className="hidden overflow-hidden rounded-2xl border border-border/70 lg:block">
-                         <TableHeader className="bg-panel/75">
-                           <TableRow className="border-b border-border/70 hover:bg-transparent">
-                             <TableHead className="min-w-[18rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Session</TableHead>
-                             <TableHead className="w-[8rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Created</TableHead>
-                             <TableHead className="w-[8rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Updated</TableHead>
-                             <TableHead className="w-[6rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Msgs</TableHead>
-                             <TableHead className="w-[7rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Cost</TableHead>
-                             <TableHead className="w-[5.5rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Detail</TableHead>
-                           </TableRow>
-                         </TableHeader>
-                         <TableBody className="divide-y divide-border/60">
+                  <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_18rem]">
+                    <div className="space-y-3">
+                      <div className="hidden md:block">
+                        <Table className="min-w-[42rem] overflow-hidden rounded-2xl border border-border/70 bg-card/40">
+                          <TableHeader className="bg-panel/75">
+                            <TableRow className="border-b border-border/70 hover:bg-transparent">
+                              <TableHead className="min-w-[15rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Session</TableHead>
+                              <TableHead className="w-[11rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Activity</TableHead>
+                              <TableHead className="w-[9rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Summary</TableHead>
+                              <TableHead className="w-[5rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Open</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody className="divide-y divide-border/60">
                            {data?.sessions.map((session) => {
                              const share = safeDivide(session.cost, summary.visibleCost) * 100
 
                              return (
-                               <TableRow key={session.id} className="bg-card/40 hover:bg-white/4">
-                                 <TableCell className="min-w-[18rem] px-4 py-3">
-                                   <div className="min-w-0 space-y-2">
-                                     <div className="truncate font-medium text-foreground">{getSessionLabel(session)}</div>
-                                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                       <Badge className="px-2 py-0.5 text-[10px] tracking-[0.16em]">{getSessionProjectLabel(session)}</Badge>
-                                       <span className="font-mono">id {session.id.slice(0, 10)}</span>
-                                     </div>
-                                     <div className="flex items-center gap-3">
-                                       <Progress className="h-1.5" value={Math.max(share, session.cost > 0 ? 3 : 0)} />
-                                       <span className="font-mono text-[11px] text-muted-foreground">{Math.round(share || 0)}%</span>
-                                     </div>
-                                   </div>
-                                 </TableCell>
-                                 <TableCell className="w-[8rem] px-4 py-3 font-mono text-sm text-foreground">{formatDateTime(session.time_created)}</TableCell>
-                                 <TableCell className="w-[8rem] px-4 py-3 font-mono text-sm text-foreground">{formatDateTime(session.time_updated)}</TableCell>
-                                 <TableCell className="w-[6rem] px-4 py-3 font-mono text-sm text-foreground">{formatCompactInteger(session.message_count)}</TableCell>
-                                 <TableCell className="w-[7rem] px-4 py-3 font-mono text-sm text-foreground">{formatCompactCurrency(session.cost)}</TableCell>
-                                 <TableCell className="w-[5.5rem] px-4 py-3">
-                                   <Button
-                                     variant="ghost"
-                                     size="sm"
+                                <TableRow key={session.id} className="bg-card/40 hover:bg-white/4">
+                                  <TableCell className="min-w-[15rem] px-4 py-3">
+                                    <div className="min-w-0 space-y-2">
+                                      <div className="truncate font-medium text-foreground">{getSessionLabel(session)}</div>
+                                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                        <Badge className="max-w-full px-2 py-0.5 text-[10px] tracking-[0.16em]">{getSessionProjectLabel(session)}</Badge>
+                                        <span className="font-mono">id {session.id.slice(0, 10)}</span>
+                                      </div>
+                                      <div className="flex items-center gap-3">
+                                        <Progress className="h-1.5" value={Math.max(share, session.cost > 0 ? 3 : 0)} />
+                                        <span className="font-mono text-[11px] text-muted-foreground">{Math.round(share || 0)}%</span>
+                                      </div>
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="w-[11rem] px-4 py-3">
+                                    <div className="space-y-2 text-xs text-muted-foreground">
+                                      <div>
+                                        <div className="uppercase tracking-[0.14em]">Created</div>
+                                        <div className="mt-1 font-mono text-sm text-foreground">{formatDateTime(session.time_created)}</div>
+                                      </div>
+                                      <div>
+                                        <div className="uppercase tracking-[0.14em]">Updated</div>
+                                        <div className="mt-1 font-mono text-sm text-foreground">{formatDateTime(session.time_updated)}</div>
+                                      </div>
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="w-[9rem] px-4 py-3">
+                                    <div className="space-y-2 text-xs text-muted-foreground">
+                                      <div>
+                                        <div className="uppercase tracking-[0.14em]">Messages</div>
+                                        <div className="mt-1 font-mono text-sm text-foreground">{formatCompactInteger(session.message_count)}</div>
+                                      </div>
+                                      <div>
+                                        <div className="uppercase tracking-[0.14em]">Cost</div>
+                                        <div className="mt-1 font-mono text-sm text-foreground">{formatCompactCurrency(session.cost)}</div>
+                                      </div>
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="w-[5rem] px-4 py-3">
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
                                      onClick={(e) => {
                                        triggerButtonRef.current = e.currentTarget
                                        setSelectedSessionId(session.id)
-                                     }}
-                                     aria-label={`View details for ${getSessionLabel(session)}`}
-                                     className="text-accent"
-                                   >
-                                     View
-                                   </Button>
-                                 </TableCell>
-                               </TableRow>
-                             )
-                           })}
-                         </TableBody>
-                       </Table>
+                                      }}
+                                      aria-label={`View details for ${getSessionLabel(session)}`}
+                                      className="w-full justify-center text-accent"
+                                    >
+                                      Open
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              )
+                            })}
+                          </TableBody>
+                        </Table>
+                      </div>
 
-                       <div className="space-y-3 lg:hidden">
+                      <div className="space-y-3 md:hidden">
                         {data?.sessions.map((session) => (
-<button
-                             key={session.id}
-                             type="button"
-                             onClick={(e) => {
-                               triggerButtonRef.current = e.currentTarget
-                               setSelectedSessionId(session.id)
+                          <button
+                              key={session.id}
+                              type="button"
+                              onClick={(e) => {
+                                triggerButtonRef.current = e.currentTarget
+                                setSelectedSessionId(session.id)
                              }}
-                             className="w-full rounded-2xl border border-border/70 bg-panel/65 p-4 text-left transition-colors hover:bg-panel/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
-                             aria-label={`View details for ${getSessionLabel(session)}`}
-                           >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="truncate font-medium text-foreground">{getSessionLabel(session)}</div>
-                                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.14em] text-muted-foreground">
-                                  <span>{getSessionProjectLabel(session)}</span>
-                                  <span aria-hidden="true">•</span>
-                                  <span>{formatCompactInteger(session.message_count)} msgs</span>
+                              className="w-full rounded-2xl border border-border/70 bg-panel/65 p-4 text-left transition-colors hover:bg-panel/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                              aria-label={`View details for ${getSessionLabel(session)}`}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="truncate font-medium text-foreground">{getSessionLabel(session)}</div>
+                                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                    <span className="uppercase tracking-[0.14em]">{getSessionProjectLabel(session)}</span>
+                                    <span aria-hidden="true">•</span>
+                                    <span className="font-mono">id {session.id.slice(0, 10)}</span>
+                                  </div>
+                                </div>
+                                <div className="font-mono text-sm text-foreground">{formatCompactCurrency(session.cost)}</div>
+                              </div>
+
+                              <div className="mt-3 rounded-xl border border-border/60 bg-background/35 px-3 py-2.5 text-xs text-muted-foreground">
+                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                                  <span>
+                                    <span className="uppercase tracking-[0.14em]">Messages</span>{' '}
+                                    <span className="font-mono text-foreground">{formatCompactInteger(session.message_count)}</span>
+                                  </span>
+                                  <span>
+                                    <span className="uppercase tracking-[0.14em]">Created</span>{' '}
+                                    <span className="font-mono text-foreground">{formatDateTime(session.time_created)}</span>
+                                  </span>
+                                  <span>
+                                    <span className="uppercase tracking-[0.14em]">Updated</span>{' '}
+                                    <span className="font-mono text-foreground">{formatDateTime(session.time_updated)}</span>
+                                  </span>
                                 </div>
                               </div>
-                              <div className="font-mono text-sm text-foreground">{formatCompactCurrency(session.cost)}</div>
-                            </div>
 
-                            <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                              <div className="rounded-lg bg-background/40 px-2.5 py-2">
-                                <div className="uppercase tracking-[0.14em]">Created</div>
-                                <div className="mt-1 font-mono text-sm text-foreground">{formatDateTime(session.time_created)}</div>
-                              </div>
-                              <div className="rounded-lg bg-background/40 px-2.5 py-2">
-                                <div className="uppercase tracking-[0.14em]">Updated</div>
-                                <div className="mt-1 font-mono text-sm text-foreground">{formatDateTime(session.time_updated)}</div>
-                              </div>
-                            </div>
-
-                            <div className="mt-3 text-sm font-medium text-accent">Open detail</div>
-                          </button>
+                              <div className="mt-3 text-sm font-medium text-accent">Open detail</div>
+                           </button>
                         ))}
                       </div>
 
@@ -623,7 +541,7 @@ export function SessionsView() {
                       </div>
                     </div>
 
-                    <Card className="border-border/70 bg-panel/55">
+                    <Card className="border-border/70 bg-panel/55 2xl:sticky 2xl:top-24">
                       <CardHeader>
                         <CardDescription>Session cues</CardDescription>
                         <CardTitle>Read the page faster</CardTitle>
@@ -658,7 +576,7 @@ export function SessionsView() {
                         <div className="rounded-xl border border-border/70 bg-background/40 px-3 py-3">
                           <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Scan priority</div>
                           <div className="mt-2 text-sm leading-6 text-muted-foreground">
-                            Preserve title, timestamps, message count, and cost first. Everything else belongs in the drawer once you decide a session deserves attention.
+                            Preserve title, activity, message count, and cost first. Everything else belongs in the inspector once a session earns attention.
                           </div>
                         </div>
                       </CardContent>
@@ -694,7 +612,7 @@ export function SessionsView() {
       >
         <SheetContent
           side="right"
-          className="flex h-full w-full max-w-[calc(100vw-1rem)] flex-col overflow-hidden border-l border-border/70 bg-background shadow-[0_24px_100px_-32px_rgba(0,0,0,0.95)] sm:max-w-2xl lg:max-w-4xl xl:max-w-5xl"
+          className="flex h-full w-full max-w-[calc(100vw-0.75rem)] flex-col overflow-hidden border-l border-border/70 bg-background shadow-[0_24px_100px_-32px_rgba(0,0,0,0.95)] sm:max-w-[42rem] xl:max-w-[min(100vw-2rem,72rem)] 2xl:max-w-[78rem]"
           onCloseAutoFocus={(e) => {
             // Prevent default focus return and manually focus trigger
             e.preventDefault()
@@ -769,7 +687,7 @@ export function SessionsView() {
               </Alert>
             ) : detail ? (
               <div className="space-y-6">
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
                   <DetailMetric
                     label="Recorded rows"
                     value={formatInteger(detail.messages.length)}
@@ -792,50 +710,92 @@ export function SessionsView() {
                   />
                 </div>
 
-                <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
+                <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(0,1.55fr)_minmax(18rem,22rem)]">
                   <div className="min-w-0 space-y-4">
                     <Card className="border-border/70 bg-panel/45">
                       <CardHeader className="gap-3 md:flex-row md:items-end md:justify-between">
                         <CardDescription>Primary review surface</CardDescription>
                         <div className="space-y-1.5">
                           <CardTitle>Message timeline</CardTitle>
-                          <p className="text-sm text-muted-foreground">Scan role, time, spend, and total tokens first. Model, provider, agent, and ids stay demoted but available.</p>
+                          <p className="text-sm text-muted-foreground">Scan role, time, spend, and total tokens first. Model, provider, agent, and ids stay present but quieter.</p>
                         </div>
                       </CardHeader>
-                      <CardContent className="space-y-3">
+                      <CardContent className="space-y-4">
+                        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/60 bg-background/35 px-3 py-2 text-sm text-muted-foreground">
+                          <span className="font-mono text-foreground">{formatInteger(detailMessageMix.user)}</span>
+                          <span>user</span>
+                          <span className="text-border">·</span>
+                          <span className="font-mono text-foreground">{formatInteger(detailMessageMix.assistant)}</span>
+                          <span>assistant</span>
+                          {detailMessageMix.other > 0 ? (
+                            <>
+                              <span className="text-border">·</span>
+                              <span className="font-mono text-foreground">{formatInteger(detailMessageMix.other)}</span>
+                              <span>other</span>
+                            </>
+                          ) : null}
+                          {detailMessageStats.hottestMessageCost > 0 ? (
+                            <>
+                              <span className="text-border">·</span>
+                              <span>peak row {formatCurrency(detailMessageStats.hottestMessageCost)}</span>
+                            </>
+                          ) : null}
+                        </div>
+
                         {detail.messages.length === 0 ? (
                           <div className="rounded-2xl border border-border/70 bg-background/45 px-4 py-5 text-sm text-muted-foreground">
                             This session exists, but the detail endpoint returned no message rows.
                           </div>
                         ) : (
-                          detail.messages.map((message) => (
-                            <SessionMessageRow
-                              key={message.id}
-                              message={message}
-                              isHighestCost={detailMessageStats.hottestMessageId === message.id}
-                              isHighestTokens={detailMessageStats.heaviestTokenMessageId === message.id}
-                            />
-                          ))
+                          <div className="divide-y divide-border/40 overflow-hidden rounded-xl border border-border/60">
+                            {detail.messages.map((message, index) => (
+                              <SessionMessageRow
+                                key={message.id}
+                                message={message}
+                                previousMessage={index > 0 ? detail.messages[index - 1] : undefined}
+                                isHighestCost={detailMessageStats.hottestMessageId === message.id}
+                                isHighestTokens={detailMessageStats.heaviestTokenMessageId === message.id}
+                              />
+                            ))}
+                          </div>
                         )}
                       </CardContent>
                     </Card>
                   </div>
 
-                  <div className="order-last min-w-0 space-y-4 xl:order-none xl:pt-1">
+                  <div className="order-last min-w-0 space-y-4 2xl:order-none 2xl:pt-1">
                     <Card className="border-border/60 bg-background/25 shadow-none">
                       <CardHeader>
                         <CardDescription>Secondary context</CardDescription>
                         <CardTitle>Session facts</CardTitle>
                       </CardHeader>
                       <CardContent className="space-y-3 text-sm text-muted-foreground">
-                        <div className="rounded-xl border border-border/60 bg-background/35 px-3 py-2 text-xs leading-5 text-muted-foreground">
-                          Secondary facts stay compact so the timeline remains the primary review surface.
+                        <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-background/35 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                          <span className="font-mono text-foreground">{formatTokenCount(getTokenTotal(detail.total_tokens))}</span>
+                          <span>window token load</span>
+                          <span className="text-border">·</span>
+                          <span>{formatCurrency(detail.total_cost)} spend</span>
                         </div>
 
-                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                        <div className="rounded-xl border border-border/60 bg-background/35 px-3 py-3">
+                          <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Token mix</div>
+                          <TokenBreakdownList
+                            className="mt-3 border-t border-border/50 pt-3"
+                            hideZeroItems
+                            tokens={detail.total_tokens}
+                            variant="compact"
+                          />
+                        </div>
+
+                        <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
                           <DetailFact label="Project" value={getSessionProjectLabel(detail)} />
                           <DetailFact label="Directory" value={detail.directory || 'No directory recorded'} subtle={!detail.directory} />
                           <DetailFact label="Last update" value={formatDateTime(detail.time_updated)} />
+                          <DetailFact
+                            label="Peak row"
+                            value={detailMessageStats.hottestMessageCost > 0 ? formatCurrency(detailMessageStats.hottestMessageCost) : 'No spend signal'}
+                            subtle={detailMessageStats.hottestMessageCost <= 0}
+                          />
                         </div>
                       </CardContent>
                     </Card>

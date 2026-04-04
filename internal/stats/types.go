@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"strings"
 	"time"
 )
 
@@ -33,8 +34,16 @@ type DayStats struct {
 	Tokens   TokenStats `json:"tokens"`
 }
 
+type Granularity string
+
+const (
+	GranularityDay  Granularity = "day"
+	GranularityHour Granularity = "hour"
+)
+
 type DailyStats struct {
-	Days []DayStats `json:"days"`
+	Days        []DayStats  `json:"days"`
+	Granularity Granularity `json:"granularity"`
 }
 
 type ModelEntry struct {
@@ -109,6 +118,98 @@ type SessionQuery struct {
 	Sort     SessionSortMode
 }
 
+type MessageSortField string
+
+const (
+	MessageSortTime   MessageSortField = "time"
+	MessageSortCost   MessageSortField = "cost"
+	MessageSortTokens MessageSortField = "tokens"
+	MessageSortModel  MessageSortField = "model"
+	MessageSortRole   MessageSortField = "role"
+)
+
+type MessageSortDirection string
+
+const (
+	MessageSortAsc  MessageSortDirection = "asc"
+	MessageSortDesc MessageSortDirection = "desc"
+)
+
+type MessageSort struct {
+	Field     MessageSortField
+	Direction MessageSortDirection
+}
+
+func (ms MessageSort) OrderByClause() string {
+	dir := "DESC"
+	if ms.Direction == MessageSortAsc {
+		dir = "ASC"
+	}
+
+	switch ms.Field {
+	case MessageSortCost:
+		return "cost " + dir
+	case MessageSortTokens:
+		return "(COALESCE(JSON_EXTRACT(m.data, '$.tokens.input'), 0) + COALESCE(JSON_EXTRACT(m.data, '$.tokens.output'), 0) + COALESCE(JSON_EXTRACT(m.data, '$.tokens.reasoning'), 0) + COALESCE(JSON_EXTRACT(m.data, '$.tokens.cache.read'), 0) + COALESCE(JSON_EXTRACT(m.data, '$.tokens.cache.write'), 0)) " + dir
+	case MessageSortModel:
+		return "model_id " + dir
+	case MessageSortRole:
+		return "role " + dir
+	default:
+		return "m.time_created " + dir
+	}
+}
+
+func ParseMessageSort(s string) MessageSort {
+	if s == "" {
+		return DefaultMessageSort()
+	}
+
+	parts := strings.SplitN(s, ":", 2)
+	field := parseMessageSortField(parts[0])
+
+	if len(parts) == 2 {
+		switch parts[1] {
+		case "asc":
+			return MessageSort{Field: field, Direction: MessageSortAsc}
+		case "desc":
+			return MessageSort{Field: field, Direction: MessageSortDesc}
+		}
+	}
+
+	return MessageSort{Field: field, Direction: defaultMessageSortDirection(field)}
+}
+
+func DefaultMessageSort() MessageSort {
+	return MessageSort{Field: MessageSortTime, Direction: MessageSortDesc}
+}
+
+func defaultMessageSortDirection(f MessageSortField) MessageSortDirection {
+	switch f {
+	case MessageSortModel, MessageSortRole:
+		return MessageSortAsc
+	default:
+		return MessageSortDesc
+	}
+}
+
+func parseMessageSortField(s string) MessageSortField {
+	switch s {
+	case "cost":
+		return MessageSortCost
+	case "tokens":
+		return MessageSortTokens
+	case "model":
+		return MessageSortModel
+	case "role":
+		return MessageSortRole
+	case "time":
+		return MessageSortTime
+	default:
+		return MessageSortTime
+	}
+}
+
 type SessionMessage struct {
 	ID          string      `json:"id"`
 	Role        string      `json:"role"`
@@ -162,4 +263,65 @@ func (p Pagination) Offset() int {
 		return 0
 	}
 	return (p.Page - 1) * p.PageSize
+}
+
+// MessageEntry represents a single message row in the requests history list.
+type MessageEntry struct {
+	ID           string      `json:"id"`
+	SessionID    string      `json:"session_id"`
+	SessionTitle string      `json:"session_title"`
+	Role         string      `json:"role"`
+	TimeCreated  time.Time   `json:"time_created"`
+	Cost         float64     `json:"cost"`
+	Tokens       *TokenStats `json:"tokens,omitempty"`
+	ModelID      string      `json:"model_id,omitempty"`
+	ProviderID   string      `json:"provider_id,omitempty"`
+}
+
+// MessageList is a paginated list of messages for a date range.
+type MessageList struct {
+	Messages []MessageEntry `json:"messages"`
+	Total    int64          `json:"total"`
+	Page     int            `json:"page"`
+	PageSize int            `json:"page_size"`
+}
+
+// MessagePart represents a single text or reasoning part from the part table.
+type MessagePart struct {
+	Type string `json:"type"` // "text" or "reasoning"
+	Text string `json:"text"` // Actual content
+}
+
+type ToolTime struct {
+	Start     int64 `json:"start,omitempty"`
+	End       int64 `json:"end,omitempty"`
+	Compacted int64 `json:"compacted,omitempty"`
+}
+
+type ToolState struct {
+	Status   string                 `json:"status"` // pending, running, completed, error
+	Input    map[string]interface{} `json:"input,omitempty"`
+	Output   string                 `json:"output,omitempty"`
+	Title    string                 `json:"title,omitempty"`
+	Error    string                 `json:"error,omitempty"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+	Time     *ToolTime              `json:"time,omitempty"`
+}
+
+type ToolPart struct {
+	Type   string    `json:"type"` // always "tool"
+	CallID string    `json:"call_id"`
+	Tool   string    `json:"tool"`
+	State  ToolState `json:"state"`
+}
+
+type MessageContent struct {
+	TextParts      []MessagePart `json:"text_parts"`
+	ReasoningParts []MessagePart `json:"reasoning_parts"`
+	ToolParts      []ToolPart    `json:"tool_parts"`
+}
+
+type MessageDetail struct {
+	MessageEntry
+	Content MessageContent `json:"content"`
 }

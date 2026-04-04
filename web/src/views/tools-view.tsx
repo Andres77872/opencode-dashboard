@@ -11,9 +11,23 @@ import { Progress } from '../components/ui/progress'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { getTools } from '../lib/api'
 import { formatCompactInteger, formatInteger, formatPercentage, safeDivide } from '../lib/format'
+import { getAriaSort, getNextSortState, type SortDirection, type SortState } from '../lib/table-sort'
 import type { ToolEntry, ToolStats } from '../types/api'
 
 type SortKey = 'invocations' | 'sessions' | 'tool' | 'successRate' | 'failures'
+
+const DEFAULT_SORT_DIRECTIONS: Record<SortKey, SortDirection> = {
+  failures: 'desc',
+  invocations: 'desc',
+  sessions: 'desc',
+  successRate: 'desc',
+  tool: 'asc',
+}
+
+const DEFAULT_TABLE_SORT: SortState<SortKey> = {
+  key: 'invocations',
+  direction: 'desc',
+}
 
 interface EnrichedToolRow extends ToolEntry {
   share: number
@@ -57,8 +71,16 @@ export function ToolsView() {
   const [data, setData] = useState<ToolStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [sortKey, setSortKey] = useState<SortKey>('invocations')
+  const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
   const hasLoadedOnceRef = useRef(false)
+
+  const handleSortChange = (key: SortKey) => {
+    setSortState((current) => getNextSortState(current, key, DEFAULT_SORT_DIRECTIONS[key]))
+  }
+
+  const isSortedBy = (key: SortKey) => sortState?.key === key
+
+  const getSortDirection = (key: SortKey) => (sortState?.key === key ? sortState.direction : undefined)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -110,10 +132,15 @@ export function ToolsView() {
       successRate: safeDivide(tool.successes, tool.invocations) * 100,
     }))
 
+    const effectiveSort = sortState ?? DEFAULT_TABLE_SORT
+
     const sortedRows = [...rows].sort((left, right) => {
-      const primary = compareRows(sortKey, left, right)
-      if (primary !== 0) {
-        return primary
+      const primary = compareRows(effectiveSort.key, left, right)
+      const directionMultiplier = effectiveSort.direction === DEFAULT_SORT_DIRECTIONS[effectiveSort.key] ? 1 : -1
+      const directedPrimary = primary * directionMultiplier
+
+      if (directedPrimary !== 0) {
+        return directedPrimary
       }
 
       if (right.invocations !== left.invocations) {
@@ -138,7 +165,7 @@ export function ToolsView() {
       overallSuccessRate: safeDivide(totalSuccesses, totalInvocations) * 100,
       empty: rows.length === 0,
     }
-  }, [data, sortKey])
+  }, [data, sortState])
 
   const handleRetry = () => {
     requestRefresh()
@@ -252,20 +279,45 @@ export function ToolsView() {
                     <Table className="overflow-hidden rounded-2xl border border-border/70">
                       <TableHeader className="bg-panel/75">
                         <TableRow className="border-b border-border/70 hover:bg-transparent">
-                          <TableHead className="min-w-[15rem]" aria-sort={sortKey === 'tool' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'tool'} label="Tool" onClick={() => setSortKey('tool')} />
+                          <TableHead className="min-w-[15rem]" aria-sort={getAriaSort(sortState, 'tool')}>
+                            <SortButton
+                              active={isSortedBy('tool')}
+                              direction={getSortDirection('tool')}
+                              label="Tool"
+                              onClick={() => handleSortChange('tool')}
+                            />
                           </TableHead>
-                          <TableHead className="w-[6rem]" aria-sort={sortKey === 'sessions' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'sessions'} label="Sessions" onClick={() => setSortKey('sessions')} />
+                          <TableHead className="w-[6rem]" aria-sort={getAriaSort(sortState, 'sessions')}>
+                            <SortButton
+                              active={isSortedBy('sessions')}
+                              direction={getSortDirection('sessions')}
+                              label="Sessions"
+                              onClick={() => handleSortChange('sessions')}
+                            />
                           </TableHead>
-                          <TableHead className="w-[7rem]" aria-sort={sortKey === 'invocations' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'invocations'} label="Runs" onClick={() => setSortKey('invocations')} />
+                          <TableHead className="w-[7rem]" aria-sort={getAriaSort(sortState, 'invocations')}>
+                            <SortButton
+                              active={isSortedBy('invocations')}
+                              direction={getSortDirection('invocations')}
+                              label="Runs"
+                              onClick={() => handleSortChange('invocations')}
+                            />
                           </TableHead>
-                          <TableHead className="w-[8rem]" aria-sort={sortKey === 'successRate' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'successRate'} label="Success" onClick={() => setSortKey('successRate')} />
+                          <TableHead className="w-[8rem]" aria-sort={getAriaSort(sortState, 'successRate')}>
+                            <SortButton
+                              active={isSortedBy('successRate')}
+                              direction={getSortDirection('successRate')}
+                              label="Success"
+                              onClick={() => handleSortChange('successRate')}
+                            />
                           </TableHead>
-                          <TableHead className="w-[6rem]" aria-sort={sortKey === 'failures' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'failures'} label="Errors" onClick={() => setSortKey('failures')} />
+                          <TableHead className="w-[6rem]" aria-sort={getAriaSort(sortState, 'failures')}>
+                            <SortButton
+                              active={isSortedBy('failures')}
+                              direction={getSortDirection('failures')}
+                              label="Errors"
+                              onClick={() => handleSortChange('failures')}
+                            />
                           </TableHead>
                           <TableHead className="w-[10rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
                             Share

@@ -175,3 +175,69 @@ func extractSessionID(path string) string {
 	}
 	return id
 }
+
+func (h *Handlers) Messages(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "7d"
+	}
+	page := parseIntQuery(r, "page", 1)
+	limit := parseIntQuery(r, "limit", 50)
+	if limit > 100 {
+		limit = 100
+	}
+	sort := stats.ParseMessageSort(r.URL.Query().Get("sort"))
+
+	result, err := stats.MessagesByPeriod(ctx, h.store, period, page, limit, sort)
+	if err != nil {
+		if err == store.ErrInvalidSchema {
+			InternalError("database schema invalid").Write(w)
+			return
+		}
+		if strings.Contains(err.Error(), "invalid period") {
+			BadRequest(err.Error()).Write(w)
+			return
+		}
+		InternalError("failed to list messages").Write(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handlers) MessageByID(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := extractMessageID(r.URL.Path)
+	if id == "" {
+		BadRequest("message id required").Write(w)
+		return
+	}
+
+	result, err := stats.MessageByID(ctx, h.store, id)
+	if err != nil {
+		if err == store.ErrInvalidSchema {
+			InternalError("database schema invalid").Write(w)
+			return
+		}
+		InternalError("failed to get message").Write(w)
+		return
+	}
+	if result == nil {
+		NotFound("message not found").Write(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func extractMessageID(path string) string {
+	prefix := "/api/v1/messages/"
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
+	id := strings.TrimPrefix(path, prefix)
+	id = strings.TrimSuffix(id, "/")
+	if id == "" || strings.Contains(id, "/") {
+		return ""
+	}
+	return id
+}

@@ -13,6 +13,7 @@ type styles struct {
 	TabRow         lipgloss.Style
 	TabActive      lipgloss.Style
 	TabInactive    lipgloss.Style
+	ContentArea    lipgloss.Style
 	Panel          lipgloss.Style
 	PanelTitle     lipgloss.Style
 	Muted          lipgloss.Style
@@ -81,12 +82,21 @@ func newStyles() styles {
 			Padding(0, 1),
 
 		TabRow: lipgloss.NewStyle().
+			Background(lipgloss.Color(bg1)).
 			Padding(0, 0, 1, 0),
 
 		TabActive: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(bg0)).
 			Background(lipgloss.Color(accent)).
 			Bold(true).
+			Border(lipgloss.Border{ // full border for width parity with TabInactive, but THICKER bottom for clear affordance
+				Top:    "─",
+				Bottom: "━", // double-thick bottom for stronger active affordance
+				Left:   "│",
+				Right:  "│",
+			}).
+			BorderForeground(lipgloss.Color(accent)).
+			BorderBackground(lipgloss.Color(accent)).
 			Padding(0, 1),
 
 		TabInactive: lipgloss.NewStyle().
@@ -94,12 +104,17 @@ func newStyles() styles {
 			Background(lipgloss.Color(bg2)).
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color(line)).
+			BorderBackground(lipgloss.Color(bg2)).
 			Padding(0, 1),
+
+		ContentArea: lipgloss.NewStyle().
+			Background(lipgloss.Color(bg1)),
 
 		Panel: lipgloss.NewStyle().
 			Background(lipgloss.Color(bg1)).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color(line)).
+			BorderBackground(lipgloss.Color(bg1)).
 			Padding(0, 1),
 
 		PanelTitle: lipgloss.NewStyle().
@@ -119,6 +134,7 @@ func newStyles() styles {
 			Background(lipgloss.Color(bg1)).
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color(accentDim)).
+			BorderBackground(lipgloss.Color(bg1)).
 			Padding(0, 1),
 
 		MetricLabel: lipgloss.NewStyle().Foreground(lipgloss.Color(muted)),
@@ -137,9 +153,10 @@ func newStyles() styles {
 
 		OverlayPanel: lipgloss.NewStyle().
 			Background(lipgloss.Color(bg1)).
-			Border(lipgloss.DoubleBorder()).
+			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color(accent)).
-			Padding(1, 2),
+			BorderBackground(lipgloss.Color(bg1)).
+			Padding(0, 1),
 
 		FilterPrompt: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(text)).
@@ -155,12 +172,14 @@ func newStyles() styles {
 			Background(lipgloss.Color(bg1)).
 			Border(lipgloss.DoubleBorder()).
 			BorderForeground(lipgloss.Color(accent)).
+			BorderBackground(lipgloss.Color(bg1)).
 			Padding(1, 2),
 
 		EmptyState: lipgloss.NewStyle().
 			Background(lipgloss.Color(bg1)).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color(line)).
+			BorderBackground(lipgloss.Color(bg1)).
 			Foreground(lipgloss.Color(muted)).
 			Padding(1, 2),
 	}
