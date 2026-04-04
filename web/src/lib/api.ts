@@ -3,6 +3,8 @@ import type {
   ConfigStats,
   DailyPeriod,
   DailyStats,
+  MessageDetail,
+  MessageList,
   ModelStats,
   OverviewStats,
   ProjectStats,
@@ -92,4 +94,22 @@ export function getSessions(page: number, limit: number, signal?: AbortSignal) {
 
 export function getSessionDetail(id: string, signal?: AbortSignal) {
   return request<SessionDetail>(`/api/v1/sessions/${encodeURIComponent(id)}`, { signal })
+}
+
+export function getMessages(period: DailyPeriod, page: number, limit: number, sort?: string, signal?: AbortSignal) {
+  const params = new URLSearchParams({
+    period,
+    page: String(page),
+    limit: String(limit),
+  })
+
+  if (sort) {
+    params.set('sort', sort)
+  }
+
+  return request<MessageList>(`/api/v1/messages?${params.toString()}`, { signal })
+}
+
+export function getMessageDetail(id: string, signal?: AbortSignal) {
+  return request<MessageDetail>(`/api/v1/messages/${encodeURIComponent(id)}`, { signal })
 }

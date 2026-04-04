@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS workspace (
 CREATE TABLE IF NOT EXISTS part (
 	id TEXT PRIMARY KEY,
 	session_id TEXT NOT NULL,
+	message_id TEXT,
 	tool TEXT,
 	input TEXT,
 	output TEXT,
@@ -67,7 +68,8 @@ CREATE TABLE IF NOT EXISTS part (
 	time_created TEXT NOT NULL,
 	time_updated TEXT NOT NULL,
 	metadata TEXT,
-	FOREIGN KEY (session_id) REFERENCES session(id)
+	FOREIGN KEY (session_id) REFERENCES session(id),
+	FOREIGN KEY (message_id) REFERENCES message(id)
 );
 `
 
@@ -379,6 +381,7 @@ func insertMessage(ctx context.Context, db *sql.DB, m *MessageBuilder) error {
 type PartBuilder struct {
 	id        string
 	sessionID string
+	messageID string
 	data      string
 	tool      string
 	createdAt time.Time
@@ -401,6 +404,11 @@ func (p *PartBuilder) Tool(tool string) *PartBuilder {
 	return p
 }
 
+func (p *PartBuilder) MessageID(id string) *PartBuilder {
+	p.messageID = id
+	return p
+}
+
 func (p *PartBuilder) CreatedAt(t time.Time) *PartBuilder {
 	p.createdAt = t
 	return p
@@ -412,10 +420,11 @@ func (p *PartBuilder) UpdatedAt(t time.Time) *PartBuilder {
 }
 
 func insertPart(ctx context.Context, db *sql.DB, p *PartBuilder) error {
-	query := `INSERT OR REPLACE INTO part (id, session_id, tool, data, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)`
+	query := `INSERT OR REPLACE INTO part (id, session_id, message_id, tool, data, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)`
 	_, err := db.ExecContext(ctx, query,
 		p.id,
 		p.sessionID,
+		p.messageID,
 		p.tool,
 		p.data,
 		p.createdAt.UnixMilli(),

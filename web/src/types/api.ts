@@ -120,6 +120,39 @@ export interface SessionDetail {
   message_count: number
 }
 
+export interface MessageEntry {
+  id: string
+  session_id: string
+  session_title: string
+  role: string
+  time_created: string
+  cost: number
+  tokens?: TokenStats
+  model_id?: string
+  provider_id?: string
+}
+
+export interface MessageList {
+  messages: MessageEntry[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface MessagePart {
+  type: 'text' | 'reasoning'
+  text: string
+}
+
+export interface MessageContent {
+  text_parts: MessagePart[]
+  reasoning_parts: MessagePart[]
+}
+
+export interface MessageDetail extends MessageEntry {
+  content: MessageContent
+}
+
 export interface OverviewStats {
   sessions: number
   messages: number

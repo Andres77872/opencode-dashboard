@@ -2,19 +2,25 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { DailyChart } from '../components/daily/daily-chart'
+import { MessageDetailSheet } from '../components/daily/message-detail-sheet'
 import { getDailyMetricMeta, getDailyMetricValue, type DailyMetric } from '../components/daily/daily-metrics'
-import { DailySkeleton } from '../components/daily/daily-skeleton'
 import { PeriodToggle } from '../components/daily/period-toggle'
+import { RequestsHistoryTable, REQUESTS_SORT_DEFAULTS } from '../components/daily/requests-history-table'
+import type { RequestsSortKey } from '../components/daily/requests-history-table'
 import { MetricCard } from '../components/overview/metric-card'
 import { TokenBreakdownList } from '../components/overview/token-breakdown-card'
 import { Alert } from '../components/ui/alert'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
-import { getDaily } from '../lib/api'
+import { getDaily, getMessages } from '../lib/api'
 import { formatCompactInteger, formatCurrency, formatInteger, formatShortDate, formatTokenCount, safeDivide } from '../lib/format'
+import { getNextSortState } from '../lib/table-sort'
+import type { SortState } from '../lib/table-sort'
 import { getTokenTotal } from '../lib/token-breakdown'
-import { isDailyPeriod, type DailyPeriod, type DailyStats, type DayStats } from '../types/api'
+import { isDailyPeriod, type DailyPeriod, type DailyStats, type DayStats, type MessageList } from '../types/api'
+
+const REQUESTS_PAGE_SIZE = 12
 
 const dailyMetricCopy: Record<DailyMetric, { detailTitle: string; detailDescription: string; metricLabel: string }> = {
   cost: {
@@ -105,8 +111,15 @@ export function DailyView() {
   const [dataByPeriod, setDataByPeriod] = useState<Partial<Record<DailyPeriod, DailyStats>>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [messages, setMessages] = useState<MessageList | null>(null)
+  const [messagesLoading, setMessagesLoading] = useState(true)
+  const [messagesError, setMessagesError] = useState<string | null>(null)
+  const [messagesPage, setMessagesPage] = useState(1)
+  const [messagesSort, setMessagesSort] = useState<SortState<RequestsSortKey> | null>(null)
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null)
   const [metric, setMetric] = useState<DailyMetric>('cost')
   const dataByPeriodRef = useRef<Partial<Record<DailyPeriod, DailyStats>>>({})
+  const messageTriggerRef = useRef<HTMLElement | null>(null)
 
   const rawPeriod = searchParams.get('period')
   const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
@@ -148,6 +161,35 @@ export function DailyView() {
 
     return () => controller.abort()
   }, [period, refreshNonce, setLastUpdatedAt, setRefreshing])
+
+  useEffect(() => {
+    const controller = new AbortController()
+
+    async function loadMessages() {
+      setMessagesError(null)
+      setMessagesLoading(true)
+
+      try {
+        const sortParam = messagesSort ? `${messagesSort.key}:${messagesSort.direction}` : undefined
+        const next = await getMessages(period, messagesPage, REQUESTS_PAGE_SIZE, sortParam, controller.signal)
+        setMessages(next)
+      } catch (caught) {
+        if (controller.signal.aborted) {
+          return
+        }
+
+        setMessagesError(caught instanceof Error ? caught.message : 'Failed to load requests history')
+      } finally {
+        if (!controller.signal.aborted) {
+          setMessagesLoading(false)
+        }
+      }
+    }
+
+    void loadMessages()
+
+    return () => controller.abort()
+  }, [messagesPage, messagesSort, period, refreshNonce])
 
   const summary = useMemo(() => {
     if (!dataForPeriod) {
@@ -203,10 +245,24 @@ export function DailyView() {
     requestRefresh()
   }
 
+  const handleSortChange = (key: RequestsSortKey) => {
+    setMessagesSort(getNextSortState(messagesSort, key, REQUESTS_SORT_DEFAULTS[key]))
+    setMessagesPage(1)
+  }
+
+  const handleOpenMessage = (messageId: string, trigger: HTMLElement) => {
+    messageTriggerRef.current = trigger
+    setSelectedMessageId(messageId)
+  }
+
   const handlePeriodChange = (nextPeriod: DailyPeriod) => {
     if (nextPeriod === period) {
       return
     }
+
+    setMessagesPage(1)
+    setMessagesSort(null)
+    setSelectedMessageId(null)
 
     setSearchParams((previous) => {
       const next = new URLSearchParams(previous)
@@ -215,83 +271,81 @@ export function DailyView() {
     })
   }
 
-  if (loading && !dataForPeriod) {
-    return (
+  return (
+    <>
       <section className="space-y-6">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div className="space-y-2">
             <Badge tone="accent">Live route</Badge>
             <h2 className="text-2xl font-semibold tracking-tight text-foreground">Daily</h2>
-             <p className="max-w-3xl text-sm text-muted-foreground">
-               Trend view backed by <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/daily</code>
-               , with shareable 1d-to-all windows and switchable cost, request, and token lenses.
-             </p>
+            <p className="max-w-3xl text-sm text-muted-foreground">
+              Switch between spend, request volume, and token flow without leaving the same daily window. The URL period toggle stays shareable and maps directly to the Go API.
+            </p>
           </div>
-          <PeriodToggle value={period} onChange={handlePeriodChange} disabled />
-        </div>
-        <DailySkeleton />
-      </section>
-    )
-  }
 
-  return (
-    <section className="space-y-6">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div className="space-y-2">
-          <Badge tone="accent">Live route</Badge>
-          <h2 className="text-2xl font-semibold tracking-tight text-foreground">Daily</h2>
-          <p className="max-w-3xl text-sm text-muted-foreground">
-            Switch between spend, request volume, and token flow without leaving the same daily window. The URL period toggle stays shareable and maps directly to the Go API.
-          </p>
+          <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
+            <div className="text-sm text-muted-foreground">
+              Endpoint:{' '}
+              <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/daily?period={period}</code>
+            </div>
+            <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
+          </div>
         </div>
 
-        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-          <div className="text-sm text-muted-foreground">
-            Endpoint:{' '}
-            <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/daily?period={period}</code>
-          </div>
-          <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
-        </div>
-      </div>
+        {error ? (
+          <Alert tone="danger" className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="font-medium text-foreground">Daily trends failed to load</div>
+              <div className="text-sm opacity-90">{error}</div>
+            </div>
+            <Button variant="ghost" onClick={handleRetry}>
+              Retry
+            </Button>
+          </Alert>
+        ) : null}
 
-      {error ? (
-        <Alert tone="danger" className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="font-medium text-foreground">Daily trends failed to load</div>
-            <div className="text-sm opacity-90">{error}</div>
-          </div>
-          <Button variant="ghost" onClick={handleRetry}>
-            Retry
-          </Button>
-        </Alert>
-      ) : null}
-
-      {summary ? (
-        <>
-          <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
-            <MetricCard
-              label="Spend in window"
-              value={formatCurrency(summary.cost)}
-              hint={getPeriodWindowHint(period, dataForPeriod?.days.length ?? 0, dataForPeriod?.granularity)}
-            />
-            <MetricCard
-              label="Sessions"
-              value={formatInteger(summary.sessions)}
-              hint={`${formatCompactInteger(summary.activeDays)} active days in the selected range`}
-            />
-            <MetricCard
-              label="Requests"
-              value={formatInteger(summary.messages)}
-              hint={`${summary.averageMessagesPerSession.toFixed(1)} messages per session in the current API model`}
-            />
+        {summary ? (
+          <>
+            <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
+              <MetricCard
+                label="Spend in window"
+                value={formatCurrency(summary.cost)}
+                hint={getPeriodWindowHint(period, dataForPeriod?.days.length ?? 0, dataForPeriod?.granularity)}
+              />
+              <MetricCard
+                label="Sessions"
+                value={formatInteger(summary.sessions)}
+                hint={`${formatCompactInteger(summary.activeDays)} active days in the selected range`}
+              />
+              <MetricCard
+                label="Requests"
+                value={formatInteger(summary.messages)}
+                hint={`${summary.averageMessagesPerSession.toFixed(1)} messages per session in the current API model`}
+              />
               <MetricCard
                 label="Token load"
                 value={formatTokenCount(summary.tokens)}
                 hint={`${formatTokenCount(Math.round(summary.averageTokensPerDay))} average tokens per calendar day`}
               />
-          </div>
+            </div>
+          </>
+        ) : null}
 
-          {summary.empty ? (
+        <RequestsHistoryTable
+          data={messages}
+          error={messagesError}
+          loading={messagesLoading}
+          page={messagesPage}
+          period={period}
+          sortState={messagesSort}
+          onOpenMessage={handleOpenMessage}
+          onPageChange={setMessagesPage}
+          onSortChange={handleSortChange}
+          onRetry={handleRetry}
+        />
+
+        {summary ? (
+          summary.empty ? (
             <Card>
               <CardHeader>
                 <CardDescription>Empty state</CardDescription>
@@ -401,9 +455,19 @@ export function DailyView() {
                 </CardContent>
               </Card>
             </div>
-          )}
-        </>
-      ) : null}
-    </section>
+          )
+        ) : null}
+      </section>
+
+      <MessageDetailSheet
+        messageId={selectedMessageId}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedMessageId(null)
+          }
+        }}
+        triggerRef={messageTriggerRef}
+      />
+    </>
   )
 }

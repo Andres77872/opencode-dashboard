@@ -9,15 +9,22 @@ import (
 )
 
 func renderOverview(s styles, width, _ int, data dashboardData) string {
-	if data.Overview.Sessions == 0 && data.Overview.Messages == 0 {
-		return s.EmptyState.Render("No OpenCode activity found in the selected database yet.")
+	// Per spec: always render zero-valued metrics and empty bars, never generic empty state
+	// Efficiency metrics for overview
+	tokensPerSession := int64(0)
+	if data.Overview.Sessions > 0 {
+		tokensPerSession = totalTokens(data.Overview) / data.Overview.Sessions
+	}
+	costPerMessage := 0.0
+	if data.Overview.Messages > 0 {
+		costPerMessage = data.Overview.Cost / float64(data.Overview.Messages)
 	}
 
 	cardWidth := max((width-6)/4, 18)
 	cards := []string{
 		metricCard(s, "Sessions", formatInt(data.Overview.Sessions), fmt.Sprintf("%d active days", data.Overview.Days), cardWidth),
-		metricCard(s, "Messages", formatInt(data.Overview.Messages), fmt.Sprintf("%s per session", formatInt(avgPerSession(data.Overview.Messages, data.Overview.Sessions))), cardWidth),
-		metricCard(s, "Cost", formatMoney(data.Overview.Cost), fmt.Sprintf("%s / day", formatMoney(data.Overview.CostPerDay)), cardWidth),
+		metricCard(s, "Messages", formatInt(data.Overview.Messages), fmt.Sprintf("%s / sess • $%.2f/msg", formatInt(avgPerSession(data.Overview.Messages, data.Overview.Sessions)), costPerMessage), cardWidth),
+		metricCard(s, "Cost", formatMoney(data.Overview.Cost), fmt.Sprintf("%s / day • %s tok/sess", formatMoney(data.Overview.CostPerDay), formatCompactInt(tokensPerSession)), cardWidth),
 		metricCard(s, "Tokens", formatInt(totalTokens(data.Overview)), formatTokens(data.Overview.Tokens), cardWidth),
 	}
 
@@ -39,18 +46,26 @@ func renderOverview(s styles, width, _ int, data dashboardData) string {
 		topTool = fmt.Sprintf("%s (%s runs)", data.Tools.Tools[0].Name, formatInt(data.Tools.Tools[0].Invocations))
 	}
 
+	// Token breakdown with progress bars - per spec: ALL categories including cache read/write
+	totalTok := totalTokens(data.Overview)
 	secondary := []string{
 		s.PanelTitle.Render("Top signals"),
 		fmt.Sprintf("Top model   %s", topModel),
 		fmt.Sprintf("Top project %s", topProject),
 		fmt.Sprintf("Top tool    %s", topTool),
 		"",
-		s.PanelTitle.Render("Token mix"),
-		fmt.Sprintf("Input       %s", formatInt(data.Overview.Tokens.Input)),
-		fmt.Sprintf("Output      %s", formatInt(data.Overview.Tokens.Output)),
-		fmt.Sprintf("Reasoning   %s", formatInt(data.Overview.Tokens.Reasoning)),
-		fmt.Sprintf("Cache R/W   %s / %s", formatInt(data.Overview.Tokens.Cache.Read), formatInt(data.Overview.Tokens.Cache.Write)),
+		s.PanelTitle.Render("Token breakdown"),
 	}
+
+	barWidth := 16
+	// Per spec: each token category must show count + percentage + progress bar
+	secondary = append(secondary,
+		fmt.Sprintf("Input      %s %s", progressBarWithPercent(s, float64(data.Overview.Tokens.Input), float64(max(totalTok, 1)), barWidth), formatInt(data.Overview.Tokens.Input)),
+		fmt.Sprintf("Output     %s %s", progressBarWithPercent(s, float64(data.Overview.Tokens.Output), float64(max(totalTok, 1)), barWidth), formatInt(data.Overview.Tokens.Output)),
+		fmt.Sprintf("Reasoning  %s %s", progressBarWithPercent(s, float64(data.Overview.Tokens.Reasoning), float64(max(totalTok, 1)), barWidth), formatInt(data.Overview.Tokens.Reasoning)),
+		fmt.Sprintf("Cache Read %s %s", progressBarWithPercent(s, float64(data.Overview.Tokens.Cache.Read), float64(max(totalTok, 1)), barWidth), formatInt(data.Overview.Tokens.Cache.Read)),
+		fmt.Sprintf("Cache Write %s %s", progressBarWithPercent(s, float64(data.Overview.Tokens.Cache.Write), float64(max(totalTok, 1)), barWidth), formatInt(data.Overview.Tokens.Cache.Write)),
+	)
 
 	recent := []string{s.PanelTitle.Render("Recent sessions")}
 	for i, session := range data.Sessions.Sessions {

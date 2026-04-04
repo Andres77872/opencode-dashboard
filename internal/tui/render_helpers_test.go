@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"math"
+	"strings"
 	"testing"
 
 	"opencode-dashboard/internal/stats"
@@ -218,6 +220,221 @@ func TestClamp(t *testing.T) {
 			result := clamp(tt.value, tt.minV, tt.maxV)
 			if result != tt.expected {
 				t.Errorf("clamp(%d, %d, %d) = %d, want %d", tt.value, tt.minV, tt.maxV, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestProgressBar(t *testing.T) {
+	s := newStyles()
+	tests := []struct {
+		name             string
+		value            float64
+		maxValue         float64
+		width            int
+		shouldContain    string
+		shouldNotContain string
+	}{
+		{name: "zero value", value: 0, maxValue: 100, width: 10, shouldContain: "░░░░░░░░░░"},
+		{name: "zero max", value: 50, maxValue: 0, width: 10, shouldContain: "░░░░░░░░░░"},
+		{name: "negative value", value: -5, maxValue: 100, width: 10, shouldContain: "░░░░░░░░░░"},
+		{name: "negative max", value: 50, maxValue: -10, width: 10, shouldContain: "░░░░░░░░░░"},
+		{name: "zero width", value: 50, maxValue: 100, width: 0, shouldContain: ""},
+		{name: "full bar", value: 100, maxValue: 100, width: 5, shouldContain: "█████"},
+		{name: "half bar", value: 50, maxValue: 100, width: 10, shouldContain: "█", shouldNotContain: "░░░░░░"},
+		{name: "exceeds max", value: 150, maxValue: 100, width: 5, shouldContain: "█████"},
+		{name: "small value", value: 1, maxValue: 100, width: 10, shouldContain: "░"},
+		{name: "single char width", value: 50, maxValue: 100, width: 1, shouldContain: "█"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := progressBar(s, tt.value, tt.maxValue, tt.width)
+			if tt.shouldContain != "" && !strings.Contains(result, tt.shouldContain) {
+				t.Errorf("progressBar() = %q, should contain %q", result, tt.shouldContain)
+			}
+			if tt.shouldNotContain != "" && strings.Contains(result, tt.shouldNotContain) {
+				t.Errorf("progressBar() = %q, should NOT contain %q", result, tt.shouldNotContain)
+			}
+			// Verify ANSI color codes are present (styled output)
+			if tt.width > 0 && tt.value > 0 && tt.maxValue > 0 {
+				if !strings.Contains(result, "\x1b[") {
+					t.Errorf("progressBar() should contain ANSI codes for styled output, got %q", result)
+				}
+			}
+		})
+	}
+}
+
+func TestProgressBarWithPercent(t *testing.T) {
+	s := newStyles()
+	tests := []struct {
+		name          string
+		value         float64
+		maxValue      float64
+		width         int
+		shouldContain string
+	}{
+		{name: "zero value", value: 0, maxValue: 100, width: 12, shouldContain: "  0%"},
+		{name: "full bar with percent", value: 100, maxValue: 100, width: 12, shouldContain: "100%"},
+		{name: "half bar with percent", value: 50, maxValue: 100, width: 12, shouldContain: " 50%"},
+		{name: "narrow width", value: 50, maxValue: 100, width: 7, shouldContain: " 50%"},
+		{name: "very narrow width", value: 50, maxValue: 100, width: 5, shouldContain: " 50%"},
+		{name: "exceeds max", value: 150, maxValue: 100, width: 12, shouldContain: "100%"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := progressBarWithPercent(s, tt.value, tt.maxValue, tt.width)
+			if !strings.Contains(result, tt.shouldContain) {
+				t.Errorf("progressBarWithPercent() = %q, should contain %q", result, tt.shouldContain)
+			}
+			// Verify ANSI color codes are present for valid values
+			if tt.width >= 8 && tt.value > 0 && tt.maxValue > 0 {
+				if !strings.Contains(result, "\x1b[") {
+					t.Errorf("progressBarWithPercent() should contain ANSI codes for styled output, got %q", result)
+				}
+			}
+		})
+	}
+}
+
+func TestCalculateMessageMix(t *testing.T) {
+	tests := []struct {
+		name          string
+		messages      []stats.SessionMessage
+		wantUser      float64
+		wantAssistant float64
+		wantSystem    float64
+	}{
+		{name: "empty list", messages: []stats.SessionMessage{}, wantUser: 0, wantAssistant: 0, wantSystem: 0},
+		{name: "all user", messages: []stats.SessionMessage{
+			{Role: "user"},
+			{Role: "user"},
+			{Role: "user"},
+		}, wantUser: 100, wantAssistant: 0, wantSystem: 0},
+		{name: "all assistant", messages: []stats.SessionMessage{
+			{Role: "assistant"},
+			{Role: "assistant"},
+		}, wantUser: 0, wantAssistant: 100, wantSystem: 0},
+		{name: "all system", messages: []stats.SessionMessage{
+			{Role: "system"},
+		}, wantUser: 0, wantAssistant: 0, wantSystem: 100},
+		{name: "mixed roles", messages: []stats.SessionMessage{
+			{Role: "user"},
+			{Role: "assistant"},
+			{Role: "assistant"},
+			{Role: "system"},
+		}, wantUser: 25, wantAssistant: 50, wantSystem: 25},
+		{name: "percentages sum to 100", messages: []stats.SessionMessage{
+			{Role: "user"},
+			{Role: "user"},
+			{Role: "assistant"},
+			{Role: "assistant"},
+			{Role: "assistant"},
+			{Role: "system"},
+		}, wantUser: 33.33, wantAssistant: 50, wantSystem: 16.67},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			userPct, assistantPct, systemPct := calculateMessageMix(tt.messages)
+			// Allow small floating point tolerance
+			tolerance := 0.1
+			if math.Abs(userPct-tt.wantUser) > tolerance {
+				t.Errorf("userPct = %.2f, want %.2f", userPct, tt.wantUser)
+			}
+			if math.Abs(assistantPct-tt.wantAssistant) > tolerance {
+				t.Errorf("assistantPct = %.2f, want %.2f", assistantPct, tt.wantAssistant)
+			}
+			if math.Abs(systemPct-tt.wantSystem) > tolerance {
+				t.Errorf("systemPct = %.2f, want %.2f", systemPct, tt.wantSystem)
+			}
+			// Verify percentages sum to 100 (or 0 for empty)
+			if len(tt.messages) > 0 {
+				sum := userPct + assistantPct + systemPct
+				if math.Abs(sum-100) > tolerance {
+					t.Errorf("percentages sum = %.2f, want 100", sum)
+				}
+			}
+		})
+	}
+}
+
+func TestFindPeakRow(t *testing.T) {
+	tests := []struct {
+		name       string
+		messages   []stats.SessionMessage
+		wantIdx    int
+		wantTokens int64
+	}{
+		{name: "empty list", messages: []stats.SessionMessage{}, wantIdx: -1, wantTokens: 0},
+		{name: "all nil tokens", messages: []stats.SessionMessage{
+			{Role: "user"},
+			{Role: "assistant"},
+		}, wantIdx: -1, wantTokens: 0},
+		{name: "single message with tokens", messages: []stats.SessionMessage{
+			{Role: "user", Tokens: &stats.TokenStats{Input: 100, Output: 50}},
+		}, wantIdx: 0, wantTokens: 150},
+		{name: "multiple messages", messages: []stats.SessionMessage{
+			{Role: "user", Tokens: &stats.TokenStats{Input: 100, Output: 50}},
+			{Role: "assistant", Tokens: &stats.TokenStats{Input: 500, Output: 300, Reasoning: 200}},
+			{Role: "user", Tokens: &stats.TokenStats{Input: 200, Output: 100}},
+		}, wantIdx: 1, wantTokens: 1000},
+		{name: "tie-breaking (first wins)", messages: []stats.SessionMessage{
+			{Role: "user", Tokens: &stats.TokenStats{Input: 100, Output: 100}},
+			{Role: "assistant", Tokens: &stats.TokenStats{Input: 100, Output: 100}},
+		}, wantIdx: 0, wantTokens: 200},
+		{name: "cache tokens included", messages: []stats.SessionMessage{
+			{Role: "user", Tokens: &stats.TokenStats{Input: 100, Output: 50, Cache: stats.CacheStats{Read: 20, Write: 10}}},
+			{Role: "assistant", Tokens: &stats.TokenStats{Input: 200, Output: 100}},
+		}, wantIdx: 1, wantTokens: 300},
+		{name: "mixed nil and valid", messages: []stats.SessionMessage{
+			{Role: "user"},
+			{Role: "assistant", Tokens: &stats.TokenStats{Input: 500, Output: 300}},
+			{Role: "user"},
+		}, wantIdx: 1, wantTokens: 800},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			peakIdx, peakTokens := findPeakRow(tt.messages)
+			if peakIdx != tt.wantIdx {
+				t.Errorf("peakIdx = %d, want %d", peakIdx, tt.wantIdx)
+			}
+			if peakTokens != tt.wantTokens {
+				t.Errorf("peakTokens = %d, want %d", peakTokens, tt.wantTokens)
+			}
+		})
+	}
+}
+
+func TestRenderStatusBadge(t *testing.T) {
+	s := newStyles()
+	tests := []struct {
+		name          string
+		successRate   float64
+		shouldContain string
+	}{
+		{name: "negative rate (no data, neutral)", successRate: -1, shouldContain: "--"},
+		{name: "zero rate (<80%, warning)", successRate: 0, shouldContain: "WARN"},
+		{name: "below 80 (warning)", successRate: 79.9, shouldContain: "WARN"},
+		{name: "at 80 (neutral)", successRate: 80, shouldContain: "--"},
+		{name: "between 80-95 (neutral)", successRate: 90, shouldContain: "--"},
+		{name: "at 95 (neutral, not >95)", successRate: 95, shouldContain: "--"},
+		{name: "above 95 (success/OK)", successRate: 96, shouldContain: "OK"},
+		{name: "at 100 (success/OK)", successRate: 100, shouldContain: "OK"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := renderStatusBadge(s, tt.successRate)
+			if !strings.Contains(result, tt.shouldContain) {
+				t.Errorf("renderStatusBadge() = %q, should contain %q", result, tt.shouldContain)
+			}
+			// Verify ANSI color codes are present (styled output)
+			if !strings.Contains(result, "\x1b[") {
+				t.Errorf("renderStatusBadge() should contain ANSI codes for styled output, got %q", result)
 			}
 		})
 	}

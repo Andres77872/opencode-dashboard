@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"strings"
 	"time"
 )
 
@@ -117,6 +118,98 @@ type SessionQuery struct {
 	Sort     SessionSortMode
 }
 
+type MessageSortField string
+
+const (
+	MessageSortTime   MessageSortField = "time"
+	MessageSortCost   MessageSortField = "cost"
+	MessageSortTokens MessageSortField = "tokens"
+	MessageSortModel  MessageSortField = "model"
+	MessageSortRole   MessageSortField = "role"
+)
+
+type MessageSortDirection string
+
+const (
+	MessageSortAsc  MessageSortDirection = "asc"
+	MessageSortDesc MessageSortDirection = "desc"
+)
+
+type MessageSort struct {
+	Field     MessageSortField
+	Direction MessageSortDirection
+}
+
+func (ms MessageSort) OrderByClause() string {
+	dir := "DESC"
+	if ms.Direction == MessageSortAsc {
+		dir = "ASC"
+	}
+
+	switch ms.Field {
+	case MessageSortCost:
+		return "cost " + dir
+	case MessageSortTokens:
+		return "(COALESCE(JSON_EXTRACT(m.data, '$.tokens.input'), 0) + COALESCE(JSON_EXTRACT(m.data, '$.tokens.output'), 0) + COALESCE(JSON_EXTRACT(m.data, '$.tokens.reasoning'), 0) + COALESCE(JSON_EXTRACT(m.data, '$.tokens.cache.read'), 0) + COALESCE(JSON_EXTRACT(m.data, '$.tokens.cache.write'), 0)) " + dir
+	case MessageSortModel:
+		return "model_id " + dir
+	case MessageSortRole:
+		return "role " + dir
+	default:
+		return "m.time_created " + dir
+	}
+}
+
+func ParseMessageSort(s string) MessageSort {
+	if s == "" {
+		return DefaultMessageSort()
+	}
+
+	parts := strings.SplitN(s, ":", 2)
+	field := parseMessageSortField(parts[0])
+
+	if len(parts) == 2 {
+		switch parts[1] {
+		case "asc":
+			return MessageSort{Field: field, Direction: MessageSortAsc}
+		case "desc":
+			return MessageSort{Field: field, Direction: MessageSortDesc}
+		}
+	}
+
+	return MessageSort{Field: field, Direction: defaultMessageSortDirection(field)}
+}
+
+func DefaultMessageSort() MessageSort {
+	return MessageSort{Field: MessageSortTime, Direction: MessageSortDesc}
+}
+
+func defaultMessageSortDirection(f MessageSortField) MessageSortDirection {
+	switch f {
+	case MessageSortModel, MessageSortRole:
+		return MessageSortAsc
+	default:
+		return MessageSortDesc
+	}
+}
+
+func parseMessageSortField(s string) MessageSortField {
+	switch s {
+	case "cost":
+		return MessageSortCost
+	case "tokens":
+		return MessageSortTokens
+	case "model":
+		return MessageSortModel
+	case "role":
+		return MessageSortRole
+	case "time":
+		return MessageSortTime
+	default:
+		return MessageSortTime
+	}
+}
+
 type SessionMessage struct {
 	ID          string      `json:"id"`
 	Role        string      `json:"role"`
@@ -170,4 +263,43 @@ func (p Pagination) Offset() int {
 		return 0
 	}
 	return (p.Page - 1) * p.PageSize
+}
+
+// MessageEntry represents a single message row in the requests history list.
+type MessageEntry struct {
+	ID           string      `json:"id"`
+	SessionID    string      `json:"session_id"`
+	SessionTitle string      `json:"session_title"`
+	Role         string      `json:"role"`
+	TimeCreated  time.Time   `json:"time_created"`
+	Cost         float64     `json:"cost"`
+	Tokens       *TokenStats `json:"tokens,omitempty"`
+	ModelID      string      `json:"model_id,omitempty"`
+	ProviderID   string      `json:"provider_id,omitempty"`
+}
+
+// MessageList is a paginated list of messages for a date range.
+type MessageList struct {
+	Messages []MessageEntry `json:"messages"`
+	Total    int64          `json:"total"`
+	Page     int            `json:"page"`
+	PageSize int            `json:"page_size"`
+}
+
+// MessagePart represents a single text or reasoning part from the part table.
+type MessagePart struct {
+	Type string `json:"type"` // "text" or "reasoning"
+	Text string `json:"text"` // Actual content
+}
+
+// MessageContent groups text and reasoning parts separately.
+type MessageContent struct {
+	TextParts      []MessagePart `json:"text_parts"`
+	ReasoningParts []MessagePart `json:"reasoning_parts"`
+}
+
+// MessageDetail is the full detail view with metadata + content.
+type MessageDetail struct {
+	MessageEntry
+	Content MessageContent `json:"content"`
 }
