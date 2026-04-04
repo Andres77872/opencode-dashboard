@@ -19,9 +19,23 @@ import {
   formatTokenCount,
   safeDivide,
 } from '../lib/format'
+import { getAriaSort, getNextSortState, type SortDirection, type SortState } from '../lib/table-sort'
 import type { ProjectEntry, ProjectStats } from '../types/api'
 
 type SortKey = 'cost' | 'messages' | 'sessions' | 'project' | 'tokens'
+
+const DEFAULT_SORT_DIRECTIONS: Record<SortKey, SortDirection> = {
+  cost: 'desc',
+  messages: 'desc',
+  project: 'asc',
+  sessions: 'desc',
+  tokens: 'desc',
+}
+
+const DEFAULT_TABLE_SORT: SortState<SortKey> = {
+  key: 'cost',
+  direction: 'desc',
+}
 
 interface EnrichedProjectRow extends ProjectEntry {
   totalTokens: number
@@ -66,8 +80,16 @@ export function ProjectsView() {
   const [data, setData] = useState<ProjectStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [sortKey, setSortKey] = useState<SortKey>('cost')
+  const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
   const hasLoadedOnceRef = useRef(false)
+
+  const handleSortChange = (key: SortKey) => {
+    setSortState((current) => getNextSortState(current, key, DEFAULT_SORT_DIRECTIONS[key]))
+  }
+
+  const isSortedBy = (key: SortKey) => sortState?.key === key
+
+  const getSortDirection = (key: SortKey) => (sortState?.key === key ? sortState.direction : undefined)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -120,10 +142,15 @@ export function ProjectsView() {
       avgCostPerSession: safeDivide(project.cost, project.sessions),
     }))
 
+    const effectiveSort = sortState ?? DEFAULT_TABLE_SORT
+
     const sortedRows = [...rows].sort((left, right) => {
-      const primary = compareRows(sortKey, left, right)
-      if (primary !== 0) {
-        return primary
+      const primary = compareRows(effectiveSort.key, left, right)
+      const directionMultiplier = effectiveSort.direction === DEFAULT_SORT_DIRECTIONS[effectiveSort.key] ? 1 : -1
+      const directedPrimary = primary * directionMultiplier
+
+      if (directedPrimary !== 0) {
+        return directedPrimary
       }
 
       if (right.cost !== left.cost) {
@@ -150,7 +177,7 @@ export function ProjectsView() {
       activityLeader,
       efficiencyLeader,
     }
-  }, [data, sortKey])
+  }, [data, sortState])
 
   const handleRetry = () => {
     requestRefresh()
@@ -262,20 +289,45 @@ export function ProjectsView() {
                     <Table className="overflow-hidden rounded-2xl border border-border/70">
                       <TableHeader className="bg-panel/75">
                         <TableRow className="border-b border-border/70 hover:bg-transparent">
-                          <TableHead className="min-w-[16rem]" aria-sort={sortKey === 'project' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'project'} label="Project" onClick={() => setSortKey('project')} />
+                          <TableHead className="min-w-[16rem]" aria-sort={getAriaSort(sortState, 'project')}>
+                            <SortButton
+                              active={isSortedBy('project')}
+                              direction={getSortDirection('project')}
+                              label="Project"
+                              onClick={() => handleSortChange('project')}
+                            />
                           </TableHead>
-                          <TableHead className="w-[8rem]" aria-sort={sortKey === 'sessions' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'sessions'} label="Sessions" onClick={() => setSortKey('sessions')} />
+                          <TableHead className="w-[8rem]" aria-sort={getAriaSort(sortState, 'sessions')}>
+                            <SortButton
+                              active={isSortedBy('sessions')}
+                              direction={getSortDirection('sessions')}
+                              label="Sessions"
+                              onClick={() => handleSortChange('sessions')}
+                            />
                           </TableHead>
-                          <TableHead className="w-[6rem]" aria-sort={sortKey === 'messages' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'messages'} label="Messages" onClick={() => setSortKey('messages')} />
+                          <TableHead className="w-[6rem]" aria-sort={getAriaSort(sortState, 'messages')}>
+                            <SortButton
+                              active={isSortedBy('messages')}
+                              direction={getSortDirection('messages')}
+                              label="Messages"
+                              onClick={() => handleSortChange('messages')}
+                            />
                           </TableHead>
-                          <TableHead className="w-[7rem]" aria-sort={sortKey === 'tokens' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'tokens'} label="Tokens" onClick={() => setSortKey('tokens')} />
+                          <TableHead className="w-[7rem]" aria-sort={getAriaSort(sortState, 'tokens')}>
+                            <SortButton
+                              active={isSortedBy('tokens')}
+                              direction={getSortDirection('tokens')}
+                              label="Tokens"
+                              onClick={() => handleSortChange('tokens')}
+                            />
                           </TableHead>
-                          <TableHead className="w-[7rem]" aria-sort={sortKey === 'cost' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'cost'} label="Cost" onClick={() => setSortKey('cost')} />
+                          <TableHead className="w-[7rem]" aria-sort={getAriaSort(sortState, 'cost')}>
+                            <SortButton
+                              active={isSortedBy('cost')}
+                              direction={getSortDirection('cost')}
+                              label="Cost"
+                              onClick={() => handleSortChange('cost')}
+                            />
                           </TableHead>
                           <TableHead className="w-[9rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
                             Share

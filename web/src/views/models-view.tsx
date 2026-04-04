@@ -18,10 +18,25 @@ import {
   formatTokenCount,
   safeDivide,
 } from '../lib/format'
+import { getAriaSort, getNextSortState, type SortDirection, type SortState } from '../lib/table-sort'
 import type { ModelEntry, ModelStats } from '../types/api'
 import { ModelsSkeleton } from '../components/models/models-skeleton'
 
 type SortKey = 'cost' | 'messages' | 'sessions' | 'model' | 'provider' | 'avgCostPerMessage'
+
+const DEFAULT_SORT_DIRECTIONS: Record<SortKey, SortDirection> = {
+  avgCostPerMessage: 'desc',
+  cost: 'desc',
+  messages: 'desc',
+  model: 'asc',
+  provider: 'asc',
+  sessions: 'desc',
+}
+
+const DEFAULT_TABLE_SORT: SortState<SortKey> = {
+  key: 'cost',
+  direction: 'desc',
+}
 
 interface EnrichedModelRow extends ModelEntry {
   totalTokens: number
@@ -64,8 +79,16 @@ export function ModelsView() {
   const [data, setData] = useState<ModelStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [sortKey, setSortKey] = useState<SortKey>('cost')
+  const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
   const hasLoadedOnceRef = useRef(false)
+
+  const handleSortChange = (key: SortKey) => {
+    setSortState((current) => getNextSortState(current, key, DEFAULT_SORT_DIRECTIONS[key]))
+  }
+
+  const isSortedBy = (key: SortKey) => sortState?.key === key
+
+  const getSortDirection = (key: SortKey) => (sortState?.key === key ? sortState.direction : undefined)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -122,10 +145,15 @@ export function ModelsView() {
       }
     })
 
+    const effectiveSort = sortState ?? DEFAULT_TABLE_SORT
+
     const sortedRows = [...rows].sort((left, right) => {
-      const primary = compareRows(sortKey, left, right)
-      if (primary !== 0) {
-        return primary
+      const primary = compareRows(effectiveSort.key, left, right)
+      const directionMultiplier = effectiveSort.direction === DEFAULT_SORT_DIRECTIONS[effectiveSort.key] ? 1 : -1
+      const directedPrimary = primary * directionMultiplier
+
+      if (directedPrimary !== 0) {
+        return directedPrimary
       }
 
       if (right.cost !== left.cost) {
@@ -151,7 +179,7 @@ export function ModelsView() {
       usageLeader,
       efficiencyLeader,
     }
-  }, [data, sortKey])
+  }, [data, sortState])
 
   const handleRetry = () => {
     requestRefresh()
@@ -326,25 +354,55 @@ export function ModelsView() {
                     <Table className="overflow-hidden rounded-2xl border border-border/70">
                       <TableHeader className="bg-panel/75">
                         <TableRow className="border-b border-border/70 hover:bg-transparent">
-                          <TableHead className="min-w-[14rem]" aria-sort={sortKey === 'model' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'model'} label="Model" onClick={() => setSortKey('model')} />
+                          <TableHead className="min-w-[14rem]" aria-sort={getAriaSort(sortState, 'model')}>
+                            <SortButton
+                              active={isSortedBy('model')}
+                              direction={getSortDirection('model')}
+                              label="Model"
+                              onClick={() => handleSortChange('model')}
+                            />
                           </TableHead>
-                          <TableHead className="w-[9rem]" aria-sort={sortKey === 'provider' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'provider'} label="Provider" onClick={() => setSortKey('provider')} />
+                          <TableHead className="w-[9rem]" aria-sort={getAriaSort(sortState, 'provider')}>
+                            <SortButton
+                              active={isSortedBy('provider')}
+                              direction={getSortDirection('provider')}
+                              label="Provider"
+                              onClick={() => handleSortChange('provider')}
+                            />
                           </TableHead>
-                          <TableHead className="w-[5.5rem]" aria-sort={sortKey === 'sessions' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'sessions'} label="Sessions" onClick={() => setSortKey('sessions')} />
+                          <TableHead className="w-[5.5rem]" aria-sort={getAriaSort(sortState, 'sessions')}>
+                            <SortButton
+                              active={isSortedBy('sessions')}
+                              direction={getSortDirection('sessions')}
+                              label="Sessions"
+                              onClick={() => handleSortChange('sessions')}
+                            />
                           </TableHead>
-                          <TableHead className="w-[6rem]" aria-sort={sortKey === 'messages' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'messages'} label="Messages" onClick={() => setSortKey('messages')} />
+                          <TableHead className="w-[6rem]" aria-sort={getAriaSort(sortState, 'messages')}>
+                            <SortButton
+                              active={isSortedBy('messages')}
+                              direction={getSortDirection('messages')}
+                              label="Messages"
+                              onClick={() => handleSortChange('messages')}
+                            />
                           </TableHead>
                           <TableHead className="w-[7rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Input</TableHead>
                           <TableHead className="w-[7rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Output</TableHead>
-                          <TableHead className="w-[7rem]" aria-sort={sortKey === 'cost' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'cost'} label="Cost" onClick={() => setSortKey('cost')} />
+                          <TableHead className="w-[7rem]" aria-sort={getAriaSort(sortState, 'cost')}>
+                            <SortButton
+                              active={isSortedBy('cost')}
+                              direction={getSortDirection('cost')}
+                              label="Cost"
+                              onClick={() => handleSortChange('cost')}
+                            />
                           </TableHead>
-                          <TableHead className="w-[8rem]" aria-sort={sortKey === 'avgCostPerMessage' ? 'descending' : 'none'}>
-                            <SortButton active={sortKey === 'avgCostPerMessage'} label="Avg / msg" onClick={() => setSortKey('avgCostPerMessage')} />
+                          <TableHead className="w-[8rem]" aria-sort={getAriaSort(sortState, 'avgCostPerMessage')}>
+                            <SortButton
+                              active={isSortedBy('avgCostPerMessage')}
+                              direction={getSortDirection('avgCostPerMessage')}
+                              label="Avg / msg"
+                              onClick={() => handleSortChange('avgCostPerMessage')}
+                            />
                           </TableHead>
                         </TableRow>
                       </TableHeader>
