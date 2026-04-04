@@ -3,6 +3,7 @@ package tui
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"opencode-dashboard/internal/stats"
@@ -184,6 +185,7 @@ func renderMessageDetailOverlayContent(s styles, width, height int, state messag
 
 	textParts := detail.Content.TextParts
 	reasoningParts := detail.Content.ReasoningParts
+	toolParts := detail.Content.ToolParts
 
 	maxContentLines := height - len(lines) - 4
 	if len(textParts) > 0 {
@@ -230,8 +232,140 @@ func renderMessageDetailOverlayContent(s styles, width, height int, state messag
 		}
 	}
 
+	if len(toolParts) > 0 {
+		lines = append(lines, "", s.Accent.Render("Tool activity"))
+		toolCount := 0
+		toolBudget := max(maxContentLines/2, 4)
+		for _, part := range toolParts {
+			if toolCount >= toolBudget {
+				break
+			}
+
+			for _, row := range renderToolPartRows(s, part, width-4) {
+				if toolCount >= toolBudget {
+					break
+				}
+				lines = append(lines, row)
+				toolCount++
+			}
+		}
+		if len(toolParts) > 1 || toolCount >= toolBudget {
+			lines = append(lines, s.Muted.Render(fmt.Sprintf("(%d tool parts)", len(toolParts))))
+		}
+	}
+
 	lines = append(lines, "", s.Muted.Render("Esc closes overlay • r refreshes"))
 	return s.OverlayPanel.Width(width).Height(height).Render(joinLines(lines...))
+}
+
+func renderToolPartRows(s styles, part stats.ToolPart, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+
+	statusLabel := part.State.Status
+	if statusLabel == "" {
+		statusLabel = "unknown"
+	}
+
+	header := fmt.Sprintf("%s [%s]", toolDisplayName(part), strings.ToUpper(statusLabel))
+	if part.State.Title != "" {
+		header += " • " + part.State.Title
+	}
+
+	rows := []string{toolStatusStyle(s, statusLabel).Render(truncateContent(header, max(width-2, 12)))}
+
+	inputSummary := summarizeToolInput(part.State.Input)
+	if inputSummary != "" {
+		rows = append(rows, s.Muted.Render(truncateContent("in: "+inputSummary, max(width-2, 12))))
+	}
+
+	if summary := toolPrimarySummary(part.State); summary != "" {
+		style := s.Text
+		label := "out: "
+		if statusLabel == "error" {
+			style = s.Danger
+			label = "err: "
+		}
+
+		for _, wrapped := range wrapText(truncateContent(label+summary, max(width-2, 12)), max(width, 12)) {
+			rows = append(rows, style.Render(wrapped))
+		}
+	}
+
+	return rows
+}
+
+func toolDisplayName(part stats.ToolPart) string {
+	if part.Tool != "" {
+		return part.Tool
+	}
+	return "unknown-tool"
+}
+
+func toolStatusStyle(s styles, status string) interface{ Render(...string) string } {
+	switch status {
+	case "completed":
+		return s.Success
+	case "error":
+		return s.Danger
+	case "running":
+		return s.Accent
+	case "pending":
+		return s.Info
+	default:
+		return s.Text
+	}
+}
+
+func summarizeToolInput(input map[string]interface{}) string {
+	if len(input) == 0 {
+		return ""
+	}
+
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, min(len(keys), 4))
+	for i, key := range keys {
+		if i >= 4 {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", key, truncateContent(stringifyToolValue(input[key]), 40)))
+	}
+
+	if len(keys) > 4 {
+		parts = append(parts, fmt.Sprintf("+%d more", len(keys)-4))
+	}
+
+	return strings.Join(parts, " • ")
+}
+
+func toolPrimarySummary(state stats.ToolState) string {
+	if state.Status == "error" && state.Error != "" {
+		return state.Error
+	}
+	if state.Status == "completed" && state.Output != "" {
+		return state.Output
+	}
+	if state.Title != "" {
+		return state.Title
+	}
+	return ""
+}
+
+func stringifyToolValue(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 func truncateContent(content string, maxChars int) string {

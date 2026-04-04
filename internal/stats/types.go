@@ -292,13 +292,35 @@ type MessagePart struct {
 	Text string `json:"text"` // Actual content
 }
 
-// MessageContent groups text and reasoning parts separately.
+type ToolTime struct {
+	Start     int64 `json:"start,omitempty"`
+	End       int64 `json:"end,omitempty"`
+	Compacted int64 `json:"compacted,omitempty"`
+}
+
+type ToolState struct {
+	Status   string                 `json:"status"` // pending, running, completed, error
+	Input    map[string]interface{} `json:"input,omitempty"`
+	Output   string                 `json:"output,omitempty"`
+	Title    string                 `json:"title,omitempty"`
+	Error    string                 `json:"error,omitempty"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+	Time     *ToolTime              `json:"time,omitempty"`
+}
+
+type ToolPart struct {
+	Type   string    `json:"type"` // always "tool"
+	CallID string    `json:"call_id"`
+	Tool   string    `json:"tool"`
+	State  ToolState `json:"state"`
+}
+
 type MessageContent struct {
 	TextParts      []MessagePart `json:"text_parts"`
 	ReasoningParts []MessagePart `json:"reasoning_parts"`
+	ToolParts      []ToolPart    `json:"tool_parts"`
 }
 
-// MessageDetail is the full detail view with metadata + content.
 type MessageDetail struct {
 	MessageEntry
 	Content MessageContent `json:"content"`

@@ -1,9 +1,17 @@
+import { Label, Pie, PieChart } from 'recharts'
 import type { TokenStats } from '../../types/api'
 import { formatPercentage, formatTokenCount } from '../../lib/format'
 import { getTokenBreakdownItems, getTokenTotal } from '../../lib/token-breakdown'
+import { tokenBreakdownChartConfig } from '../../lib/chart-config'
+import { transformTokensToSlices } from '../../lib/chart-transform'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card'
-import { Progress } from '../ui/progress'
-import { Separator } from '../ui/separator'
+import {
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+  ChartTooltipContent,
+} from '../ui/chart'
 import { cn } from '../../lib/utils'
 
 interface TokenBreakdownCardProps {
@@ -51,7 +59,7 @@ export function TokenBreakdownList({
 
   return (
     <div className={cn('space-y-4', className)}>
-      {visibleData.map((item, index) => {
+      {visibleData.map((item) => {
         const share = total === 0 ? 0 : (item.value / total) * 100
 
         return (
@@ -70,8 +78,6 @@ export function TokenBreakdownList({
                 <div className="text-xs text-muted-foreground">{formatPercentage(share)}</div>
               </div>
             </div>
-            <Progress value={Math.max(share, total > 0 ? 4 : 0)} indicatorStyle={{ backgroundColor: item.color }} />
-            {index < visibleData.length - 1 ? <Separator className="mt-4" /> : null}
           </div>
         )
       })}
@@ -87,16 +93,69 @@ export function TokenBreakdownCard({
   tokens,
 }: TokenBreakdownCardProps) {
   const total = getTokenTotal(tokens)
+  const formattedTotal = formatTokenCount(total)
+  const slices = transformTokensToSlices(tokens)
+
+  const visibleSlices = hideZeroItems ? slices.filter((s) => s.value > 0) : slices
 
   return (
-    <Card className={cn('h-full', className)}>
+    <Card className={cn('h-full border-border/70 bg-linear-to-b from-card to-panel', className)}>
       <CardHeader>
         <CardDescription>{description}</CardDescription>
-        <CardTitle className="font-mono text-2xl">{formatTokenCount(total)}</CardTitle>
+        <CardTitle className="font-mono text-2xl">{formattedTotal}</CardTitle>
         {title ? <div className="text-sm font-medium text-foreground">{title}</div> : null}
       </CardHeader>
       <CardContent>
-        <TokenBreakdownList hideZeroItems={hideZeroItems} tokens={tokens} />
+        <ChartContainer config={tokenBreakdownChartConfig} className="mx-auto min-h-[200px] w-full">
+          <PieChart accessibilityLayer>
+            <ChartTooltip
+              content={
+                <ChartTooltipContent
+                  nameKey="name"
+                  formatter={(value) =>
+                    typeof value === 'number' ? formatTokenCount(value) : String(value)
+                  }
+                />
+              }
+            />
+            <Pie
+              data={visibleSlices}
+              dataKey="value"
+              nameKey="name"
+              innerRadius="60%"
+              outerRadius="80%"
+              strokeWidth={2}
+              stroke="var(--color-card)"
+              paddingAngle={2}
+            >
+              <Label
+                content={({ viewBox }) => {
+                  if (viewBox && 'cx' in viewBox && 'cy' in viewBox) {
+                    return (
+                      <text x={viewBox.cx} y={viewBox.cy} textAnchor="middle" dominantBaseline="middle">
+                        <tspan
+                          x={viewBox.cx}
+                          y={viewBox.cy}
+                          className="fill-foreground text-2xl font-bold"
+                        >
+                          {formattedTotal}
+                        </tspan>
+                        <tspan
+                          x={viewBox.cx}
+                          y={(viewBox.cy || 0) + 20}
+                          className="fill-muted-foreground text-xs"
+                        >
+                          total tokens
+                        </tspan>
+                      </text>
+                    )
+                  }
+                }}
+              />
+            </Pie>
+            <ChartLegend content={<ChartLegendContent nameKey="name" />} />
+          </PieChart>
+        </ChartContainer>
       </CardContent>
     </Card>
   )

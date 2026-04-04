@@ -144,9 +144,33 @@ export interface MessagePart {
   text: string
 }
 
+export interface ToolTime {
+  start?: number
+  end?: number
+  compacted?: number
+}
+
+export interface ToolState {
+  status: 'pending' | 'running' | 'completed' | 'error'
+  input?: Record<string, unknown>
+  output?: string
+  title?: string
+  error?: string
+  metadata?: Record<string, unknown>
+  time?: ToolTime
+}
+
+export interface ToolPart {
+  type: 'tool'
+  call_id: string
+  tool: string
+  state: ToolState
+}
+
 export interface MessageContent {
   text_parts: MessagePart[]
   reasoning_parts: MessagePart[]
+  tool_parts: ToolPart[]
 }
 
 export interface MessageDetail extends MessageEntry {

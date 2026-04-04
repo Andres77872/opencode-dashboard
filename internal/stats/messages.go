@@ -3,6 +3,7 @@ package stats
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	"opencode-dashboard/internal/store"
@@ -319,7 +320,7 @@ func MessageByID(ctx context.Context, s *store.Store, id string) (*MessageDetail
 
 		part := MessagePart{
 			Type: partType.String,
-			Text: truncateContent(partText.String, 500),
+			Text: truncateContent(partText.String, 1000),
 		}
 
 		if partType.String == "text" {
@@ -333,6 +334,41 @@ func MessageByID(ctx context.Context, s *store.Store, id string) (*MessageDetail
 		return nil, err
 	}
 
+	// Query tool parts from part.data
+	toolQuery := `
+		SELECT data
+		FROM part
+		WHERE message_id = ?
+			AND JSON_EXTRACT(data, '$.type') = 'tool'
+		ORDER BY id
+	`
+
+	toolRows, err := db.QueryContext(ctx, toolQuery, id)
+	if err != nil {
+		return nil, err
+	}
+	defer toolRows.Close()
+
+	var toolParts []ToolPart
+
+	for toolRows.Next() {
+		var dataJSON string
+		if err := toolRows.Scan(&dataJSON); err != nil {
+			return nil, err
+		}
+
+		toolPart, err := parseToolPart(dataJSON)
+		if err != nil {
+			continue
+		}
+
+		toolParts = append(toolParts, toolPart)
+	}
+
+	if err := toolRows.Err(); err != nil {
+		return nil, err
+	}
+
 	// Ensure arrays are not nil for JSON serialization
 	if textParts == nil {
 		textParts = []MessagePart{}
@@ -340,12 +376,16 @@ func MessageByID(ctx context.Context, s *store.Store, id string) (*MessageDetail
 	if reasoningParts == nil {
 		reasoningParts = []MessagePart{}
 	}
+	if toolParts == nil {
+		toolParts = []ToolPart{}
+	}
 
 	return &MessageDetail{
 		MessageEntry: entry,
 		Content: MessageContent{
 			TextParts:      textParts,
 			ReasoningParts: reasoningParts,
+			ToolParts:      toolParts,
 		},
 	}, nil
 }
@@ -355,6 +395,70 @@ func truncateContent(content string, maxChars int) string {
 	if len(content) <= maxChars {
 		return content
 	}
-	// Truncate and add ellipsis indicator
 	return content[:maxChars] + "..."
+}
+
+const toolContentMaxChars = 2000
+
+func parseToolPart(dataJSON string) (ToolPart, error) {
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(dataJSON), &raw); err != nil {
+		return ToolPart{}, err
+	}
+
+	callID, _ := raw["callID"].(string)
+	tool, _ := raw["tool"].(string)
+
+	state := ToolState{}
+	if stateRaw, ok := raw["state"].(map[string]interface{}); ok {
+		state.Status, _ = stateRaw["status"].(string)
+
+		if input, ok := stateRaw["input"].(map[string]interface{}); ok {
+			state.Input = truncateToolInput(input)
+		}
+
+		if output, ok := stateRaw["output"].(string); ok {
+			state.Output = truncateContent(output, toolContentMaxChars)
+		}
+
+		state.Title, _ = stateRaw["title"].(string)
+		state.Error, _ = stateRaw["error"].(string)
+
+		if meta, ok := stateRaw["metadata"].(map[string]interface{}); ok {
+			state.Metadata = meta
+		}
+
+		if timeRaw, ok := stateRaw["time"].(map[string]interface{}); ok {
+			t := &ToolTime{}
+			if start, ok := timeRaw["start"].(float64); ok {
+				t.Start = int64(start)
+			}
+			if end, ok := timeRaw["end"].(float64); ok {
+				t.End = int64(end)
+			}
+			if compacted, ok := timeRaw["compacted"].(float64); ok {
+				t.Compacted = int64(compacted)
+			}
+			state.Time = t
+		}
+	}
+
+	return ToolPart{
+		Type:   "tool",
+		CallID: callID,
+		Tool:   tool,
+		State:  state,
+	}, nil
+}
+
+func truncateToolInput(input map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{})
+	for k, v := range input {
+		if str, ok := v.(string); ok && len(str) > toolContentMaxChars {
+			result[k] = truncateContent(str, toolContentMaxChars)
+		} else {
+			result[k] = v
+		}
+	}
+	return result
 }

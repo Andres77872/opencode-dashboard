@@ -763,3 +763,220 @@ func TestTruncateContent(t *testing.T) {
 		})
 	}
 }
+
+// TestMessageByIDWithToolParts tests message detail with tool parts.
+func TestMessageByIDWithToolParts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	now := time.Now().UTC()
+	b := fixture.NewBuilder()
+
+	b.AddProject(fixture.NewProject("proj-001", "/test").Name("test-project"))
+
+	s1 := fixture.NewSession("ses-001", "proj-001").
+		Title("Test session").
+		CreatedAt(now).
+		UpdatedAt(now)
+
+	msg1 := fixture.NewMessage("msg-001", "ses-001", "assistant").
+		CreatedAt(now).
+		Cost(0.12).
+		ModelID("claude-3-sonnet").
+		ProviderID("anthropic").
+		Tokens(2000, 800, 300)
+	s1.AddMessage(msg1)
+
+	b.AddSession(s1)
+
+	// Add completed tool part
+	toolData1 := `{"type":"tool","callID":"call-001","tool":"read_file","state":{"status":"completed","input":{"path":"/src/main.go"},"output":"package main\n\nfunc main() {}","title":"Read main.go","time":{"start":1000,"end":2000}}}`
+	b.AddPart(fixture.NewPart("part-001", "ses-001", toolData1).MessageID("msg-001"))
+
+	// Add pending tool part
+	toolData2 := `{"type":"tool","callID":"call-002","tool":"bash","state":{"status":"pending","input":{"command":"ls -la"}}}`
+	b.AddPart(fixture.NewPart("part-002", "ses-001", toolData2).MessageID("msg-001"))
+
+	// Add error tool part
+	toolData3 := `{"type":"tool","callID":"call-003","tool":"write_file","state":{"status":"error","input":{"path":"/src/test.go"},"error":"file not found"}}`
+	b.AddPart(fixture.NewPart("part-003", "ses-001", toolData3).MessageID("msg-001"))
+
+	dbPath, err := b.Build(ctx)
+	if err != nil {
+		t.Fatalf("Failed to create custom fixture: %v", err)
+	}
+	defer os.RemoveAll(filepath.Dir(dbPath))
+
+	st, err := store.Connect(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Failed to connect to fixture: %v", err)
+	}
+	defer st.Close()
+
+	detail, err := MessageByID(ctx, st, "msg-001")
+	if err != nil {
+		t.Fatalf("MessageByID(msg-001) failed: %v", err)
+	}
+
+	if detail == nil {
+		t.Fatal("MessageByID returned nil, want message detail")
+	}
+
+	if len(detail.Content.ToolParts) != 3 {
+		t.Errorf("MessageDetail.Content.ToolParts has %d parts, want 3", len(detail.Content.ToolParts))
+	}
+
+	for i, part := range detail.Content.ToolParts {
+		if part.Type != "tool" {
+			t.Errorf("ToolPart[%d].Type = %s, want 'tool'", i, part.Type)
+		}
+		if part.CallID == "" {
+			t.Errorf("ToolPart[%d].CallID is empty", i)
+		}
+		if part.Tool == "" {
+			t.Errorf("ToolPart[%d].Tool is empty", i)
+		}
+		if part.State.Status == "" {
+			t.Errorf("ToolPart[%d].State.Status is empty", i)
+		}
+	}
+
+	completed := detail.Content.ToolParts[0]
+	if completed.State.Status != "completed" {
+		t.Errorf("First tool part status = %s, want 'completed'", completed.State.Status)
+	}
+	if completed.State.Output == "" {
+		t.Errorf("Completed tool part has empty output")
+	}
+	if completed.State.Title == "" {
+		t.Errorf("Completed tool part has empty title")
+	}
+
+	pending := detail.Content.ToolParts[1]
+	if pending.State.Status != "pending" {
+		t.Errorf("Second tool part status = %s, want 'pending'", pending.State.Status)
+	}
+
+	errorTool := detail.Content.ToolParts[2]
+	if errorTool.State.Status != "error" {
+		t.Errorf("Third tool part status = %s, want 'error'", errorTool.State.Status)
+	}
+	if errorTool.State.Error == "" {
+		t.Errorf("Error tool part has empty error message")
+	}
+}
+
+// TestMessageByIDWithAllPartTypes tests message with text, reasoning, and tool parts.
+func TestMessageByIDWithAllPartTypes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	now := time.Now().UTC()
+	b := fixture.NewBuilder()
+
+	b.AddProject(fixture.NewProject("proj-001", "/test").Name("test-project"))
+
+	s1 := fixture.NewSession("ses-001", "proj-001").
+		Title("Test session").
+		CreatedAt(now).
+		UpdatedAt(now)
+
+	msg1 := fixture.NewMessage("msg-001", "ses-001", "assistant").
+		CreatedAt(now).
+		Cost(0.15).
+		ModelID("claude-3-sonnet").
+		ProviderID("anthropic").
+		Tokens(2500, 900, 400)
+	s1.AddMessage(msg1)
+
+	b.AddSession(s1)
+
+	b.AddPart(fixture.NewPart("part-001", "ses-001", `{"type":"reasoning","text":"Analyzing..."}`).MessageID("msg-001"))
+	b.AddPart(fixture.NewPart("part-002", "ses-001", `{"type":"tool","callID":"call-001","tool":"bash","state":{"status":"completed","input":{"cmd":"echo test"},"output":"test","title":"Run command"}}`).MessageID("msg-001"))
+	b.AddPart(fixture.NewPart("part-003", "ses-001", `{"type":"text","text":"Here's the result."}`).MessageID("msg-001"))
+
+	dbPath, err := b.Build(ctx)
+	if err != nil {
+		t.Fatalf("Failed to create custom fixture: %v", err)
+	}
+	defer os.RemoveAll(filepath.Dir(dbPath))
+
+	st, err := store.Connect(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Failed to connect to fixture: %v", err)
+	}
+	defer st.Close()
+
+	detail, err := MessageByID(ctx, st, "msg-001")
+	if err != nil {
+		t.Fatalf("MessageByID(msg-001) failed: %v", err)
+	}
+
+	if len(detail.Content.TextParts) != 1 {
+		t.Errorf("TextParts count = %d, want 1", len(detail.Content.TextParts))
+	}
+	if len(detail.Content.ReasoningParts) != 1 {
+		t.Errorf("ReasoningParts count = %d, want 1", len(detail.Content.ReasoningParts))
+	}
+	if len(detail.Content.ToolParts) != 1 {
+		t.Errorf("ToolParts count = %d, want 1", len(detail.Content.ToolParts))
+	}
+}
+
+// TestParseToolPart tests parsing tool part JSON.
+func TestParseToolPart(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		wantTool string
+		wantStat string
+	}{
+		{
+			name:     "completed tool",
+			json:     `{"type":"tool","callID":"call-1","tool":"read","state":{"status":"completed","input":{"path":"/a.go"},"output":"code","title":"Read"}}`,
+			wantTool: "read",
+			wantStat: "completed",
+		},
+		{
+			name:     "pending tool",
+			json:     `{"type":"tool","callID":"call-2","tool":"bash","state":{"status":"pending","input":{"cmd":"ls"}}}`,
+			wantTool: "bash",
+			wantStat: "pending",
+		},
+		{
+			name:     "error tool",
+			json:     `{"type":"tool","callID":"call-3","tool":"write","state":{"status":"error","input":{"path":"/b.go"},"error":"not found"}}`,
+			wantTool: "write",
+			wantStat: "error",
+		},
+		{
+			name:     "running tool",
+			json:     `{"type":"tool","callID":"call-4","tool":"search","state":{"status":"running","input":{"q":"test"},"title":"Searching"}}`,
+			wantTool: "search",
+			wantStat: "running",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			part, err := parseToolPart(tt.json)
+			if err != nil {
+				t.Fatalf("parseToolPart() error: %v", err)
+			}
+			if part.Tool != tt.wantTool {
+				t.Errorf("Tool = %s, want %s", part.Tool, tt.wantTool)
+			}
+			if part.State.Status != tt.wantStat {
+				t.Errorf("Status = %s, want %s", part.State.Status, tt.wantStat)
+			}
+		})
+	}
+}

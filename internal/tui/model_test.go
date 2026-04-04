@@ -1365,6 +1365,76 @@ func TestSessionDetailHeightConstraint(t *testing.T) {
 	// Should not panic or fail
 }
 
+func TestMessageDetailOverlayShowsToolParts(t *testing.T) {
+	s := newStyles()
+	state := messageDetailOverlayState{
+		detail: &stats.MessageDetail{
+			MessageEntry: stats.MessageEntry{
+				ID:           "msg-1",
+				SessionID:    "ses-1",
+				SessionTitle: "Tooling session",
+				Role:         "assistant",
+				TimeCreated:  time.Now(),
+				Cost:         0.12,
+				ModelID:      "claude-3-sonnet",
+				ProviderID:   "anthropic",
+				Tokens: &stats.TokenStats{
+					Input:     100,
+					Output:    50,
+					Reasoning: 20,
+				},
+			},
+			Content: stats.MessageContent{
+				ToolParts: []stats.ToolPart{
+					{
+						Type:   "tool",
+						CallID: "call-1",
+						Tool:   "bash",
+						State: stats.ToolState{
+							Status: "completed",
+							Title:  "Run command",
+							Input: map[string]interface{}{
+								"command": "ls -la",
+							},
+							Output: "file-a\nfile-b",
+						},
+					},
+					{
+						Type:   "tool",
+						CallID: "call-2",
+						Tool:   "write",
+						State: stats.ToolState{
+							Status: "error",
+							Input: map[string]interface{}{
+								"path": "/tmp/out.txt",
+							},
+							Error: "permission denied",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := renderMessageDetailOverlayContent(s, 90, 36, state)
+
+	if !strings.Contains(result, "Tool activity") {
+		t.Error("message detail overlay should show Tool activity section")
+	}
+	if !strings.Contains(result, "bash [COMPLETED]") {
+		t.Error("message detail overlay should show completed tool header")
+	}
+	if !strings.Contains(result, "in: command=ls -la") {
+		t.Error("message detail overlay should summarize tool input")
+	}
+	if !strings.Contains(result, "out: file-a") {
+		t.Error("message detail overlay should show tool output summary")
+	}
+	if !strings.Contains(result, "err: permission denied") {
+		t.Error("message detail overlay should show tool error summary")
+	}
+}
+
 // Leader Summary Helper Tests
 
 func TestRenderLeaderSection(t *testing.T) {

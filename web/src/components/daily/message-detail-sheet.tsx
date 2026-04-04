@@ -14,7 +14,7 @@ import {
 import { Skeleton } from '../ui/skeleton'
 import { getMessageDetail } from '../../lib/api'
 import { formatCurrency, formatDateTime, formatInteger, formatTokenCount } from '../../lib/format'
-import type { MessageDetail, MessagePart, TokenStats } from '../../types/api'
+import type { MessageDetail, MessagePart, TokenStats, ToolPart, ToolState } from '../../types/api'
 
 function getRoleTone(role: string) {
   switch (role) {
@@ -47,6 +47,136 @@ function getTokenTotal(tokens?: TokenStats) {
   }
 
   return tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
+}
+
+function getToolStatusTone(status?: string) {
+  switch (status) {
+    case 'completed':
+      return 'success' as const
+    case 'error':
+      return 'danger' as const
+    case 'running':
+      return 'accent' as const
+    case 'pending':
+      return 'warning' as const
+    default:
+      return 'default' as const
+  }
+}
+
+function truncateToolValue(value: string, maxChars = 240) {
+  if (value.length <= maxChars) {
+    return value
+  }
+
+  return `${value.slice(0, maxChars)}…`
+}
+
+function stringifyToolValue(value: unknown) {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+function summarizeToolInput(input: ToolState['input']) {
+  if (!input || Object.keys(input).length === 0) {
+    return 'No input recorded'
+  }
+
+  const summary = Object.entries(input)
+    .slice(0, 4)
+    .map(([key, value]) => `${key}=${truncateToolValue(stringifyToolValue(value), 48)}`)
+    .join(' • ')
+
+  const remaining = Object.keys(input).length - 4
+  if (remaining > 0) {
+    return `${summary} • +${remaining} more`
+  }
+
+  return summary
+}
+
+function getToolPrimarySummary(state: ToolState) {
+  if (state.status === 'error' && state.error) {
+    return truncateToolValue(state.error)
+  }
+
+  if (state.status === 'completed' && state.output) {
+    return truncateToolValue(state.output)
+  }
+
+  if (state.title) {
+    return truncateToolValue(state.title)
+  }
+
+  return null
+}
+
+function ToolSection({ parts }: { parts: ToolPart[] }) {
+  return (
+    <Card className="border-warning/30 bg-warning/[0.04]">
+      <CardHeader className="gap-3 md:flex-row md:items-end md:justify-between">
+        <div className="space-y-1.5">
+          <CardDescription>Structured tool execution trace</CardDescription>
+          <CardTitle>Tool activity</CardTitle>
+        </div>
+
+        <Badge tone="warning">{formatInteger(parts.length)} parts</Badge>
+      </CardHeader>
+
+      <CardContent>
+        {parts.length === 0 ? (
+          <div className="rounded-2xl border border-border/60 bg-background/35 px-4 py-5 text-sm text-muted-foreground">
+            No tool activity was returned for this request.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {parts.map((part, index) => {
+              const primarySummary = getToolPrimarySummary(part.state)
+
+              return (
+                <div key={part.call_id || `${part.tool}-${index}`} className="rounded-2xl border border-border/60 bg-background/55 px-4 py-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-sm text-foreground">{part.tool || 'unknown-tool'}</span>
+                        <Badge tone={getToolStatusTone(part.state.status)}>{part.state.status || 'unknown'}</Badge>
+                        {part.state.title ? <span className="text-sm text-muted-foreground">{part.state.title}</span> : null}
+                      </div>
+
+                      {part.call_id ? <div className="font-mono text-[11px] text-muted-foreground">call {part.call_id}</div> : null}
+                    </div>
+                  </div>
+
+                  <div className="mt-3 space-y-2 text-sm leading-6">
+                    <div className="rounded-xl border border-border/50 bg-background/45 px-3 py-2">
+                      <span className="mr-2 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Input</span>
+                      <span className="break-words font-mono text-xs text-foreground">{summarizeToolInput(part.state.input)}</span>
+                    </div>
+
+                    {primarySummary ? (
+                      <div className="rounded-xl border border-border/50 bg-background/45 px-3 py-2 whitespace-pre-wrap break-words">
+                        <span className="mr-2 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                          {part.state.status === 'error' ? 'Error' : part.state.status === 'completed' && part.state.output ? 'Output' : 'Summary'}
+                        </span>
+                        <span className={part.state.status === 'error' ? 'text-danger' : 'text-foreground'}>{primarySummary}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
 }
 
 function DetailMetric({ label, value, hint }: { label: string; value: string; hint: string }) {
@@ -191,13 +321,15 @@ export function MessageDetailSheet({
   const detailStats = useMemo(() => {
     const textCount = detail?.content.text_parts.length ?? 0
     const reasoningCount = detail?.content.reasoning_parts.length ?? 0
+    const toolCount = detail?.content.tool_parts?.length ?? 0
     const tokenTotal = getTokenTotal(detail?.tokens)
 
     return {
       textCount,
       reasoningCount,
+      toolCount,
       tokenTotal,
-      hasContent: textCount + reasoningCount > 0,
+      hasContent: textCount + reasoningCount + toolCount > 0,
     }
   }, [detail])
 
@@ -225,28 +357,28 @@ export function MessageDetailSheet({
                 <h3 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
                   {detail ? 'Request detail' : 'Loading request detail'}
                 </h3>
-                <SheetDescription className="sr-only">Detailed message drawer with separated text and reasoning preview.</SheetDescription>
+                <SheetDescription className="sr-only">Detailed message drawer with separated text, reasoning, and tool activity preview.</SheetDescription>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                 {detail ? (
                   <>
-                    <span className="font-mono text-foreground">{formatDateTime(detail.time_created)}</span>
-                    <span aria-hidden="true">•</span>
-                    <span>{getModelLabel(detail)}</span>
-                    <span aria-hidden="true">•</span>
-                    <span>{detailStats.textCount} text · {detailStats.reasoningCount} reasoning</span>
-                  </>
-                ) : (
-                  <span>Fetching verbose request content…</span>
-                )}
-              </div>
+                     <span className="font-mono text-foreground">{formatDateTime(detail.time_created)}</span>
+                     <span aria-hidden="true">•</span>
+                     <span>{getModelLabel(detail)}</span>
+                     <span aria-hidden="true">•</span>
+                     <span>{detailStats.textCount} text · {detailStats.reasoningCount} reasoning · {detailStats.toolCount} tools</span>
+                   </>
+                 ) : (
+                   <span>Fetching verbose request content…</span>
+                 )}
+               </div>
 
-              <div className="rounded-xl border border-border/70 bg-panel/40 px-3 py-2 text-sm text-muted-foreground">
-                Text and reasoning stay deliberately separated here so the table can remain dense instead of turning into a messy transcript dump.
-              </div>
-            </div>
-          </div>
+               <div className="rounded-xl border border-border/70 bg-panel/40 px-3 py-2 text-sm text-muted-foreground">
+                 Text, reasoning, and tool activity stay deliberately separated here so the table can remain dense instead of turning into a messy transcript dump.
+               </div>
+             </div>
+           </div>
         </SheetHeader>
 
         <div className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-5 sm:px-6">
@@ -277,8 +409,8 @@ export function MessageDetailSheet({
                 />
                 <DetailMetric
                   label="Content blocks"
-                  value={formatInteger(detailStats.textCount + detailStats.reasoningCount)}
-                  hint={`${formatInteger(detailStats.textCount)} text parts · ${formatInteger(detailStats.reasoningCount)} reasoning parts`}
+                  value={formatInteger(detailStats.textCount + detailStats.reasoningCount + detailStats.toolCount)}
+                  hint={`${formatInteger(detailStats.textCount)} text parts · ${formatInteger(detailStats.reasoningCount)} reasoning parts · ${formatInteger(detailStats.toolCount)} tool parts`}
                 />
                 <DetailMetric
                   label="Recorded at"
@@ -306,6 +438,8 @@ export function MessageDetailSheet({
                     parts={detail.content.reasoning_parts}
                     toneClassName="border-accent/30 bg-accent/[0.05]"
                   />
+
+                  <ToolSection parts={detail.content.tool_parts ?? []} />
                 </div>
 
                 <div className="order-last min-w-0 space-y-4 2xl:order-none 2xl:pt-1">

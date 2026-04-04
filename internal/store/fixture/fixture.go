@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS message (
 	id TEXT PRIMARY KEY,
 	session_id TEXT NOT NULL,
 	time_created TEXT NOT NULL,
+	time_updated TEXT NOT NULL,
 	data TEXT NOT NULL,
 	FOREIGN KEY (session_id) REFERENCES session(id)
 );
@@ -60,14 +61,10 @@ CREATE TABLE IF NOT EXISTS workspace (
 CREATE TABLE IF NOT EXISTS part (
 	id TEXT PRIMARY KEY,
 	session_id TEXT NOT NULL,
-	message_id TEXT,
-	tool TEXT,
-	input TEXT,
-	output TEXT,
-	data TEXT,
+	message_id TEXT NOT NULL,
+	data TEXT NOT NULL,
 	time_created TEXT NOT NULL,
 	time_updated TEXT NOT NULL,
-	metadata TEXT,
 	FOREIGN KEY (session_id) REFERENCES session(id),
 	FOREIGN KEY (message_id) REFERENCES message(id)
 );
@@ -361,13 +358,13 @@ func insertSession(ctx context.Context, db *sql.DB, s *SessionBuilder) error {
 }
 
 func insertMessage(ctx context.Context, db *sql.DB, m *MessageBuilder) error {
-	// Build JSON data for message (OpenCode stores message metadata in data column)
 	data := buildMessageJSON(m)
 
-	query := `INSERT OR REPLACE INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)`
+	query := `INSERT OR REPLACE INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`
 	_, err := db.ExecContext(ctx, query,
 		m.id,
 		m.sessionID,
+		m.createdAt.UnixMilli(),
 		m.createdAt.UnixMilli(),
 		data,
 	)
@@ -383,12 +380,10 @@ type PartBuilder struct {
 	sessionID string
 	messageID string
 	data      string
-	tool      string
 	createdAt time.Time
 	updatedAt time.Time
 }
 
-// NewPart creates a new part builder with required fields.
 func NewPart(id, sessionID, data string) *PartBuilder {
 	return &PartBuilder{
 		id:        id,
@@ -397,11 +392,6 @@ func NewPart(id, sessionID, data string) *PartBuilder {
 		createdAt: time.Now().UTC(),
 		updatedAt: time.Now().UTC(),
 	}
-}
-
-func (p *PartBuilder) Tool(tool string) *PartBuilder {
-	p.tool = tool
-	return p
 }
 
 func (p *PartBuilder) MessageID(id string) *PartBuilder {
@@ -420,12 +410,11 @@ func (p *PartBuilder) UpdatedAt(t time.Time) *PartBuilder {
 }
 
 func insertPart(ctx context.Context, db *sql.DB, p *PartBuilder) error {
-	query := `INSERT OR REPLACE INTO part (id, session_id, message_id, tool, data, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT OR REPLACE INTO part (id, session_id, message_id, data, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)`
 	_, err := db.ExecContext(ctx, query,
 		p.id,
 		p.sessionID,
 		p.messageID,
-		p.tool,
 		p.data,
 		p.createdAt.UnixMilli(),
 		p.updatedAt.UnixMilli(),
