@@ -20,8 +20,16 @@ func NewHandlers(s *store.Store) *Handlers {
 
 func (h *Handlers) Overview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	result, err := stats.Overview(ctx, h.store)
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "7d"
+	}
+	result, err := stats.Overview(ctx, h.store, period)
 	if err != nil {
+		if strings.Contains(err.Error(), "invalid period") {
+			BadRequest(err.Error()).Write(w)
+			return
+		}
 		InternalError("failed to compute overview").Write(w)
 		return
 	}
@@ -48,8 +56,16 @@ func (h *Handlers) Daily(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) Models(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	result, err := stats.Models(ctx, h.store)
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "7d"
+	}
+	result, err := stats.Models(ctx, h.store, period)
 	if err != nil {
+		if strings.Contains(err.Error(), "invalid period") {
+			BadRequest(err.Error()).Write(w)
+			return
+		}
 		InternalError("failed to compute model stats").Write(w)
 		return
 	}
@@ -58,8 +74,16 @@ func (h *Handlers) Models(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) Tools(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	result, err := stats.Tools(ctx, h.store)
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "7d"
+	}
+	result, err := stats.Tools(ctx, h.store, period)
 	if err != nil {
+		if strings.Contains(err.Error(), "invalid period") {
+			BadRequest(err.Error()).Write(w)
+			return
+		}
 		if err == store.ErrInvalidSchema {
 			InternalError("database schema invalid").Write(w)
 			return
@@ -72,8 +96,16 @@ func (h *Handlers) Tools(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) Projects(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	result, err := stats.Projects(ctx, h.store)
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "7d"
+	}
+	result, err := stats.Projects(ctx, h.store, period)
 	if err != nil {
+		if strings.Contains(err.Error(), "invalid period") {
+			BadRequest(err.Error()).Write(w)
+			return
+		}
 		if err == store.ErrInvalidSchema {
 			InternalError("database schema invalid").Write(w)
 			return
@@ -91,8 +123,21 @@ func (h *Handlers) Sessions(w http.ResponseWriter, r *http.Request) {
 	if limit > 100 {
 		limit = 100
 	}
-	result, err := stats.Sessions(ctx, h.store, page, limit)
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "7d"
+	}
+	result, err := stats.SessionsWithQuery(ctx, h.store, stats.SessionQuery{
+		Page:     page,
+		PageSize: limit,
+		Sort:     stats.SessionSortNewest,
+		Period:   period,
+	})
 	if err != nil {
+		if strings.Contains(err.Error(), "invalid period") {
+			BadRequest(err.Error()).Write(w)
+			return
+		}
 		if err == store.ErrInvalidSchema {
 			InternalError("database schema invalid").Write(w)
 			return

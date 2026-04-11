@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"opencode-dashboard/internal/store"
 )
@@ -18,15 +19,39 @@ type toolPartData struct {
 	} `json:"state"`
 }
 
-func Tools(ctx context.Context, st *store.Store) (ToolStats, error) {
+func Tools(ctx context.Context, st *store.Store, period string) (ToolStats, error) {
 	if !st.IsValidSchema() {
 		return ToolStats{}, store.ErrInvalidSchema
 	}
 
+	days, err := parsePeriod(period)
+	if err != nil {
+		return ToolStats{}, err
+	}
+
+	now := time.Now().UTC()
+	endDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	startDate := endDate
+
+	if days == allHistoricPeriodDays {
+		startDate, err = queryEarliestActivityDate(ctx, st)
+		if err != nil {
+			return ToolStats{}, fmt.Errorf("query earliest activity date: %w", err)
+		}
+		if startDate.IsZero() {
+			startDate = endDate
+		}
+	} else if days > 0 {
+		startDate = endDate.AddDate(0, 0, -days+1)
+	}
+
+	startMs := startDate.UnixMilli()
+	endMs := endDate.AddDate(0, 0, 1).UnixMilli()
+
 	db := st.DB()
 
-	query := `SELECT session_id, data FROM part`
-	rows, err := db.QueryContext(ctx, query)
+	query := `SELECT session_id, data FROM part WHERE time_created >= ? AND time_created < ?`
+	rows, err := db.QueryContext(ctx, query, startMs, endMs)
 	if err != nil {
 		return ToolStats{}, fmt.Errorf("failed to query parts: %w", err)
 	}

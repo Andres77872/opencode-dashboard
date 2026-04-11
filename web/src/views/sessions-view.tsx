@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { PeriodToggle } from '../components/daily/period-toggle'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { MetricCard } from '../components/overview/metric-card'
 import { TokenBreakdownList } from '../components/overview/token-breakdown-card'
@@ -36,6 +38,7 @@ import {
   safeDivide,
 } from '../lib/format'
 import type { SessionDetail, SessionEntry, SessionList, SessionMessage, TokenStats } from '../types/api'
+import { isDailyPeriod, type DailyPeriod } from '../types/api'
 
 const PAGE_SIZE = 12
 
@@ -132,16 +135,50 @@ function DetailFact({ label, value, subtle = false }: { label: string; value: st
 
 export function SessionsView() {
   const { refreshNonce, requestRefresh, setLastUpdatedAt, setRefreshing } = useDashboardContext()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [data, setData] = useState<SessionList | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [page, setPage] = useState(1)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [detail, setDetail] = useState<SessionDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [detailRequestNonce, setDetailRequestNonce] = useState(0)
   const hasLoadedOnceRef = useRef(false)
+
+  const rawPeriod = searchParams.get('period')
+  const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
+
+  // Derive page from URL (single source of truth).
+  const pageFromUrl = parseInt(searchParams.get('page') ?? '1', 10)
+  const page = isNaN(pageFromUrl) || pageFromUrl < 1 ? 1 : pageFromUrl
+
+  // Normalize missing/invalid period to ?period=7d and ensure page has a value on mount.
+  useEffect(() => {
+    const needsNormalization = !isDailyPeriod(rawPeriod) || !searchParams.has('page')
+    if (needsNormalization) {
+      setSearchParams((previous) => {
+        const next = new URLSearchParams(previous)
+        if (!isDailyPeriod(rawPeriod)) {
+          next.set('period', '7d')
+        }
+        if (!next.has('page')) {
+          next.set('page', '1')
+        }
+        return next
+      })
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Helper to update page in URL.
+  const setPage = (updater: number | ((prev: number) => number)) => {
+    const nextPage = typeof updater === 'function' ? updater(page) : updater
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous)
+      next.set('page', String(nextPage))
+      return next
+    })
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -155,7 +192,7 @@ export function SessionsView() {
       }
 
       try {
-        const next = await getSessions(page, PAGE_SIZE, controller.signal)
+        const next = await getSessions(page, PAGE_SIZE, period, controller.signal)
         setData(next)
         hasLoadedOnceRef.current = true
         setLastUpdatedAt(new Date())
@@ -176,7 +213,7 @@ export function SessionsView() {
     void loadSessions()
 
     return () => controller.abort()
-  }, [page, refreshNonce, setLastUpdatedAt, setRefreshing])
+  }, [page, period, refreshNonce, setLastUpdatedAt, setRefreshing])
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -299,6 +336,20 @@ export function SessionsView() {
     requestRefresh()
   }
 
+  const handlePeriodChange = (nextPeriod: DailyPeriod) => {
+    if (nextPeriod === period) {
+      return
+    }
+
+    // Reset page to 1 and update period in a single URL write, preserving all other params (search, filters, etc.).
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous)
+      next.set('period', nextPeriod)
+      next.set('page', '1')
+      return next
+    })
+  }
+
   const handleDetailRetry = () => {
     if (selectedSessionId) {
       setDetailRequestNonce((current) => current + 1)
@@ -316,6 +367,15 @@ export function SessionsView() {
               Dense session browsing from <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions</code>
               {' '}with detail hydration from <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions/:id</code>.
             </p>
+          </div>
+          <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
+            <div className="text-sm text-muted-foreground">
+              Endpoints:{' '}
+              <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions</code>
+              {' '}+{' '}
+              <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions/:id</code>
+            </div>
+            <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
           </div>
         </div>
         <SessionsSkeleton />
@@ -335,11 +395,14 @@ export function SessionsView() {
             </p>
           </div>
 
-          <div className="text-sm text-muted-foreground">
-            Endpoints:{' '}
-            <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions</code>
-            {' '}+{' '}
-            <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions/:id</code>
+          <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
+            <div className="text-sm text-muted-foreground">
+              Endpoints:{' '}
+              <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions?period={period}</code>
+              {' '}+{' '}
+              <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions/:id</code>
+            </div>
+            <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
           </div>
         </div>
 

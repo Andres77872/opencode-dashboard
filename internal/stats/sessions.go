@@ -3,6 +3,7 @@ package stats
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 
@@ -40,15 +41,56 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 	offset := (query.Page - 1) * query.PageSize
 	orderBy := sessionOrderBy(query.Sort)
 
+	// Compute period window if period is specified
+	var startMs, endMs int64
+	var hasPeriod bool
+	if query.Period != "" {
+		days, err := parsePeriod(query.Period)
+		if err != nil {
+			return SessionList{}, err
+		}
+
+		now := time.Now().UTC()
+		endDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		startDate := endDate
+
+		if days == allHistoricPeriodDays {
+			startDate, err = queryEarliestActivityDate(ctx, s)
+			if err != nil {
+				return SessionList{}, fmt.Errorf("query earliest activity date: %w", err)
+			}
+			if startDate.IsZero() {
+				startDate = endDate
+			}
+		} else if days > 0 {
+			startDate = endDate.AddDate(0, 0, -days+1)
+		}
+
+		startMs = startDate.UnixMilli()
+		endMs = endDate.AddDate(0, 0, 1).UnixMilli()
+		hasPeriod = true
+	}
+
 	// Get total count first
-	var total int64
 	countQuery := `
 		SELECT COUNT(*)
 		FROM session s
 		LEFT JOIN project p ON p.id = s.project_id
 		WHERE (? = '' OR LOWER(COALESCE(s.title, '')) LIKE LOWER(?) OR LOWER(COALESCE(p.name, p.worktree, '')) LIKE LOWER(?))
 	`
-	err := db.QueryRowContext(ctx, countQuery, filter, filterLike, filterLike).Scan(&total)
+	countArgs := []interface{}{filter, filterLike, filterLike}
+
+	if hasPeriod {
+		countQuery += ` AND EXISTS (
+			SELECT 1 FROM message m
+			WHERE m.session_id = s.id
+				AND m.time_created >= ? AND m.time_created < ?
+		)`
+		countArgs = append(countArgs, startMs, endMs)
+	}
+
+	var total int64
+	err := db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			total = 0
@@ -78,14 +120,29 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 				COALESCE(JSON_EXTRACT(data, '$.cost'), 0) AS cost
 			FROM message
 			WHERE JSON_EXTRACT(data, '$.role') = 'assistant'
+				AND time_created >= ? AND time_created < ?
 		) m ON m.session_id = s.id
 		WHERE (? = '' OR LOWER(COALESCE(s.title, '')) LIKE LOWER(?) OR LOWER(COALESCE(p.name, p.worktree, '')) LIKE LOWER(?))
+	`
+	listArgs := []interface{}{startMs, endMs, filter, filterLike, filterLike}
+
+	if hasPeriod {
+		listQuery += ` AND EXISTS (
+			SELECT 1 FROM message m2
+			WHERE m2.session_id = s.id
+				AND m2.time_created >= ? AND m2.time_created < ?
+		)`
+		listArgs = append(listArgs, startMs, endMs)
+	}
+
+	listQuery += `
 		GROUP BY s.id
 		ORDER BY ` + orderBy + `
 		LIMIT ? OFFSET ?
 	`
+	listArgs = append(listArgs, query.PageSize, offset)
 
-	rows, err := db.QueryContext(ctx, listQuery, filter, filterLike, filterLike, query.PageSize, offset)
+	rows, err := db.QueryContext(ctx, listQuery, listArgs...)
 	if err != nil {
 		return SessionList{}, err
 	}

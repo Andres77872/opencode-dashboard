@@ -116,6 +116,7 @@ type SessionQuery struct {
 	PageSize int
 	Filter   string
 	Sort     SessionSortMode
+	Period   string // "1d", "7d", "30d", "1y", "all" — filters by message activity time
 }
 
 type MessageSortField string

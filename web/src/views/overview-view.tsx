@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { PeriodToggle } from '../components/daily/period-toggle'
 import { Alert } from '../components/ui/alert'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -10,28 +12,54 @@ import { useDashboardContext } from '../components/layout/dashboard-context'
 import { getOverview } from '../lib/api'
 import { formatCompactInteger, formatCurrency, formatInteger, safeDivide } from '../lib/format'
 import type { OverviewStats } from '../types/api'
+import { isDailyPeriod, type DailyPeriod } from '../types/api'
 
 export function OverviewView() {
   const { refreshNonce, requestRefresh, setLastUpdatedAt, setRefreshing } = useDashboardContext()
-  const [data, setData] = useState<OverviewStats | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [dataByPeriod, setDataByPeriod] = useState<Partial<Record<DailyPeriod, OverviewStats>>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const dataByPeriodRef = useRef<Partial<Record<DailyPeriod, OverviewStats>>>({})
   const hasLoadedOnceRef = useRef(false)
 
+  const rawPeriod = searchParams.get('period')
+  const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
+  const dataForPeriod = dataByPeriod[period] ?? null
+
+  // Normalize missing/invalid period to ?period=7d on mount (preserves other params).
   useEffect(() => {
+    if (!isDailyPeriod(rawPeriod)) {
+      setSearchParams((previous) => {
+        const next = new URLSearchParams(previous)
+        next.set('period', '7d')
+        return next
+      })
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    // Cache short-circuit: if this period was already loaded, skip the fetch.
+    if (dataByPeriodRef.current[period]) {
+      return
+    }
+
     const controller = new AbortController()
 
     async function loadOverview() {
       setRefreshing(true)
       setError(null)
-
-      if (!hasLoadedOnceRef.current) {
-        setLoading(true)
-      }
+      setLoading(true)
 
       try {
-        const next = await getOverview(controller.signal)
-        setData(next)
+        const next = await getOverview(period, controller.signal)
+        const nextDataByPeriod = {
+          ...dataByPeriodRef.current,
+          [period]: next,
+        }
+
+        dataByPeriodRef.current = nextDataByPeriod
+        setDataByPeriod(nextDataByPeriod)
         hasLoadedOnceRef.current = true
         setLastUpdatedAt(new Date())
       } catch (caught) {
@@ -51,39 +79,53 @@ export function OverviewView() {
     void loadOverview()
 
     return () => controller.abort()
-  }, [refreshNonce, setLastUpdatedAt, setRefreshing])
+  }, [period, refreshNonce, setLastUpdatedAt, setRefreshing])
+
+  const handlePeriodChange = (nextPeriod: DailyPeriod) => {
+    if (nextPeriod === period) {
+      return
+    }
+
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous)
+      next.set('period', nextPeriod)
+      return next
+    })
+  }
 
   const efficiency = useMemo(() => {
-    if (!data) {
+    if (!dataForPeriod) {
       return null
     }
 
     return {
-      messagesPerSession: safeDivide(data.messages, data.sessions),
-      costPerMessage: safeDivide(data.cost, data.messages),
+      messagesPerSession: safeDivide(dataForPeriod.messages, dataForPeriod.sessions),
+      costPerMessage: safeDivide(dataForPeriod.cost, dataForPeriod.messages),
       totalTokens:
-        data.tokens.input +
-        data.tokens.output +
-        data.tokens.reasoning +
-        data.tokens.cache.read +
-        data.tokens.cache.write,
+        dataForPeriod.tokens.input +
+        dataForPeriod.tokens.output +
+        dataForPeriod.tokens.reasoning +
+        dataForPeriod.tokens.cache.read +
+        dataForPeriod.tokens.cache.write,
     }
-  }, [data])
+  }, [dataForPeriod])
 
   const handleRetry = () => {
     requestRefresh()
   }
 
-  if (loading && !data) {
+  if (loading && !dataForPeriod) {
     return (
       <section className="space-y-6">
-        <div className="space-y-2">
-          <Badge tone="accent">Live route</Badge>
-          <h2 className="text-2xl font-semibold tracking-tight text-foreground">Overview</h2>
-          <p className="max-w-3xl text-sm text-muted-foreground">
-            Real data from <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/overview</code>
-            , proving the web path end-to-end.
-          </p>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-2">
+            <Badge tone="accent">Live route</Badge>
+            <h2 className="text-2xl font-semibold tracking-tight text-foreground">Overview</h2>
+            <p className="max-w-3xl text-sm text-muted-foreground">
+              Real data from <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/overview</code>
+              , proving the web path end-to-end.
+            </p>
+          </div>
         </div>
         <OverviewSkeleton />
       </section>
@@ -100,8 +142,11 @@ export function OverviewView() {
             Executive summary first: sessions, messages, spend, active days, and token mix coming from the Go API.
           </p>
         </div>
-        <div className="text-sm text-muted-foreground">
-          Endpoint: <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/overview</code>
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
+          <div className="text-sm text-muted-foreground">
+            Endpoint: <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/overview?period={period}</code>
+          </div>
+          <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
         </div>
       </div>
 
@@ -117,39 +162,39 @@ export function OverviewView() {
         </Alert>
       ) : null}
 
-      {data ? (
+      {dataForPeriod ? (
         <>
           <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
             <MetricCard
               label="Total sessions"
-              value={formatInteger(data.sessions)}
-              hint={`${formatCompactInteger(data.sessions)} recorded sessions`}
+              value={formatInteger(dataForPeriod.sessions)}
+              hint={`${formatCompactInteger(dataForPeriod.sessions)} recorded sessions`}
             />
             <MetricCard
               label="Total messages"
-              value={formatInteger(data.messages)}
-              hint={`${formatCompactInteger(data.messages)} messages captured`}
+              value={formatInteger(dataForPeriod.messages)}
+              hint={`${formatCompactInteger(dataForPeriod.messages)} messages captured`}
             />
             <MetricCard
               label="Total cost"
-              value={formatCurrency(data.cost)}
-              hint={`${formatCurrency(data.cost_per_day)} average spend per active day`}
+              value={formatCurrency(dataForPeriod.cost)}
+              hint={`${formatCurrency(dataForPeriod.cost_per_day)} average spend per active day`}
             />
             <MetricCard
               label="Active days"
-              value={formatInteger(data.days)}
-              hint={data.days === 0 ? 'No active days recorded yet' : 'Distinct days with session activity'}
+              value={formatInteger(dataForPeriod.days)}
+              hint={dataForPeriod.days === 0 ? 'No active days recorded yet' : 'Distinct days with session activity'}
             />
           </div>
 
-          {data.sessions === 0 ? (
+          {dataForPeriod.sessions === 0 ? (
             <Alert tone="info">
               No sessions have been recorded yet. This is normal on a fresh OpenCode setup — once data exists, the cards above will fill automatically.
             </Alert>
           ) : null}
 
           <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr_1fr]">
-            <TokenBreakdownCard tokens={data.tokens} />
+            <TokenBreakdownCard tokens={dataForPeriod.tokens} />
 
             <Card>
               <CardHeader>
@@ -159,7 +204,7 @@ export function OverviewView() {
               <CardContent className="space-y-4 text-sm">
                 <div className="flex items-center justify-between gap-3 rounded-xl bg-panel/75 px-3 py-3">
                   <span className="text-muted-foreground">Cost / day</span>
-                  <span className="font-mono text-foreground">{formatCurrency(data.cost_per_day)}</span>
+                  <span className="font-mono text-foreground">{formatCurrency(dataForPeriod.cost_per_day)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3 rounded-xl bg-panel/75 px-3 py-3">
                   <span className="text-muted-foreground">Messages / session</span>

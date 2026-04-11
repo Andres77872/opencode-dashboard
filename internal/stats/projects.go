@@ -3,16 +3,42 @@ package stats
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"opencode-dashboard/internal/store"
 )
 
-func Projects(ctx context.Context, s *store.Store) (ProjectStats, error) {
+func Projects(ctx context.Context, s *store.Store, period string) (ProjectStats, error) {
 	if !s.IsValidSchema() {
 		return ProjectStats{}, store.ErrInvalidSchema
 	}
+
+	days, err := parsePeriod(period)
+	if err != nil {
+		return ProjectStats{}, err
+	}
+
+	now := time.Now().UTC()
+	endDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	startDate := endDate
+
+	if days == allHistoricPeriodDays {
+		startDate, err = queryEarliestActivityDate(ctx, s)
+		if err != nil {
+			return ProjectStats{}, fmt.Errorf("query earliest activity date: %w", err)
+		}
+		if startDate.IsZero() {
+			startDate = endDate
+		}
+	} else if days > 0 {
+		startDate = endDate.AddDate(0, 0, -days+1)
+	}
+
+	startMs := startDate.UnixMilli()
+	endMs := endDate.AddDate(0, 0, 1).UnixMilli()
 
 	db := s.DB()
 
@@ -21,7 +47,7 @@ func Projects(ctx context.Context, s *store.Store) (ProjectStats, error) {
 			p.id,
 			p.worktree,
 			p.name,
-			COUNT(DISTINCT s.id) AS session_count,
+			COUNT(DISTINCT CASE WHEN m.id IS NOT NULL THEN s.id END) AS session_count,
 			COUNT(m.id) AS message_count,
 			COALESCE(SUM(m.cost), 0) AS total_cost,
 			COALESCE(SUM(m.input_tokens), 0) AS total_input,
@@ -43,12 +69,13 @@ func Projects(ctx context.Context, s *store.Store) (ProjectStats, error) {
 				COALESCE(JSON_EXTRACT(data, '$.tokens.cache.write'), 0) AS cache_write
 			FROM message
 			WHERE JSON_EXTRACT(data, '$.role') = 'assistant'
+				AND time_created >= ? AND time_created < ?
 		) m ON m.session_id = s.id
 		GROUP BY p.id
 		ORDER BY total_cost DESC
 	`
 
-	rows, err := db.QueryContext(ctx, query)
+	rows, err := db.QueryContext(ctx, query, startMs, endMs)
 	if err != nil {
 		return ProjectStats{}, err
 	}

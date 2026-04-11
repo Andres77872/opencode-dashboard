@@ -3,12 +3,38 @@ package stats
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sort"
+	"time"
 
 	"opencode-dashboard/internal/store"
 )
 
-func Models(ctx context.Context, s *store.Store) (ModelStats, error) {
+func Models(ctx context.Context, s *store.Store, period string) (ModelStats, error) {
+	days, err := parsePeriod(period)
+	if err != nil {
+		return ModelStats{}, err
+	}
+
+	now := time.Now().UTC()
+	endDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	startDate := endDate
+
+	if days == allHistoricPeriodDays {
+		startDate, err = queryEarliestActivityDate(ctx, s)
+		if err != nil {
+			return ModelStats{}, fmt.Errorf("query earliest activity date: %w", err)
+		}
+		if startDate.IsZero() {
+			startDate = endDate
+		}
+	} else if days > 0 {
+		startDate = endDate.AddDate(0, 0, -days+1)
+	}
+
+	startMs := startDate.UnixMilli()
+	endMs := endDate.AddDate(0, 0, 1).UnixMilli()
+
 	query := `
 		SELECT
 			json_extract(data, '$.modelID') as model_id,
@@ -24,10 +50,11 @@ func Models(ctx context.Context, s *store.Store) (ModelStats, error) {
 		FROM message
 		WHERE json_extract(data, '$.role') = 'assistant'
 			AND json_extract(data, '$.modelID') IS NOT NULL
+			AND time_created >= ? AND time_created < ?
 		GROUP BY model_id, provider_id
 	`
 
-	rows, err := s.DB().QueryContext(ctx, query)
+	rows, err := s.DB().QueryContext(ctx, query, startMs, endMs)
 	if err != nil {
 		return ModelStats{}, err
 	}

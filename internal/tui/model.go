@@ -55,13 +55,17 @@ const (
 )
 
 type dashboardData struct {
-	Overview      stats.OverviewStats
-	DailyByPeriod map[string]stats.DailyStats
-	Models        stats.ModelStats
-	Tools         stats.ToolStats
-	Projects      stats.ProjectStats
-	Sessions      stats.SessionList
-	Config        stats.ConfigView
+	Overview         stats.OverviewStats
+	DailyByPeriod    map[string]stats.DailyStats
+	OverviewByPeriod map[string]stats.OverviewStats
+	ToolsByPeriod    map[string]stats.ToolStats
+	ProjectsByPeriod map[string]stats.ProjectStats
+	Models           stats.ModelStats
+	ModelsByPeriod   map[string]stats.ModelStats
+	Tools            stats.ToolStats
+	Projects         stats.ProjectStats
+	Sessions         stats.SessionList
+	Config           stats.ConfigView
 }
 
 type filterState struct {
@@ -140,6 +144,30 @@ type dailyPeriodLoadedMsg struct {
 	err    error
 }
 
+type overviewPeriodLoadedMsg struct {
+	period string
+	data   stats.OverviewStats
+	err    error
+}
+
+type toolsPeriodLoadedMsg struct {
+	period string
+	data   stats.ToolStats
+	err    error
+}
+
+type projectsPeriodLoadedMsg struct {
+	period string
+	data   stats.ProjectStats
+	err    error
+}
+
+type modelsPeriodLoadedMsg struct {
+	period string
+	data   stats.ModelStats
+	err    error
+}
+
 type dayMessagesLoadedMsg struct {
 	date string
 	list stats.MessageList
@@ -162,41 +190,51 @@ type model struct {
 	width  int
 	height int
 
-	activeTab     tabID
-	helpVisible   bool
-	dailyPeriod   string
-	dailyLoading  bool
-	dailyMetric   dailyMetric
-	dailyCursor   int
-	dayMessages   dayMessagesOverlayState
-	messageDetail messageDetailOverlayState
-	filterMode    bool
-	loading       bool
-	loaded        bool
-	loadErr       error
-	lastLoaded    time.Time
-	data          dashboardData
-	models        modelTableState
-	tools         toolTableState
-	projects      projectTableState
-	sessions      sessionTableState
-	sessionDetail sessionOverlayState
+	activeTab      tabID
+	helpVisible    bool
+	dailyPeriod    string
+	dailyLoading   bool
+	dailyMetric    dailyMetric
+	dailyCursor    int
+	overviewPeriod string
+	toolsPeriod    string
+	projectsPeriod string
+	sessionsPeriod string
+	modelsPeriod   string
+	dayMessages    dayMessagesOverlayState
+	messageDetail  messageDetailOverlayState
+	filterMode     bool
+	loading        bool
+	loaded         bool
+	loadErr        error
+	lastLoaded     time.Time
+	data           dashboardData
+	models         modelTableState
+	tools          toolTableState
+	projects       projectTableState
+	sessions       sessionTableState
+	sessionDetail  sessionOverlayState
 }
 
 func newModel(st *store.Store, opts Options) *model {
 	return &model{
-		store:       st,
-		opts:        opts,
-		styles:      newStyles(),
-		keys:        defaultKeyMap(),
-		width:       120,
-		height:      36,
-		activeTab:   tabOverview,
-		dailyPeriod: "7d",
-		dailyMetric: dailyMetricCost,
-		loading:     true,
-		models:      modelTableState{sort: modelSortCost},
-		tools:       toolTableState{sort: toolSortRuns},
+		store:          st,
+		opts:           opts,
+		styles:         newStyles(),
+		keys:           defaultKeyMap(),
+		width:          120,
+		height:         36,
+		activeTab:      tabOverview,
+		dailyPeriod:    "7d",
+		dailyMetric:    dailyMetricCost,
+		loading:        true,
+		overviewPeriod: "all",
+		toolsPeriod:    "all",
+		projectsPeriod: "all",
+		sessionsPeriod: "all",
+		modelsPeriod:   "all",
+		models:         modelTableState{sort: modelSortCost},
+		tools:          toolTableState{sort: toolSortRuns},
 		projects: projectTableState{
 			sort: projectSortCost,
 		},
@@ -267,6 +305,58 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.data.DailyByPeriod = make(map[string]stats.DailyStats)
 		}
 		m.data.DailyByPeriod[msg.period] = msg.data
+		return m, nil
+
+	case overviewPeriodLoadedMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.loadErr = msg.err
+			return m, nil
+		}
+		if m.data.OverviewByPeriod == nil {
+			m.data.OverviewByPeriod = make(map[string]stats.OverviewStats)
+		}
+		m.data.OverviewByPeriod[msg.period] = msg.data
+		m.data.Overview = msg.data
+		return m, nil
+
+	case toolsPeriodLoadedMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.loadErr = msg.err
+			return m, nil
+		}
+		if m.data.ToolsByPeriod == nil {
+			m.data.ToolsByPeriod = make(map[string]stats.ToolStats)
+		}
+		m.data.ToolsByPeriod[msg.period] = msg.data
+		m.data.Tools = msg.data
+		return m, nil
+
+	case projectsPeriodLoadedMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.loadErr = msg.err
+			return m, nil
+		}
+		if m.data.ProjectsByPeriod == nil {
+			m.data.ProjectsByPeriod = make(map[string]stats.ProjectStats)
+		}
+		m.data.ProjectsByPeriod[msg.period] = msg.data
+		m.data.Projects = msg.data
+		return m, nil
+
+	case modelsPeriodLoadedMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.loadErr = msg.err
+			return m, nil
+		}
+		if m.data.ModelsByPeriod == nil {
+			m.data.ModelsByPeriod = make(map[string]stats.ModelStats)
+		}
+		m.data.ModelsByPeriod[msg.period] = msg.data
+		m.data.Models = msg.data
 		return m, nil
 
 	case dayMessagesLoadedMsg:
@@ -364,6 +454,8 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.activeTab {
 	case tabDaily:
 		return m.updateDailyKey(msg)
+	case tabOverview:
+		return m.updateOverviewKey(msg)
 	case tabModels:
 		return m.updateModelsKey(msg)
 	case tabTools:
@@ -381,6 +473,19 @@ func (m *model) updateModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	count := len(m.visibleModelEntries())
 
+	if matches(key, m.keys.PrevPage...) {
+		nextPeriod := nextDailyPeriod(m.modelsPeriod)
+		m.modelsPeriod = nextPeriod
+		if _, ok := m.data.ModelsByPeriod[nextPeriod]; !ok {
+			m.loading = true
+			m.models.cursor = 0
+			return m, loadModelsPeriodCmd(m.store, nextPeriod)
+		}
+		m.data.Models = m.data.ModelsByPeriod[nextPeriod]
+		m.models.cursor = 0
+		return m, nil
+	}
+
 	if matches(key, m.keys.Filter...) {
 		m.filterMode = true
 		m.models.filterDraft = m.models.filter
@@ -396,9 +501,41 @@ func (m *model) updateModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m.updateStaticTableCursorKey(key, count, &m.models.cursor)
 }
 
+func (m *model) updateOverviewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+
+	if matches(key, m.keys.PrevPage...) {
+		nextPeriod := nextDailyPeriod(m.overviewPeriod)
+		m.overviewPeriod = nextPeriod
+		if _, ok := m.data.OverviewByPeriod[nextPeriod]; !ok {
+			// Cache miss — load data for new period
+			m.loading = true
+			return m, loadOverviewPeriodCmd(m.store, nextPeriod)
+		}
+		// Cache hit — switch to cached data
+		m.data.Overview = m.data.OverviewByPeriod[nextPeriod]
+		return m, nil
+	}
+
+	return m, nil
+}
+
 func (m *model) updateToolsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	count := len(m.visibleToolEntries())
+
+	if matches(key, m.keys.PrevPage...) {
+		nextPeriod := nextDailyPeriod(m.toolsPeriod)
+		m.toolsPeriod = nextPeriod
+		if _, ok := m.data.ToolsByPeriod[nextPeriod]; !ok {
+			m.loading = true
+			m.tools.cursor = 0
+			return m, loadToolsPeriodCmd(m.store, nextPeriod)
+		}
+		m.data.Tools = m.data.ToolsByPeriod[nextPeriod]
+		m.tools.cursor = 0
+		return m, nil
+	}
 
 	if matches(key, m.keys.Filter...) {
 		m.filterMode = true
@@ -418,6 +555,19 @@ func (m *model) updateToolsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *model) updateProjectsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	count := len(m.visibleProjectEntries())
+
+	if matches(key, m.keys.PrevPage...) {
+		nextPeriod := nextDailyPeriod(m.projectsPeriod)
+		m.projectsPeriod = nextPeriod
+		if _, ok := m.data.ProjectsByPeriod[nextPeriod]; !ok {
+			m.loading = true
+			m.projects.cursor = 0
+			return m, loadProjectsPeriodCmd(m.store, nextPeriod)
+		}
+		m.data.Projects = m.data.ProjectsByPeriod[nextPeriod]
+		m.projects.cursor = 0
+		return m, nil
+	}
 
 	if matches(key, m.keys.Filter...) {
 		m.filterMode = true
@@ -466,6 +616,15 @@ func (m *model) updateSessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	if matches(key, m.keys.Sort...) {
 		m.sessions.sort = nextSessionSort(m.sessions.sort)
+		m.sessions.page = 1
+		m.sessions.cursor = 0
+		m.loading = true
+		return m, loadSessionsCmd(m.store, m.currentSessionQuery())
+	}
+
+	// Uppercase P for period cycling (lowercase p is prev page for pagination)
+	if key == "P" {
+		m.sessionsPeriod = nextDailyPeriod(m.sessionsPeriod)
 		m.sessions.page = 1
 		m.sessions.cursor = 0
 		m.loading = true
@@ -843,12 +1002,18 @@ func (m *model) renderHelp(bodyHeight int) string {
 		"  /         filter current table",
 		"  s         cycle table sort",
 		"",
+		m.styles.Text.Render("Overview / Models / Tools / Projects"),
+		"  p         cycles 1d/7d/30d/1y/all",
+		"",
 		m.styles.Text.Render("Daily"),
 		"  j/k       move cursor on bars",
 		"  g/G       jump top/bottom",
 		"  p         cycles 1d/7d/30d/1y/all",
 		"  t         cycles cost/sessions/messages/tokens",
 		"  Enter     open day messages overlay",
+		"",
+		m.styles.Text.Render("Sessions"),
+		"  P         cycles period 1d/7d/30d/1y/all",
 		"",
 		m.styles.Text.Render("Day Messages Overlay"),
 		"  j/k       move cursor",
@@ -874,26 +1039,29 @@ func (m *model) renderFooter() string {
 		}
 		contextKeys += fmt.Sprintf(" • p period:%s • t metric:%s", periodLabel, renderDailyMetricLabel(m.dailyMetric))
 	}
+	if m.activeTab == tabOverview {
+		contextKeys += fmt.Sprintf(" • p period:%s", m.overviewPeriod)
+	}
 	if m.activeTab == tabModels {
-		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s", renderModelSortLabel(m.models.sort))
+		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s • p period:%s", renderModelSortLabel(m.models.sort), m.modelsPeriod)
 		if m.models.filter != "" {
 			contextKeys += " • filter:" + truncateWithEllipsis(m.models.filter, 18)
 		}
 	}
 	if m.activeTab == tabTools {
-		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s", renderToolSortLabel(m.tools.sort))
+		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s • p period:%s", renderToolSortLabel(m.tools.sort), m.toolsPeriod)
 		if m.tools.filter != "" {
 			contextKeys += " • filter:" + truncateWithEllipsis(m.tools.filter, 18)
 		}
 	}
 	if m.activeTab == tabProjects {
-		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s", renderProjectSortLabel(m.projects.sort))
+		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s • p period:%s", renderProjectSortLabel(m.projects.sort), m.projectsPeriod)
 		if m.projects.filter != "" {
 			contextKeys += " • filter:" + truncateWithEllipsis(m.projects.filter, 18)
 		}
 	}
 	if m.activeTab == tabSessions {
-		contextKeys += fmt.Sprintf(" • j/k move • n/p pages • / filter • s sort:%s", renderSessionSortLabel(m.sessions.sort))
+		contextKeys += fmt.Sprintf(" • j/k move • n/p pages • / filter • s sort:%s • P period:%s", renderSessionSortLabel(m.sessions.sort), m.sessionsPeriod)
 		if m.sessions.filter != "" {
 			contextKeys += " • filter:" + truncateWithEllipsis(m.sessions.filter, 18)
 		}
@@ -971,6 +1139,7 @@ func (m *model) currentSessionQuery() stats.SessionQuery {
 		PageSize: defaultSessionsPageSize,
 		Filter:   m.sessions.filter,
 		Sort:     m.sessions.sort,
+		Period:   m.sessionsPeriod,
 	}
 }
 
@@ -1024,24 +1193,35 @@ func loadSnapshotCmd(st *store.Store, query stats.SessionQuery) tea.Cmd {
 		var data dashboardData
 		var err error
 
-		if data.Overview, err = stats.Overview(ctx, st); err != nil {
+		if data.Overview, err = stats.Overview(ctx, st, "all"); err != nil {
 			return snapshotLoadedMsg{err: err}
 		}
+		data.OverviewByPeriod = make(map[string]stats.OverviewStats)
+		data.OverviewByPeriod["all"] = data.Overview
+
 		data.DailyByPeriod = make(map[string]stats.DailyStats)
 		if daily7, err := stats.Daily(ctx, st, "7d"); err != nil {
 			return snapshotLoadedMsg{err: err}
 		} else {
 			data.DailyByPeriod["7d"] = daily7
 		}
-		if data.Models, err = stats.Models(ctx, st); err != nil {
+		if data.Models, err = stats.Models(ctx, st, "all"); err != nil {
 			return snapshotLoadedMsg{err: err}
 		}
-		if data.Tools, err = stats.Tools(ctx, st); err != nil {
+		data.ModelsByPeriod = make(map[string]stats.ModelStats)
+		data.ModelsByPeriod["all"] = data.Models
+		if data.Tools, err = stats.Tools(ctx, st, "all"); err != nil {
 			return snapshotLoadedMsg{err: err}
 		}
-		if data.Projects, err = stats.Projects(ctx, st); err != nil {
+		data.ToolsByPeriod = make(map[string]stats.ToolStats)
+		data.ToolsByPeriod["all"] = data.Tools
+
+		if data.Projects, err = stats.Projects(ctx, st, "all"); err != nil {
 			return snapshotLoadedMsg{err: err}
 		}
+		data.ProjectsByPeriod = make(map[string]stats.ProjectStats)
+		data.ProjectsByPeriod["all"] = data.Projects
+
 		if data.Sessions, err = stats.SessionsWithQuery(ctx, st, query); err != nil {
 			return snapshotLoadedMsg{err: err}
 		}
@@ -1080,6 +1260,46 @@ func loadDailyPeriodCmd(st *store.Store, period string) tea.Cmd {
 
 		data, err := stats.Daily(ctx, st, period)
 		return dailyPeriodLoadedMsg{period: period, data: data, err: err}
+	}
+}
+
+func loadOverviewPeriodCmd(st *store.Store, period string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		data, err := stats.Overview(ctx, st, period)
+		return overviewPeriodLoadedMsg{period: period, data: data, err: err}
+	}
+}
+
+func loadToolsPeriodCmd(st *store.Store, period string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		data, err := stats.Tools(ctx, st, period)
+		return toolsPeriodLoadedMsg{period: period, data: data, err: err}
+	}
+}
+
+func loadProjectsPeriodCmd(st *store.Store, period string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		data, err := stats.Projects(ctx, st, period)
+		return projectsPeriodLoadedMsg{period: period, data: data, err: err}
+	}
+}
+
+func loadModelsPeriodCmd(st *store.Store, period string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		data, err := stats.Models(ctx, st, period)
+		return modelsPeriodLoadedMsg{period: period, data: data, err: err}
 	}
 }
 

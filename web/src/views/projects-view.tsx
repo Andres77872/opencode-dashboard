@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { PeriodToggle } from '../components/daily/period-toggle'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { MetricCard } from '../components/overview/metric-card'
 import { ProjectsSkeleton } from '../components/projects/projects-skeleton'
@@ -22,6 +24,7 @@ import {
 } from '../lib/format'
 import { getAriaSort, getNextSortState, type SortDirection, type SortState } from '../lib/table-sort'
 import type { ProjectEntry, ProjectStats } from '../types/api'
+import { isDailyPeriod, type DailyPeriod } from '../types/api'
 
 type SortKey = 'cost' | 'messages' | 'sessions' | 'project' | 'tokens'
 
@@ -78,11 +81,17 @@ function compareRows(sortKey: SortKey, left: EnrichedProjectRow, right: Enriched
 
 export function ProjectsView() {
   const { refreshNonce, requestRefresh, setLastUpdatedAt, setRefreshing } = useDashboardContext()
-  const [data, setData] = useState<ProjectStats | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [dataByPeriod, setDataByPeriod] = useState<Partial<Record<DailyPeriod, ProjectStats>>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
+  const dataByPeriodRef = useRef<Partial<Record<DailyPeriod, ProjectStats>>>({})
   const hasLoadedOnceRef = useRef(false)
+
+  const rawPeriod = searchParams.get('period')
+  const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
+  const dataForPeriod = dataByPeriod[period] ?? null
 
   const handleSortChange = (key: SortKey) => {
     setSortState((current) => getNextSortState(current, key, DEFAULT_SORT_DIRECTIONS[key]))
@@ -92,20 +101,39 @@ export function ProjectsView() {
 
   const getSortDirection = (key: SortKey) => (sortState?.key === key ? sortState.direction : undefined)
 
+  // Normalize missing/invalid period to ?period=7d on mount (preserves other params).
   useEffect(() => {
+    if (!isDailyPeriod(rawPeriod)) {
+      setSearchParams((previous) => {
+        const next = new URLSearchParams(previous)
+        next.set('period', '7d')
+        return next
+      })
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    // Cache short-circuit: if this period was already loaded, skip the fetch.
+    if (dataByPeriodRef.current[period]) {
+      return
+    }
+
     const controller = new AbortController()
 
     async function loadProjects() {
       setRefreshing(true)
       setError(null)
-
-      if (!hasLoadedOnceRef.current) {
-        setLoading(true)
-      }
+      setLoading(true)
 
       try {
-        const next = await getProjects(controller.signal)
-        setData(next)
+        const next = await getProjects(period, controller.signal)
+        const nextDataByPeriod = {
+          ...dataByPeriodRef.current,
+          [period]: next,
+        }
+
+        dataByPeriodRef.current = nextDataByPeriod
+        setDataByPeriod(nextDataByPeriod)
         hasLoadedOnceRef.current = true
         setLastUpdatedAt(new Date())
       } catch (caught) {
@@ -125,18 +153,32 @@ export function ProjectsView() {
     void loadProjects()
 
     return () => controller.abort()
-  }, [refreshNonce, setLastUpdatedAt, setRefreshing])
+  }, [period, refreshNonce, setLastUpdatedAt, setRefreshing])
+
+  const handlePeriodChange = (nextPeriod: DailyPeriod) => {
+    if (nextPeriod === period) {
+      return
+    }
+
+    setSortState(null)
+
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous)
+      next.set('period', nextPeriod)
+      return next
+    })
+  }
 
   const summary = useMemo(() => {
-    if (!data) {
+    if (!dataForPeriod) {
       return null
     }
 
-    const totalCost = data.projects.reduce((accumulator, project) => accumulator + project.cost, 0)
-    const totalSessions = data.projects.reduce((accumulator, project) => accumulator + project.sessions, 0)
-    const totalMessages = data.projects.reduce((accumulator, project) => accumulator + project.messages, 0)
+    const totalCost = dataForPeriod.projects.reduce((accumulator, project) => accumulator + project.cost, 0)
+    const totalSessions = dataForPeriod.projects.reduce((accumulator, project) => accumulator + project.sessions, 0)
+    const totalMessages = dataForPeriod.projects.reduce((accumulator, project) => accumulator + project.messages, 0)
 
-    const rows = data.projects.map<EnrichedProjectRow>((project) => ({
+    const rows = dataForPeriod.projects.map<EnrichedProjectRow>((project) => ({
       ...project,
       totalTokens: getTotalTokens(project),
       costShare: safeDivide(project.cost, totalCost) * 100,
@@ -178,13 +220,13 @@ export function ProjectsView() {
       activityLeader,
       efficiencyLeader,
     }
-  }, [data, sortState])
+  }, [dataForPeriod, sortState])
 
   const handleRetry = () => {
     requestRefresh()
   }
 
-  if (loading && !data) {
+  if (loading && !dataForPeriod) {
     return (
       <section className="space-y-6">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -212,8 +254,11 @@ export function ProjectsView() {
           </p>
         </div>
 
-        <div className="text-sm text-muted-foreground">
-          Endpoint: <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/projects</code>
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
+          <div className="text-sm text-muted-foreground">
+            Endpoint: <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/projects?period={period}</code>
+          </div>
+          <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
         </div>
       </div>
 

@@ -32,7 +32,7 @@ func TestOverviewWithFixture(t *testing.T) {
 	}
 	defer st.Close()
 
-	overview, err := Overview(ctx, st)
+	overview, err := Overview(ctx, st, "all")
 	if err != nil {
 		t.Fatalf("Overview() failed: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestModelsWithFixture(t *testing.T) {
 	}
 	defer st.Close()
 
-	models, err := Models(ctx, st)
+	models, err := Models(ctx, st, "all")
 	if err != nil {
 		t.Fatalf("Models() failed: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestProjectsWithFixture(t *testing.T) {
 	}
 	defer st.Close()
 
-	projects, err := Projects(ctx, st)
+	projects, err := Projects(ctx, st, "all")
 	if err != nil {
 		t.Fatalf("Projects() failed: %v", err)
 	}

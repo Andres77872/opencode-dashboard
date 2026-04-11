@@ -58,8 +58,9 @@ async function request<T>(path: string, init?: RequestInit) {
   return (await response.json()) as T
 }
 
-export function getOverview(signal?: AbortSignal) {
-  return request<OverviewStats>('/api/v1/overview', { signal })
+export function getOverview(period: DailyPeriod, signal?: AbortSignal) {
+  const params = new URLSearchParams({ period })
+  return request<OverviewStats>(`/api/v1/overview?${params.toString()}`, { signal })
 }
 
 export function getDaily(period: DailyPeriod, signal?: AbortSignal) {
@@ -67,26 +68,30 @@ export function getDaily(period: DailyPeriod, signal?: AbortSignal) {
   return request<DailyStats>(`/api/v1/daily?${params.toString()}`, { signal })
 }
 
-export function getModels(signal?: AbortSignal) {
-  return request<ModelStats>('/api/v1/models', { signal })
+export function getModels(period: DailyPeriod, signal?: AbortSignal) {
+  const params = new URLSearchParams({ period })
+  return request<ModelStats>(`/api/v1/models?${params.toString()}`, { signal })
 }
 
-export function getTools(signal?: AbortSignal) {
-  return request<ToolStats>('/api/v1/tools', { signal })
+export function getTools(period: DailyPeriod, signal?: AbortSignal) {
+  const params = new URLSearchParams({ period })
+  return request<ToolStats>(`/api/v1/tools?${params.toString()}`, { signal })
 }
 
-export function getProjects(signal?: AbortSignal) {
-  return request<ProjectStats>('/api/v1/projects', { signal })
+export function getProjects(period: DailyPeriod, signal?: AbortSignal) {
+  const params = new URLSearchParams({ period })
+  return request<ProjectStats>(`/api/v1/projects?${params.toString()}`, { signal })
 }
 
 export function getConfig(signal?: AbortSignal) {
   return request<ConfigStats>('/api/v1/config', { signal })
 }
 
-export function getSessions(page: number, limit: number, signal?: AbortSignal) {
+export function getSessions(page: number, limit: number, period: DailyPeriod, signal?: AbortSignal) {
   const params = new URLSearchParams({
     page: String(page),
     limit: String(limit),
+    period,
   })
 
   return request<SessionList>(`/api/v1/sessions?${params.toString()}`, { signal })
