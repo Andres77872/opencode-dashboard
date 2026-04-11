@@ -168,6 +168,8 @@ export function DailyChart({ days, metric, granularity, onMetricChange }: DailyC
               {metric === 'tokens' ? (
                 <>
                   <ChartTooltip
+                    cursor={{ fill: 'oklch(0.74 0.16 64 / 0.15)' }}
+                    allowEscapeViewBox={{ x: true, y: true }}
                     content={
                       <ChartTooltipContent
                         indicator="dot"
@@ -194,6 +196,8 @@ export function DailyChart({ days, metric, granularity, onMetricChange }: DailyC
               ) : metric === 'cost' ? (
                 <>
                   <ChartTooltip
+                    cursor={{ fill: 'oklch(0.74 0.16 64 / 0.15)' }}
+                    allowEscapeViewBox={{ x: true, y: true }}
                     content={
                       <ChartTooltipContent
                         hideIndicator
@@ -212,6 +216,8 @@ export function DailyChart({ days, metric, granularity, onMetricChange }: DailyC
               ) : (
                 <>
                   <ChartTooltip
+                    cursor={{ fill: 'oklch(0.74 0.16 64 / 0.15)' }}
+                    allowEscapeViewBox={{ x: true, y: true }}
                     content={
                       <ChartTooltipContent
                         hideIndicator

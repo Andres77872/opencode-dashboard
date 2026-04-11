@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { SortButton } from '../components/ui/sort-button'
 import { Progress } from '../components/ui/progress'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 import { getModels } from '../lib/api'
 import {
   formatCompactCurrency,
@@ -308,12 +309,21 @@ export function ModelsView() {
                       <span>Sessions</span>
                       <span className="font-mono text-foreground">{summary.usageLeader ? formatInteger(summary.usageLeader.sessions) : '0'}</span>
                     </div>
-                    <div className="flex items-center justify-between gap-3 rounded-xl bg-panel/75 px-3 py-3">
-                      <span>Total tokens</span>
-                      <span className="font-mono text-foreground">
-                        {summary.usageLeader ? formatTokenCount(summary.usageLeader.totalTokens) : '0'}
-                      </span>
-                    </div>
+<div className="flex items-center justify-between gap-3 rounded-xl bg-panel/75 px-3 py-3">
+                       <span>Total tokens</span>
+                       <TooltipProvider>
+                         <Tooltip>
+                           <TooltipTrigger asChild>
+                             <span className="cursor-default font-mono text-foreground transition-opacity hover:opacity-80">
+                               {summary.usageLeader ? formatTokenCount(summary.usageLeader.totalTokens) : '0'}
+                             </span>
+                           </TooltipTrigger>
+                           <TooltipContent side="top" className="font-mono">
+                             <p>{summary.usageLeader ? formatInteger(summary.usageLeader.totalTokens) : '0'}</p>
+                           </TooltipContent>
+                         </Tooltip>
+                       </TooltipProvider>
+                     </div>
                   </CardContent>
                 </Card>
 
@@ -419,11 +429,37 @@ export function ModelsView() {
                               </div>
                             </TableCell>
                             <TableCell className="truncate font-mono text-sm text-muted-foreground">{getProviderLabel(row)}</TableCell>
-                            <TableCell className="font-mono text-sm text-foreground">{formatCompactInteger(row.sessions)}</TableCell>
-                            <TableCell className="font-mono text-sm text-foreground">{formatCompactInteger(row.messages)}</TableCell>
-                            <TableCell className="font-mono text-sm text-foreground">{formatTokenCount(row.tokens.input)}</TableCell>
-                            <TableCell className="font-mono text-sm text-foreground">{formatTokenCount(row.tokens.output)}</TableCell>
-                            <TableCell className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</TableCell>
+<TableCell className="font-mono text-sm text-foreground">{formatCompactInteger(row.sessions)}</TableCell>
+                             <TableCell className="font-mono text-sm text-foreground">{formatCompactInteger(row.messages)}</TableCell>
+                             <TableCell className="font-mono text-sm text-foreground">
+                               <TooltipProvider>
+                                 <Tooltip>
+                                   <TooltipTrigger asChild>
+                                     <span className="cursor-default transition-opacity hover:opacity-80">
+                                       {formatTokenCount(row.tokens.input)}
+                                     </span>
+                                   </TooltipTrigger>
+                                   <TooltipContent side="top" className="font-mono">
+                                     <p>{formatInteger(row.tokens.input)}</p>
+                                   </TooltipContent>
+                                 </Tooltip>
+                               </TooltipProvider>
+                             </TableCell>
+                             <TableCell className="font-mono text-sm text-foreground">
+                               <TooltipProvider>
+                                 <Tooltip>
+                                   <TooltipTrigger asChild>
+                                     <span className="cursor-default transition-opacity hover:opacity-80">
+                                       {formatTokenCount(row.tokens.output)}
+                                     </span>
+                                   </TooltipTrigger>
+                                   <TooltipContent side="top" className="font-mono">
+                                     <p>{formatInteger(row.tokens.output)}</p>
+                                   </TooltipContent>
+                                 </Tooltip>
+                               </TooltipProvider>
+                             </TableCell>
+                             <TableCell className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</TableCell>
                             <TableCell className="font-mono text-sm text-foreground">{formatCurrency(row.avgCostPerMessage)}</TableCell>
                           </TableRow>
                         ))}
@@ -461,14 +497,36 @@ export function ModelsView() {
                             <div className="uppercase tracking-[0.14em]">Messages</div>
                             <div className="mt-1 font-mono text-sm text-foreground">{formatCompactInteger(row.messages)}</div>
                           </div>
-                          <div className="rounded-lg bg-background/40 px-2.5 py-2">
-                            <div className="uppercase tracking-[0.14em]">Input</div>
-                            <div className="mt-1 font-mono text-sm text-foreground">{formatTokenCount(row.tokens.input)}</div>
-                          </div>
-                          <div className="rounded-lg bg-background/40 px-2.5 py-2">
-                            <div className="uppercase tracking-[0.14em]">Output</div>
-                            <div className="mt-1 font-mono text-sm text-foreground">{formatTokenCount(row.tokens.output)}</div>
-                          </div>
+<div className="rounded-lg bg-background/40 px-2.5 py-2">
+                             <div className="uppercase tracking-[0.14em]">Input</div>
+                             <TooltipProvider>
+                               <Tooltip>
+                                 <TooltipTrigger asChild>
+                                   <div className="mt-1 cursor-default font-mono text-sm text-foreground transition-opacity hover:opacity-80">
+                                     {formatTokenCount(row.tokens.input)}
+                                   </div>
+                                 </TooltipTrigger>
+                                 <TooltipContent side="top" className="font-mono">
+                                   <p>{formatInteger(row.tokens.input)}</p>
+                                 </TooltipContent>
+                               </Tooltip>
+                             </TooltipProvider>
+                           </div>
+                           <div className="rounded-lg bg-background/40 px-2.5 py-2">
+                             <div className="uppercase tracking-[0.14em]">Output</div>
+                             <TooltipProvider>
+                               <Tooltip>
+                                 <TooltipTrigger asChild>
+                                   <div className="mt-1 cursor-default font-mono text-sm text-foreground transition-opacity hover:opacity-80">
+                                     {formatTokenCount(row.tokens.output)}
+                                   </div>
+                                 </TooltipTrigger>
+                                 <TooltipContent side="top" className="font-mono">
+                                   <p>{formatInteger(row.tokens.output)}</p>
+                                 </TooltipContent>
+                               </Tooltip>
+                             </TooltipProvider>
+                           </div>
                           <div className="rounded-lg bg-background/40 px-2.5 py-2">
                             <div className="uppercase tracking-[0.14em]">Avg / msg</div>
                             <div className="mt-1 font-mono text-sm text-foreground">{formatCurrency(row.avgCostPerMessage)}</div>

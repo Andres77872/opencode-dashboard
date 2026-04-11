@@ -13,6 +13,7 @@ import { Alert } from '../components/ui/alert'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 import { getDaily, getMessages } from '../lib/api'
 import { formatCompactInteger, formatCurrency, formatInteger, formatShortDate, formatTokenCount, safeDivide } from '../lib/format'
 import { getNextSortState } from '../lib/table-sort'
@@ -304,32 +305,35 @@ export function DailyView() {
           </Alert>
         ) : null}
 
-        {summary ? (
-          <>
-            <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
-              <MetricCard
-                label="Spend in window"
-                value={formatCurrency(summary.cost)}
-                hint={getPeriodWindowHint(period, dataForPeriod?.days.length ?? 0, dataForPeriod?.granularity)}
-              />
-              <MetricCard
-                label="Sessions"
-                value={formatInteger(summary.sessions)}
-                hint={`${formatCompactInteger(summary.activeDays)} active days in the selected range`}
-              />
-              <MetricCard
-                label="Requests"
-                value={formatInteger(summary.messages)}
-                hint={`${summary.averageMessagesPerSession.toFixed(1)} messages per session in the current API model`}
-              />
-              <MetricCard
-                label="Token load"
-                value={formatTokenCount(summary.tokens)}
-                hint={`${formatTokenCount(Math.round(summary.averageTokensPerDay))} average tokens per calendar day`}
-              />
-            </div>
-          </>
-        ) : null}
+        <TooltipProvider>
+          <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
+            <MetricCard
+              label="Spend in window"
+              value={summary ? formatCurrency(summary.cost) : ''}
+              hint={summary ? getPeriodWindowHint(period, dataForPeriod?.days.length ?? 0, dataForPeriod?.granularity) : 'Loading...'}
+              loading={loading && !summary}
+            />
+            <MetricCard
+              label="Sessions"
+              value={summary ? formatInteger(summary.sessions) : ''}
+              hint={summary ? `${formatCompactInteger(summary.activeDays)} active days in the selected range` : 'Loading...'}
+              loading={loading && !summary}
+            />
+            <MetricCard
+              label="Requests"
+              value={summary ? formatInteger(summary.messages) : ''}
+              hint={summary ? `${summary.averageMessagesPerSession.toFixed(1)} messages per session in the current API model` : 'Loading...'}
+              loading={loading && !summary}
+            />
+            <MetricCard
+              label="Token load"
+              value={summary ? formatTokenCount(summary.tokens) : ''}
+              tooltipValue={summary ? `${formatInteger(summary.tokens)} tokens` : undefined}
+              hint={summary ? `${formatTokenCount(Math.round(summary.averageTokensPerDay))} average tokens per calendar day` : 'Loading...'}
+              loading={loading && !summary}
+            />
+          </div>
+        </TooltipProvider>
 
         <RequestsHistoryTable
           data={messages}
@@ -384,7 +388,18 @@ export function DailyView() {
                       <div className="flex flex-wrap items-end justify-between gap-3">
                         <div>
                           <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Window token mix</div>
-                          <div className="mt-2 font-mono text-lg text-foreground">{formatTokenCount(summary.tokens)}</div>
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div className="mt-2 cursor-default font-mono text-lg text-foreground transition-opacity hover:opacity-80">
+                                  {formatTokenCount(summary.tokens)}
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="font-mono">
+                                <p>{formatInteger(summary.tokens)} tokens</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
                         </div>
                         <div className="text-right text-xs text-muted-foreground">
                           <div className="uppercase tracking-[0.14em]">Peak {summary.isHourly ? 'hour' : 'day'}</div>
@@ -436,7 +451,20 @@ export function DailyView() {
                                 ? formatCurrency(day.cost)
                                 : metric === 'requests'
                                   ? formatInteger(day.messages)
-                                  : formatTokenCount(metricValue)}
+                                  : (
+                                    <TooltipProvider>
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <span className="cursor-default transition-opacity hover:opacity-80">
+                                            {formatTokenCount(metricValue)}
+                                          </span>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="top" className="font-mono">
+                                          <p>{formatInteger(metricValue)} tokens</p>
+                                        </TooltipContent>
+                                      </Tooltip>
+                                    </TooltipProvider>
+                                  )}
                             </span>
                           </div>
 

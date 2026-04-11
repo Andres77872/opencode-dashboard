@@ -24,6 +24,7 @@ import {
   TableHeader,
   TableRow,
 } from '../components/ui/table'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 import { getSessionDetail, getSessions } from '../lib/api'
 import {
   formatCompactCurrency,
@@ -93,11 +94,28 @@ function PaginationButton({
   )
 }
 
-function DetailMetric({ label, value, hint }: { label: string; value: string; hint: string }) {
+function DetailMetric({ label, value, hint, tooltipValue }: { label: string; value: string; hint: string; tooltipValue?: string }) {
+  const valueElement = tooltipValue ? (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="mt-2 cursor-default font-mono text-lg text-foreground transition-opacity hover:opacity-80 sm:text-xl">
+            {value}
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="font-mono">
+          <p>{tooltipValue}</p>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  ) : (
+    <div className="mt-2 font-mono text-lg text-foreground sm:text-xl">{value}</div>
+  )
+
   return (
     <div className="rounded-2xl border border-border/70 bg-background/45 px-4 py-4">
       <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
-      <div className="mt-2 font-mono text-lg text-foreground sm:text-xl">{value}</div>
+      {valueElement}
       <div className="mt-2 text-sm leading-6 text-muted-foreground">{hint}</div>
     </div>
   )
@@ -701,6 +719,7 @@ export function SessionsView() {
                   <DetailMetric
                     label="Token load"
                     value={formatTokenCount(getTokenTotal(detail.total_tokens))}
+                    tooltipValue={`${formatInteger(getTokenTotal(detail.total_tokens))} tokens`}
                     hint={detailMessageStats.heaviestTokenTotal > 0 ? `Heaviest row ${formatTokenCount(detailMessageStats.heaviestTokenTotal)} · ${formatTokenCount(detail.total_tokens.input)} input · ${formatTokenCount(detail.total_tokens.output)} output` : 'No token activity recorded'}
                   />
                   <DetailMetric
@@ -771,7 +790,18 @@ export function SessionsView() {
                       </CardHeader>
                       <CardContent className="space-y-3 text-sm text-muted-foreground">
                         <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-background/35 px-3 py-2 text-xs leading-5 text-muted-foreground">
-                          <span className="font-mono text-foreground">{formatTokenCount(getTokenTotal(detail.total_tokens))}</span>
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="cursor-default font-mono text-foreground transition-opacity hover:opacity-80">
+                                  {formatTokenCount(getTokenTotal(detail.total_tokens))}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="font-mono">
+                                <p>{formatInteger(getTokenTotal(detail.total_tokens))} tokens</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
                           <span>window token load</span>
                           <span className="text-border">·</span>
                           <span>{formatCurrency(detail.total_cost)} spend</span>

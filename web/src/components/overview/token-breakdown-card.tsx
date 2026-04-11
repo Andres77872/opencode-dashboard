@@ -1,6 +1,6 @@
 import { Label, Pie, PieChart } from 'recharts'
 import type { TokenStats } from '../../types/api'
-import { formatPercentage, formatTokenCount } from '../../lib/format'
+import { formatInteger, formatPercentage, formatTokenCount } from '../../lib/format'
 import { getTokenBreakdownItems, getTokenTotal } from '../../lib/token-breakdown'
 import { tokenBreakdownChartConfig } from '../../lib/chart-config'
 import { transformTokensToSlices } from '../../lib/chart-transform'
@@ -12,6 +12,7 @@ import {
   ChartTooltip,
   ChartTooltipContent,
 } from '../ui/chart'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
 import { cn } from '../../lib/utils'
 
 interface TokenBreakdownCardProps {
@@ -41,47 +42,69 @@ export function TokenBreakdownList({
 
   if (variant === 'compact') {
     return (
-      <div className={cn('flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-muted-foreground', className)}>
-        {visibleData.map((item) => (
-          <span key={item.key} className="inline-flex items-center gap-1.5">
-            <span
-              aria-hidden="true"
-              className="size-1.5 rounded-full border border-white/12"
-              style={{ backgroundColor: item.color }}
-            />
-            <span>{item.label}</span>
-            <span className="font-mono text-foreground/85">{formatTokenCount(item.value)}</span>
-          </span>
-        ))}
-      </div>
+      <TooltipProvider>
+        <div className={cn('flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-muted-foreground', className)}>
+          {visibleData.map((item) => (
+            <span key={item.key} className="inline-flex items-center gap-1.5">
+              <span
+                aria-hidden="true"
+                className="size-1.5 rounded-full border border-white/12"
+                style={{ backgroundColor: item.color }}
+              />
+              <span>{item.label}</span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="cursor-default font-mono text-foreground/85 transition-opacity hover:opacity-80">
+                    {formatTokenCount(item.value)}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="font-mono">
+                  <p>{formatInteger(item.value)}</p>
+                </TooltipContent>
+              </Tooltip>
+            </span>
+          ))}
+        </div>
+      </TooltipProvider>
     )
   }
 
   return (
-    <div className={cn('space-y-4', className)}>
-      {visibleData.map((item) => {
-        const share = total === 0 ? 0 : (item.value / total) * 100
+    <TooltipProvider>
+      <div className={cn('space-y-4', className)}>
+        {visibleData.map((item) => {
+          const share = total === 0 ? 0 : (item.value / total) * 100
 
-        return (
-          <div key={item.label} className="space-y-2">
-            <div className="flex items-center justify-between gap-3 text-sm">
-              <span className="flex items-center gap-2 text-muted-foreground">
-                <span
-                  aria-hidden="true"
-                  className="size-2.5 rounded-full border border-white/12"
-                  style={{ backgroundColor: item.color }}
-                />
-                {item.label}
-              </span>
-              <div className="text-right">
-                <div className="font-mono text-foreground">{formatTokenCount(item.value)}</div>
-                <div className="text-xs text-muted-foreground">{formatPercentage(share)}</div>
+          return (
+            <div key={item.label} className="space-y-2">
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="flex items-center gap-2 text-muted-foreground">
+                  <span
+                    aria-hidden="true"
+                    className="size-2.5 rounded-full border border-white/12"
+                    style={{ backgroundColor: item.color }}
+                  />
+                  {item.label}
+                </span>
+                <div className="text-right">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div className="cursor-default font-mono text-foreground transition-opacity hover:opacity-80">
+                        {formatTokenCount(item.value)}
+                      </div>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="font-mono">
+                      <p>{formatInteger(item.value)}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <div className="text-xs text-muted-foreground">{formatPercentage(share)}</div>
+                </div>
               </div>
             </div>
-          </div>
-        )
-      })}
-    </div>
+          )
+        })}
+      </div>
+    </TooltipProvider>
   )
 }
 
@@ -109,6 +132,7 @@ export function TokenBreakdownCard({
         <ChartContainer config={tokenBreakdownChartConfig} className="mx-auto min-h-[200px] w-full">
           <PieChart accessibilityLayer>
             <ChartTooltip
+              allowEscapeViewBox={{ x: true, y: true }}
               content={
                 <ChartTooltipContent
                   nameKey="name"

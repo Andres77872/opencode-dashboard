@@ -1,4 +1,4 @@
-import { formatCurrency, formatDateTime, formatTokenCount } from '../../lib/format'
+import { formatCurrency, formatDateTime, formatInteger, formatTokenCount } from '../../lib/format'
 import { cn } from '../../lib/utils'
 import type { SessionMessage } from '../../types/api'
 import { Badge } from '../ui/badge'
@@ -92,28 +92,73 @@ export function SessionMessageRow({
             </span>
             <span>
               <span className="text-muted-foreground/50">input </span>
-              <span className="text-foreground/80">{formatTokenCount(message.tokens?.input ?? 0)}</span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="cursor-default text-foreground/80 transition-opacity hover:opacity-80">
+                    {formatTokenCount(message.tokens?.input ?? 0)}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="font-mono">
+                  <p>{formatInteger(message.tokens?.input ?? 0)}</p>
+                </TooltipContent>
+              </Tooltip>
             </span>
             <span>
               <span className="text-muted-foreground/50">output </span>
-              <span className="text-foreground/80">{formatTokenCount(message.tokens?.output ?? 0)}</span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="cursor-default text-foreground/80 transition-opacity hover:opacity-80">
+                    {formatTokenCount(message.tokens?.output ?? 0)}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="font-mono">
+                  <p>{formatInteger(message.tokens?.output ?? 0)}</p>
+                </TooltipContent>
+              </Tooltip>
             </span>
             {(message.tokens?.cache.read ?? 0) > 0 ? (
               <span>
                 <span className="text-muted-foreground/50">cache·r </span>
-                <span className="text-foreground/80">{formatTokenCount(message.tokens!.cache.read)}</span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="cursor-default text-foreground/80 transition-opacity hover:opacity-80">
+                      {formatTokenCount(message.tokens!.cache.read)}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="font-mono">
+                    <p>{formatInteger(message.tokens!.cache.read)}</p>
+                  </TooltipContent>
+                </Tooltip>
               </span>
             ) : null}
             {(message.tokens?.cache.write ?? 0) > 0 ? (
               <span>
                 <span className="text-muted-foreground/50">cache·w </span>
-                <span className="text-foreground/80">{formatTokenCount(message.tokens!.cache.write)}</span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="cursor-default text-foreground/80 transition-opacity hover:opacity-80">
+                      {formatTokenCount(message.tokens!.cache.write)}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="font-mono">
+                    <p>{formatInteger(message.tokens!.cache.write)}</p>
+                  </TooltipContent>
+                </Tooltip>
               </span>
             ) : null}
             {(message.tokens?.reasoning ?? 0) > 0 ? (
               <span>
                 <span className="text-muted-foreground/50">reasoning </span>
-                <span className="text-foreground/80">{formatTokenCount(message.tokens!.reasoning)}</span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="cursor-default text-foreground/80 transition-opacity hover:opacity-80">
+                      {formatTokenCount(message.tokens!.reasoning)}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="font-mono">
+                    <p>{formatInteger(message.tokens!.reasoning)}</p>
+                  </TooltipContent>
+                </Tooltip>
               </span>
             ) : null}
           </div>

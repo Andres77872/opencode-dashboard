@@ -4,14 +4,8 @@ import { Button } from '../ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card'
 import { Skeleton } from '../ui/skeleton'
 import { SortButton } from '../ui/sort-button'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '../ui/table'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
 import { formatCompactCurrency, formatDateTime, formatInteger, formatTokenCount } from '../../lib/format'
 import { getAriaSort } from '../../lib/table-sort'
 import type { SortDirection, SortState } from '../../lib/table-sort'
@@ -239,7 +233,18 @@ export function RequestsHistoryTable({
 
                       <TableCell className="w-[7rem] px-4 py-3 text-right">
                         {tokenTotal > 0 ? (
-                          <span className="font-mono text-sm text-foreground">{formatTokenCount(tokenTotal)}</span>
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="cursor-default font-mono text-sm text-foreground transition-opacity hover:opacity-80">
+                                  {formatTokenCount(tokenTotal)}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="font-mono">
+                                <p>{formatInteger(tokenTotal)} tokens</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
                         ) : (
                           <span className="text-sm text-muted-foreground">&mdash;</span>
                         )}
@@ -302,12 +307,23 @@ export function RequestsHistoryTable({
                       <span className="truncate font-medium text-foreground">{getMessageSessionLabel(message)}</span>
                     </div>
 
-                    <div className="text-right">
-                      <div className="font-mono text-sm text-foreground">{formatCompactCurrency(message.cost)}</div>
-                      {tokenTotal > 0 ? (
-                        <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">{formatTokenCount(tokenTotal)}</div>
-                      ) : null}
-                    </div>
+<div className="text-right">
+                       <div className="font-mono text-sm text-foreground">{formatCompactCurrency(message.cost)}</div>
+                       {tokenTotal > 0 ? (
+                         <TooltipProvider>
+                           <Tooltip>
+                             <TooltipTrigger asChild>
+                               <div className="mt-0.5 cursor-default font-mono text-[11px] text-muted-foreground transition-opacity hover:opacity-80">
+                                 {formatTokenCount(tokenTotal)}
+                               </div>
+                             </TooltipTrigger>
+                             <TooltipContent side="top" className="font-mono">
+                               <p>{formatInteger(tokenTotal)} tokens</p>
+                             </TooltipContent>
+                           </Tooltip>
+                         </TooltipProvider>
+                       ) : null}
+                     </div>
                   </div>
 
                   <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">

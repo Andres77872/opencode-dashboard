@@ -14,6 +14,7 @@ import {
 import { Skeleton } from '../ui/skeleton'
 import { getMessageDetail } from '../../lib/api'
 import { formatCurrency, formatDateTime, formatInteger, formatTokenCount } from '../../lib/format'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
 import type { MessageDetail, MessagePart, TokenStats, ToolPart, ToolState } from '../../types/api'
 
 function getRoleTone(role: string) {
@@ -179,11 +180,28 @@ function ToolSection({ parts }: { parts: ToolPart[] }) {
   )
 }
 
-function DetailMetric({ label, value, hint }: { label: string; value: string; hint: string }) {
+function DetailMetric({ label, value, hint, tooltipValue }: { label: string; value: string; hint: string; tooltipValue?: string }) {
+  const valueElement = tooltipValue ? (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="mt-2 cursor-default font-mono text-lg text-foreground transition-opacity hover:opacity-80 sm:text-xl">
+            {value}
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="font-mono">
+          <p>{tooltipValue}</p>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  ) : (
+    <div className="mt-2 font-mono text-lg text-foreground sm:text-xl">{value}</div>
+  )
+
   return (
     <div className="rounded-2xl border border-border/70 bg-background/45 px-4 py-4">
       <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
-      <div className="mt-2 font-mono text-lg text-foreground sm:text-xl">{value}</div>
+      {valueElement}
       <div className="mt-2 text-sm leading-6 text-muted-foreground">{hint}</div>
     </div>
   )
@@ -405,6 +423,7 @@ export function MessageDetailSheet({
                 <DetailMetric
                   label="Token load"
                   value={formatTokenCount(detailStats.tokenTotal)}
+                  tooltipValue={`${formatInteger(detailStats.tokenTotal)} tokens`}
                   hint={detail.tokens ? `${formatTokenCount(detail.tokens.input)} input · ${formatTokenCount(detail.tokens.output)} output · ${formatTokenCount(detail.tokens.reasoning)} reasoning` : 'No token telemetry recorded'}
                 />
                 <DetailMetric
@@ -450,7 +469,18 @@ export function MessageDetailSheet({
                     </CardHeader>
                     <CardContent className="space-y-3 text-sm text-muted-foreground">
                       <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-background/35 px-3 py-2 text-xs leading-5 text-muted-foreground">
-                        <span className="font-mono text-foreground">{formatTokenCount(detailStats.tokenTotal)}</span>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="cursor-default font-mono text-foreground transition-opacity hover:opacity-80">
+                                {formatTokenCount(detailStats.tokenTotal)}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="font-mono">
+                              <p>{formatInteger(detailStats.tokenTotal)} tokens</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
                         <span>token load</span>
                         <span className="text-border">·</span>
                         <span>{formatCurrency(detail.cost)} spend</span>
