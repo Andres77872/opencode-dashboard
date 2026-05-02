@@ -271,6 +271,24 @@ type LeaderEntry struct {
 	Value float64 // Cost or invocations
 }
 
+// compactMetricCard renders a single-line horizontal stat card.
+// Format: "■ Title: VALUE  detail"
+// Returns empty string if width < 20 (not enough room for meaningful display).
+// Truncates detail first, then value if content exceeds width.
+func compactMetricCard(s styles, title, value, detail string, width int) string {
+	if width < 20 {
+		return ""
+	}
+	content := s.MetricLabel.Render("■ "+title) + " " + s.MetricValue.Render(value)
+	if detail != "" {
+		remaining := width - lipgloss.Width(content) - 2
+		if remaining > 4 {
+			content += "  " + s.Muted.Render(truncateWithEllipsis(detail, remaining))
+		}
+	}
+	return s.MetricCard.Width(width).Render(content)
+}
+
 // renderLeaderSection renders a reusable leader summary section for top N items.
 // Used by Models (top 3 by cost), Tools (top 2 by invocations), Projects (top 3 by cost).
 // Returns formatted leader cards joined horizontally (or vertically on narrow width).

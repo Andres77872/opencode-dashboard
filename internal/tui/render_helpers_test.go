@@ -439,3 +439,43 @@ func TestRenderStatusBadge(t *testing.T) {
 		})
 	}
 }
+
+func TestCompactMetricCard(t *testing.T) {
+	s := newStyles()
+	tests := []struct {
+		name          string
+		title         string
+		value         string
+		detail        string
+		width         int
+		shouldContain string
+		shouldBeEmpty bool
+	}{
+		{name: "width below 20 returns empty", title: "Test", value: "42", detail: "today", width: 15, shouldBeEmpty: true},
+		{name: "basic card with title and value", title: "Sessions", value: "42", detail: "", width: 24, shouldContain: "Sessions"},
+		{name: "card with detail", title: "Cost", value: "$1.23", detail: "today", width: 30, shouldContain: "today"},
+		{name: "card at minimum width 20", title: "X", value: "1", detail: "", width: 20, shouldContain: "X"},
+		{name: "truncated detail", title: "LongTitle", value: "999", detail: "very long detail text that exceeds width", width: 36, shouldContain: "LongTitle"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := compactMetricCard(s, tt.title, tt.value, tt.detail, tt.width)
+			if tt.shouldBeEmpty {
+				if result != "" {
+					t.Errorf("compactMetricCard() expected empty, got %q", result)
+				}
+				return
+			}
+			if result == "" {
+				t.Errorf("compactMetricCard() expected non-empty for width=%d", tt.width)
+			}
+			if tt.shouldContain != "" && !strings.Contains(result, tt.shouldContain) {
+				t.Errorf("compactMetricCard() = %q, should contain %q", result, tt.shouldContain)
+			}
+			if !strings.Contains(result, "\x1b[") {
+				t.Errorf("compactMetricCard() should contain ANSI codes, got %q", result)
+			}
+		})
+	}
+}

@@ -5,6 +5,8 @@ import (
 	"math"
 	"strings"
 
+	lipgloss "charm.land/lipgloss/v2"
+
 	"opencode-dashboard/internal/stats"
 )
 
@@ -39,8 +41,31 @@ func renderDaily(s styles, width, height int, daily stats.DailyStats, period str
 	lines := []string{
 		s.PanelTitle.Render(fmt.Sprintf("Daily activity • %s • %s", periodLabel, renderDailyMetricLabel(metric))),
 		s.Muted.Render(renderDailySummary(daily, metric, isHourly, showFullSummary)),
-		"",
 	}
+
+	// KPI cards row
+	if len(daily.Days) > 0 && width >= 80 {
+		total := 0.0
+		peakValue := 0.0
+		for _, day := range daily.Days {
+			val := dailyMetricValue(day, metric)
+			total += val
+			if val > peakValue {
+				peakValue = val
+			}
+		}
+		avg := total / float64(len(daily.Days))
+		cardWidth := max((width-8)/4, 18)
+		dailyKPI := lipgloss.JoinHorizontal(lipgloss.Top,
+			compactMetricCard(s, "Total", renderDailyMetricValue(metric, total, true), "", cardWidth),
+			compactMetricCard(s, "Avg/day", renderDailyMetricValue(metric, avg, true), "", cardWidth),
+			compactMetricCard(s, "Peak", renderDailyMetricValue(metric, peakValue, true), "", cardWidth),
+			compactMetricCard(s, "Days", formatInt(int64(len(daily.Days))), "", cardWidth),
+		)
+		lines = append(lines, dailyKPI)
+	}
+
+	lines = append(lines, "")
 
 	maxRows := max(height-5, 5)
 	start := max(len(daily.Days)-maxRows, 0)

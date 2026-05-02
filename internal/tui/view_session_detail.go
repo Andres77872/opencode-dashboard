@@ -202,9 +202,3 @@ func fallbackString(value, fallback string) string {
 	}
 	return value
 }
-
-func calculateMessageRows(height int, lineCount int) int {
-	available := height - lineCount - 3
-	minRows := max(3, height/6)
-	return max(available, minRows)
-}

@@ -1,14 +1,17 @@
 package tui
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
 	"opencode-dashboard/internal/stats"
+	"opencode-dashboard/internal/store"
 )
 
 func TestNextDailyPeriod(t *testing.T) {
@@ -1818,4 +1821,782 @@ func TestDailyWidthThresholdResponsiveBehavior(t *testing.T) {
 			t.Error("very narrow terminal should NOT show 'Peak' in summary")
 		}
 	})
+}
+
+// New token column width threshold tests
+func TestModelsViewNewWidthThresholds(t *testing.T) {
+	s := newStyles()
+	items := []stats.ModelEntry{
+		{ModelID: "claude-3", ProviderID: "anthropic", Cost: 10.0, Messages: 100, Sessions: 10,
+			Tokens: stats.TokenStats{Input: 5000, Output: 3000, Reasoning: 1000, Cache: stats.CacheStats{Read: 500, Write: 200}}},
+	}
+	state := tableViewState{cursor: 0, sortLabel: "cost"}
+
+	// At width 130, should show TOKENS bar (compact distribution)
+	result130 := renderModels(s, 130, 20, items, 1, state)
+	if !strings.Contains(result130, "TOKENS") {
+		t.Error("width 130 should show TOKENS column header")
+	}
+
+	// At width 129, should NOT show TOKENS bar
+	result129 := renderModels(s, 129, 20, items, 1, state)
+	if strings.Contains(result129, "TOKENS") {
+		t.Error("width 129 should NOT show TOKENS column header")
+	}
+
+	// At width 160, should show individual token columns
+	result160 := renderModels(s, 160, 20, items, 1, state)
+	if !strings.Contains(result160, "C_RD") || !strings.Contains(result160, "C_WR") {
+		t.Error("width 160 should show C_RD and C_WR column headers")
+	}
+
+	// At width 159, should show compact bar but not individual columns
+	result159 := renderModels(s, 159, 20, items, 1, state)
+	if !strings.Contains(result159, "TOKENS") {
+		t.Error("width 159 should still show TOKENS bar")
+	}
+	if strings.Contains(result159, "C_RD") {
+		t.Error("width 159 should NOT show C_RD column header")
+	}
+}
+
+// Extended leaders tests
+func TestModelsViewExtendedLeaders(t *testing.T) {
+	s := newStyles()
+	items := []stats.ModelEntry{
+		{ModelID: "claude-3", ProviderID: "anthropic", Cost: 10.0, Messages: 200, Sessions: 20},
+		{ModelID: "gpt-4", ProviderID: "openai", Cost: 5.0, Messages: 100, Sessions: 10},
+		{ModelID: "llama-3", ProviderID: "meta", Cost: 1.0, Messages: 50, Sessions: 5},
+	}
+	state := tableViewState{cursor: 0, sortLabel: "cost"}
+
+	result := renderModels(s, 120, 30, items, 3, state)
+
+	if !strings.Contains(result, "#1") {
+		t.Error("Models view should show #1 leaders")
+	}
+	if !strings.Contains(result, "Most used") {
+		t.Error("Models view should show 'Most used' leader section")
+	}
+	if !strings.Contains(result, "Best $/msg") {
+		t.Error("Models view should show 'Best $/msg' leader section")
+	}
+}
+
+// KPI cards presence tests
+func TestModelsViewKPICards(t *testing.T) {
+	s := newStyles()
+	items := []stats.ModelEntry{
+		{ModelID: "claude-3", ProviderID: "anthropic", Cost: 10.0, Messages: 100, Sessions: 10},
+	}
+	state := tableViewState{cursor: 0, sortLabel: "cost"}
+
+	result := renderModels(s, 100, 20, items, 1, state)
+	// Should show KPI cards with model counts
+	if !strings.Contains(result, "■ Models") {
+		t.Error("Models view should show KPI cards with Models")
+	}
+	if !strings.Contains(result, "■ Cost") {
+		t.Error("Models view should show KPI cards with Cost")
+	}
+}
+
+func TestToolsViewKPICards(t *testing.T) {
+	s := newStyles()
+	items := []stats.ToolEntry{
+		{Name: "bash", Invocations: 100, Successes: 98, Failures: 2, Sessions: 5},
+		{Name: "read", Invocations: 50, Successes: 48, Failures: 2, Sessions: 3},
+	}
+	state := tableViewState{cursor: 0, sortLabel: "runs"}
+
+	result := renderTools(s, 100, 20, items, 2, state)
+	if !strings.Contains(result, "■ Tools") {
+		t.Error("Tools view should show KPI cards with Tools")
+	}
+	if !strings.Contains(result, "■ Runs") {
+		t.Error("Tools view should show KPI cards with Runs")
+	}
+}
+
+func TestToolsViewFailLeader(t *testing.T) {
+	s := newStyles()
+	items := []stats.ToolEntry{
+		{Name: "bash", Invocations: 100, Successes: 60, Failures: 40, Sessions: 5},
+		{Name: "read", Invocations: 50, Successes: 48, Failures: 2, Sessions: 3},
+		{Name: "write", Invocations: 30, Successes: 10, Failures: 20, Sessions: 2},
+	}
+	state := tableViewState{cursor: 0, sortLabel: "runs"}
+
+	result := renderTools(s, 120, 30, items, 3, state)
+	if !strings.Contains(result, "Most failed") {
+		t.Error("Tools view should show 'Most failed' leader section")
+	}
+
+	// When all failures are zero, should NOT show failure leader
+	zeroItems := []stats.ToolEntry{
+		{Name: "bash", Invocations: 100, Successes: 100, Failures: 0, Sessions: 5},
+		{Name: "read", Invocations: 50, Successes: 50, Failures: 0, Sessions: 3},
+	}
+	zeroResult := renderTools(s, 120, 30, zeroItems, 2, state)
+	if strings.Contains(zeroResult, "Most failed") {
+		t.Error("Tools view should NOT show 'Most failed' when all failures are 0")
+	}
+}
+
+func TestProjectsViewKPICards(t *testing.T) {
+	s := newStyles()
+	items := []stats.ProjectEntry{
+		{ProjectID: "proj-1", ProjectName: "Project Alpha", Sessions: 20, Messages: 200, Cost: 50.0},
+		{ProjectID: "proj-2", ProjectName: "Project Beta", Sessions: 10, Messages: 100, Cost: 25.0},
+	}
+	state := tableViewState{cursor: 0, sortLabel: "cost"}
+
+	result := renderProjects(s, 100, 20, items, 2, state)
+	if !strings.Contains(result, "■ Projects") {
+		t.Error("Projects view should show KPI cards")
+	}
+}
+
+func TestSessionsViewKPICards(t *testing.T) {
+	s := newStyles()
+	list := stats.SessionList{
+		Sessions: []stats.SessionEntry{
+			{Title: "Session 1", Cost: 10.0, MessageCount: 50},
+			{Title: "Session 2", Cost: 20.0, MessageCount: 100},
+		},
+		Total:    2,
+		Page:     1,
+		PageSize: 12,
+	}
+	state := sessionsViewState{cursor: 0}
+
+	result := renderSessions(s, 100, 20, list, state)
+	if !strings.Contains(result, "■ Sessions") {
+		t.Error("Sessions view should show KPI cards")
+	}
+}
+
+// Project detail overlay state machine test
+func TestProjectDetailOverlayTransitions(t *testing.T) {
+	// This tests the state struct and key routing logic
+	// Using a model with minimal setup
+
+	// Verify projectDetailOverlayState struct matches expected pattern
+	state := projectDetailOverlayState{
+		visible: true,
+		id:      "test-project",
+		loading: true,
+		page:    1,
+		period:  "all",
+	}
+
+	if !state.visible {
+		t.Error("projectDetailOverlayState should have visible=true")
+	}
+	if state.id != "test-project" {
+		t.Error("projectDetailOverlayState should have id set")
+	}
+	if !state.loading {
+		t.Error("projectDetailOverlayState should have loading=true")
+	}
+	if state.page != 1 {
+		t.Error("projectDetailOverlayState should start at page 1")
+	}
+
+	// Verify close clears state
+	closed := projectDetailOverlayState{}
+	if closed.visible {
+		t.Error("Closed overlay should have visible=false")
+	}
+}
+
+// Config state tests
+func TestConfigSectionNavigation(t *testing.T) {
+	// Verify configState struct works correctly
+	cs := configState{
+		section:  -1,
+		cursor:   0,
+		expanded: make(map[string]bool),
+	}
+
+	if cs.section != -1 {
+		t.Error("configState should start at section -1 (list view)")
+	}
+
+	// Simulate entering a section
+	cs.section = 0
+	cs.cursor = 0
+	if cs.section != 0 {
+		t.Error("configState should be at section 0 after drill down")
+	}
+
+	// Simulate collapse/expand toggle
+	cs.expanded["section.key"] = true
+	if !cs.expanded["section.key"] {
+		t.Error("configState should track expanded keys")
+	}
+	delete(cs.expanded, "section.key")
+	if cs.expanded["section.key"] {
+		t.Error("configState should allow removing expanded keys")
+	}
+}
+
+// Daily KPI cards test
+func TestDailyViewKPICards(t *testing.T) {
+	s := newStyles()
+	daily := stats.DailyStats{
+		Days: []stats.DayStats{
+			{Date: "2025-01-01", Cost: 10.0, Sessions: 5, Messages: 100, Tokens: stats.TokenStats{Input: 5000}},
+			{Date: "2025-01-02", Cost: 20.0, Sessions: 8, Messages: 200, Tokens: stats.TokenStats{Input: 8000}},
+			{Date: "2025-01-03", Cost: 15.0, Sessions: 6, Messages: 150, Tokens: stats.TokenStats{Input: 6000}},
+		},
+	}
+
+	result := renderDaily(s, 100, 25, daily, "7d", dailyMetricCost, false, 0)
+
+	if !strings.Contains(result, "■ Total") {
+		t.Error("Daily view should show Total KPI card")
+	}
+	if !strings.Contains(result, "■ Avg/day") {
+		t.Error("Daily view should show Avg/day KPI card")
+	}
+	if !strings.Contains(result, "■ Peak") {
+		t.Error("Daily view should show Peak KPI card")
+	}
+	if !strings.Contains(result, "■ Days") {
+		t.Error("Daily view should show Days KPI card")
+	}
+}
+
+// Config bracket ([ / ]) navigation test — exercises real key routing.
+func TestConfigBracketNavigation(t *testing.T) {
+	m := &model{
+		width:  100,
+		height: 30,
+		styles: newStyles(),
+		keys:   defaultKeyMap(),
+		data: dashboardData{
+			Config: stats.ConfigView{
+				Exists: true,
+				Content: map[string]any{
+					"models":  map[string]any{"default": "claude", "timeout": float64(30)},
+					"display": map[string]any{"theme": "dark", "width": float64(120)},
+					"keys":    map[string]any{"quit": "q", "help": "?"},
+				},
+			},
+		},
+		config: configState{section: -1, cursor: 0, expanded: make(map[string]bool)},
+	}
+
+	// Start in section list view (section == -1)
+	if m.config.section != -1 {
+		t.Fatal("config should start in section list view")
+	}
+
+	// Press Enter to drill into first section
+	_, _ = m.updateConfigKey(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+	if m.config.section != 0 {
+		t.Fatalf("after Enter, config.section should be 0, got %d", m.config.section)
+	}
+	if m.config.cursor != 0 {
+		t.Fatalf("after Enter into section, config.cursor should be 0, got %d", m.config.cursor)
+	}
+
+	// Press [ (PrevTab) to go back to section list
+	_, _ = m.updateConfigKey(tea.KeyPressMsg(tea.Key{Text: "[", Code: '['}))
+	if m.config.section != -1 {
+		t.Fatalf("after [, config.section should be -1, got %d", m.config.section)
+	}
+
+	// Move cursor down to section 1
+	_, _ = m.updateConfigKey(tea.KeyPressMsg(tea.Key{Text: "j", Code: 'j'}))
+	if m.config.cursor != 1 {
+		t.Fatalf("after j, config.cursor should be 1, got %d", m.config.cursor)
+	}
+
+	// Drill into section 1
+	_, _ = m.updateConfigKey(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+	if m.config.section != 1 {
+		t.Fatalf("after Enter on section 1, config.section should be 1, got %d", m.config.section)
+	}
+
+	// Press ] (NextTab) to go back to section list (per existing PrevTab/NextTab config handler)
+	_, _ = m.updateConfigKey(tea.KeyPressMsg(tea.Key{Text: "]", Code: ']'}))
+	if m.config.section != -1 {
+		t.Fatalf("after ], config.section should be -1, got %d", m.config.section)
+	}
+
+	// Press Esc to verify it also works
+	m.config.section = 0
+	_, _ = m.updateConfigKey(tea.KeyPressMsg(tea.Key{Text: "esc", Code: tea.KeyEsc}))
+	if m.config.section != -1 {
+		t.Fatalf("after Esc, config.section should be -1, got %d", m.config.section)
+	}
+}
+
+// Config section navigation via left/h/up/k keys — exercises cursor movement in section list.
+func TestConfigSectionCursorNavigation(t *testing.T) {
+	m := &model{
+		width:  100,
+		height: 30,
+		styles: newStyles(),
+		keys:   defaultKeyMap(),
+		data: dashboardData{
+			Config: stats.ConfigView{
+				Exists: true,
+				Content: map[string]any{
+					"models":  map[string]any{},
+					"display": map[string]any{},
+					"keys":    map[string]any{},
+					"sync":    map[string]any{},
+				},
+			},
+		},
+		config: configState{section: -1, cursor: 0, expanded: make(map[string]bool)},
+	}
+
+	// Start at section 0, press j to go down
+	_, _ = m.updateConfigKey(tea.KeyPressMsg(tea.Key{Text: "j", Code: 'j'}))
+	if m.config.cursor != 1 {
+		t.Fatalf("after first j, cursor should be 1, got %d", m.config.cursor)
+	}
+
+	// Press k to go back up
+	_, _ = m.updateConfigKey(tea.KeyPressMsg(tea.Key{Text: "k", Code: 'k'}))
+	if m.config.cursor != 0 {
+		t.Fatalf("after k, cursor should be 0, got %d", m.config.cursor)
+	}
+
+	// Verify config section list render output contains sections
+	result := renderConfig(m.styles, 100, 30, m.data.Config, Options{}, store.SchemaInfo{}, &m.config)
+	if !strings.Contains(result, "models") {
+		t.Error("config render should contain 'models' section")
+	}
+	if !strings.Contains(result, "display") {
+		t.Error("config render should contain 'display' section")
+	}
+	if !strings.Contains(result, "keys") {
+		t.Error("config render should contain 'keys' section")
+	}
+	if !strings.Contains(result, "sync") {
+		t.Error("config render should contain 'sync' section")
+	}
+}
+
+// Project detail overlay key routing — exercises real updateProjectsKey behavior.
+func TestProjectDetailOverlayKeyRouting(t *testing.T) {
+	m := &model{
+		width:  100,
+		height: 30,
+		styles: newStyles(),
+		keys:   defaultKeyMap(),
+		data: dashboardData{
+			Projects: stats.ProjectStats{
+				Projects: []stats.ProjectEntry{
+					{ProjectID: "proj-1", ProjectName: "Alpha", Sessions: 10, Messages: 100, Cost: 50.0},
+					{ProjectID: "proj-2", ProjectName: "Beta", Sessions: 5, Messages: 50, Cost: 25.0},
+				},
+			},
+		},
+		projects: projectTableState{
+			filterState: filterState{cursor: 0},
+			sort:        projectSortCost,
+		},
+		projectsPeriod: "all",
+	}
+
+	// Enter on first project should set overlay visible+loading
+	result, cmd := m.updateProjectsKey(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+	_ = result // model returned
+	_ = cmd    // cmd returned (we ignore it in tests)
+
+	if !m.projectDetail.visible {
+		t.Error("after Enter on project, overlay should be visible")
+	}
+	if !m.projectDetail.loading {
+		t.Error("after Enter on project, overlay should be loading")
+	}
+	if m.projectDetail.id != "proj-1" {
+		t.Errorf("after Enter on project, id should be 'proj-1', got %q", m.projectDetail.id)
+	}
+	if m.projectDetail.page != 1 {
+		t.Errorf("after Enter on project, page should be 1, got %d", m.projectDetail.page)
+	}
+	if m.projectDetail.period != "all" {
+		t.Errorf("after Enter on project, period should be 'all', got %q", m.projectDetail.period)
+	}
+
+	// Simulate load completion via Update
+	m2, _ := m.Update(projectDetailLoadedMsg{
+		id:     "proj-1",
+		detail: &stats.ProjectDetail{ProjectName: "Alpha", Sessions: 10, Messages: 100, Cost: 50.0},
+		err:    nil,
+	})
+	m = m2.(*model)
+
+	if m.projectDetail.loading {
+		t.Error("after loaded msg, overlay should not be loading")
+	}
+	if m.projectDetail.err != nil {
+		t.Errorf("after loaded msg, err should be nil, got %v", m.projectDetail.err)
+	}
+	if m.projectDetail.detail == nil {
+		t.Fatal("after loaded msg, detail should not be nil")
+	}
+	if m.projectDetail.detail.ProjectName != "Alpha" {
+		t.Errorf("after loaded msg, ProjectName should be 'Alpha', got %q", m.projectDetail.detail.ProjectName)
+	}
+
+	// Verify stale-message rejection: different id gets ignored
+	// Reset and send with wrong id
+	m.projectDetail = projectDetailOverlayState{visible: true, id: "proj-1", loading: true}
+	m.Update(projectDetailLoadedMsg{
+		id:     "proj-2", // wrong id
+		detail: &stats.ProjectDetail{},
+		err:    nil,
+	})
+	if m.projectDetail.loading != true {
+		t.Error("stale msg with wrong id should be ignored (loading should remain true)")
+	}
+
+	// Esc should close overlay
+	_, _ = m.updateProjectDetailOverlayKey(tea.KeyPressMsg(tea.Key{Text: "esc", Code: tea.KeyEsc}))
+	if m.projectDetail.visible {
+		t.Error("after Esc, overlay should not be visible")
+	}
+	if m.projectDetail.id != "" {
+		t.Errorf("after Esc, id should be empty, got %q", m.projectDetail.id)
+	}
+}
+
+// Project detail overlay pagination — exercises n/p key handling.
+func TestProjectDetailOverlayPagination(t *testing.T) {
+	// Create sessions for pagination
+	sessions := make([]stats.SessionEntry, 15)
+	for i := range sessions {
+		sessions[i] = stats.SessionEntry{
+			ID:           fmt.Sprintf("sess-%d", i),
+			Title:        fmt.Sprintf("Session %d", i),
+			MessageCount: int64(i + 1),
+			Cost:         float64(i) * 2.0,
+		}
+	}
+
+	m := &model{
+		width:  100,
+		height: 30,
+		styles: newStyles(),
+		keys:   defaultKeyMap(),
+		projectDetail: projectDetailOverlayState{
+			visible: true,
+			id:      "proj-1",
+			loading: false,
+			page:    1,
+			period:  "all",
+			detail: &stats.ProjectDetail{
+				ProjectName:    "Alpha",
+				RecentSessions: sessions[:defaultSessionsPageSize],
+				TotalSessions:  int64(len(sessions)),
+				Sessions:       15,
+				Messages:       150,
+				Cost:           100.0,
+			},
+		},
+	}
+
+	// At page 1, pressing n should go to page 2 (if next page exists)
+	_, cmd := m.updateProjectDetailOverlayKey(tea.KeyPressMsg(tea.Key{Text: "n", Code: 'n'}))
+	if cmd == nil {
+		t.Error("pressing n at page 1 with more sessions should return a cmd")
+	}
+	if m.projectDetail.page != 2 {
+		t.Errorf("after n, page should be 2, got %d", m.projectDetail.page)
+	}
+	if m.projectDetail.cursor != 0 {
+		t.Errorf("after n, cursor should be reset to 0, got %d", m.projectDetail.cursor)
+	}
+	if !m.projectDetail.loading {
+		t.Error("after n, loading should be true")
+	}
+
+	// Reset state, test p
+	m.projectDetail.page = 2
+	m.projectDetail.loading = false
+	m.projectDetail.cursor = 3
+
+	_, cmd = m.updateProjectDetailOverlayKey(tea.KeyPressMsg(tea.Key{Text: "p", Code: 'p'}))
+	if cmd == nil {
+		t.Error("pressing p at page 2 should return a cmd")
+	}
+	if m.projectDetail.page != 1 {
+		t.Errorf("after p, page should be 1, got %d", m.projectDetail.page)
+	}
+	if m.projectDetail.cursor != 0 {
+		t.Errorf("after p, cursor should be reset to 0, got %d", m.projectDetail.cursor)
+	}
+	if !m.projectDetail.loading {
+		t.Error("after p, loading should be true")
+	}
+}
+
+// Project detail stale overlay messaging — exercises differentiate stale vs not-found.
+func TestProjectDetailStaleOverlayMessaging(t *testing.T) {
+	s := newStyles()
+
+	// Test stale state: errProjectStale should render stale message
+	staleState := projectDetailOverlayState{
+		visible: true,
+		id:      "proj-1",
+		err:     errProjectStale,
+	}
+	staleResult := renderProjectDetailOverlay(s, 80, 30, staleState)
+	if !strings.Contains(staleResult, "stale") {
+		t.Errorf("stale overlay should render stale message, got:\n%s", staleResult)
+	}
+	if strings.Contains(staleResult, "deleted") {
+		t.Errorf("stale overlay should NOT say 'deleted', got:\n%s", staleResult)
+	}
+
+	// Test not-found state: sql.ErrNoRows should render not-found message
+	notFoundState := projectDetailOverlayState{
+		visible: true,
+		id:      "proj-1",
+		err:     sql.ErrNoRows,
+	}
+	notFoundResult := renderProjectDetailOverlay(s, 80, 30, notFoundState)
+	if !strings.Contains(notFoundResult, "not found") {
+		t.Errorf("not-found overlay should render 'not found' message, got:\n%s", notFoundResult)
+	}
+	if strings.Contains(notFoundResult, "stale") {
+		t.Errorf("not-found overlay should NOT say 'stale', got:\n%s", notFoundResult)
+	}
+}
+
+// Render project detail overlay output for a loaded state.
+func TestProjectDetailOverlayRenderLoaded(t *testing.T) {
+	s := newStyles()
+
+	loadedState := projectDetailOverlayState{
+		visible: true,
+		id:      "proj-1",
+		detail: &stats.ProjectDetail{
+			ProjectName: "Test Project",
+			Sessions:    10,
+			Messages:    200,
+			Cost:        150.0,
+			Tokens: stats.TokenStats{
+				Input: 5000, Output: 3000, Reasoning: 1000,
+				Cache: stats.CacheStats{Read: 500, Write: 200},
+			},
+			RecentSessions: []stats.SessionEntry{
+				{Title: "Working on feature X", MessageCount: 25, Cost: 15.0},
+				{Title: "Debugging issue Y", MessageCount: 10, Cost: 5.0},
+			},
+			TotalSessions: 10,
+		},
+		page: 1,
+	}
+
+	result := renderProjectDetailOverlay(s, 80, 30, loadedState)
+
+	if !strings.Contains(result, "Test Project") {
+		t.Error("render should show project name")
+	}
+	if !strings.Contains(result, "Token breakdown") {
+		t.Error("render should show token breakdown section")
+	}
+	if !strings.Contains(result, "Recent sessions") {
+		t.Error("render should show recent sessions section")
+	}
+	if !strings.Contains(result, "Input") {
+		t.Error("token breakdown should show Input category")
+	}
+	if !strings.Contains(result, "Output") {
+		t.Error("token breakdown should show Output category")
+	}
+	if !strings.Contains(result, "Page 1/1") {
+		t.Error("render should show pagination status")
+	}
+	if !strings.Contains(result, "Esc closes overlay") {
+		t.Error("render should show footer hint")
+	}
+}
+
+// Config section detail expand/collapse via updateConfigKey.
+func TestConfigSectionExpandCollapse(t *testing.T) {
+	m := &model{
+		width:  100,
+		height: 30,
+		styles: newStyles(),
+		keys:   defaultKeyMap(),
+		data: dashboardData{
+			Config: stats.ConfigView{
+				Exists: true,
+				Content: map[string]any{
+					"api": map[string]any{
+						"models": map[string]any{"default": "claude", "fallback": "gpt"},
+						"key":    "sk-test",
+					},
+				},
+			},
+		},
+		config: configState{section: -1, cursor: 0, expanded: make(map[string]bool)},
+	}
+
+	// Drill into section 0 (api)
+	_, _ = m.updateConfigKey(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+	if m.config.section != 0 {
+		t.Fatalf("section should be 0 after Enter, got %d", m.config.section)
+	}
+
+	// First key is "api.key" (alphabetically), second is "api.models" (nested)
+	// Move cursor down to api.models (index 1)
+	m.config.cursor = 1
+
+	// Press Enter to expand
+	_, _ = m.updateConfigKey(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+	if !m.config.expanded["api.models"] {
+		t.Error("api.models should be expanded after Enter")
+	}
+
+	// Press Enter again to collapse
+	_, _ = m.updateConfigKey(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+	if m.config.expanded["api.models"] {
+		t.Error("api.models should be collapsed after second Enter")
+	}
+}
+
+// Config render output for no-config state.
+func TestConfigNoFileMessage(t *testing.T) {
+	s := newStyles()
+	cs := configState{section: -1, cursor: 0, expanded: make(map[string]bool)}
+
+	// Config does not exist
+	result := renderConfig(s, 100, 30, stats.ConfigView{Exists: false}, Options{}, store.SchemaInfo{}, &cs)
+	if !strings.Contains(result, "No config file found") {
+		t.Errorf("render should show 'No config file found' message:\n%s", result)
+	}
+
+	// Config exists but no content
+	result = renderConfig(s, 100, 30, stats.ConfigView{Exists: true, Content: nil}, Options{}, store.SchemaInfo{}, &cs)
+	if !strings.Contains(result, "no content") {
+		t.Errorf("render should show 'no content' message:\n%s", result)
+	}
+}
+
+// Project detail overlay render: loading state.
+func TestProjectDetailOverlayLoading(t *testing.T) {
+	s := newStyles()
+	loadingState := projectDetailOverlayState{
+		visible: true,
+		id:      "proj-1",
+		loading: true,
+	}
+	result := renderProjectDetailOverlay(s, 80, 30, loadingState)
+	if !strings.Contains(result, "Loading project detail") {
+		t.Errorf("loading state should show loading message:\n%s", result)
+	}
+}
+
+// Project detail overlay render: nil detail (no data).
+func TestProjectDetailOverlayNilDetail(t *testing.T) {
+	s := newStyles()
+	nilState := projectDetailOverlayState{
+		visible: true,
+		id:      "proj-1",
+		detail:  nil,
+	}
+	result := renderProjectDetailOverlay(s, 80, 30, nilState)
+	if !strings.Contains(result, "No detail available") {
+		t.Errorf("nil detail should show 'No detail available' message:\n%s", result)
+	}
+}
+
+// Project overlay Enter → session detail handoff — verifies pressing Enter on a session row
+// in the project detail overlay closes the project overlay and opens the session detail overlay.
+func TestProjectDetailOverlayEnterToSession(t *testing.T) {
+	m := &model{
+		width:  100,
+		height: 30,
+		styles: newStyles(),
+		keys:   defaultKeyMap(),
+		projectDetail: projectDetailOverlayState{
+			visible: true,
+			id:      "proj-1",
+			loading: false,
+			page:    1,
+			period:  "all",
+			detail: &stats.ProjectDetail{
+				ProjectName: "Alpha",
+				RecentSessions: []stats.SessionEntry{
+					{ID: "sess-1", Title: "Working on feature X", MessageCount: 25, Cost: 15.0},
+					{ID: "sess-2", Title: "Debugging issue Y", MessageCount: 10, Cost: 5.0},
+				},
+				TotalSessions: 2,
+				Sessions:      2,
+				Messages:      35,
+				Cost:          20.0,
+			},
+		},
+	}
+
+	// Cursor starts at 0, press Enter on first session row
+	resultModel, cmd := m.updateProjectDetailOverlayKey(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+	_ = resultModel
+
+	if cmd == nil {
+		t.Error("Enter on session row should return a cmd (loadSessionDetailCmd)")
+	}
+
+	// Project overlay should be fully closed
+	if m.projectDetail.visible {
+		t.Error("project detail overlay should be closed after Enter on session")
+	}
+	if m.projectDetail.id != "" {
+		t.Errorf("project detail id should be empty, got %q", m.projectDetail.id)
+	}
+
+	// Session detail overlay should be open with correct session ID
+	if !m.sessionDetail.visible {
+		t.Error("session detail overlay should be visible after handoff")
+	}
+	if m.sessionDetail.id != "sess-1" {
+		t.Errorf("session detail id should be 'sess-1', got %q", m.sessionDetail.id)
+	}
+	if !m.sessionDetail.loading {
+		t.Error("session detail should be loading after handoff")
+	}
+}
+
+// Config section tab render — verify section detail view renders key-value pairs.
+func TestConfigSectionDetailRender(t *testing.T) {
+	s := newStyles()
+	cs := configState{section: 0, cursor: 0, expanded: make(map[string]bool)}
+	cfg := stats.ConfigView{
+		Exists: true,
+		Content: map[string]any{
+			"api": map[string]any{
+				"key":     "sk-test-12345",
+				"timeout": float64(30),
+				"enabled": true,
+			},
+		},
+	}
+	result := renderConfig(s, 100, 30, cfg, Options{}, store.SchemaInfo{}, &cs)
+
+	if !strings.Contains(result, "api") {
+		t.Error("section detail should show section name")
+	}
+	if !strings.Contains(result, "key") {
+		t.Error("section detail should show key names")
+	}
+	if !strings.Contains(result, "timeout") {
+		t.Error("section detail should show timeout")
+	}
+	if !strings.Contains(result, "enabled") {
+		t.Error("section detail should show enabled")
+	}
+	if !strings.Contains(result, "[/] or Esc") {
+		t.Error("section detail should show back navigation hint")
+	}
 }

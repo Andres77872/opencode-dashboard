@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -95,32 +94,6 @@ type projectTableState struct {
 	sort projectSortMode
 }
 
-type sessionOverlayState struct {
-	visible bool
-	id      string
-	detail  *stats.SessionDetail
-	loading bool
-	err     error
-}
-
-type dayMessagesOverlayState struct {
-	visible  bool
-	date     string
-	messages stats.MessageList
-	cursor   int
-	page     int
-	loading  bool
-	err      error
-}
-
-type messageDetailOverlayState struct {
-	visible bool
-	id      string
-	detail  *stats.MessageDetail
-	loading bool
-	err     error
-}
-
 type snapshotLoadedMsg struct {
 	data     dashboardData
 	loadedAt time.Time
@@ -130,12 +103,6 @@ type snapshotLoadedMsg struct {
 type sessionsLoadedMsg struct {
 	list stats.SessionList
 	err  error
-}
-
-type sessionDetailLoadedMsg struct {
-	id     string
-	detail *stats.SessionDetail
-	err    error
 }
 
 type dailyPeriodLoadedMsg struct {
@@ -165,18 +132,6 @@ type projectsPeriodLoadedMsg struct {
 type modelsPeriodLoadedMsg struct {
 	period string
 	data   stats.ModelStats
-	err    error
-}
-
-type dayMessagesLoadedMsg struct {
-	date string
-	list stats.MessageList
-	err  error
-}
-
-type messageDetailLoadedMsg struct {
-	id     string
-	detail *stats.MessageDetail
 	err    error
 }
 
@@ -214,6 +169,8 @@ type model struct {
 	projects       projectTableState
 	sessions       sessionTableState
 	sessionDetail  sessionOverlayState
+	projectDetail  projectDetailOverlayState
+	config         configState
 }
 
 func newModel(st *store.Store, opts Options) *model {
@@ -243,6 +200,10 @@ func newModel(st *store.Store, opts Options) *model {
 			filterState: filterState{cursor: 0},
 			sort:        stats.SessionSortNewest,
 		},
+		config: configState{
+			section:  -1,
+			expanded: make(map[string]bool),
+		},
 	}
 }
 
@@ -270,6 +231,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reconcileTableCursors()
 		m.applyLoadedSessions(msg.data.Sessions)
 		m.reconcileSessionOverlay()
+		m.reconcileProjectOverlay()
 		return m, nil
 
 	case sessionsLoadedMsg:
@@ -293,6 +255,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionDetail.loading = false
 		m.sessionDetail.err = msg.err
 		m.sessionDetail.detail = msg.detail
+		return m, nil
+
+	case projectDetailLoadedMsg:
+		if msg.id != m.projectDetail.id {
+			return m, nil
+		}
+		m.projectDetail.loading = false
+		m.projectDetail.err = msg.err
+		m.projectDetail.detail = msg.detail
 		return m, nil
 
 	case dailyPeriodLoadedMsg:
@@ -407,6 +378,10 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.updateSessionOverlayKey(msg)
 	}
 
+	if m.projectDetail.visible {
+		return m.updateProjectDetailOverlayKey(msg)
+	}
+
 	if m.filterMode {
 		return m.updateFilterKey(msg)
 	}
@@ -464,6 +439,8 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.updateProjectsKey(msg)
 	case tabSessions:
 		return m.updateSessionsKey(msg)
+	case tabConfig:
+		return m.updateConfigKey(msg)
 	default:
 		return m, nil
 	}
@@ -581,6 +558,21 @@ func (m *model) updateProjectsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if matches(key, m.keys.Toggle...) && count > 0 {
+		entry, ok := m.currentProjectEntry()
+		if !ok {
+			return m, nil
+		}
+		m.projectDetail = projectDetailOverlayState{
+			visible: true,
+			id:      entry.ProjectID,
+			loading: true,
+			page:    1,
+			period:  m.projectsPeriod,
+		}
+		return m, loadProjectDetailCmd(m.store, entry.ProjectID, m.projectsPeriod, 1)
+	}
+
 	return m.updateStaticTableCursorKey(key, count, &m.projects.cursor)
 }
 
@@ -691,27 +683,6 @@ func (m *model) updateFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) updateSessionOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	key := msg.String()
-	if matches(key, m.keys.Close...) {
-		m.sessionDetail.visible = false
-		m.sessionDetail.loading = false
-		m.sessionDetail.err = nil
-		m.sessionDetail.detail = nil
-		m.sessionDetail.id = ""
-		return m, nil
-	}
-	if matches(key, m.keys.Refresh...) {
-		m.loading = true
-		m.sessionDetail.loading = true
-		return m, tea.Batch(
-			loadSnapshotCmd(m.store, m.currentSessionQuery()),
-			loadSessionDetailCmd(m.store, m.sessionDetail.id),
-		)
-	}
-	return m, nil
-}
-
 func (m *model) updateDailyKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	daily := m.currentDaily()
@@ -764,88 +735,6 @@ func (m *model) updateDailyKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) updateDayMessagesOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	key := msg.String()
-	count := len(m.dayMessages.messages.Messages)
-
-	if matches(key, m.keys.Close...) {
-		m.dayMessages.visible = false
-		m.dayMessages.loading = false
-		m.dayMessages.err = nil
-		m.dayMessages.messages = stats.MessageList{}
-		m.dayMessages.date = ""
-		m.dayMessages.cursor = 0
-		m.dayMessages.page = 1
-		return m, nil
-	}
-	if matches(key, m.keys.Refresh...) {
-		m.dayMessages.loading = true
-		m.dayMessages.err = nil
-		return m, loadDayMessagesCmd(m.store, m.dayMessages.date, m.dayMessages.page)
-	}
-	if count > 0 {
-		if matches(key, m.keys.Down...) {
-			m.dayMessages.cursor = clamp(m.dayMessages.cursor+1, 0, max(count-1, 0))
-			return m, nil
-		}
-		if matches(key, m.keys.Up...) {
-			m.dayMessages.cursor = clamp(m.dayMessages.cursor-1, 0, max(count-1, 0))
-			return m, nil
-		}
-		if matches(key, m.keys.Top...) {
-			m.dayMessages.cursor = 0
-			return m, nil
-		}
-		if matches(key, m.keys.Bottom...) {
-			m.dayMessages.cursor = max(count-1, 0)
-			return m, nil
-		}
-		if matches(key, m.keys.NextPage...) && hasNextMessagePage(m.dayMessages.messages) {
-			m.dayMessages.page++
-			m.dayMessages.cursor = 0
-			m.dayMessages.loading = true
-			return m, loadDayMessagesCmd(m.store, m.dayMessages.date, m.dayMessages.page)
-		}
-		if matches(key, m.keys.PrevPage...) && m.dayMessages.page > 1 {
-			m.dayMessages.page--
-			m.dayMessages.cursor = 0
-			m.dayMessages.loading = true
-			return m, loadDayMessagesCmd(m.store, m.dayMessages.date, m.dayMessages.page)
-		}
-		if matches(key, m.keys.Toggle...) {
-			if m.dayMessages.cursor >= 0 && m.dayMessages.cursor < count {
-				entry := m.dayMessages.messages.Messages[m.dayMessages.cursor]
-				m.messageDetail = messageDetailOverlayState{
-					visible: true,
-					id:      entry.ID,
-					loading: true,
-				}
-				return m, loadMessageDetailCmd(m.store, entry.ID)
-			}
-		}
-	}
-	return m, nil
-}
-
-func (m *model) updateMessageDetailOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	key := msg.String()
-
-	if matches(key, m.keys.Close...) {
-		m.messageDetail.visible = false
-		m.messageDetail.loading = false
-		m.messageDetail.err = nil
-		m.messageDetail.detail = nil
-		m.messageDetail.id = ""
-		return m, nil
-	}
-	if matches(key, m.keys.Refresh...) {
-		m.messageDetail.loading = true
-		m.messageDetail.err = nil
-		return m, loadMessageDetailCmd(m.store, m.messageDetail.id)
-	}
-	return m, nil
-}
-
 func (m *model) View() tea.View {
 	bodyHeight := max(m.height-6, 10)
 	content := m.renderContent(bodyHeight)
@@ -860,6 +749,9 @@ func (m *model) View() tea.View {
 	}
 	if m.sessionDetail.visible {
 		content = m.renderSessionOverlay(content, bodyHeight)
+	}
+	if m.projectDetail.visible {
+		content = m.renderProjectOverlay(content, bodyHeight)
 	}
 
 	parts := []string{m.renderStatusBar(), m.renderTabs(), content, m.renderFooter()}
@@ -969,7 +861,7 @@ func (m *model) renderActiveTab(width, height int) string {
 			sort:        m.sessions.sort,
 		})
 	case tabConfig:
-		return renderConfig(m.styles, width, height, m.data.Config, m.opts, m.store.Schema())
+		return renderConfig(m.styles, width, height, m.data.Config, m.opts, m.store.Schema(), &m.config)
 	default:
 		return "unknown tab"
 	}
@@ -1001,6 +893,8 @@ func (m *model) renderHelp(bodyHeight int) string {
 		"  g/G       jump top/bottom",
 		"  /         filter current table",
 		"  s         cycle table sort",
+		m.styles.Text.Render("Projects"),
+		"  Enter     opens detail overlay",
 		"",
 		m.styles.Text.Render("Overview / Models / Tools / Projects"),
 		"  p         cycles 1d/7d/30d/1y/all",
@@ -1015,6 +909,12 @@ func (m *model) renderHelp(bodyHeight int) string {
 		m.styles.Text.Render("Sessions"),
 		"  P         cycles period 1d/7d/30d/1y/all",
 		"",
+		m.styles.Text.Render("Config"),
+		"  j/k       move cursor",
+		"  Enter     select section / expand value",
+		"  [ / ] / Esc   go back to section list",
+		"  g/G       jump top/bottom",
+		"",
 		m.styles.Text.Render("Day Messages Overlay"),
 		"  j/k       move cursor",
 		"  n/p       paginate",
@@ -1024,6 +924,12 @@ func (m *model) renderHelp(bodyHeight int) string {
 		m.styles.Text.Render("Message Detail Overlay"),
 		"  Esc       close overlay (returns to day messages)",
 		"  r         refresh message content",
+		"",
+		m.styles.Text.Render("Project Detail Overlay"),
+		"  j/k       move cursor",
+		"  n/p       paginate",
+		"  Enter     open session",
+		"  Esc       close overlay",
 	}
 	box := m.styles.HelpPanel.Width(max(min(m.width-8, 84), 40)).Render(joinLines(help...))
 	return lipgloss.Place(max(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, box,
@@ -1066,6 +972,9 @@ func (m *model) renderFooter() string {
 			contextKeys += " • filter:" + truncateWithEllipsis(m.sessions.filter, 18)
 		}
 	}
+	if m.activeTab == tabConfig {
+		contextKeys += " • j/k move • Enter select • [/] sections • Esc back"
+	}
 	if m.filterMode {
 		contextKeys = "FILTER • type to search current table • Enter apply • Esc cancel"
 	}
@@ -1082,45 +991,15 @@ func (m *model) renderFooter() string {
 	if m.sessionDetail.visible && !m.dayMessages.visible && !m.messageDetail.visible {
 		contextKeys = "SESSION DETAIL • Esc close • r refresh detail"
 	}
+	if m.projectDetail.visible && !m.sessionDetail.visible && !m.dayMessages.visible && !m.messageDetail.visible {
+		pageInfo := fmt.Sprintf("page %d", m.projectDetail.page)
+		if m.projectDetail.detail != nil {
+			totalPages := max(int((m.projectDetail.detail.TotalSessions+int64(defaultSessionsPageSize)-1)/int64(defaultSessionsPageSize)), 1)
+			pageInfo = fmt.Sprintf("page %d/%d", m.projectDetail.page, totalPages)
+		}
+		contextKeys = fmt.Sprintf("PROJECT DETAIL • %s • j/k move • n/p pages • Enter session • Esc close", pageInfo)
+	}
 	return m.styles.Footer.Width(m.width).Render(contextKeys)
-}
-
-func (m *model) renderSessionOverlay(base string, bodyHeight int) string {
-	panelWidth := calculateOverlayWidth(m.width)
-	panelHeight := calculateOverlayHeight(bodyHeight)
-	overlay := renderSessionDetailOverlay(m.styles, panelWidth, panelHeight, m.sessionDetail)
-	return lipgloss.Place(max(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, overlay,
-		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(lipgloss.Color("#171A1F"))))
-}
-
-func (m *model) renderDayMessagesOverlay(base string, bodyHeight int) string {
-	panelWidth := calculateOverlayWidth(m.width)
-	panelHeight := calculateOverlayHeight(bodyHeight)
-	overlay := renderDayMessagesOverlayContent(m.styles, panelWidth, panelHeight, m.dayMessages)
-	return lipgloss.Place(max(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, overlay,
-		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(lipgloss.Color("#171A1F"))))
-}
-
-func (m *model) renderMessageDetailOverlay(base string, bodyHeight int) string {
-	panelWidth := calculateOverlayWidth(m.width)
-	panelHeight := calculateOverlayHeight(bodyHeight)
-	overlay := renderMessageDetailOverlayContent(m.styles, panelWidth, panelHeight, m.messageDetail)
-	return lipgloss.Place(max(m.width-4, 40), bodyHeight, lipgloss.Center, lipgloss.Center, overlay,
-		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(lipgloss.Color("#171A1F"))))
-}
-
-func calculateOverlayWidth(termWidth int) int {
-	minWidth := 48
-	maxWidth := 140
-	proportionalWidth := int(float64(termWidth) * 0.85)
-	return max(min(proportionalWidth, maxWidth), minWidth)
-}
-
-func calculateOverlayHeight(bodyHeight int) int {
-	minHeight := 12
-	maxHeight := 40
-	proportionalHeight := int(float64(bodyHeight) * 0.85)
-	return max(min(proportionalHeight, maxHeight), minHeight)
 }
 
 func (m *model) currentDaily() stats.DailyStats {
@@ -1160,13 +1039,12 @@ func (m *model) reconcileTableCursors() {
 	m.projects.cursor = clamp(m.projects.cursor, 0, max(len(m.visibleProjectEntries())-1, 0))
 }
 
-func (m *model) reconcileSessionOverlay() {
-	if !m.sessionDetail.visible || m.sessionDetail.id == "" {
-		return
+func (m *model) currentProjectEntry() (stats.ProjectEntry, bool) {
+	items := m.visibleProjectEntries()
+	if m.projects.cursor < 0 || m.projects.cursor >= len(items) {
+		return stats.ProjectEntry{}, false
 	}
-	if _, ok := m.sessionEntryByID(m.sessionDetail.id); !ok && !m.sessionDetail.loading {
-		m.sessionDetail.err = sql.ErrNoRows
-	}
+	return items[m.projects.cursor], true
 }
 
 func (m *model) currentSessionEntry() (stats.SessionEntry, bool) {
@@ -1187,45 +1065,82 @@ func (m *model) sessionEntryByID(id string) (stats.SessionEntry, bool) {
 
 func loadSnapshotCmd(st *store.Store, query stats.SessionQuery) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
 		var data dashboardData
 		var err error
 
-		if data.Overview, err = stats.Overview(ctx, st, "all"); err != nil {
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			data.Overview, err = stats.Overview(ctx, st, "all")
+		}()
+		if err != nil {
 			return snapshotLoadedMsg{err: err}
 		}
 		data.OverviewByPeriod = make(map[string]stats.OverviewStats)
 		data.OverviewByPeriod["all"] = data.Overview
 
 		data.DailyByPeriod = make(map[string]stats.DailyStats)
-		if daily7, err := stats.Daily(ctx, st, "7d"); err != nil {
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			var daily7 stats.DailyStats
+			daily7, err = stats.Daily(ctx, st, "7d")
+			if err == nil {
+				data.DailyByPeriod["7d"] = daily7
+			}
+		}()
+		if err != nil {
 			return snapshotLoadedMsg{err: err}
-		} else {
-			data.DailyByPeriod["7d"] = daily7
 		}
-		if data.Models, err = stats.Models(ctx, st, "all"); err != nil {
+
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			data.Models, err = stats.Models(ctx, st, "all")
+		}()
+		if err != nil {
 			return snapshotLoadedMsg{err: err}
 		}
 		data.ModelsByPeriod = make(map[string]stats.ModelStats)
 		data.ModelsByPeriod["all"] = data.Models
-		if data.Tools, err = stats.Tools(ctx, st, "all"); err != nil {
+
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			data.Tools, err = stats.Tools(ctx, st, "all")
+		}()
+		if err != nil {
 			return snapshotLoadedMsg{err: err}
 		}
 		data.ToolsByPeriod = make(map[string]stats.ToolStats)
 		data.ToolsByPeriod["all"] = data.Tools
 
-		if data.Projects, err = stats.Projects(ctx, st, "all"); err != nil {
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			data.Projects, err = stats.Projects(ctx, st, "all")
+		}()
+		if err != nil {
 			return snapshotLoadedMsg{err: err}
 		}
 		data.ProjectsByPeriod = make(map[string]stats.ProjectStats)
 		data.ProjectsByPeriod["all"] = data.Projects
 
-		if data.Sessions, err = stats.SessionsWithQuery(ctx, st, query); err != nil {
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			data.Sessions, err = stats.SessionsWithQuery(ctx, st, query)
+		}()
+		if err != nil {
 			return snapshotLoadedMsg{err: err}
 		}
-		if data.Config, err = stats.Config(ctx, st); err != nil {
+
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			data.Config, err = stats.Config(ctx, st)
+		}()
+		if err != nil {
 			return snapshotLoadedMsg{err: err}
 		}
 
@@ -1240,16 +1155,6 @@ func loadSessionsCmd(st *store.Store, query stats.SessionQuery) tea.Cmd {
 
 		list, err := stats.SessionsWithQuery(ctx, st, query)
 		return sessionsLoadedMsg{list: list, err: err}
-	}
-}
-
-func loadSessionDetailCmd(st *store.Store, id string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		detail, err := stats.SessionByID(ctx, st, id)
-		return sessionDetailLoadedMsg{id: id, detail: detail, err: err}
 	}
 }
 
@@ -1301,49 +1206,6 @@ func loadModelsPeriodCmd(st *store.Store, period string) tea.Cmd {
 		data, err := stats.Models(ctx, st, period)
 		return modelsPeriodLoadedMsg{period: period, data: data, err: err}
 	}
-}
-
-func loadDayMessagesCmd(st *store.Store, date string, page int) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		period := date
-		if len(date) == 10 {
-			period = "1d"
-		}
-		list, err := stats.MessagesByPeriod(ctx, st, period, page, 20, stats.DefaultMessageSort())
-		if err == nil && len(date) == 10 {
-			var filtered []stats.MessageEntry
-			for _, msg := range list.Messages {
-				if msg.TimeCreated.Format("2006-01-02") == date {
-					filtered = append(filtered, msg)
-				}
-			}
-			list.Messages = filtered
-			if filtered == nil {
-				list.Messages = []stats.MessageEntry{}
-			}
-		}
-		return dayMessagesLoadedMsg{date: date, list: list, err: err}
-	}
-}
-
-func loadMessageDetailCmd(st *store.Store, id string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		detail, err := stats.MessageByID(ctx, st, id)
-		return messageDetailLoadedMsg{id: id, detail: detail, err: err}
-	}
-}
-
-func hasNextMessagePage(list stats.MessageList) bool {
-	if list.PageSize <= 0 {
-		return false
-	}
-	return int64(list.Page*list.PageSize) < list.Total
 }
 
 func nextDailyPeriod(current string) string {

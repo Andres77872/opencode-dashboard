@@ -2,7 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+
+	lipgloss "charm.land/lipgloss/v2"
 
 	"opencode-dashboard/internal/stats"
 )
@@ -31,6 +34,43 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 		s.Muted.Render("Top usage with leader summary, cost share, and avg/msg."),
 	}
 
+	// KPI cards row
+	if len(items) > 0 {
+		totalSessions := int64(0)
+		totalMessages := int64(0)
+		totalCost := 0.0
+		for _, item := range items {
+			totalSessions += item.Sessions
+			totalMessages += item.Messages
+			totalCost += item.Cost
+		}
+		avgCostPerMsg := 0.0
+		if totalMessages > 0 {
+			avgCostPerMsg = totalCost / float64(totalMessages)
+		}
+		if width >= 80 {
+			cardWidth := max((width-8)/4, 18)
+			modelsKPI := lipgloss.JoinHorizontal(lipgloss.Top,
+				compactMetricCard(s, "Models", formatInt(int64(len(items))), "", cardWidth),
+				compactMetricCard(s, "Cost", formatMoney(totalCost), "", cardWidth),
+				compactMetricCard(s, "Sessions", formatInt(totalSessions), "", cardWidth),
+				compactMetricCard(s, "Avg $/msg", formatMoney(avgCostPerMsg), "", cardWidth),
+			)
+			rows = append(rows, modelsKPI)
+		} else {
+			cardWidth := max((width-8)/2, 18)
+			row1 := lipgloss.JoinHorizontal(lipgloss.Top,
+				compactMetricCard(s, "Models", formatInt(int64(len(items))), "", cardWidth),
+				compactMetricCard(s, "Cost", formatMoney(totalCost), "", cardWidth),
+			)
+			row2 := lipgloss.JoinHorizontal(lipgloss.Top,
+				compactMetricCard(s, "Sessions", formatInt(totalSessions), "", cardWidth),
+				compactMetricCard(s, "Avg $/msg", formatMoney(avgCostPerMsg), "", cardWidth),
+			)
+			rows = append(rows, row1, row2)
+		}
+	}
+
 	// Leader section (top 3 by cost) - reusable helper
 	if len(items) >= 2 {
 		totalCost := 0.0
@@ -45,6 +85,50 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 		if leaderSection != "" {
 			rows = append(rows, "", leaderSection)
 		}
+
+		// Usage leader (by messages)
+		sortedByMsgs := make([]stats.ModelEntry, len(items))
+		copy(sortedByMsgs, items)
+		sort.Slice(sortedByMsgs, func(i, j int) bool {
+			if sortedByMsgs[i].Messages != sortedByMsgs[j].Messages {
+				return sortedByMsgs[i].Messages > sortedByMsgs[j].Messages
+			}
+			return sortedByMsgs[i].Cost > sortedByMsgs[j].Cost
+		})
+		usageTotal := sortedByMsgs[0].Messages
+		usageLeaders := make([]LeaderEntry, min(3, len(sortedByMsgs)))
+		for i := 0; i < len(usageLeaders); i++ {
+			usageLeaders[i] = LeaderEntry{Name: sortedByMsgs[i].ModelID, Value: float64(sortedByMsgs[i].Messages)}
+		}
+		usageSection := renderLeaderSection(s, width, usageLeaders, float64(usageTotal), "#%d", func(v float64) string { return formatInt(int64(v)) })
+		if usageSection != "" {
+			rows = append(rows, "", s.Muted.Render("Most used"), usageSection)
+		}
+
+		// Efficiency leader (best $/msg)
+		effCandidates := make([]stats.ModelEntry, 0, len(items))
+		for _, item := range items {
+			if item.Messages > 0 {
+				effCandidates = append(effCandidates, item)
+			}
+		}
+		if len(effCandidates) >= 2 {
+			sort.Slice(effCandidates, func(i, j int) bool {
+				ratioI := effCandidates[i].Cost / float64(effCandidates[i].Messages)
+				ratioJ := effCandidates[j].Cost / float64(effCandidates[j].Messages)
+				return ratioI < ratioJ
+			})
+			maxEfficiency := effCandidates[len(effCandidates)-1].Cost / float64(effCandidates[len(effCandidates)-1].Messages)
+			effLeaders := make([]LeaderEntry, min(3, len(effCandidates)))
+			for i := 0; i < len(effLeaders); i++ {
+				ratio := effCandidates[i].Cost / float64(effCandidates[i].Messages)
+				effLeaders[i] = LeaderEntry{Name: effCandidates[i].ModelID, Value: ratio}
+			}
+			effSection := renderLeaderSection(s, width, effLeaders, maxEfficiency, "#%d", formatMoney)
+			if effSection != "" {
+				rows = append(rows, "", s.Muted.Render("Best $/msg"), effSection)
+			}
+		}
 	}
 
 	rows = append(rows, "")
@@ -52,15 +136,21 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 	// Width thresholds for progressive column drop
 	showAvgPerMsg := width >= 95
 	showCostShare := width >= 110
+	showTokenBar := width >= 130
+	showTokenCols := width >= 160
 
 	// Calculate dynamic widths
 	nameWidth := max(width-42, 16)
 	if showAvgPerMsg && !showCostShare {
 		nameWidth = max(width-50, 16)
-	} else if showAvgPerMsg && showCostShare {
+	} else if showAvgPerMsg && showCostShare && !showTokenBar {
 		nameWidth = max(width-74, 16)
-	} else if showCostShare {
+	} else if showCostShare && !showTokenBar {
 		nameWidth = max(width-62, 16)
+	} else if showTokenBar && !showTokenCols {
+		nameWidth = max(width-86, 16) // +TOKENS(12) on top of avg+share combo
+	} else if showTokenCols {
+		nameWidth = max(width-106, 16) // +IN(6)+OUT(6)+REAS(8)+CR(6)+CW(6) on top of avg+share
 	}
 
 	// Build header based on available columns
@@ -71,6 +161,11 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 	headerParts = append(headerParts, padLeft("COST", 10))
 	if showCostShare {
 		headerParts = append(headerParts, padLeft("SHARE", 12))
+	}
+	if showTokenCols {
+		headerParts = append(headerParts, padLeft("IN", 6), padLeft("OUT", 6), padLeft("REAS", 8), padLeft("C_RD", 6), padLeft("C_WR", 6))
+	} else if showTokenBar {
+		headerParts = append(headerParts, padLeft("TOKENS", 12))
 	}
 	rows = append(rows, s.TableHeader.Render(strings.Join(headerParts, " ")))
 
@@ -83,8 +178,13 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 		rows = append(rows, s.Muted.Render(message))
 	} else {
 		totalCost := 0.0
+		maxTotalTokens := int64(0)
 		for _, item := range items {
 			totalCost += item.Cost
+			totalTokens := item.Tokens.Input + item.Tokens.Output + item.Tokens.Reasoning + item.Tokens.Cache.Read + item.Tokens.Cache.Write
+			if totalTokens > maxTotalTokens {
+				maxTotalTokens = totalTokens
+			}
 		}
 
 		start, end := tableWindow(len(items), state.cursor, limit)
@@ -109,6 +209,19 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 				shareBar := progressBarWithPercent(s, item.Cost, totalCost, 12)
 				lineParts = append(lineParts, padLeft(shareBar, 12))
 			}
+			if showTokenCols {
+				lineParts = append(lineParts,
+					padLeft(formatCompactInt(item.Tokens.Input), 6),
+					padLeft(formatCompactInt(item.Tokens.Output), 6),
+					padLeft(formatCompactInt(item.Tokens.Reasoning), 8),
+					padLeft(formatCompactInt(item.Tokens.Cache.Read), 6),
+					padLeft(formatCompactInt(item.Tokens.Cache.Write), 6),
+				)
+			} else if showTokenBar {
+				totalTokens := item.Tokens.Input + item.Tokens.Output + item.Tokens.Reasoning + item.Tokens.Cache.Read + item.Tokens.Cache.Write
+				tokenBar := progressBarWithPercent(s, float64(totalTokens), float64(maxTotalTokens), 12)
+				lineParts = append(lineParts, padLeft(tokenBar, 12))
+			}
 
 			line := strings.Join(lineParts, " ")
 			if i == state.cursor {
@@ -128,6 +241,43 @@ func renderTools(s styles, width, height int, items []stats.ToolEntry, total int
 		s.Muted.Render("Top tool usage with leader summary, success rate, and status."),
 	}
 
+	// KPI cards row
+	if len(items) > 0 {
+		totalInvocations := int64(0)
+		totalFailures := int64(0)
+		for _, item := range items {
+			totalInvocations += item.Invocations
+			totalFailures += item.Failures
+		}
+		successRate := "--"
+		if totalInvocations > 0 {
+			successful := totalInvocations - totalFailures
+			rate := (float64(successful) / float64(totalInvocations)) * 100
+			successRate = fmt.Sprintf("%.1f%%", rate)
+		}
+		if width >= 80 {
+			cardWidth := max((width-8)/4, 18)
+			toolsKPI := lipgloss.JoinHorizontal(lipgloss.Top,
+				compactMetricCard(s, "Tools", formatInt(int64(len(items))), "", cardWidth),
+				compactMetricCard(s, "Runs", formatInt(totalInvocations), "", cardWidth),
+				compactMetricCard(s, "Failures", formatInt(totalFailures), "", cardWidth),
+				compactMetricCard(s, "Success", successRate, "", cardWidth),
+			)
+			rows = append(rows, toolsKPI)
+		} else {
+			cardWidth := max((width-8)/2, 18)
+			row1 := lipgloss.JoinHorizontal(lipgloss.Top,
+				compactMetricCard(s, "Tools", formatInt(int64(len(items))), "", cardWidth),
+				compactMetricCard(s, "Runs", formatInt(totalInvocations), "", cardWidth),
+			)
+			row2 := lipgloss.JoinHorizontal(lipgloss.Top,
+				compactMetricCard(s, "Failures", formatInt(totalFailures), "", cardWidth),
+				compactMetricCard(s, "Success", successRate, "", cardWidth),
+			)
+			rows = append(rows, row1, row2)
+		}
+	}
+
 	// Leader section (top 2 by invocations) - reusable helper
 	if len(items) >= 2 {
 		totalInvocations := int64(0)
@@ -141,6 +291,28 @@ func renderTools(s styles, width, height int, items []stats.ToolEntry, total int
 		leaderSection := renderLeaderSection(s, width, leaders, float64(totalInvocations), "#%d", func(v float64) string { return formatInt(int64(v)) })
 		if leaderSection != "" {
 			rows = append(rows, "", leaderSection)
+		}
+
+		// Failure leader
+		failedTools := make([]stats.ToolEntry, 0, len(items))
+		for _, item := range items {
+			if item.Failures > 0 {
+				failedTools = append(failedTools, item)
+			}
+		}
+		if len(failedTools) >= 2 {
+			sort.Slice(failedTools, func(i, j int) bool {
+				return failedTools[i].Failures > failedTools[j].Failures
+			})
+			totalFailures := failedTools[0].Failures
+			failLeaders := make([]LeaderEntry, min(3, len(failedTools)))
+			for i := 0; i < len(failLeaders); i++ {
+				failLeaders[i] = LeaderEntry{Name: failedTools[i].Name, Value: float64(failedTools[i].Failures)}
+			}
+			failSection := renderLeaderSection(s, width, failLeaders, float64(totalFailures), "#%d", func(v float64) string { return formatInt(int64(v)) })
+			if failSection != "" {
+				rows = append(rows, "", s.Muted.Render("Most failed"), failSection)
+			}
 		}
 	}
 
@@ -242,6 +414,39 @@ func renderProjects(s styles, width, height int, items []stats.ProjectEntry, tot
 	rows := []string{
 		s.PanelTitle.Render("Projects"),
 		s.Muted.Render("Project concentration with leader summary, tokens, and share."),
+	}
+
+	// KPI cards row
+	if len(items) > 0 {
+		totalSessions := int64(0)
+		totalMessages := int64(0)
+		totalCost := 0.0
+		for _, item := range items {
+			totalSessions += item.Sessions
+			totalMessages += item.Messages
+			totalCost += item.Cost
+		}
+		if width >= 80 {
+			cardWidth := max((width-8)/4, 18)
+			projectsKPI := lipgloss.JoinHorizontal(lipgloss.Top,
+				compactMetricCard(s, "Projects", formatInt(int64(len(items))), "", cardWidth),
+				compactMetricCard(s, "Sessions", formatInt(totalSessions), "", cardWidth),
+				compactMetricCard(s, "Messages", formatInt(totalMessages), "", cardWidth),
+				compactMetricCard(s, "Cost", formatMoney(totalCost), "", cardWidth),
+			)
+			rows = append(rows, projectsKPI)
+		} else {
+			cardWidth := max((width-8)/2, 18)
+			row1 := lipgloss.JoinHorizontal(lipgloss.Top,
+				compactMetricCard(s, "Projects", formatInt(int64(len(items))), "", cardWidth),
+				compactMetricCard(s, "Sessions", formatInt(totalSessions), "", cardWidth),
+			)
+			row2 := lipgloss.JoinHorizontal(lipgloss.Top,
+				compactMetricCard(s, "Messages", formatInt(totalMessages), "", cardWidth),
+				compactMetricCard(s, "Cost", formatMoney(totalCost), "", cardWidth),
+			)
+			rows = append(rows, row1, row2)
+		}
 	}
 
 	// Leader section (top 3 by cost) - reusable helper
@@ -348,7 +553,44 @@ func renderSessions(s styles, width, height int, list stats.SessionList, state s
 	rows := []string{
 		s.PanelTitle.Render("Sessions"),
 		s.Muted.Render("Dense browse flow with filter, sort, cost share, and Enter drill-down."),
-		"",
+	}
+
+	// KPI cards row (scoped to current page)
+	if len(list.Sessions) > 0 {
+		totalCost := 0.0
+		maxCost := 0.0
+		totalMessages := int64(0)
+		for _, item := range list.Sessions {
+			totalCost += item.Cost
+			totalMessages += item.MessageCount
+			if item.Cost > maxCost {
+				maxCost = item.Cost
+			}
+		}
+		avgCost := totalCost / float64(len(list.Sessions))
+		if width >= 80 {
+			cardWidth := max((width-8)/4, 18)
+			sessionsKPI := lipgloss.JoinHorizontal(lipgloss.Top,
+				compactMetricCard(s, "Sessions", formatInt(int64(len(list.Sessions))), "", cardWidth),
+				compactMetricCard(s, "Avg $/sess", formatMoney(avgCost), "", cardWidth),
+				compactMetricCard(s, "Messages", formatInt(totalMessages), "", cardWidth),
+				compactMetricCard(s, "Max Cost", formatMoney(maxCost), "", cardWidth),
+			)
+			rows = append(rows, sessionsKPI, "")
+		} else {
+			cardWidth := max((width-8)/2, 18)
+			row1 := lipgloss.JoinHorizontal(lipgloss.Top,
+				compactMetricCard(s, "Sessions", formatInt(int64(len(list.Sessions))), "", cardWidth),
+				compactMetricCard(s, "Avg $/sess", formatMoney(avgCost), "", cardWidth),
+			)
+			row2 := lipgloss.JoinHorizontal(lipgloss.Top,
+				compactMetricCard(s, "Messages", formatInt(totalMessages), "", cardWidth),
+				compactMetricCard(s, "Max Cost", formatMoney(maxCost), "", cardWidth),
+			)
+			rows = append(rows, row1, row2, "")
+		}
+	} else {
+		rows = append(rows, "")
 	}
 
 	// Width threshold for share column
