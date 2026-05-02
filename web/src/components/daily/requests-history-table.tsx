@@ -7,9 +7,10 @@ import { SortButton } from '../ui/sort-button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
 import { formatCompactCurrency, formatDateTime, formatInteger, formatTokenCount } from '../../lib/format'
+import { getTokenTotal } from '../../lib/token-breakdown'
 import { getAriaSort } from '../../lib/table-sort'
 import type { SortDirection, SortState } from '../../lib/table-sort'
-import type { DailyPeriod, MessageEntry, MessageList, TokenStats } from '../../types/api'
+import type { DailyPeriod, MessageEntry, MessageList } from '../../types/api'
 
 const FALLBACK_PAGE_SIZE = 12
 
@@ -38,14 +39,6 @@ function getRoleTone(role: string) {
 
 function getMessageSessionLabel(message: Pick<MessageEntry, 'session_title'>) {
   return message.session_title || 'Untitled session'
-}
-
-function getTokenTotal(tokens?: TokenStats) {
-  if (!tokens) {
-    return 0
-  }
-
-  return tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
 }
 
 function PaginationButton({
@@ -139,18 +132,18 @@ export function RequestsHistoryTable({
     <Card>
       <CardHeader>
         <CardDescription>Always-on drill-down</CardDescription>
-        <CardTitle>Requests history</CardTitle>
+        <CardTitle>Messages history</CardTitle>
       </CardHeader>
 
       <CardContent className="space-y-4">
         {error ? (
           <Alert tone="danger" className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="font-medium text-foreground">Requests history failed to load</div>
+              <div className="font-medium text-foreground">Messages history failed to load</div>
               <div className="text-sm opacity-90">{error}</div>
             </div>
             <Button variant="ghost" onClick={onRetry}>
-              Retry requests
+              Retry messages
             </Button>
           </Alert>
         ) : null}
@@ -184,11 +177,11 @@ export function RequestsHistoryTable({
                 {loading && !data ? <LoadingRows /> : null}
 
                 {!loading && (data?.messages.length ?? 0) === 0 ? (
-                  <EmptyRow colSpan={7} copy="No requests recorded for this Daily window yet." />
+                  <EmptyRow colSpan={7} copy="No messages recorded for this Daily window yet." />
                 ) : null}
 
                 {data?.messages.map((message) => {
-                  const tokenTotal = getTokenTotal(message.tokens)
+                  const tokenTotal = message.tokens ? getTokenTotal(message.tokens) : 0
 
                   return (
                     <TableRow
@@ -284,19 +277,19 @@ export function RequestsHistoryTable({
 
             {!loading && (data?.messages.length ?? 0) === 0 ? (
               <div className="rounded-2xl border border-border/70 bg-panel/65 px-4 py-5 text-sm text-muted-foreground">
-                No requests recorded for this Daily window yet.
+                No messages recorded for this Daily window yet.
               </div>
             ) : null}
 
             {data?.messages.map((message) => {
-              const tokenTotal = getTokenTotal(message.tokens)
+              const tokenTotal = message.tokens ? getTokenTotal(message.tokens) : 0
 
               return (
                 <button
                   key={message.id}
                   type="button"
                   onClick={(event) => onOpenMessage(message.id, event.currentTarget)}
-                  className="w-full rounded-2xl border border-border/70 bg-panel/65 p-4 text-left transition-colors hover:bg-panel/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                  className="w-full rounded-2xl border border-border/70 bg-panel/65 p-4 text-left transition-colors hover:bg-panel/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                   aria-label={`View details for ${getMessageSessionLabel(message)}`}
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -344,7 +337,7 @@ export function RequestsHistoryTable({
           <div className="flex flex-col gap-3 rounded-2xl border border-border/70 bg-panel/50 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
               <span className="font-medium text-foreground">
-                Showing {firstVisible}–{lastVisible} of {formatInteger(total)} requests
+                Showing {firstVisible}–{lastVisible} of {formatInteger(total)} messages
               </span>
             </div>
 

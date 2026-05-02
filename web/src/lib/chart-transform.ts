@@ -11,6 +11,25 @@ export interface TokenBarDatum {
   total: number
 }
 
+/** Normalised (0–1) datum for percentage-stacked token bars.
+ *  Raw values are preserved in `_raw` so tooltips can show absolute counts. */
+export interface TokenPercentageDatum {
+  date: string
+  input: number
+  'cache-read': number
+  output: number
+  reasoning: number
+  'cache-write': number
+  total: number
+  _raw: {
+    input: number
+    'cache-read': number
+    output: number
+    reasoning: number
+    'cache-write': number
+  }
+}
+
 export interface CostBarDatum {
   date: string
   cost: number
@@ -52,6 +71,43 @@ export function transformDaysToRequestBars(days: DayStats[]): RequestsBarDatum[]
     date: day.date,
     requests: day.messages,
   }))
+}
+
+/** Transform days into normalised (0–1) token categories for percentage-stacked bars.
+ *  Raw absolute values are kept in `_raw` for tooltip display. */
+export function transformDaysToTokenPercentageBars(days: DayStats[]): TokenPercentageDatum[] {
+  return days.map((day) => {
+    const input = day.tokens.input
+    const cacheRead = day.tokens.cache.read
+    const output = day.tokens.output
+    const reasoning = day.tokens.reasoning
+    const cacheWrite = day.tokens.cache.write
+    const total = input + cacheRead + output + reasoning + cacheWrite
+
+    if (total === 0) {
+      return {
+        date: day.date,
+        input: 0,
+        'cache-read': 0,
+        output: 0,
+        reasoning: 0,
+        'cache-write': 0,
+        total: 0,
+        _raw: { input: 0, 'cache-read': 0, output: 0, reasoning: 0, 'cache-write': 0 },
+      }
+    }
+
+    return {
+      date: day.date,
+      input: input / total,
+      'cache-read': cacheRead / total,
+      output: output / total,
+      reasoning: reasoning / total,
+      'cache-write': cacheWrite / total,
+      total,
+      _raw: { input, 'cache-read': cacheRead, output, reasoning, 'cache-write': cacheWrite },
+    }
+  })
 }
 
 const TOKEN_COLORS: Record<string, string> = {

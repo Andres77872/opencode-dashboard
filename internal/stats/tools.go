@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
-	"time"
 
 	"opencode-dashboard/internal/store"
 )
@@ -19,35 +19,81 @@ type toolPartData struct {
 	} `json:"state"`
 }
 
+// useLegacyToolsPath returns true when OPCODE_TOOLS_LEGACY=true, forcing the old Go streaming path.
+func useLegacyToolsPath() bool {
+	return os.Getenv("OPCODE_TOOLS_LEGACY") == "true"
+}
+
 func Tools(ctx context.Context, st *store.Store, period string) (ToolStats, error) {
 	if !st.IsValidSchema() {
 		return ToolStats{}, store.ErrInvalidSchema
 	}
 
-	days, err := parsePeriod(period)
+	pw, err := ComputePeriodWindow(ctx, st, period)
 	if err != nil {
 		return ToolStats{}, err
 	}
 
-	now := time.Now().UTC()
-	endDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	startDate := endDate
+	startMs := pw.StartMs
+	endMs := pw.EndMs
 
-	if days == allHistoricPeriodDays {
-		startDate, err = queryEarliestActivityDate(ctx, st)
-		if err != nil {
-			return ToolStats{}, fmt.Errorf("query earliest activity date: %w", err)
-		}
-		if startDate.IsZero() {
-			startDate = endDate
-		}
-	} else if days > 0 {
-		startDate = endDate.AddDate(0, 0, -days+1)
+	if useLegacyToolsPath() {
+		return toolsLegacy(ctx, st, startMs, endMs)
 	}
 
-	startMs := startDate.UnixMilli()
-	endMs := endDate.AddDate(0, 0, 1).UnixMilli()
+	return toolsSQL(ctx, st, startMs, endMs)
+}
 
+// toolsSQL uses JSON_EXTRACT + GROUP BY in SQL to aggregate tool stats.
+func toolsSQL(ctx context.Context, st *store.Store, startMs, endMs int64) (ToolStats, error) {
+	db := st.DB()
+
+	query := `
+		SELECT
+			JSON_EXTRACT(p.data, '$.tool') AS tool_name,
+			COUNT(*) AS invocations,
+			SUM(CASE WHEN JSON_EXTRACT(p.data, '$.state.status') = 'completed' THEN 1 ELSE 0 END) AS successes,
+			SUM(CASE WHEN JSON_EXTRACT(p.data, '$.state.status') = 'error' THEN 1 ELSE 0 END) AS failures,
+			COUNT(DISTINCT p.session_id) AS sessions
+		FROM part p
+		WHERE p.time_created >= ? AND p.time_created < ?
+			AND JSON_EXTRACT(p.data, '$.type') = 'tool'
+			AND JSON_EXTRACT(p.data, '$.tool') IS NOT NULL
+			AND JSON_EXTRACT(p.data, '$.tool') != ''
+		GROUP BY tool_name
+		ORDER BY invocations DESC, tool_name ASC
+	`
+
+	rows, err := db.QueryContext(ctx, query, startMs, endMs)
+	if err != nil {
+		return ToolStats{}, fmt.Errorf("failed to query tool aggregates: %w", err)
+	}
+	defer rows.Close()
+
+	tools := make([]ToolEntry, 0)
+	for rows.Next() {
+		var entry ToolEntry
+		if err := rows.Scan(
+			&entry.Name,
+			&entry.Invocations,
+			&entry.Successes,
+			&entry.Failures,
+			&entry.Sessions,
+		); err != nil {
+			return ToolStats{}, fmt.Errorf("failed to scan tool row: %w", err)
+		}
+		tools = append(tools, entry)
+	}
+
+	if err := rows.Err(); err != nil {
+		return ToolStats{}, fmt.Errorf("error iterating tool rows: %w", err)
+	}
+
+	return ToolStats{Tools: tools}, nil
+}
+
+// toolsLegacy is the old Go streaming path, kept as fallback behind OPCODE_TOOLS_LEGACY=true.
+func toolsLegacy(ctx context.Context, st *store.Store, startMs, endMs int64) (ToolStats, error) {
 	db := st.DB()
 
 	query := `SELECT session_id, data FROM part WHERE time_created >= ? AND time_created < ?`

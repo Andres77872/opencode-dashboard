@@ -1,12 +1,14 @@
 import type {
   ApiErrorResponse,
   ConfigStats,
+  DailyDimensionStats,
   DailyPeriod,
   DailyStats,
   MessageDetail,
   MessageList,
   ModelStats,
   OverviewStats,
+  ProjectDetail,
   ProjectStats,
   SessionDetail,
   SessionList,
@@ -14,6 +16,21 @@ import type {
 } from '../types/api'
 
 const DEFAULT_API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() ?? ''
+
+/**
+ * Module-level flag for HTTP cache bypass.
+ * Set to true before a refresh-triggered fetch to make the next `request()` call
+ * pass `cache: 'no-cache'` to fetch(). Reset to false after each request.
+ */
+let _bypassCache = false
+
+/**
+ * Enable HTTP cache bypass for the next request made via `request()`.
+ * Used by usePeriodResource when refreshNonce triggers a re-fetch.
+ */
+export function setBypassCache(value: boolean) {
+  _bypassCache = value
+}
 
 export class ApiClientError extends Error {
   readonly status: number
@@ -43,13 +60,21 @@ async function parseError(response: Response) {
 }
 
 async function request<T>(path: string, init?: RequestInit) {
-  const response = await fetch(resolveUrl(path), {
+  const fetchInit: RequestInit = {
     ...init,
     headers: {
       Accept: 'application/json',
       ...init?.headers,
     },
-  })
+  }
+
+  // When the user-initiated refresh has triggered this request, bypass HTTP cache
+  if (_bypassCache) {
+    fetchInit.cache = 'no-cache'
+    _bypassCache = false
+  }
+
+  const response = await fetch(resolveUrl(path), fetchInit)
 
   if (!response.ok) {
     throw new ApiClientError(await parseError(response), response.status)
@@ -87,7 +112,12 @@ export function getConfig(signal?: AbortSignal) {
   return request<ConfigStats>('/api/v1/config', { signal })
 }
 
-export function getSessions(page: number, limit: number, period: DailyPeriod, signal?: AbortSignal) {
+export function getSessions(
+  page: number,
+  limit: number,
+  period: DailyPeriod,
+  signal?: AbortSignal,
+) {
   const params = new URLSearchParams({
     page: String(page),
     limit: String(limit),
@@ -95,6 +125,50 @@ export function getSessions(page: number, limit: number, period: DailyPeriod, si
   })
 
   return request<SessionList>(`/api/v1/sessions?${params.toString()}`, { signal })
+}
+
+export function getSessionsWithFilter(
+  page: number,
+  limit: number,
+  period: DailyPeriod,
+  filter?: string,
+  projectId?: number,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+    period,
+  })
+
+  if (filter) {
+    params.set('filter', filter)
+  }
+
+  if (projectId !== undefined && projectId > 0) {
+    params.set('project_id', String(projectId))
+  }
+
+  return request<SessionList>(`/api/v1/sessions?${params.toString()}`, { signal })
+}
+
+export function getDailyDimension(dimension: string, period: DailyPeriod, signal?: AbortSignal) {
+  const params = new URLSearchParams({ dimension, period })
+  return request<DailyDimensionStats>(`/api/v1/daily?${params.toString()}`, { signal })
+}
+
+export function getProjectDetail(id: number, period: DailyPeriod, page?: number, limit?: number, signal?: AbortSignal) {
+  const params = new URLSearchParams({ period })
+
+  if (page !== undefined) {
+    params.set('page', String(page))
+  }
+
+  if (limit !== undefined) {
+    params.set('limit', String(limit))
+  }
+
+  return request<ProjectDetail>(`/api/v1/projects/${id}?${params.toString()}`, { signal })
 }
 
 export function getSessionDetail(id: string, signal?: AbortSignal) {

@@ -49,6 +49,7 @@ func (e APIError) Write(w http.ResponseWriter) {
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=30")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
 }

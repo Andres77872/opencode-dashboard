@@ -135,13 +135,13 @@ func (s *SessionBuilder) AddUserMessage(id string, createdAt time.Time) *Session
 	return s.AddMessage(NewMessage(id, s.id, "user").CreatedAt(createdAt))
 }
 
-func (s *SessionBuilder) AddAssistantMessage(id string, createdAt time.Time, cost float64, modelID, providerID string, input, output, reasoning int64) *SessionBuilder {
+func (s *SessionBuilder) AddAssistantMessage(id string, createdAt time.Time, cost float64, modelID, providerID string, input, output, reasoning, cacheRead, cacheWrite int64) *SessionBuilder {
 	msg := NewMessage(id, s.id, "assistant").
 		CreatedAt(createdAt).
 		Cost(cost).
 		ModelID(modelID).
 		ProviderID(providerID).
-		Tokens(input, output, reasoning)
+		Tokens(input, output, reasoning, cacheRead, cacheWrite)
 	return s.AddMessage(msg)
 }
 
@@ -157,6 +157,8 @@ type MessageBuilder struct {
 	input      int64
 	output     int64
 	reasoning  int64
+	cacheRead  int64
+	cacheWrite int64
 }
 
 // NewMessage creates a new message builder with required fields.
@@ -189,10 +191,12 @@ func (m *MessageBuilder) ProviderID(id string) *MessageBuilder {
 	return m
 }
 
-func (m *MessageBuilder) Tokens(input, output, reasoning int64) *MessageBuilder {
+func (m *MessageBuilder) Tokens(input, output, reasoning, cacheRead, cacheWrite int64) *MessageBuilder {
 	m.input = input
 	m.output = output
 	m.reasoning = reasoning
+	m.cacheRead = cacheRead
+	m.cacheWrite = cacheWrite
 	return m
 }
 
@@ -404,6 +408,15 @@ func (p *PartBuilder) CreatedAt(t time.Time) *PartBuilder {
 	return p
 }
 
+// NewStepFinishPart creates a part builder for a step-finish entry with token data.
+func NewStepFinishPart(id, sessionID, messageID string, input, output, reasoning, cacheRead, cacheWrite int64, cost float64) *PartBuilder {
+	data := fmt.Sprintf(
+		`{"type":"step-finish","reason":"stop","tokens":{"input":%d,"output":%d,"reasoning":%d,"cache":{"read":%d,"write":%d}},"cost":%.6f}`,
+		input, output, reasoning, cacheRead, cacheWrite, cost,
+	)
+	return NewPart(id, sessionID, data).MessageID(messageID)
+}
+
 func (p *PartBuilder) UpdatedAt(t time.Time) *PartBuilder {
 	p.updatedAt = t
 	return p
@@ -432,8 +445,8 @@ func buildMessageJSON(m *MessageBuilder) string {
 	}
 
 	// Assistant message with cost/tokens
-	return fmt.Sprintf(`{"role":"assistant","cost":%.6f,"modelID":"%s","providerID":"%s","tokens":{"input":%d,"output":%d,"reasoning":%d,"cache":{"read":0,"write":0}}}`,
-		m.cost, m.modelID, m.providerID, m.input, m.output, m.reasoning)
+	return fmt.Sprintf(`{"role":"assistant","cost":%.6f,"modelID":"%s","providerID":"%s","tokens":{"input":%d,"output":%d,"reasoning":%d,"cache":{"read":%d,"write":%d}}}`,
+		m.cost, m.modelID, m.providerID, m.input, m.output, m.reasoning, m.cacheRead, m.cacheWrite)
 }
 
 // SampleFixture creates a typical OpenCode-like database for testing.
@@ -457,9 +470,10 @@ func SampleFixture(ctx context.Context) (string, error) {
 		CreatedAt(day1).
 		UpdatedAt(day1)
 	s1.AddUserMessage("msg-001-01", day1.Add(1*time.Minute))
-	s1.AddAssistantMessage("msg-001-02", day1.Add(2*time.Minute), 0.05, "claude-3-sonnet", "anthropic", 1000, 500, 100)
+	// msg-001-02 message-level tokens reflect only Part B values (simulating upstream overwrite)
+	s1.AddAssistantMessage("msg-001-02", day1.Add(2*time.Minute), 0.05, "claude-3-sonnet", "anthropic", 200, 400, 100, 0, 0)
 	s1.AddUserMessage("msg-001-03", day1.Add(3*time.Minute))
-	s1.AddAssistantMessage("msg-001-04", day1.Add(4*time.Minute), 0.08, "claude-3-sonnet", "anthropic", 2000, 800, 150)
+	s1.AddAssistantMessage("msg-001-04", day1.Add(4*time.Minute), 0.08, "claude-3-sonnet", "anthropic", 2000, 800, 150, 0, 0)
 	b.AddSession(s1)
 
 	// Session 2: my-app with single exchange
@@ -468,7 +482,10 @@ func SampleFixture(ctx context.Context) (string, error) {
 		CreatedAt(day2).
 		UpdatedAt(day2)
 	s2.AddUserMessage("msg-002-01", day2.Add(1*time.Minute))
-	s2.AddAssistantMessage("msg-002-02", day2.Add(2*time.Minute), 0.03, "gpt-4", "openai", 800, 400, 50)
+	s2.AddAssistantMessage("msg-002-02", day2.Add(2*time.Minute), 0.03, "gpt-4", "openai", 800, 400, 50, 0, 0)
+	// Zero-token edge case: assistant message with all-zero tokens, no parts
+	s2.AddUserMessage("msg-002-03", day2.Add(3*time.Minute))
+	s2.AddAssistantMessage("msg-002-04", day2.Add(4*time.Minute), 0.0, "gpt-4", "openai", 0, 0, 0, 0, 0)
 	b.AddSession(s2)
 
 	// Session 3: opencode-dashboard with different model
@@ -477,18 +494,29 @@ func SampleFixture(ctx context.Context) (string, error) {
 		CreatedAt(day3).
 		UpdatedAt(day3)
 	s3.AddUserMessage("msg-003-01", day3.Add(1*time.Minute))
-	s3.AddAssistantMessage("msg-003-02", day3.Add(2*time.Minute), 0.12, "gpt-4-turbo", "openai", 3000, 1200, 200)
+	// gpt-4-turbo message with cache values at message level too
+	s3.AddAssistantMessage("msg-003-02", day3.Add(2*time.Minute), 0.12, "gpt-4-turbo", "openai", 3000, 1200, 200, 500, 300)
 	s3.AddUserMessage("msg-003-03", day3.Add(3*time.Minute))
-	s3.AddAssistantMessage("msg-003-04", day3.Add(4*time.Minute), 0.15, "gpt-4-turbo", "openai", 4000, 1500, 250)
+	s3.AddAssistantMessage("msg-003-04", day3.Add(4*time.Minute), 0.15, "gpt-4-turbo", "openai", 4000, 1500, 250, 800, 400)
 	b.AddSession(s3)
 
-	// Session 4: legacy-project (no title)
+	// Session 4: legacy-project (no title) — fallback model: NO step-finish parts
 	s4 := NewSession("ses-004", "proj-003").
 		CreatedAt(day3.Add(-1 * time.Hour)).
 		UpdatedAt(day3.Add(-1 * time.Hour))
 	s4.AddUserMessage("msg-004-01", day3.Add(-1*time.Hour).Add(1*time.Minute))
-	s4.AddAssistantMessage("msg-004-02", day3.Add(-1*time.Hour).Add(2*time.Minute), 0.02, "gpt-3.5-turbo", "openai", 500, 200, 30)
+	s4.AddAssistantMessage("msg-004-02", day3.Add(-1*time.Hour).Add(2*time.Minute), 0.02, "gpt-3.5-turbo", "openai", 500, 200, 30, 0, 0)
 	b.AddSession(s4)
+
+	// Add step-finish parts for multi-step scenario (claude-3-sonnet msg-001-02)
+	// Part A: first step
+	b.AddPart(NewStepFinishPart("prt-001-02-a", "ses-001", "msg-001-02", 500, 300, 50, 100, 200, 0.03))
+	// Part B: second step — message-level tokens overwrite to Part B values upstream
+	b.AddPart(NewStepFinishPart("prt-001-02-b", "ses-001", "msg-001-02", 200, 400, 100, 0, 50, 0.02))
+
+	// Add step-finish parts for cache model (gpt-4-turbo)
+	b.AddPart(NewStepFinishPart("prt-003-02-a", "ses-003", "msg-003-02", 3000, 1200, 200, 500, 300, 0.06))
+	b.AddPart(NewStepFinishPart("prt-003-04-a", "ses-003", "msg-003-04", 4000, 1500, 250, 800, 400, 0.08))
 
 	return b.Build(ctx)
 }

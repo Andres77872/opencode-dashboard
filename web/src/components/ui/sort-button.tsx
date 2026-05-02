@@ -1,3 +1,4 @@
+import { Button } from './button'
 import { cn } from '../../lib/utils'
 import type { SortDirection } from '../../lib/table-sort'
 
@@ -21,13 +22,15 @@ export function SortButton({ label, active, direction, onClick }: SortButtonProp
   const sortStateLabel = active ? (direction === 'asc' ? 'ascending' : 'descending') : 'not sorted'
 
   return (
-    <button
+    <Button
       type="button"
+      variant="ghost"
+      size="xs"
       onClick={onClick}
       aria-label={`Sort by ${label}. Currently ${sortStateLabel}.`}
       title={`Sort by ${label}`}
       className={cn(
-        'inline-flex items-center gap-2 rounded-md px-1 py-1 text-left text-[11px] font-medium uppercase tracking-[0.16em] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70',
+        'rounded-md px-1 py-1 text-left text-[11px] font-medium uppercase tracking-[0.16em]',
         active ? 'bg-background/40 text-foreground' : 'text-muted-foreground hover:text-foreground',
       )}
     >
@@ -38,6 +41,6 @@ export function SortButton({ label, active, direction, onClick }: SortButtonProp
       >
         {icon}
       </span>
-    </button>
+    </Button>
   )
 }

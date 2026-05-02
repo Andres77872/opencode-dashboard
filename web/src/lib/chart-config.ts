@@ -13,7 +13,7 @@ export const costChartConfig = {
 } satisfies ChartConfig
 
 export const requestsChartConfig = {
-  requests: { label: 'Requests', color: 'var(--color-chart-1)' },
+  requests: { label: 'Messages', color: 'var(--color-chart-1)' },
 } satisfies ChartConfig
 
 export const tokenBreakdownChartConfig = {

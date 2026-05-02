@@ -42,7 +42,39 @@ func (h *Handlers) Daily(w http.ResponseWriter, r *http.Request) {
 	if period == "" {
 		period = "7d"
 	}
-	result, err := stats.Daily(ctx, h.store, period)
+
+	// Check for dimension query param — if present, route to dimension endpoint
+	if dim := r.URL.Query().Get("dimension"); dim != "" {
+		result, err := stats.DailyDimension(ctx, h.store, dim, period)
+		if err != nil {
+			if strings.Contains(err.Error(), "invalid dimension") {
+				BadRequest(err.Error()).Write(w)
+				return
+			}
+			if strings.Contains(err.Error(), "invalid period") {
+				BadRequest(err.Error()).Write(w)
+				return
+			}
+			InternalError("failed to compute dimension stats").Write(w)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	// Parse granularity param
+	granStr := r.URL.Query().Get("granularity")
+	var result stats.DailyStats
+	var err error
+	switch granStr {
+	case "hour":
+		result, err = stats.Daily(ctx, h.store, period, stats.GranularityHour)
+	case "day":
+		result, err = stats.Daily(ctx, h.store, period, stats.GranularityDay)
+	default:
+		// Don't pass granularity — let Daily decide based on period (auto-hour for 1d)
+		result, err = stats.Daily(ctx, h.store, period)
+	}
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid period") {
 			BadRequest(err.Error()).Write(w)
@@ -116,6 +148,41 @@ func (h *Handlers) Projects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (h *Handlers) ProjectDetail(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		BadRequest("invalid project id").Write(w)
+		return
+	}
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "7d"
+	}
+	page := parseIntQuery(r, "page", 1)
+	limit := parseIntQuery(r, "limit", 10)
+
+	result, err := stats.ProjectByID(ctx, h.store, id, period, page, limit)
+	if err != nil {
+		if err == store.ErrInvalidSchema {
+			InternalError("database schema invalid").Write(w)
+			return
+		}
+		if strings.Contains(err.Error(), "invalid period") {
+			BadRequest(err.Error()).Write(w)
+			return
+		}
+		InternalError("failed to get project detail").Write(w)
+		return
+	}
+	if result == nil {
+		NotFound("project not found").Write(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (h *Handlers) Sessions(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	page := parseIntQuery(r, "page", 1)
@@ -127,11 +194,24 @@ func (h *Handlers) Sessions(w http.ResponseWriter, r *http.Request) {
 	if period == "" {
 		period = "7d"
 	}
+
+	var projectID int64
+	if pid := r.URL.Query().Get("project_id"); pid != "" {
+		var err error
+		projectID, err = strconv.ParseInt(pid, 10, 64)
+		if err != nil {
+			BadRequest("invalid project_id").Write(w)
+			return
+		}
+	}
+
 	result, err := stats.SessionsWithQuery(ctx, h.store, stats.SessionQuery{
-		Page:     page,
-		PageSize: limit,
-		Sort:     stats.SessionSortNewest,
-		Period:   period,
+		Page:      page,
+		PageSize:  limit,
+		Filter:    r.URL.Query().Get("filter"),
+		ProjectID: projectID,
+		Sort:      stats.SessionSortNewest,
+		Period:    period,
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid period") {

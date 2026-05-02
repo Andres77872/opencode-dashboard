@@ -14,19 +14,44 @@ import { Button } from '../components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { buildConfigSummary, buildSectionProjections, normalizeSearchQuery, serializeConfigValue, titleizeKey } from '../lib/config-utils'
 import { getConfig } from '../lib/api'
+import { usePeriodResource } from '../lib/use-period-resource'
 import type { ConfigStats } from '../types/api'
+import type { DailyPeriod } from '../types/api'
+
+/**
+ * Backward-compat shim for config content.
+ * Old API returns content as a string (JSON-encoded), new API returns it as an object.
+ */
+function resolveContent(raw: ConfigStats): ConfigStats {
+  if (raw.content && typeof raw.content === 'string') {
+    try {
+      return { ...raw, content: JSON.parse(raw.content) }
+    } catch {
+      return raw
+    }
+  }
+
+  return raw
+}
 
 export function ConfigView() {
-  const { refreshNonce, requestRefresh, setLastUpdatedAt, setRefreshing } = useDashboardContext()
-  const [data, setData] = useState<ConfigStats | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { requestRefresh } = useDashboardContext()
   const [searchValue, setSearchValue] = useState('')
   const [activeTab, setActiveTab] = useState('overview')
   const [copiedId, setCopiedId] = useState<string | null>(null)
-  const hasLoadedOnceRef = useRef(false)
   const hasChosenInitialTabRef = useRef(false)
   const copyResetRef = useRef<number | null>(null)
+
+  // Config is periodless — use a fixed '7d' as period arg (fetcher ignores it).
+  // cachePeriods: false ensures always re-fetch on refreshNonce.
+  const { data: rawData, loading, error } = usePeriodResource(
+    (_p: DailyPeriod, signal?: AbortSignal) => getConfig(signal),
+    '7d' as DailyPeriod,
+    { cachePeriods: false },
+  )
+
+  // Apply backward-compat shim for config content
+  const data = useMemo(() => (rawData ? resolveContent(rawData) : null), [rawData])
 
   useEffect(() => {
     return () => {
@@ -35,50 +60,6 @@ export function ConfigView() {
       }
     }
   }, [])
-
-  useEffect(() => {
-    const controller = new AbortController()
-    let ignore = false
-
-    async function loadConfig() {
-      setRefreshing(true)
-      setError(null)
-
-      if (!hasLoadedOnceRef.current) {
-        setLoading(true)
-      }
-
-      try {
-        const next = await getConfig(controller.signal)
-
-        if (ignore) {
-          return
-        }
-
-        setData(next)
-        hasLoadedOnceRef.current = true
-        setLastUpdatedAt(new Date())
-      } catch (caught) {
-        if (controller.signal.aborted || ignore) {
-          return
-        }
-
-        setError(caught instanceof Error ? caught.message : 'Failed to load config')
-      } finally {
-        if (!controller.signal.aborted && !ignore) {
-          setLoading(false)
-          setRefreshing(false)
-        }
-      }
-    }
-
-    void loadConfig()
-
-    return () => {
-      ignore = true
-      controller.abort()
-    }
-  }, [refreshNonce, setLastUpdatedAt, setRefreshing])
 
   const searchQuery = useMemo(() => normalizeSearchQuery(searchValue), [searchValue])
   const summary = useMemo(() => buildConfigSummary(data), [data])
@@ -134,7 +115,7 @@ export function ConfigView() {
             <Badge tone="accent">Live route</Badge>
             <h2 className="text-2xl font-semibold tracking-tight text-foreground">Config</h2>
             <p className="max-w-3xl text-sm text-muted-foreground">
-              Focused inspection of <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>, reorganized into a section-first explorer instead of a scattered JSON wall.
+              Focused inspection of <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>, reorganized into a section-first explorer instead of a scattered JSON wall.
             </p>
           </div>
         </div>
@@ -142,6 +123,8 @@ export function ConfigView() {
       </section>
     )
   }
+
+  const contentValue = typeof data?.content === 'string' ? data.content : JSON.stringify(data?.content, null, 2)
 
   return (
     <section className="space-y-4">
@@ -155,7 +138,7 @@ export function ConfigView() {
         </div>
 
         <div className="text-sm text-muted-foreground">
-          Endpoint: <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>
+          Endpoint: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>
         </div>
       </div>
 
@@ -193,7 +176,7 @@ export function ConfigView() {
                 Nothing is broken. The route checked the resolved XDG config path and found no file to inspect, so the UI stays honest about where it looked.
               </p>
               <p>
-                Once <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">opencode.json</code> exists, this workspace will organize the redacted payload into focused section tabs automatically.
+                Once <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">opencode.json</code> exists, this workspace will organize the redacted payload into focused section tabs automatically.
               </p>
             </ConfigStateCard>
           ) : summary.parseError ? (
@@ -202,7 +185,7 @@ export function ConfigView() {
               title="Structured parsing failed"
               actions={
                 data.content ? (
-                  <CopyButton copyId="parse-error-raw" copiedId={copiedId} label="Copy JSON" value={data.content} onCopy={handleCopy} />
+                  <CopyButton copyId="parse-error-raw" copiedId={copiedId} label="Copy JSON" value={contentValue} onCopy={handleCopy} />
                 ) : null
               }
             >
@@ -211,7 +194,7 @@ export function ConfigView() {
               </p>
               <Alert tone="warning">{summary.parseError}</Alert>
               <div className="max-h-[32rem] overflow-auto rounded-xl border border-border/70 bg-background/40 p-3 font-mono text-xs leading-6 text-foreground">
-                <pre className="whitespace-pre-wrap break-words">{data.content}</pre>
+                <pre className="whitespace-pre-wrap break-words">{contentValue}</pre>
               </div>
             </ConfigStateCard>
           ) : summary.emptyObject ? (
@@ -280,7 +263,7 @@ export function ConfigView() {
               ))}
 
               <TabsContent value="raw">
-                <ConfigRawJsonPanel content={data?.content} copiedId={copiedId} onCopy={handleCopy} />
+                <ConfigRawJsonPanel content={contentValue} copiedId={copiedId} onCopy={handleCopy} />
               </TabsContent>
             </Tabs>
           )}

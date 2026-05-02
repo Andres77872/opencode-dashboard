@@ -14,13 +14,14 @@ import type { ModelEntry } from '../../types/api'
 import { formatCompactCurrency, formatCompactInteger, formatCurrency, formatInteger, formatTokenCount } from '../../lib/format'
 import { getAriaSort, type SortDirection, type SortState } from '../../lib/table-sort'
 
-export type SortKey = 'cost' | 'messages' | 'sessions' | 'model' | 'provider' | 'avgCostPerMessage'
+export type SortKey = 'cost' | 'messages' | 'sessions' | 'model' | 'provider' | 'avgCostPerMessage' | 'percent'
 
 export const DEFAULT_SORT_DIRECTIONS: Record<SortKey, SortDirection> = {
   avgCostPerMessage: 'asc',
   cost: 'desc',
   messages: 'desc',
   model: 'asc',
+  percent: 'desc',
   provider: 'asc',
   sessions: 'desc',
 }
@@ -38,11 +39,12 @@ export function getProviderLabel(model: ModelEntry): string {
   return model.provider_id || 'Unknown provider'
 }
 
-export function getTotalTokens(model: ModelEntry): number {
-  return model.tokens.input + model.tokens.output + model.tokens.reasoning + model.tokens.cache.read + model.tokens.cache.write
-}
-
-export function compareRows(sortKey: SortKey, left: EnrichedModelRow, right: EnrichedModelRow): number {
+export function compareRows(
+  sortKey: SortKey,
+  left: EnrichedModelRow,
+  right: EnrichedModelRow,
+  metric?: ModelsMetric,
+): number {
   switch (sortKey) {
     case 'model':
       return getModelLabel(left).localeCompare(getModelLabel(right))
@@ -54,6 +56,18 @@ export function compareRows(sortKey: SortKey, left: EnrichedModelRow, right: Enr
       return right.messages - left.messages
     case 'avgCostPerMessage':
       return right.avgCostPerMessage - left.avgCostPerMessage
+    case 'percent': {
+      if (!metric) return right.cost - left.cost
+      const getShare = (row: EnrichedModelRow): number => {
+        switch (metric) {
+          case 'cost': return row.costShare
+          case 'sessions': return row.sessionShare
+          case 'messages': return row.messageShare
+          case 'tokens': return row.tokenShare
+        }
+      }
+      return getShare(right) - getShare(left)
+    }
     case 'cost':
     default:
       return right.cost - left.cost
@@ -108,11 +122,31 @@ export function ModelsTable({ rows, metric, totalMetricValue, sortState, onSortC
               onClick={() => onSortChange('messages')}
             />
           </TableHead>
+          <TableHead className="w-[9rem]" aria-sort={getAriaSort(sortState, 'percent')}>
+            <SortButton
+              active={isSortedBy('percent')}
+              direction={getSortDirection('percent')}
+              label="Share"
+              onClick={() => onSortChange('percent')}
+            />
+          </TableHead>
           <TableHead className="w-[7rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
             Input
           </TableHead>
           <TableHead className="w-[7rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
             Output
+          </TableHead>
+          <TableHead className="hidden md:table-cell w-[7rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            Reasoning
+          </TableHead>
+          <TableHead className="hidden lg:table-cell w-[7rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            Cache Read
+          </TableHead>
+          <TableHead className="hidden lg:table-cell w-[7rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            Cache Write
+          </TableHead>
+          <TableHead className="hidden md:table-cell lg:hidden w-[7rem] text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            Cache
           </TableHead>
           <TableHead className="w-[7rem]" aria-sort={getAriaSort(sortState, 'cost')}>
             <SortButton
@@ -141,17 +175,17 @@ export function ModelsTable({ rows, metric, totalMetricValue, sortState, onSortC
           return (
             <TableRow key={`${row.provider_id}:${row.model_id}`} className="bg-card/40 hover:bg-white/4">
               <TableCell className="min-w-[14rem]">
-                <div className="space-y-2">
-                  <div className="truncate font-medium text-foreground">{getModelLabel(row)}</div>
-                  <div className="flex items-center gap-3">
-                    <Progress value={progressValue} className="flex-1" />
-                    <span className="font-mono text-xs text-muted-foreground">{formatModelsMetricShare(metricShare)}</span>
-                  </div>
-                </div>
+                <div className="truncate font-medium text-foreground">{getModelLabel(row)}</div>
               </TableCell>
               <TableCell className="truncate font-mono text-sm text-muted-foreground">{getProviderLabel(row)}</TableCell>
               <TableCell className="font-mono text-sm text-foreground">{formatCompactInteger(row.sessions)}</TableCell>
               <TableCell className="font-mono text-sm text-foreground">{formatCompactInteger(row.messages)}</TableCell>
+              <TableCell className="w-[9rem]">
+                <div className="space-y-2">
+                  <Progress value={progressValue} className="flex-1" />
+                  <span className="font-mono text-xs text-muted-foreground">{formatModelsMetricShare(metricShare)}</span>
+                </div>
+              </TableCell>
               <TableCell className="font-mono text-sm text-foreground">
                 <TooltipProvider>
                   <Tooltip>
@@ -172,6 +206,54 @@ export function ModelsTable({ rows, metric, totalMetricValue, sortState, onSortC
                     </TooltipTrigger>
                     <TooltipContent side="top" className="font-mono">
                       <p>{formatInteger(row.tokens.output)}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </TableCell>
+              <TableCell className="hidden md:table-cell font-mono text-sm text-foreground">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="cursor-default transition-opacity hover:opacity-80">{formatTokenCount(row.tokens.reasoning)}</span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="font-mono">
+                      <p>{formatInteger(row.tokens.reasoning)}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </TableCell>
+              <TableCell className="hidden lg:table-cell font-mono text-sm text-foreground">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="cursor-default transition-opacity hover:opacity-80">{formatTokenCount(row.tokens.cache.read)}</span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="font-mono">
+                      <p>{formatInteger(row.tokens.cache.read)}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </TableCell>
+              <TableCell className="hidden lg:table-cell font-mono text-sm text-foreground">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="cursor-default transition-opacity hover:opacity-80">{formatTokenCount(row.tokens.cache.write)}</span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="font-mono">
+                      <p>{formatInteger(row.tokens.cache.write)}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </TableCell>
+              <TableCell className="hidden md:table-cell lg:hidden font-mono text-sm text-foreground">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="cursor-default transition-opacity hover:opacity-80">{formatTokenCount(row.tokens.cache.read + row.tokens.cache.write)}</span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="font-mono">
+                      <p>{formatInteger(row.tokens.cache.read + row.tokens.cache.write)}</p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>

@@ -14,8 +14,9 @@ import {
 import { Skeleton } from '../ui/skeleton'
 import { getMessageDetail } from '../../lib/api'
 import { formatCurrency, formatDateTime, formatInteger, formatTokenCount } from '../../lib/format'
+import { getTokenTotal } from '../../lib/token-breakdown'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
-import type { MessageDetail, MessagePart, TokenStats, ToolPart, ToolState } from '../../types/api'
+import type { MessageDetail, MessagePart, ToolPart, ToolState } from '../../types/api'
 
 function getRoleTone(role: string) {
   switch (role) {
@@ -40,14 +41,6 @@ function getModelLabel(message: Pick<MessageDetail, 'model_id' | 'provider_id'>)
   }
 
   return message.model_id || message.provider_id || 'No model metadata'
-}
-
-function getTokenTotal(tokens?: TokenStats) {
-  if (!tokens) {
-    return 0
-  }
-
-  return tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
 }
 
 function getToolStatusTone(status?: string) {
@@ -340,7 +333,7 @@ export function MessageDetailSheet({
     const textCount = detail?.content.text_parts.length ?? 0
     const reasoningCount = detail?.content.reasoning_parts.length ?? 0
     const toolCount = detail?.content.tool_parts?.length ?? 0
-    const tokenTotal = getTokenTotal(detail?.tokens)
+    const tokenTotal = detail?.tokens ? getTokenTotal(detail.tokens) : 0
 
     return {
       textCount,

@@ -10,6 +10,7 @@ type CacheStats struct {
 	Write int64 `json:"write"`
 }
 
+// NOTE: TokenStats uses nested cache: {read, write} for daily/model aggregate tokens.
 type TokenStats struct {
 	Input     int64      `json:"input"`
 	Output    int64      `json:"output"`
@@ -46,6 +47,32 @@ type DailyStats struct {
 	Granularity Granularity `json:"granularity"`
 }
 
+// DimensionDayStats represents a single day's data for a specific dimension value.
+type DimensionDayStats struct {
+	Date      string     `json:"date"`
+	Dimension string     `json:"dimension_key"`
+	Sessions  int64      `json:"sessions"`
+	Messages  int64      `json:"messages"`
+	Cost      float64    `json:"cost"`
+	Tokens    TokenStats `json:"tokens"`
+}
+
+// DailyDimensionStats is the response type for the dimension-grouped daily endpoint.
+type DailyDimensionStats struct {
+	Days      []DimensionDayStats `json:"days"`
+	Dimension string              `json:"dimension"`
+	Period    string              `json:"period"`
+}
+
+// NOTE: AvgTokenStats uses flat cache_read, cache_write for per-unit averages.
+type AvgTokenStats struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	Reasoning  float64 `json:"reasoning"`
+	CacheRead  float64 `json:"cache_read"`
+	CacheWrite float64 `json:"cache_write"`
+}
+
 type ModelEntry struct {
 	ModelID    string     `json:"model_id"`
 	ProviderID string     `json:"provider_id"`
@@ -53,6 +80,10 @@ type ModelEntry struct {
 	Messages   int64      `json:"messages"`
 	Cost       float64    `json:"cost"`
 	Tokens     TokenStats `json:"tokens"`
+
+	// Added: nullable pointers with omitempty for backward-compatible API expansion
+	AvgTokensPerMessage *AvgTokenStats `json:"avg_tokens_per_message,omitempty"`
+	AvgTokensPerSession *AvgTokenStats `json:"avg_tokens_per_session,omitempty"`
 }
 
 type ModelStats struct {
@@ -84,6 +115,19 @@ type ProjectStats struct {
 	Projects []ProjectEntry `json:"projects"`
 }
 
+// ProjectDetail is the response type for the project drilldown endpoint.
+type ProjectDetail struct {
+	ProjectID      string         `json:"project_id"`
+	ProjectName    string         `json:"project_name"`
+	Worktree       string         `json:"worktree,omitempty"`
+	Sessions       int64          `json:"sessions"`
+	Messages       int64          `json:"messages"`
+	Cost           float64        `json:"cost"`
+	Tokens         TokenStats     `json:"tokens"`
+	RecentSessions []SessionEntry `json:"recent_sessions,omitempty"`
+	TotalSessions  int64          `json:"total_sessions"`
+}
+
 type SessionEntry struct {
 	ID           string    `json:"id"`
 	Title        string    `json:"title"`
@@ -112,11 +156,12 @@ const (
 )
 
 type SessionQuery struct {
-	Page     int
-	PageSize int
-	Filter   string
-	Sort     SessionSortMode
-	Period   string // "1d", "7d", "30d", "1y", "all" — filters by message activity time
+	Page      int
+	PageSize  int
+	Filter    string
+	ProjectID int64 // exact project ID filter, 0 = no filter
+	Sort      SessionSortMode
+	Period    string // "1d", "7d", "30d", "1y", "all" — filters by message activity time
 }
 
 type MessageSortField string
@@ -237,9 +282,9 @@ type SessionDetail struct {
 }
 
 type ConfigView struct {
-	Path    string `json:"path"`
-	Exists  bool   `json:"exists"`
-	Content string `json:"content,omitempty"`
+	Path    string         `json:"path"`
+	Exists  bool           `json:"exists"`
+	Content map[string]any `json:"content,omitempty"`
 }
 
 type DateRange struct {
@@ -273,7 +318,7 @@ type MessageEntry struct {
 	SessionTitle string      `json:"session_title"`
 	Role         string      `json:"role"`
 	TimeCreated  time.Time   `json:"time_created"`
-	Cost         float64     `json:"cost"`
+	Cost         float64     `json:"cost,omitempty"`
 	Tokens       *TokenStats `json:"tokens,omitempty"`
 	ModelID      string      `json:"model_id,omitempty"`
 	ProviderID   string      `json:"provider_id,omitempty"`

@@ -3,8 +3,6 @@ package stats
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"time"
 
 	"opencode-dashboard/internal/store"
 )
@@ -12,29 +10,13 @@ import (
 func Overview(ctx context.Context, store *store.Store, period string) (OverviewStats, error) {
 	var result OverviewStats
 
-	days, err := parsePeriod(period)
+	pw, err := ComputePeriodWindow(ctx, store, period)
 	if err != nil {
 		return result, err
 	}
 
-	now := time.Now().UTC()
-	endDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	startDate := endDate
-
-	if days == allHistoricPeriodDays {
-		startDate, err = queryEarliestActivityDate(ctx, store)
-		if err != nil {
-			return result, fmt.Errorf("query earliest activity date: %w", err)
-		}
-		if startDate.IsZero() {
-			startDate = endDate
-		}
-	} else if days > 0 {
-		startDate = endDate.AddDate(0, 0, -days+1)
-	}
-
-	startMs := startDate.UnixMilli()
-	endMs := endDate.AddDate(0, 0, 1).UnixMilli()
+	startMs := pw.StartMs
+	endMs := pw.EndMs
 
 	db := store.DB()
 

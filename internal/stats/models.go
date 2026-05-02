@@ -3,54 +3,51 @@ package stats
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"sort"
-	"time"
 
 	"opencode-dashboard/internal/store"
 )
 
 func Models(ctx context.Context, s *store.Store, period string) (ModelStats, error) {
-	days, err := parsePeriod(period)
+	pw, err := ComputePeriodWindow(ctx, s, period)
 	if err != nil {
 		return ModelStats{}, err
 	}
 
-	now := time.Now().UTC()
-	endDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	startDate := endDate
-
-	if days == allHistoricPeriodDays {
-		startDate, err = queryEarliestActivityDate(ctx, s)
-		if err != nil {
-			return ModelStats{}, fmt.Errorf("query earliest activity date: %w", err)
-		}
-		if startDate.IsZero() {
-			startDate = endDate
-		}
-	} else if days > 0 {
-		startDate = endDate.AddDate(0, 0, -days+1)
-	}
-
-	startMs := startDate.UnixMilli()
-	endMs := endDate.AddDate(0, 0, 1).UnixMilli()
+	startMs := pw.StartMs
+	endMs := pw.EndMs
 
 	query := `
 		SELECT
-			json_extract(data, '$.modelID') as model_id,
-			json_extract(data, '$.providerID') as provider_id,
-			COUNT(DISTINCT session_id) as sessions,
+			json_extract(msg.data, '$.modelID') as model_id,
+			json_extract(msg.data, '$.providerID') as provider_id,
+			COUNT(DISTINCT msg.session_id) as sessions,
 			COUNT(*) as messages,
-			SUM(COALESCE(json_extract(data, '$.cost'), 0)) as total_cost,
-			SUM(COALESCE(json_extract(data, '$.tokens.input'), 0)) as input_tokens,
-			SUM(COALESCE(json_extract(data, '$.tokens.output'), 0)) as output_tokens,
-			SUM(COALESCE(json_extract(data, '$.tokens.reasoning'), 0)) as reasoning_tokens,
-			SUM(COALESCE(json_extract(data, '$.tokens.cache.read'), 0)) as cache_read,
-			SUM(COALESCE(json_extract(data, '$.tokens.cache.write'), 0)) as cache_write
-		FROM message
-		WHERE json_extract(data, '$.role') = 'assistant'
-			AND json_extract(data, '$.modelID') IS NOT NULL
-			AND time_created >= ? AND time_created < ?
+			SUM(COALESCE(json_extract(msg.data, '$.cost'), 0)) as total_cost,
+			SUM(COALESCE(step.input, json_extract(msg.data, '$.tokens.input'), 0)) as input_tokens,
+			SUM(COALESCE(step.output, json_extract(msg.data, '$.tokens.output'), 0)) as output_tokens,
+			SUM(COALESCE(step.reasoning, json_extract(msg.data, '$.tokens.reasoning'), 0)) as reasoning_tokens,
+			SUM(COALESCE(step.cache_read, json_extract(msg.data, '$.tokens.cache.read'), 0)) as cache_read,
+			SUM(COALESCE(step.cache_write, json_extract(msg.data, '$.tokens.cache.write'), 0)) as cache_write
+		FROM (
+			SELECT id, session_id, data, time_created
+			FROM message
+			WHERE json_extract(data, '$.role') = 'assistant'
+				AND json_extract(data, '$.modelID') IS NOT NULL
+				AND time_created >= ? AND time_created < ?
+		) msg
+		LEFT JOIN (
+			SELECT
+				p.message_id,
+				SUM(COALESCE(json_extract(p.data, '$.tokens.input'), 0)) as input,
+				SUM(COALESCE(json_extract(p.data, '$.tokens.output'), 0)) as output,
+				SUM(COALESCE(json_extract(p.data, '$.tokens.reasoning'), 0)) as reasoning,
+				SUM(COALESCE(json_extract(p.data, '$.tokens.cache.read'), 0)) as cache_read,
+				SUM(COALESCE(json_extract(p.data, '$.tokens.cache.write'), 0)) as cache_write
+			FROM part p
+			WHERE json_extract(p.data, '$.type') = 'step-finish'
+			GROUP BY p.message_id
+		) step ON step.message_id = msg.id
 		GROUP BY model_id, provider_id
 	`
 
@@ -60,7 +57,7 @@ func Models(ctx context.Context, s *store.Store, period string) (ModelStats, err
 	}
 	defer rows.Close()
 
-	var models []ModelEntry
+	models := make([]ModelEntry, 0)
 	for rows.Next() {
 		var entry ModelEntry
 		var modelID, providerID sql.NullString
@@ -92,6 +89,29 @@ func Models(ctx context.Context, s *store.Store, period string) (ModelStats, err
 
 	if err := rows.Err(); err != nil {
 		return ModelStats{}, err
+	}
+
+	// Compute per-type token averages per message and per session.
+	for i := range models {
+		entry := &models[i]
+		if entry.Messages > 0 {
+			entry.AvgTokensPerMessage = &AvgTokenStats{
+				Input:      float64(entry.Tokens.Input) / float64(entry.Messages),
+				Output:     float64(entry.Tokens.Output) / float64(entry.Messages),
+				Reasoning:  float64(entry.Tokens.Reasoning) / float64(entry.Messages),
+				CacheRead:  float64(entry.Tokens.Cache.Read) / float64(entry.Messages),
+				CacheWrite: float64(entry.Tokens.Cache.Write) / float64(entry.Messages),
+			}
+		}
+		if entry.Sessions > 0 {
+			entry.AvgTokensPerSession = &AvgTokenStats{
+				Input:      float64(entry.Tokens.Input) / float64(entry.Sessions),
+				Output:     float64(entry.Tokens.Output) / float64(entry.Sessions),
+				Reasoning:  float64(entry.Tokens.Reasoning) / float64(entry.Sessions),
+				CacheRead:  float64(entry.Tokens.Cache.Read) / float64(entry.Sessions),
+				CacheWrite: float64(entry.Tokens.Cache.Write) / float64(entry.Sessions),
+			}
+		}
 	}
 
 	sort.Slice(models, func(i, j int) bool {

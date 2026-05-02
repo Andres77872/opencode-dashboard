@@ -3,7 +3,6 @@ package stats
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"strings"
 	"time"
 
@@ -45,29 +44,12 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 	var startMs, endMs int64
 	var hasPeriod bool
 	if query.Period != "" {
-		days, err := parsePeriod(query.Period)
+		pw, err := ComputePeriodWindow(ctx, s, query.Period)
 		if err != nil {
 			return SessionList{}, err
 		}
-
-		now := time.Now().UTC()
-		endDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-		startDate := endDate
-
-		if days == allHistoricPeriodDays {
-			startDate, err = queryEarliestActivityDate(ctx, s)
-			if err != nil {
-				return SessionList{}, fmt.Errorf("query earliest activity date: %w", err)
-			}
-			if startDate.IsZero() {
-				startDate = endDate
-			}
-		} else if days > 0 {
-			startDate = endDate.AddDate(0, 0, -days+1)
-		}
-
-		startMs = startDate.UnixMilli()
-		endMs = endDate.AddDate(0, 0, 1).UnixMilli()
+		startMs = pw.StartMs
+		endMs = pw.EndMs
 		hasPeriod = true
 	}
 
@@ -79,6 +61,11 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 		WHERE (? = '' OR LOWER(COALESCE(s.title, '')) LIKE LOWER(?) OR LOWER(COALESCE(p.name, p.worktree, '')) LIKE LOWER(?))
 	`
 	countArgs := []interface{}{filter, filterLike, filterLike}
+
+	if query.ProjectID > 0 {
+		countQuery += ` AND p.id = ?`
+		countArgs = append(countArgs, query.ProjectID)
+	}
 
 	if hasPeriod {
 		countQuery += ` AND EXISTS (
@@ -125,6 +112,11 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 		WHERE (? = '' OR LOWER(COALESCE(s.title, '')) LIKE LOWER(?) OR LOWER(COALESCE(p.name, p.worktree, '')) LIKE LOWER(?))
 	`
 	listArgs := []interface{}{startMs, endMs, filter, filterLike, filterLike}
+
+	if query.ProjectID > 0 {
+		listQuery += ` AND p.id = ?`
+		listArgs = append(listArgs, query.ProjectID)
+	}
 
 	if hasPeriod {
 		listQuery += ` AND EXISTS (

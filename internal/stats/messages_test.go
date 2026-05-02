@@ -356,7 +356,7 @@ func TestMessageByIDWithTextParts(t *testing.T) {
 		Cost(0.05).
 		ModelID("claude-3-sonnet").
 		ProviderID("anthropic").
-		Tokens(1000, 500, 100)
+		Tokens(1000, 500, 100, 0, 0)
 	s1.AddMessage(msg2)
 
 	b.AddSession(s1)
@@ -456,7 +456,7 @@ func TestMessageByIDWithReasoningParts(t *testing.T) {
 		Cost(0.08).
 		ModelID("claude-3-sonnet").
 		ProviderID("anthropic").
-		Tokens(1500, 600, 200)
+		Tokens(1500, 600, 200, 0, 0)
 	s1.AddMessage(msg1)
 
 	b.AddSession(s1)
@@ -535,7 +535,7 @@ func TestMessageByIDWithBothTextAndReasoning(t *testing.T) {
 		Cost(0.12).
 		ModelID("claude-3-sonnet").
 		ProviderID("anthropic").
-		Tokens(2000, 800, 300)
+		Tokens(2000, 800, 300, 0, 0)
 	s1.AddMessage(msg1)
 
 	b.AddSession(s1)
@@ -788,7 +788,7 @@ func TestMessageByIDWithToolParts(t *testing.T) {
 		Cost(0.12).
 		ModelID("claude-3-sonnet").
 		ProviderID("anthropic").
-		Tokens(2000, 800, 300)
+		Tokens(2000, 800, 300, 0, 0)
 	s1.AddMessage(msg1)
 
 	b.AddSession(s1)
@@ -894,7 +894,7 @@ func TestMessageByIDWithAllPartTypes(t *testing.T) {
 		Cost(0.15).
 		ModelID("claude-3-sonnet").
 		ProviderID("anthropic").
-		Tokens(2500, 900, 400)
+		Tokens(2500, 900, 400, 0, 0)
 	s1.AddMessage(msg1)
 
 	b.AddSession(s1)

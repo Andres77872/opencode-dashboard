@@ -58,7 +58,7 @@ export function ConfigWorkspaceHeader({
             copyId="config-raw"
             copiedId={copiedId}
             label="Copy JSON"
-            value={data.content}
+            value={JSON.stringify(data.content, null, 2)}
             onCopy={onCopy}
           />
         ) : null}

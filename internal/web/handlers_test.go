@@ -125,3 +125,61 @@ func TestExtractSessionIDSecurity(t *testing.T) {
 		})
 	}
 }
+
+// TestWriteJSONCacheControl validates that writeJSON sets the Cache-Control header.
+func TestWriteJSONCacheControl(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeJSON(rec, http.StatusOK, map[string]string{"status": "ok"})
+
+	expected := "public, max-age=30"
+	got := rec.Header().Get("Cache-Control")
+	if got != expected {
+		t.Errorf("Cache-Control header = %q, want %q", got, expected)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status code = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+}
+
+// TestWriteJSONCacheControlOnErrorResponse validates Cache-Control on error responses too.
+func TestWriteJSONCacheControlOnErrorResponse(t *testing.T) {
+	rec := httptest.NewRecorder()
+	NotFound("test not found").Write(rec)
+
+	expected := "public, max-age=30"
+	got := rec.Header().Get("Cache-Control")
+	if got != expected {
+		t.Errorf("Cache-Control header on error = %q, want %q", got, expected)
+	}
+}
+
+// TestExtractMessageID validates message ID extraction from URL paths.
+func TestExtractMessageID(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		expected string
+	}{
+		{name: "valid simple id", path: "/api/v1/messages/msg-001", expected: "msg-001"},
+		{name: "valid with trailing slash", path: "/api/v1/messages/msg-001/", expected: "msg-001"},
+		{name: "missing prefix", path: "/messages/msg-001", expected: ""},
+		{name: "empty id", path: "/api/v1/messages/", expected: ""},
+		{name: "no id segment", path: "/api/v1/messages", expected: ""},
+		{name: "id with slashes", path: "/api/v1/messages/msg/001", expected: ""},
+		{name: "empty path", path: "", expected: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractMessageID(tt.path)
+			if result != tt.expected {
+				t.Errorf("extractMessageID(%q) = %q, want %q", tt.path, result, tt.expected)
+			}
+		})
+	}
+}

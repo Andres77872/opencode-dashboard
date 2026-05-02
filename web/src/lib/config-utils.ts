@@ -131,7 +131,7 @@ export function collectInsights(value: ConfigJsonValue): ConfigInsights {
   )
 }
 
-export function parseConfigContent(content?: string): ParsedConfigState {
+export function parseConfigContent(content?: Record<string, unknown>): ParsedConfigState {
   if (!content) {
     return {
       parsed: null,
@@ -139,16 +139,9 @@ export function parseConfigContent(content?: string): ParsedConfigState {
     }
   }
 
-  try {
-    return {
-      parsed: JSON.parse(content) as ConfigJsonValue,
-      parseError: null,
-    }
-  } catch (error) {
-    return {
-      parsed: null,
-      parseError: error instanceof Error ? error.message : 'Failed to parse config JSON',
-    }
+  return {
+    parsed: content as ConfigJsonValue,
+    parseError: null,
   }
 }
 

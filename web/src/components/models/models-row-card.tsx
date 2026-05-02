@@ -39,7 +39,7 @@ export function ModelsRowCard({ row, metric, totalMetricValue }: ModelsRowCardPr
         <span className="font-mono text-xs text-muted-foreground">{formatModelsMetricShare(metricShare)}</span>
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+      <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
         <div className="rounded-lg bg-background/40 px-2.5 py-2">
           <div className="uppercase tracking-[0.14em]">Sessions</div>
           <div className="mt-1 font-mono text-sm text-foreground">{formatCompactInteger(row.sessions)}</div>
@@ -85,6 +85,51 @@ export function ModelsRowCard({ row, metric, totalMetricValue }: ModelsRowCardPr
               </TooltipTrigger>
               <TooltipContent side="top" className="font-mono">
                 <p>{formatInteger(row.tokens.output)}</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+        <div className="rounded-lg bg-background/40 px-2.5 py-2">
+          <div className="uppercase tracking-[0.14em]">Reasoning</div>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="mt-1 cursor-default font-mono text-sm text-foreground transition-opacity hover:opacity-80">
+                  {formatTokenCount(row.tokens.reasoning)}
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="font-mono">
+                <p>{formatInteger(row.tokens.reasoning)}</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+        <div className="rounded-lg bg-background/40 px-2.5 py-2">
+          <div className="uppercase tracking-[0.14em]">Cache Read</div>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="mt-1 cursor-default font-mono text-sm text-foreground transition-opacity hover:opacity-80">
+                  {formatTokenCount(row.tokens.cache.read)}
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="font-mono">
+                <p>{formatInteger(row.tokens.cache.read)}</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+        <div className="rounded-lg bg-background/40 px-2.5 py-2">
+          <div className="uppercase tracking-[0.14em]">Cache Write</div>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="mt-1 cursor-default font-mono text-sm text-foreground transition-opacity hover:opacity-80">
+                  {formatTokenCount(row.tokens.cache.write)}
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="font-mono">
+                <p>{formatInteger(row.tokens.cache.write)}</p>
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>

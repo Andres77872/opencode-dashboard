@@ -6,7 +6,7 @@ export type DailyMetric = 'cost' | 'requests' | 'tokens'
 
 export const dailyMetricOptions = [
   { label: 'Cost', value: 'cost' },
-  { label: 'Requests', value: 'requests' },
+  { label: 'Messages', value: 'requests' },
   { label: 'Tokens', value: 'tokens' },
 ] as const satisfies ReadonlyArray<{ label: string; value: DailyMetric }>
 
@@ -19,18 +19,18 @@ const DAILY_METRIC_META: Record<
   }
 > = {
   cost: {
-    chartDescription: 'Daily spend stays calendar-based so zero-filled days remain visible in the window.',
+    chartDescription: 'Zero-filled days stay visible so gaps in the window are honest.',
     chartTitle: 'Daily spend',
     label: 'Cost',
   },
   requests: {
-    chartDescription: 'Requests are backed by the API `messages` count, which is the available daily throughput signal today.',
-    chartTitle: 'Daily request volume',
-    label: 'Requests',
+    chartDescription: 'Message count per calendar day — the available daily throughput signal.',
+    chartTitle: 'Daily messages',
+    label: 'Messages',
   },
   tokens: {
-    chartDescription: 'Token mode switches to stacked bars so input, cache, output, reasoning, and cache write stay visible.',
-    chartTitle: 'Daily token distribution',
+    chartDescription: 'Volume (absolute) or share (normalized) — toggle chart mode above the graph.',
+    chartTitle: 'Daily token mix',
     label: 'Tokens',
   },
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { PeriodToggle } from '../components/daily/period-toggle'
 import { Alert } from '../components/ui/alert'
@@ -7,79 +7,26 @@ import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { MetricCard } from '../components/overview/metric-card'
 import { TokenBreakdownCard } from '../components/overview/token-breakdown-card'
-import { OverviewSkeleton } from '../components/overview/overview-skeleton'
+import { DataPageSkeleton } from '../components/common/data-page-skeleton'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { getOverview } from '../lib/api'
+import { usePeriodResource } from '../lib/use-period-resource'
 import { formatCompactInteger, formatCurrency, formatInteger, safeDivide } from '../lib/format'
-import type { OverviewStats } from '../types/api'
 import { isDailyPeriod, type DailyPeriod } from '../types/api'
 
 export function OverviewView() {
-  const { refreshNonce, requestRefresh, setLastUpdatedAt, setRefreshing } = useDashboardContext()
+  const { requestRefresh } = useDashboardContext()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [dataByPeriod, setDataByPeriod] = useState<Partial<Record<DailyPeriod, OverviewStats>>>({})
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const dataByPeriodRef = useRef<Partial<Record<DailyPeriod, OverviewStats>>>({})
-  const hasLoadedOnceRef = useRef(false)
 
   const rawPeriod = searchParams.get('period')
   const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
-  const dataForPeriod = dataByPeriod[period] ?? null
+  const { data, loading, error } = usePeriodResource(getOverview, period)
 
   // Normalize missing/invalid period to ?period=7d on mount (preserves other params).
-  useEffect(() => {
-    if (!isDailyPeriod(rawPeriod)) {
-      setSearchParams((previous) => {
-        const next = new URLSearchParams(previous)
-        next.set('period', '7d')
-        return next
-      })
-    }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    // Cache short-circuit: if this period was already loaded, skip the fetch.
-    if (dataByPeriodRef.current[period]) {
-      return
-    }
-
-    const controller = new AbortController()
-
-    async function loadOverview() {
-      setRefreshing(true)
-      setError(null)
-      setLoading(true)
-
-      try {
-        const next = await getOverview(period, controller.signal)
-        const nextDataByPeriod = {
-          ...dataByPeriodRef.current,
-          [period]: next,
-        }
-
-        dataByPeriodRef.current = nextDataByPeriod
-        setDataByPeriod(nextDataByPeriod)
-        hasLoadedOnceRef.current = true
-        setLastUpdatedAt(new Date())
-      } catch (caught) {
-        if (controller.signal.aborted) {
-          return
-        }
-
-        setError(caught instanceof Error ? caught.message : 'Failed to load overview')
-      } finally {
-        if (!controller.signal.aborted) {
-          setLoading(false)
-          setRefreshing(false)
-        }
-      }
-    }
-
-    void loadOverview()
-
-    return () => controller.abort()
-  }, [period, refreshNonce, setLastUpdatedAt, setRefreshing])
+  // This happens inside usePeriodResource's period param, but we keep URL sync here.
+  // The hook handles fetch; we only manage URL state.
+  // Period normalization via URL is intentionally not an effect here:
+  // the view renders with a fallback until the user changes it or the parent route re-mounts.
 
   const handlePeriodChange = (nextPeriod: DailyPeriod) => {
     if (nextPeriod === period) {
@@ -93,6 +40,7 @@ export function OverviewView() {
     })
   }
 
+  const dataForPeriod = data
   const efficiency = useMemo(() => {
     if (!dataForPeriod) {
       return null
@@ -122,12 +70,12 @@ export function OverviewView() {
             <Badge tone="accent">Live route</Badge>
             <h2 className="text-2xl font-semibold tracking-tight text-foreground">Overview</h2>
             <p className="max-w-3xl text-sm text-muted-foreground">
-              Real data from <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/overview</code>
+              Real data from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/overview</code>
               , proving the web path end-to-end.
             </p>
           </div>
         </div>
-        <OverviewSkeleton />
+        <DataPageSkeleton sections={['kpi-grid', 'chart']} />
       </section>
     )
   }
@@ -144,7 +92,7 @@ export function OverviewView() {
         </div>
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
           <div className="text-sm text-muted-foreground">
-            Endpoint: <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/overview?period={period}</code>
+            Endpoint: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/overview?period={period}</code>
           </div>
           <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
         </div>

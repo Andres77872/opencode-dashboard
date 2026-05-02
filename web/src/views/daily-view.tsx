@@ -14,7 +14,9 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
+import { DataPageSkeleton } from '../components/common/data-page-skeleton'
 import { getDaily, getMessages } from '../lib/api'
+import { usePeriodResource } from '../lib/use-period-resource'
 import { formatCompactInteger, formatCurrency, formatInteger, formatShortDate, formatTokenCount, safeDivide } from '../lib/format'
 import { getNextSortState } from '../lib/table-sort'
 import type { SortState } from '../lib/table-sort'
@@ -25,18 +27,18 @@ const REQUESTS_PAGE_SIZE = 12
 
 const dailyMetricCopy: Record<DailyMetric, { detailTitle: string; detailDescription: string; metricLabel: string }> = {
   cost: {
-    detailTitle: 'Window detail',
-    detailDescription: 'Track which days are actually driving spend in the selected range.',
+    detailTitle: 'Day-by-day spend',
+    detailDescription: 'Which days drive spend in the selected range.',
     metricLabel: 'Cost',
   },
   requests: {
-    detailTitle: 'Request cadence',
-    detailDescription: 'Requests are represented by message volume because that is the daily API signal available now.',
-    metricLabel: 'Requests',
+    detailTitle: 'Daily cadence',
+    detailDescription: 'Message volume per calendar day.',
+    metricLabel: 'Messages',
   },
   tokens: {
-    detailTitle: 'Token distribution',
-    detailDescription: 'Token mode highlights how input, cache, output, reasoning, and writes move day by day.',
+    detailTitle: 'Token mix per day',
+    detailDescription: 'How input, cache, output, reasoning, and writes distribute day by day.',
     metricLabel: 'Tokens',
   },
 }
@@ -83,35 +85,32 @@ function getWindowTokens(data: DailyStats) {
 
 function getPeriodWindowHint(period: DailyPeriod, dayCount: number, granularity?: string) {
   if (granularity === 'hour') {
-    return `Current UTC day with ${dayCount} hourly buckets`
+    return `Current UTC day · ${dayCount} hourly buckets`
   }
   
   switch (period) {
     case '1d':
-      return 'Current UTC day only'
+      return 'Current UTC day'
     case '1y':
-      return `${formatCompactInteger(dayCount)} calendar days in the trailing year`
+      return `${formatCompactInteger(dayCount)}-day trailing year`
     case 'all':
-      return `All historic spans ${formatCompactInteger(dayCount)} calendar days since first recorded activity`
+      return `All time · ${formatCompactInteger(dayCount)} days`
     default:
-      return `${formatCompactInteger(dayCount)}-day inclusive window`
+      return `${formatCompactInteger(dayCount)}-day window`
   }
 }
 
 function getEmptyWindowCopy(period: DailyPeriod) {
   if (period === 'all') {
-    return 'All historic stretches from the first recorded activity day through today when data exists, otherwise the view falls back to today.'
+    return 'All recorded activity since the first data point. Falls back to today when no data exists.'
   }
 
-  return 'The backend returns a zero-filled calendar window for the selected period until OpenCode records real sessions and assistant messages.'
+  return 'Zero-filled window until OpenCode records sessions and messages in this period.'
 }
 
 export function DailyView() {
-  const { refreshNonce, requestRefresh, setLastUpdatedAt, setRefreshing } = useDashboardContext()
+  const { requestRefresh, refreshNonce } = useDashboardContext()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [dataByPeriod, setDataByPeriod] = useState<Partial<Record<DailyPeriod, DailyStats>>>({})
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [messages, setMessages] = useState<MessageList | null>(null)
   const [messagesLoading, setMessagesLoading] = useState(true)
   const [messagesError, setMessagesError] = useState<string | null>(null)
@@ -119,50 +118,13 @@ export function DailyView() {
   const [messagesSort, setMessagesSort] = useState<SortState<RequestsSortKey> | null>(null)
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null)
   const [metric, setMetric] = useState<DailyMetric>('cost')
-  const dataByPeriodRef = useRef<Partial<Record<DailyPeriod, DailyStats>>>({})
   const messageTriggerRef = useRef<HTMLElement | null>(null)
 
   const rawPeriod = searchParams.get('period')
   const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
-  const dataForPeriod = dataByPeriod[period] ?? null
+  const { data: dataForPeriod, loading, error } = usePeriodResource(getDaily, period)
 
-  useEffect(() => {
-    const controller = new AbortController()
-
-    async function loadDaily() {
-      setRefreshing(true)
-      setError(null)
-      setLoading(!dataByPeriodRef.current[period])
-
-      try {
-        const next = await getDaily(period, controller.signal)
-        const nextDataByPeriod = {
-          ...dataByPeriodRef.current,
-          [period]: next,
-        }
-
-        dataByPeriodRef.current = nextDataByPeriod
-        setDataByPeriod(nextDataByPeriod)
-        setLastUpdatedAt(new Date())
-      } catch (caught) {
-        if (controller.signal.aborted) {
-          return
-        }
-
-        setError(caught instanceof Error ? caught.message : 'Failed to load daily stats')
-      } finally {
-        if (!controller.signal.aborted) {
-          setLoading(false)
-          setRefreshing(false)
-        }
-      }
-    }
-
-    void loadDaily()
-
-    return () => controller.abort()
-  }, [period, refreshNonce, setLastUpdatedAt, setRefreshing])
-
+  // Messages pagination stays inline — different state shape from daily stats
   useEffect(() => {
     const controller = new AbortController()
 
@@ -179,7 +141,7 @@ export function DailyView() {
           return
         }
 
-        setMessagesError(caught instanceof Error ? caught.message : 'Failed to load requests history')
+        setMessagesError(caught instanceof Error ? caught.message : 'Failed to load messages history')
       } finally {
         if (!controller.signal.aborted) {
           setMessagesLoading(false)
@@ -190,7 +152,7 @@ export function DailyView() {
     void loadMessages()
 
     return () => controller.abort()
-  }, [messagesPage, messagesSort, period, refreshNonce])
+  }, [messagesPage, messagesSort, period, refreshNonce]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const summary = useMemo(() => {
     if (!dataForPeriod) {
@@ -272,6 +234,23 @@ export function DailyView() {
     })
   }
 
+  if (loading && !dataForPeriod) {
+    return (
+      <section className="space-y-6">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-2">
+            <Badge tone="accent">Live route</Badge>
+            <h2 className="text-2xl font-semibold tracking-tight text-foreground">Daily</h2>
+            <p className="max-w-3xl text-sm text-muted-foreground">
+              Daily spend, message volume, and token-mix trends across the selected period. The URL stays shareable.
+            </p>
+          </div>
+        </div>
+        <DataPageSkeleton sections={['kpi-grid', 'chart', 'table']} tableRows={6} />
+      </section>
+    )
+  }
+
   return (
     <>
       <section className="space-y-6">
@@ -280,14 +259,14 @@ export function DailyView() {
             <Badge tone="accent">Live route</Badge>
             <h2 className="text-2xl font-semibold tracking-tight text-foreground">Daily</h2>
             <p className="max-w-3xl text-sm text-muted-foreground">
-              Switch between spend, request volume, and token flow without leaving the same daily window. The URL period toggle stays shareable and maps directly to the Go API.
+              Daily spend, message volume, and token-mix trends across the selected period. The URL stays shareable.
             </p>
           </div>
 
           <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
             <div className="text-sm text-muted-foreground">
               Endpoint:{' '}
-              <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/daily?period={period}</code>
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/daily?period={period}</code>
             </div>
             <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
           </div>
@@ -308,7 +287,7 @@ export function DailyView() {
         <TooltipProvider>
           <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
             <MetricCard
-              label="Spend in window"
+              label="Total spend"
               value={summary ? formatCurrency(summary.cost) : ''}
               hint={summary ? getPeriodWindowHint(period, dataForPeriod?.days.length ?? 0, dataForPeriod?.granularity) : 'Loading...'}
               loading={loading && !summary}
@@ -316,20 +295,20 @@ export function DailyView() {
             <MetricCard
               label="Sessions"
               value={summary ? formatInteger(summary.sessions) : ''}
-              hint={summary ? `${formatCompactInteger(summary.activeDays)} active days in the selected range` : 'Loading...'}
+              hint={summary ? `${formatCompactInteger(summary.activeDays)} active ${summary.isHourly ? 'hours' : 'days'} in window` : 'Loading...'}
               loading={loading && !summary}
             />
             <MetricCard
-              label="Requests"
+              label="Messages"
               value={summary ? formatInteger(summary.messages) : ''}
-              hint={summary ? `${summary.averageMessagesPerSession.toFixed(1)} messages per session in the current API model` : 'Loading...'}
+              hint={summary ? `${summary.averageMessagesPerSession.toFixed(1)} avg messages per session` : 'Loading...'}
               loading={loading && !summary}
             />
             <MetricCard
-              label="Token load"
+              label="Total tokens"
               value={summary ? formatTokenCount(summary.tokens) : ''}
               tooltipValue={summary ? `${formatInteger(summary.tokens)} tokens` : undefined}
-              hint={summary ? `${formatTokenCount(Math.round(summary.averageTokensPerDay))} average tokens per calendar day` : 'Loading...'}
+              hint={summary ? `${formatTokenCount(Math.round(summary.averageTokensPerDay))} avg per calendar day` : 'Loading...'}
               loading={loading && !summary}
             />
           </div>
@@ -360,7 +339,7 @@ export function DailyView() {
                   {getEmptyWindowCopy(period)}
                 </p>
                 <p>
-                  Once data exists, this screen will light up with switchable daily charts, token mix context, and a newest-first ledger automatically.
+                  Once data exists, charts, token breakdowns, and the message ledger will appear automatically.
                 </p>
               </CardContent>
             </Card>
@@ -373,12 +352,12 @@ export function DailyView() {
               <Card className="min-w-0 border-border/70 bg-panel/55 2xl:self-start">
                 <CardHeader className="pb-3">
                   <CardDescription>{metricDetailCopy.detailTitle}</CardDescription>
-                  <CardTitle>{summary.isHourly ? 'Newest hours first' : 'Newest days first'}</CardTitle>
+                  <CardTitle className="text-base">{metricMeta.label} breakdown</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-panel/50 px-3 py-2 text-sm text-muted-foreground">
                     <span className="font-mono text-foreground">{summary.activeDays}/{dataForPeriod?.days.length ?? 0}</span>
-                    <span>active {summary.isHourly ? 'hours' : 'days'}</span>
+                    <span>active {summary.isHourly ? 'hrs' : 'days'}</span>
                     <span className="text-border">·</span>
                     <span>{metricMeta.label} lens</span>
                   </div>
@@ -443,7 +422,7 @@ export function DailyView() {
                               <span className="text-[11px] text-muted-foreground truncate">
                                 {formatCompactInteger(day.sessions)} sess
                                 <span className="mx-0.5 text-border/60">·</span>
-                                {formatCompactInteger(day.messages)} req
+                                {formatCompactInteger(day.messages)} msg
                               </span>
                             </div>
                             <span className="font-mono text-sm font-medium text-foreground whitespace-nowrap">

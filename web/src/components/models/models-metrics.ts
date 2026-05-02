@@ -6,7 +6,10 @@ import {
   formatPercentage,
   formatTokenCount,
 } from '../../lib/format'
-import type { ModelEntry } from '../../types/api'
+import { getAvgTokenTotal } from '../../lib/token-breakdown'
+import type { AvgTokenStats, ModelEntry } from '../../types/api'
+
+export { getAvgTokenTotal }
 
 export type ModelsMetric = 'cost' | 'sessions' | 'messages' | 'tokens'
 
@@ -14,6 +17,13 @@ export interface EnrichedModelRow extends ModelEntry {
   totalTokens: number
   avgCostPerMessage: number
   costShare: number
+  avgTokensPerMessage?: AvgTokenStats
+  avgTokensPerSession?: AvgTokenStats
+  totalAvgTokensPerMessage: number
+  totalAvgTokensPerSession: number
+  tokenShare: number
+  sessionShare: number
+  messageShare: number
 }
 
 export const modelsMetricOptions = [

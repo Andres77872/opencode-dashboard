@@ -5,7 +5,8 @@ import type { TooltipValueType } from "recharts"
 import { cn } from "../../lib/utils"
 
 // Format: { THEME_NAME: CSS_SELECTOR }
-const THEMES = { light: "", dark: ".dark" } as const
+// Empty selector = always active (app is always dark via color-scheme, never uses .dark class)
+const THEMES = { dark: "" } as const
 
 const INITIAL_DIMENSION = { width: 320, height: 200 } as const
 type TooltipNameType = number | string

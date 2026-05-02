@@ -47,8 +47,14 @@ const TOKEN_BREAKDOWN_CONFIG: Array<{
   },
 ]
 
+import type { AvgTokenStats } from '../types/api'
+
 export function getTokenTotal(tokens: TokenStats) {
   return tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
+}
+
+export function getAvgTokenTotal(avg: AvgTokenStats): number {
+  return avg.input + avg.output + avg.reasoning + avg.cache_read + avg.cache_write
 }
 
 export function getTokenBreakdownItems(tokens: TokenStats): TokenBreakdownItem[] {

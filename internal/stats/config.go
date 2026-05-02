@@ -59,13 +59,8 @@ func Config(ctx context.Context, _ *store.Store) (ConfigView, error) {
 
 	redacted := redactSensitive(raw)
 
-	redactedContent, err := json.MarshalIndent(redacted, "", "  ")
-	if err != nil {
-		return view, fmt.Errorf("failed to marshal redacted config: %w", err)
-	}
-
 	view.Exists = true
-	view.Content = string(redactedContent)
+	view.Content = redacted
 
 	return view, nil
 }

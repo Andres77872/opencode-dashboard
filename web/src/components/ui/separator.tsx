@@ -1,6 +1,22 @@
-import type { HTMLAttributes } from 'react'
+import { Separator as SeparatorPrimitive } from 'radix-ui'
 import { cn } from '../../lib/utils'
 
-export function Separator({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('h-px w-full bg-border/80', className)} {...props} />
+export function Separator({
+  className,
+  orientation = 'horizontal',
+  decorative = true,
+  ...props
+}: React.ComponentProps<typeof SeparatorPrimitive.Root>) {
+  return (
+    <SeparatorPrimitive.Root
+      decorative={decorative}
+      orientation={orientation}
+      className={cn(
+        'shrink-0 bg-border/80',
+        orientation === 'horizontal' ? 'h-px w-full' : 'h-full w-px',
+        className,
+      )}
+      {...props}
+    />
+  )
 }

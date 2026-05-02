@@ -11,30 +11,37 @@ import (
 
 const allHistoricPeriodDays = -1
 
-func Daily(ctx context.Context, db *store.Store, period string) (DailyStats, error) {
-	if period == "1d" {
-		return dailyHourly(ctx, db)
+// Daily returns per-day stats for the given period.
+// When no granularity is passed, defaults: 1d → hourly (24 buckets), 7d+ → daily.
+// Explicit granularity=day disables auto-hour for 1d.
+// Explicit granularity=hour forces hourly regardless of period (multi-day supported).
+func Daily(ctx context.Context, db *store.Store, period string, granularity ...Granularity) (DailyStats, error) {
+	// Determine if granularity was explicitly provided (vs. handler passing empty or not at all)
+	var gran Granularity
+	explicit := false
+	if len(granularity) > 0 && granularity[0] != "" {
+		gran = granularity[0]
+		explicit = true
 	}
 
-	days, err := parsePeriod(period)
+	// Auto-hour for 1d by default (no explicit granularity override)
+	if period == "1d" && !explicit {
+		return dailyHourly(ctx, db, period)
+	}
+
+	// Explicit hour override (for any period including 1d — multi-day hourly supported)
+	if gran == GranularityHour {
+		return dailyHourly(ctx, db, period)
+	}
+
+	// Migrate  to ComputePeriodWindow in Daily
+	pw, err := ComputePeriodWindow(ctx, db, period)
 	if err != nil {
 		return DailyStats{}, err
 	}
 
-	now := time.Now().UTC()
-	endDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	startDate := endDate
-	if days == allHistoricPeriodDays {
-		startDate, err = queryEarliestActivityDate(ctx, db)
-		if err != nil {
-			return DailyStats{}, fmt.Errorf("query earliest activity date: %w", err)
-		}
-		if startDate.IsZero() {
-			startDate = endDate
-		}
-	} else {
-		startDate = endDate.AddDate(0, 0, -days+1)
-	}
+	startDate := pw.StartDate
+	endDate := pw.EndDate
 
 	dayMap := make(map[string]DayStats)
 	for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
@@ -250,14 +257,38 @@ func queryMessageStatsByDay(ctx context.Context, db *store.Store, startDate, end
 	return result, rows.Err()
 }
 
-func dailyHourly(ctx context.Context, db *store.Store) (DailyStats, error) {
-	now := time.Now().UTC()
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	endOfDay := startOfDay.Add(24 * time.Hour)
+// dailyHourly returns per-hour stats across the given period.
+// When period is "1d" (or empty), returns 24 hourly buckets for today (UTC midnight to midnight).
+// When period is broader (e.g. "7d", "30d"), generates hourly buckets across the full window
+// using ComputePeriodWindow. Example: "7d" → 168 hourly buckets (7 × 24).
+func dailyHourly(ctx context.Context, db *store.Store, period string) (DailyStats, error) {
+	var startTime, endTime time.Time
+
+	if period == "" || period == "1d" {
+		// Single day: today's 24 hours (UTC midnight → midnight)
+		now := time.Now().UTC()
+		startTime = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		endTime = startTime.Add(24 * time.Hour)
+	} else {
+		// Multi-day hourly: compute the full window.
+		// endTime extends 24h past pw.EndDate to include the full last day,
+		// matching the daily iteration pattern (inclusive of EndDate).
+		pw, err := ComputePeriodWindow(ctx, db, period)
+		if err != nil {
+			return DailyStats{}, err
+		}
+		startTime = pw.StartDate
+		endTime = pw.EndDate.Add(24 * time.Hour)
+	}
+
+	totalHours := int(endTime.Sub(startTime).Hours())
+	if totalHours <= 0 {
+		totalHours = 24 // safety fallback
+	}
 
 	hourMap := make(map[string]DayStats)
-	for h := 0; h < 24; h++ {
-		hourTime := startOfDay.Add(time.Duration(h) * time.Hour)
+	for h := 0; h < totalHours; h++ {
+		hourTime := startTime.Add(time.Duration(h) * time.Hour)
 		key := hourTime.Format("2006-01-02T15:04:05Z")
 		hourMap[key] = DayStats{
 			Date:     key,
@@ -268,7 +299,7 @@ func dailyHourly(ctx context.Context, db *store.Store) (DailyStats, error) {
 		}
 	}
 
-	sessionCounts, err := querySessionCountsByHour(ctx, db, startOfDay, endOfDay)
+	sessionCounts, err := querySessionCountsByHour(ctx, db, startTime, endTime)
 	if err != nil {
 		return DailyStats{}, fmt.Errorf("query session counts by hour: %w", err)
 	}
@@ -280,7 +311,7 @@ func dailyHourly(ctx context.Context, db *store.Store) (DailyStats, error) {
 		}
 	}
 
-	messageStats, err := queryMessageStatsByHour(ctx, db, startOfDay, endOfDay)
+	messageStats, err := queryMessageStatsByHour(ctx, db, startTime, endTime)
 	if err != nil {
 		return DailyStats{}, fmt.Errorf("query message stats by hour: %w", err)
 	}
@@ -294,9 +325,9 @@ func dailyHourly(ctx context.Context, db *store.Store) (DailyStats, error) {
 		}
 	}
 
-	result := make([]DayStats, 0, 24)
-	for h := 0; h < 24; h++ {
-		hourTime := startOfDay.Add(time.Duration(h) * time.Hour)
+	result := make([]DayStats, 0, totalHours)
+	for h := 0; h < totalHours; h++ {
+		hourTime := startTime.Add(time.Duration(h) * time.Hour)
 		key := hourTime.Format("2006-01-02T15:04:05Z")
 		result = append(result, hourMap[key])
 	}
@@ -424,4 +455,110 @@ func queryMessageStatsByHour(ctx context.Context, db *store.Store, startTime, en
 	}
 
 	return result, rows.Err()
+}
+
+// validDimensions contains the supported dimension values for DailyDimension.
+var validDimensions = map[string]string{
+	"model":   "$.modelID",
+	"tool":    "$.tool",
+	"project": "$.projectID",
+}
+
+// DailyDimension returns per-day, per-dimension stats grouped by the given dimension field.
+// Supported dimensions: "model" (JSON_EXTRACT $.modelID), "tool" ($.tool), "project" ($.projectID).
+func DailyDimension(ctx context.Context, db *store.Store, dimension, period string) (DailyDimensionStats, error) {
+	path, ok := validDimensions[dimension]
+	if !ok {
+		return DailyDimensionStats{}, fmt.Errorf("invalid dimension %q: supported values are model, tool, project", dimension)
+	}
+
+	pw, err := ComputePeriodWindow(ctx, db, period)
+	if err != nil {
+		return DailyDimensionStats{}, err
+	}
+
+	query := fmt.Sprintf(`
+		SELECT
+			DATE(m.time_created / 1000, 'unixepoch') AS day,
+			JSON_EXTRACT(m.data, '%s') AS dim,
+			COUNT(DISTINCT m.session_id) AS sessions,
+			COUNT(*) AS messages,
+			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.cost') AS REAL)), 0) AS total_cost,
+			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.input') AS INTEGER)), 0) AS input_tokens,
+			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.output') AS INTEGER)), 0) AS output_tokens,
+			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.reasoning') AS INTEGER)), 0) AS reasoning_tokens,
+			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.cache.read') AS INTEGER)), 0) AS cache_read_tokens,
+			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.cache.write') AS INTEGER)), 0) AS cache_write_tokens
+		FROM message m
+		WHERE JSON_EXTRACT(m.data, '$.role') = 'assistant'
+			AND JSON_EXTRACT(m.data, '%[1]s') IS NOT NULL
+			AND JSON_EXTRACT(m.data, '%[1]s') != ''
+			AND m.time_created >= ? AND m.time_created < ?
+		GROUP BY day, dim
+		ORDER BY day ASC, total_cost DESC
+	`, path)
+
+	rows, err := db.DB().QueryContext(ctx, query, pw.StartMs, pw.EndMs)
+	if err != nil {
+		return DailyDimensionStats{}, fmt.Errorf("query dimension stats: %w", err)
+	}
+	defer rows.Close()
+
+	days := make([]DimensionDayStats, 0)
+	for rows.Next() {
+		var (
+			day        string
+			dim        sql.NullString
+			sessions   int64
+			messages   int64
+			cost       float64
+			input      int64
+			output     int64
+			reasoning  int64
+			cacheRead  int64
+			cacheWrite int64
+		)
+
+		if err := rows.Scan(
+			&day, &dim,
+			&sessions, &messages,
+			&cost,
+			&input, &output, &reasoning,
+			&cacheRead, &cacheWrite,
+		); err != nil {
+			return DailyDimensionStats{}, fmt.Errorf("scan dimension row: %w", err)
+		}
+
+		dimKey := dim.String
+		if !dim.Valid {
+			dimKey = "unknown"
+		}
+
+		days = append(days, DimensionDayStats{
+			Date:      day,
+			Dimension: dimKey,
+			Sessions:  sessions,
+			Messages:  messages,
+			Cost:      cost,
+			Tokens: TokenStats{
+				Input:     input,
+				Output:    output,
+				Reasoning: reasoning,
+				Cache: CacheStats{
+					Read:  cacheRead,
+					Write: cacheWrite,
+				},
+			},
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return DailyDimensionStats{}, fmt.Errorf("iterate dimension rows: %w", err)
+	}
+
+	return DailyDimensionStats{
+		Days:      days,
+		Dimension: dimension,
+		Period:    period,
+	}, nil
 }

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronRightIcon } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SegmentedControl } from '../components/daily/segmented-control'
 import { PeriodToggle } from '../components/daily/period-toggle'
@@ -16,11 +17,10 @@ import {
   DEFAULT_TABLE_SORT,
   getModelLabel,
   getProviderLabel,
-  getTotalTokens,
   ModelsTable,
   type SortKey,
 } from '../components/models/models-table'
-import { ModelsSkeleton } from '../components/models/models-skeleton'
+import { DataPageSkeleton } from '../components/common/data-page-skeleton'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { MetricCard } from '../components/overview/metric-card'
 import { Alert } from '../components/ui/alert'
@@ -29,10 +29,11 @@ import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 import { getModels } from '../lib/api'
-import { formatCompactInteger, formatCurrency, formatInteger, formatPercentage, safeDivide } from '../lib/format'
+import { usePeriodResource } from '../lib/use-period-resource'
+import { formatCompactInteger, formatCurrency, formatInteger, formatPercentage, formatTokenCount, safeDivide } from '../lib/format'
 import { getNextSortState, type SortState } from '../lib/table-sort'
-import { getTokenTotal } from '../lib/token-breakdown'
-import { isDailyPeriod, type DailyPeriod, type ModelStats } from '../types/api'
+import { getAvgTokenTotal, getTokenTotal } from '../lib/token-breakdown'
+import { isDailyPeriod, type DailyPeriod } from '../types/api'
 
 function getEmptyWindowCopy(period: DailyPeriod): string {
   if (period === 'all') {
@@ -42,84 +43,43 @@ function getEmptyWindowCopy(period: DailyPeriod): string {
 }
 
 export function ModelsView() {
-  const { refreshNonce, requestRefresh, setLastUpdatedAt, setRefreshing } = useDashboardContext()
+  const { requestRefresh } = useDashboardContext()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [dataByPeriod, setDataByPeriod] = useState<Partial<Record<DailyPeriod, ModelStats>>>({})
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
   const [metric, setMetric] = useState<ModelsMetric>('cost')
-  const dataByPeriodRef = useRef<Partial<Record<DailyPeriod, ModelStats>>>({})
-  const hasLoadedOnceRef = useRef(false)
 
   const rawPeriod = searchParams.get('period')
   const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
-  const dataForPeriod = dataByPeriod[period] ?? null
-
-  useEffect(() => {
-    const controller = new AbortController()
-
-    async function loadModels() {
-      setRefreshing(true)
-      setError(null)
-
-      if (!hasLoadedOnceRef.current) {
-        setLoading(true)
-      } else if (!dataByPeriodRef.current[period]) {
-        setLoading(true)
-      }
-
-      try {
-        const next = await getModels(period, controller.signal)
-        const nextDataByPeriod = {
-          ...dataByPeriodRef.current,
-          [period]: next,
-        }
-
-        dataByPeriodRef.current = nextDataByPeriod
-        setDataByPeriod(nextDataByPeriod)
-        hasLoadedOnceRef.current = true
-        setLastUpdatedAt(new Date())
-      } catch (caught) {
-        if (controller.signal.aborted) {
-          return
-        }
-
-        setError(caught instanceof Error ? caught.message : 'Failed to load model stats')
-      } finally {
-        if (!controller.signal.aborted) {
-          setLoading(false)
-          setRefreshing(false)
-        }
-      }
-    }
-
-    void loadModels()
-
-    return () => controller.abort()
-  }, [period, refreshNonce, setLastUpdatedAt, setRefreshing])
+  const { data, loading, error } = usePeriodResource(getModels, period)
 
   const summary = useMemo(() => {
-    if (!dataForPeriod) {
+    if (!data) {
       return null
     }
 
-    const totalCost = dataForPeriod.models.reduce((acc, m) => acc + m.cost, 0)
-    const totalMessages = dataForPeriod.models.reduce((acc, m) => acc + m.messages, 0)
-    const totalSessions = dataForPeriod.models.reduce((acc, m) => acc + m.sessions, 0)
-    const totalTokens = dataForPeriod.models.reduce((acc, m) => acc + getTokenTotal(m.tokens), 0)
+    const totalCost = data.models.reduce((acc, m) => acc + m.cost, 0)
+    const totalMessages = data.models.reduce((acc, m) => acc + m.messages, 0)
+    const totalSessions = data.models.reduce((acc, m) => acc + m.sessions, 0)
+    const totalTokens = data.models.reduce((acc, m) => acc + getTokenTotal(m.tokens), 0)
 
-    const rows = dataForPeriod.models.map<EnrichedModelRow>((model) => ({
+    const rows = data.models.map<EnrichedModelRow>((model) => ({
       ...model,
-      totalTokens: getTotalTokens(model),
+      totalTokens: getTokenTotal(model.tokens),
       avgCostPerMessage: safeDivide(model.cost, model.messages),
       costShare: safeDivide(model.cost, totalCost) * 100,
+      avgTokensPerMessage: model.avg_tokens_per_message,
+      avgTokensPerSession: model.avg_tokens_per_session,
+      totalAvgTokensPerMessage: model.avg_tokens_per_message ? getAvgTokenTotal(model.avg_tokens_per_message) : 0,
+      totalAvgTokensPerSession: model.avg_tokens_per_session ? getAvgTokenTotal(model.avg_tokens_per_session) : 0,
+      tokenShare: safeDivide(getTokenTotal(model.tokens), totalTokens) * 100,
+      sessionShare: safeDivide(model.sessions, totalSessions) * 100,
+      messageShare: safeDivide(model.messages, totalMessages) * 100,
     }))
 
     const effectiveSort = sortState ?? DEFAULT_TABLE_SORT
 
     const sortedRows = [...rows].sort((left, right) => {
-      const primary = compareRows(effectiveSort.key, left, right)
+      const primary = compareRows(effectiveSort.key, left, right, metric)
       const multiplier = effectiveSort.direction === DEFAULT_SORT_DIRECTIONS[effectiveSort.key] ? 1 : -1
       const directedPrimary = primary * multiplier
 
@@ -165,7 +125,7 @@ export function ModelsView() {
       usageLeader,
       efficiencyLeader,
     }
-  }, [dataForPeriod, sortState, metric])
+  }, [data, sortState, metric])
 
   const handleSortChange = (key: SortKey) => {
     setSortState((current) => getNextSortState(current, key, DEFAULT_SORT_DIRECTIONS[key]))
@@ -187,6 +147,7 @@ export function ModelsView() {
 
   const handleMetricChange = (nextMetric: ModelsMetric) => {
     setMetric(nextMetric)
+    setSortState(null) // reset sort to default on metric change
   }
 
   const handleRetry = () => {
@@ -195,7 +156,7 @@ export function ModelsView() {
 
   const metricMeta = getModelsMetricMeta(metric)
 
-  if (loading && !dataForPeriod) {
+  if (loading && !data) {
     return (
       <section className="space-y-6">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -203,11 +164,11 @@ export function ModelsView() {
             <Badge tone="accent">Live route</Badge>
             <h2 className="text-2xl font-semibold tracking-tight text-foreground">Models</h2>
             <p className="max-w-3xl text-sm text-muted-foreground">
-              Ranked model usage from <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/models</code>.
+              Ranked model usage from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/models</code>.
             </p>
           </div>
         </div>
-        <ModelsSkeleton />
+        <DataPageSkeleton sections={['kpi-grid', 'table']} tableRows={7} />
       </section>
     )
   }
@@ -226,7 +187,7 @@ export function ModelsView() {
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
           <div className="text-sm text-muted-foreground">
             Endpoint:{' '}
-            <code className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-xs">/api/v1/models?period={period}</code>
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/models?period={period}</code>
           </div>
           <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
         </div>
@@ -416,6 +377,35 @@ export function ModelsView() {
                   </div>
                 </CardContent>
               </Card>
+
+              <details className="group">
+                <summary className="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground">
+                  <ChevronRightIcon className="inline h-4 w-4 transition-transform group-open:rotate-90" />
+                  {' '}Advanced Metrics (token averages)
+                </summary>
+                <div className="mt-4 grid grid-cols-2 gap-6">
+                  <div>
+                    <h4 className="text-sm font-medium text-foreground">Avg per message</h4>
+                    <div className="mt-2 space-y-1 text-sm text-muted-foreground">
+                      <div>Input: {formatTokenCount(summary.rows[0]?.avgTokensPerMessage?.input ?? 0)}</div>
+                      <div>Output: {formatTokenCount(summary.rows[0]?.avgTokensPerMessage?.output ?? 0)}</div>
+                      <div>Reasoning: {formatTokenCount(summary.rows[0]?.avgTokensPerMessage?.reasoning ?? 0)}</div>
+                      <div>Cache Read: {formatTokenCount(summary.rows[0]?.avgTokensPerMessage?.cache_read ?? 0)}</div>
+                      <div>Cache Write: {formatTokenCount(summary.rows[0]?.avgTokensPerMessage?.cache_write ?? 0)}</div>
+                    </div>
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-medium text-foreground">Avg per session</h4>
+                    <div className="mt-2 space-y-1 text-sm text-muted-foreground">
+                      <div>Input: {formatTokenCount(summary.rows[0]?.avgTokensPerSession?.input ?? 0)}</div>
+                      <div>Output: {formatTokenCount(summary.rows[0]?.avgTokensPerSession?.output ?? 0)}</div>
+                      <div>Reasoning: {formatTokenCount(summary.rows[0]?.avgTokensPerSession?.reasoning ?? 0)}</div>
+                      <div>Cache Read: {formatTokenCount(summary.rows[0]?.avgTokensPerSession?.cache_read ?? 0)}</div>
+                      <div>Cache Write: {formatTokenCount(summary.rows[0]?.avgTokensPerSession?.cache_write ?? 0)}</div>
+                    </div>
+                  </div>
+                </div>
+              </details>
             </>
           )}
         </>

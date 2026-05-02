@@ -16,33 +16,13 @@ func MessagesByPeriod(ctx context.Context, s *store.Store, period string, page, 
 		return MessageList{}, store.ErrInvalidSchema
 	}
 
-	// Parse period using the same logic as Daily
-	days, err := parsePeriod(period)
+	pw, err := ComputePeriodWindow(ctx, s, period)
 	if err != nil {
 		return MessageList{}, err
 	}
 
-	// Calculate date range
-	now := time.Now().UTC()
-	endDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	endMs := endDate.AddDate(0, 0, 1).UnixMilli() // Include full last day
-
-	var startMs int64
-	if days == allHistoricPeriodDays {
-		// Query earliest activity date for "all" period
-		earliest, err := queryEarliestActivityDate(ctx, s)
-		if err != nil {
-			return MessageList{}, err
-		}
-		if earliest.IsZero() {
-			startMs = endDate.UnixMilli()
-		} else {
-			startMs = earliest.UnixMilli()
-		}
-	} else {
-		startDate := endDate.AddDate(0, 0, -days+1)
-		startMs = startDate.UnixMilli()
-	}
+	startMs := pw.StartMs
+	endMs := pw.EndMs
 
 	// Validate pagination parameters
 	if page < 1 {

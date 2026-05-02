@@ -62,6 +62,7 @@
 }
 
 :root {
+  --header-height: 116px;
   color-scheme: dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;

@@ -1,4 +1,5 @@
 import { formatCurrency, formatDateTime, formatInteger, formatTokenCount } from '../../lib/format'
+import { getTokenTotal } from '../../lib/token-breakdown'
 import { cn } from '../../lib/utils'
 import type { SessionMessage } from '../../types/api'
 import { Badge } from '../ui/badge'
@@ -17,11 +18,6 @@ function getRoleTone(role: string) {
   }
 }
 
-export function getTokenTotal(message: SessionMessage) {
-  if (!message.tokens) return 0
-  return message.tokens.input + message.tokens.output + message.tokens.reasoning + message.tokens.cache.read + message.tokens.cache.write
-}
-
 export function SessionMessageRow({
   message,
   previousMessage,
@@ -33,7 +29,7 @@ export function SessionMessageRow({
   isHighestCost?: boolean
   isHighestTokens?: boolean
 }) {
-  const tokenTotal = getTokenTotal(message)
+  const tokenTotal = message.tokens ? getTokenTotal(message.tokens) : 0
   const cost = message.cost ?? 0
   const isHighlight = isHighestCost || isHighestTokens
 

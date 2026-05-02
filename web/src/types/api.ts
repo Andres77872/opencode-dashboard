@@ -33,6 +33,14 @@ export interface DailyStats {
   granularity: Granularity
 }
 
+export interface AvgTokenStats {
+  input: number
+  output: number
+  reasoning: number
+  cache_read: number
+  cache_write: number
+}
+
 export interface ModelEntry {
   model_id: string
   provider_id: string
@@ -40,6 +48,8 @@ export interface ModelEntry {
   messages: number
   cost: number
   tokens: TokenStats
+  avg_tokens_per_message?: AvgTokenStats
+  avg_tokens_per_session?: AvgTokenStats
 }
 
 export interface ModelStats {
@@ -71,10 +81,37 @@ export interface ProjectStats {
   projects: ProjectEntry[]
 }
 
+export interface DimensionDayStats {
+  date: string
+  dimension_key: string
+  sessions: number
+  messages: number
+  cost: number
+  tokens: TokenStats
+}
+
+export interface DailyDimensionStats {
+  days: DimensionDayStats[]
+  dimension: string
+  period: string
+}
+
+export interface ProjectDetail {
+  project_id: string
+  project_name: string
+  worktree?: string
+  sessions: number
+  messages: number
+  cost: number
+  tokens: TokenStats
+  recent_sessions?: SessionEntry[]
+  total_sessions: number
+}
+
 export interface ConfigStats {
   path: string
   exists: boolean
-  content?: string
+  content?: Record<string, unknown>
 }
 
 export interface SessionEntry {

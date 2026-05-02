@@ -1,12 +1,26 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"opencode-dashboard/internal/stats"
 	"opencode-dashboard/internal/store"
 )
+
+// configContentAsString returns the ConfigView content as a display string for the TUI.
+// Handles the migration from string to map[string]any by re-marshaling if needed.
+func configContentAsString(cfg stats.ConfigView) string {
+	if cfg.Content == nil {
+		return ""
+	}
+	b, err := json.MarshalIndent(cfg.Content, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("%v", cfg.Content)
+	}
+	return string(b)
+}
 
 func renderConfig(s styles, width, height int, cfg stats.ConfigView, opts Options, schema store.SchemaInfo) string {
 	lines := []string{
@@ -25,7 +39,8 @@ func renderConfig(s styles, width, height int, cfg stats.ConfigView, opts Option
 		return joinLines(lines...)
 	}
 
-	previewLines := strings.Split(cfg.Content, "\n")
+	contentStr := configContentAsString(cfg)
+	previewLines := strings.Split(contentStr, "\n")
 	maxPreview := max(height-10, 6)
 	for i, line := range previewLines {
 		if i >= maxPreview {

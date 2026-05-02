@@ -3,7 +3,6 @@ package stats
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"path/filepath"
 	"sort"
 	"time"
@@ -16,29 +15,13 @@ func Projects(ctx context.Context, s *store.Store, period string) (ProjectStats,
 		return ProjectStats{}, store.ErrInvalidSchema
 	}
 
-	days, err := parsePeriod(period)
+	pw, err := ComputePeriodWindow(ctx, s, period)
 	if err != nil {
 		return ProjectStats{}, err
 	}
 
-	now := time.Now().UTC()
-	endDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	startDate := endDate
-
-	if days == allHistoricPeriodDays {
-		startDate, err = queryEarliestActivityDate(ctx, s)
-		if err != nil {
-			return ProjectStats{}, fmt.Errorf("query earliest activity date: %w", err)
-		}
-		if startDate.IsZero() {
-			startDate = endDate
-		}
-	} else if days > 0 {
-		startDate = endDate.AddDate(0, 0, -days+1)
-	}
-
-	startMs := startDate.UnixMilli()
-	endMs := endDate.AddDate(0, 0, 1).UnixMilli()
+	startMs := pw.StartMs
+	endMs := pw.EndMs
 
 	db := s.DB()
 
@@ -161,4 +144,176 @@ func resolveProjectName(projectID string, name string, worktree string) string {
 		return projectID[:8]
 	}
 	return projectID
+}
+
+// ProjectByID returns aggregate stats and recent sessions for a specific project.
+// Returns nil if the project does not exist.
+func ProjectByID(ctx context.Context, s *store.Store, id int64, period string, page, limit int) (*ProjectDetail, error) {
+	if !s.IsValidSchema() {
+		return nil, store.ErrInvalidSchema
+	}
+
+	db := s.DB()
+
+	// Verify project exists and get metadata
+	var projectID, worktree string
+	var name sql.NullString
+	err := db.QueryRowContext(ctx, "SELECT id, name, worktree FROM project WHERE id = ?", id).Scan(&projectID, &name, &worktree)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	pw, err := ComputePeriodWindow(ctx, s, period)
+	if err != nil {
+		return nil, err
+	}
+
+	// Aggregate stats for this project
+	aggQuery := `
+		SELECT
+			COUNT(DISTINCT s.id) AS sessions,
+			COUNT(m.id) AS messages,
+			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.cost') AS REAL)), 0) AS total_cost,
+			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.input') AS INTEGER)), 0) AS input_tokens,
+			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.output') AS INTEGER)), 0) AS output_tokens,
+			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.reasoning') AS INTEGER)), 0) AS reasoning_tokens,
+			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.cache.read') AS INTEGER)), 0) AS cache_read,
+			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.cache.write') AS INTEGER)), 0) AS cache_write
+		FROM session s
+		LEFT JOIN message m ON m.session_id = s.id
+			AND JSON_EXTRACT(m.data, '$.role') = 'assistant'
+			AND m.time_created >= ? AND m.time_created < ?
+		WHERE s.project_id = ?
+	`
+	var sessions, messages int64
+	var cost float64
+	var input, output, reasoning, cacheRead, cacheWrite int64
+	err = db.QueryRowContext(ctx, aggQuery, pw.StartMs, pw.EndMs, projectID).Scan(
+		&sessions, &messages, &cost,
+		&input, &output, &reasoning, &cacheRead, &cacheWrite,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			sessions, messages = 0, 0
+			cost = 0
+			input, output, reasoning, cacheRead, cacheWrite = 0, 0, 0, 0, 0
+		} else {
+			return nil, err
+		}
+	}
+
+	// Validate pagination
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := (page - 1) * limit
+
+	// Total session count for pagination
+	var totalSessions int64
+	err = db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM session WHERE project_id = ?", projectID,
+	).Scan(&totalSessions)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			totalSessions = 0
+		} else {
+			return nil, err
+		}
+	}
+
+	// Recent sessions paginated
+	recentQuery := `
+		SELECT
+			s.id,
+			s.title,
+			s.project_id,
+			p.name,
+			p.worktree,
+			s.time_created,
+			s.time_updated,
+			(SELECT COUNT(*) FROM message m2 WHERE m2.session_id = s.id) AS message_count,
+			COALESCE((SELECT SUM(CAST(JSON_EXTRACT(m3.data, '$.cost') AS REAL)) FROM message m3 WHERE m3.session_id = s.id AND JSON_EXTRACT(m3.data, '$.role') = 'assistant'), 0) AS total_cost
+		FROM session s
+		LEFT JOIN project p ON p.id = s.project_id
+		WHERE s.project_id = ?
+		ORDER BY s.time_created DESC
+		LIMIT ? OFFSET ?
+	`
+
+	recentRows, err := db.QueryContext(ctx, recentQuery, projectID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer recentRows.Close()
+
+	recentSessions := make([]SessionEntry, 0)
+	for recentRows.Next() {
+		var (
+			sessionID     string
+			title         sql.NullString
+			pid           sql.NullString
+			pname         sql.NullString
+			wtree         sql.NullString
+			timeCreatedMs int64
+			timeUpdatedMs int64
+			msgCount      int64
+			totalCost     float64
+		)
+
+		if err := recentRows.Scan(&sessionID, &title, &pid, &pname, &wtree, &timeCreatedMs, &timeUpdatedMs, &msgCount, &totalCost); err != nil {
+			return nil, err
+		}
+
+		displayName := resolveProjectName(
+			pid.String,
+			pname.String,
+			wtree.String,
+		)
+
+		recentSessions = append(recentSessions, SessionEntry{
+			ID:           sessionID,
+			Title:        title.String,
+			ProjectID:    pid.String,
+			ProjectName:  displayName,
+			TimeCreated:  time.UnixMilli(timeCreatedMs).UTC(),
+			TimeUpdated:  time.UnixMilli(timeUpdatedMs).UTC(),
+			MessageCount: msgCount,
+			Cost:         totalCost,
+		})
+	}
+
+	if err := recentRows.Err(); err != nil {
+		return nil, err
+	}
+
+	projectName := resolveProjectName(projectID, name.String, worktree)
+
+	return &ProjectDetail{
+		ProjectID:   projectID,
+		ProjectName: projectName,
+		Worktree:    worktree,
+		Sessions:    sessions,
+		Messages:    messages,
+		Cost:        cost,
+		Tokens: TokenStats{
+			Input:     input,
+			Output:    output,
+			Reasoning: reasoning,
+			Cache: CacheStats{
+				Read:  cacheRead,
+				Write: cacheWrite,
+			},
+		},
+		RecentSessions: recentSessions,
+		TotalSessions:  totalSessions,
+	}, nil
 }

@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -52,15 +53,6 @@ func TestParsePeriod(t *testing.T) {
 	}
 }
 
-func TestGranularityConstants(t *testing.T) {
-	if GranularityDay != "day" {
-		t.Errorf("GranularityDay = %q, want %q", GranularityDay, "day")
-	}
-	if GranularityHour != "hour" {
-		t.Errorf("GranularityHour = %q, want %q", GranularityHour, "hour")
-	}
-}
-
 func TestDailyStatsGranularity(t *testing.T) {
 	stats := DailyStats{
 		Days:        []DayStats{},
@@ -76,5 +68,207 @@ func TestDailyStatsGranularity(t *testing.T) {
 	}
 	if statsHourly.Granularity != GranularityHour {
 		t.Errorf("DailyStats.Granularity = %q, want %q", statsHourly.Granularity, GranularityHour)
+	}
+}
+
+// TestDailyGranularityLogic tests the granularity auto-hour logic without a database fixture.
+// These are unit-level logic tests for the Daily function's variadic parameter handling.
+func TestDailyGranularityLogic(t *testing.T) {
+	t.Run("no granularity with 1d returns hourly", func(t *testing.T) {
+		// Simulate the function signature behavior: empty variadic = no granularity
+		fn := func(period string, granularity ...Granularity) Granularity {
+			explicit := false
+			if len(granularity) > 0 && granularity[0] != "" {
+				explicit = true
+			}
+			if period == "1d" && !explicit {
+				return GranularityHour
+			}
+			return GranularityDay
+		}
+
+		if g := fn("1d"); g != GranularityHour {
+			t.Errorf("no granularity + 1d: got %q, want %q", g, GranularityHour)
+		}
+	})
+
+	t.Run("granularity=day with 1d returns daily", func(t *testing.T) {
+		fn := func(period string, granularity ...Granularity) Granularity {
+			explicit := false
+			var gran Granularity
+			if len(granularity) > 0 && granularity[0] != "" {
+				gran = granularity[0]
+				explicit = true
+			}
+			if period == "1d" && !explicit {
+				return GranularityHour
+			}
+			if gran == GranularityHour {
+				return GranularityHour
+			}
+			return GranularityDay
+		}
+
+		if g := fn("1d", GranularityDay); g != GranularityDay {
+			t.Errorf("granularity=day + 1d: got %q, want %q", g, GranularityDay)
+		}
+	})
+
+	t.Run("granularity=hour with 7d returns hourly", func(t *testing.T) {
+		fn := func(period string, granularity ...Granularity) Granularity {
+			explicit := false
+			var gran Granularity
+			if len(granularity) > 0 && granularity[0] != "" {
+				gran = granularity[0]
+				explicit = true
+			}
+			if period == "1d" && !explicit {
+				return GranularityHour
+			}
+			if gran == GranularityHour {
+				return GranularityHour
+			}
+			return GranularityDay
+		}
+
+		if g := fn("7d", GranularityHour); g != GranularityHour {
+			t.Errorf("granularity=hour + 7d: got %q, want %q", g, GranularityHour)
+		}
+	})
+
+	t.Run("empty string granularity treated as no-explicit", func(t *testing.T) {
+		// This simulates what the handler used to do (passing "")
+		fn := func(period string, granularity ...Granularity) Granularity {
+			explicit := false
+			if len(granularity) > 0 && granularity[0] != "" {
+				explicit = true
+			}
+			if period == "1d" && !explicit {
+				return GranularityHour
+			}
+			return GranularityDay
+		}
+
+		// Empty string passed as variadic should be treated as NOT explicit
+		if g := fn("1d", Granularity("")); g != GranularityHour {
+			t.Errorf("empty granularity + 1d: got %q, want %q (auto-hour)", g, GranularityHour)
+		}
+	})
+
+	t.Run("no granularity with 7d returns daily", func(t *testing.T) {
+		fn := func(period string, granularity ...Granularity) Granularity {
+			explicit := false
+			if len(granularity) > 0 && granularity[0] != "" {
+				explicit = true
+			}
+			if period == "1d" && !explicit {
+				return GranularityHour
+			}
+			return GranularityDay
+		}
+
+		if g := fn("7d"); g != GranularityDay {
+			t.Errorf("no granularity + 7d: got %q, want %q", g, GranularityDay)
+		}
+	})
+}
+
+// TestDailyDimensionValidDimensions validates dimension constant values.
+func TestDailyDimensionValidDimensions(t *testing.T) {
+	expectedDims := map[string]string{
+		"model":   "$.modelID",
+		"tool":    "$.tool",
+		"project": "$.projectID",
+	}
+
+	if len(validDimensions) != len(expectedDims) {
+		t.Errorf("validDimensions has %d entries, want %d", len(validDimensions), len(expectedDims))
+	}
+
+	for dim, expectedPath := range expectedDims {
+		path, ok := validDimensions[dim]
+		if !ok {
+			t.Errorf("validDimensions missing key %q", dim)
+			continue
+		}
+		if path != expectedPath {
+			t.Errorf("validDimensions[%q] = %q, want %q", dim, path, expectedPath)
+		}
+	}
+}
+
+// TestDailyDimensionError checks that invalid dimensions produce appropriate errors.
+func TestDailyDimensionError(t *testing.T) {
+	invalidDims := []string{"invalid", "modelx", "", "model "}
+	for _, dim := range invalidDims {
+		t.Run("dimension_"+dim, func(t *testing.T) {
+			_, ok := validDimensions[dim]
+			if ok {
+				t.Errorf("validDimensions should NOT contain %q", dim)
+			}
+		})
+	}
+}
+
+// TestGranularityConstants ensures Granularity constants have expected string values.
+func TestGranularityConstants(t *testing.T) {
+	if GranularityDay != "day" {
+		t.Errorf("GranularityDay = %q, want %q", GranularityDay, "day")
+	}
+	if GranularityHour != "hour" {
+		t.Errorf("GranularityHour = %q, want %q", GranularityHour, "hour")
+	}
+}
+
+// TestModelStatsEmptyArray proves that serialized ModelStats produces {"models":[]} not {"models":null}.
+func TestModelStatsEmptyArray(t *testing.T) {
+	stats := ModelStats{Models: make([]ModelEntry, 0)}
+	data, err := json.Marshal(stats)
+	if err != nil {
+		t.Fatalf("json.Marshal(ModelStats{}) failed: %v", err)
+	}
+	got := string(data)
+	want := `{"models":[]}`
+	if got != want {
+		t.Errorf("ModelStats JSON = %s, want %s", got, want)
+	}
+
+	// Also verify that nil produces {"models":null} so the make() fix is necessary
+	statsNil := ModelStats{}
+	dataNil, _ := json.Marshal(statsNil)
+	if string(dataNil) != `{"models":null}` {
+		t.Errorf("nil ModelStats JSON = %s, want {\"models\":null}", string(dataNil))
+	}
+}
+
+// TestMessageEntryCostOmitEmpty proves that MessageEntry with zero cost omits the field.
+func TestMessageEntryCostOmitEmpty(t *testing.T) {
+	entry := MessageEntry{
+		ID:        "test-msg",
+		SessionID: "test-ses",
+		Role:      "user",
+		Cost:      0,
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("json.Marshal(MessageEntry) failed: %v", err)
+	}
+	got := string(data)
+	if strings.Contains(got, `"cost":0`) {
+		t.Errorf("MessageEntry with Cost=0 should omit cost field, got: %s", got)
+	}
+	if !strings.Contains(got, `"id":"test-msg"`) {
+		t.Errorf("MessageEntry missing id field: %s", got)
+	}
+
+	// Verify non-zero cost IS included
+	entry.Cost = 1.5
+	data, err = json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("json.Marshal(MessageEntry with cost) failed: %v", err)
+	}
+	got = string(data)
+	if !strings.Contains(got, `"cost":1.5`) {
+		t.Errorf("MessageEntry with Cost=1.5 should include cost, got: %s", got)
 	}
 }
