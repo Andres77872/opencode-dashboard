@@ -132,7 +132,7 @@ export function getSessionsWithFilter(
   limit: number,
   period: DailyPeriod,
   filter?: string,
-  projectId?: number,
+  projectId?: string,
   signal?: AbortSignal,
 ) {
   const params = new URLSearchParams({
@@ -145,8 +145,8 @@ export function getSessionsWithFilter(
     params.set('filter', filter)
   }
 
-  if (projectId !== undefined && projectId > 0) {
-    params.set('project_id', String(projectId))
+  if (projectId) {
+    params.set('project_id', projectId)
   }
 
   return request<SessionList>(`/api/v1/sessions?${params.toString()}`, { signal })
@@ -157,7 +157,7 @@ export function getDailyDimension(dimension: string, period: DailyPeriod, signal
   return request<DailyDimensionStats>(`/api/v1/daily?${params.toString()}`, { signal })
 }
 
-export function getProjectDetail(id: number, period: DailyPeriod, page?: number, limit?: number, signal?: AbortSignal) {
+export function getProjectDetail(id: string, period: DailyPeriod, page?: number, limit?: number, signal?: AbortSignal) {
   const params = new URLSearchParams({ period })
 
   if (page !== undefined) {
@@ -168,7 +168,7 @@ export function getProjectDetail(id: number, period: DailyPeriod, page?: number,
     params.set('limit', String(limit))
   }
 
-  return request<ProjectDetail>(`/api/v1/projects/${id}?${params.toString()}`, { signal })
+  return request<ProjectDetail>(`/api/v1/projects/${encodeURIComponent(id)}?${params.toString()}`, { signal })
 }
 
 export function getSessionDetail(id: string, signal?: AbortSignal) {

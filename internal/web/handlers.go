@@ -150,10 +150,9 @@ func (h *Handlers) Projects(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) ProjectDetail(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		BadRequest("invalid project id").Write(w)
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		BadRequest("missing project id").Write(w)
 		return
 	}
 	period := r.URL.Query().Get("period")
@@ -195,14 +194,9 @@ func (h *Handlers) Sessions(w http.ResponseWriter, r *http.Request) {
 		period = "7d"
 	}
 
-	var projectID int64
+	var projectID string
 	if pid := r.URL.Query().Get("project_id"); pid != "" {
-		var err error
-		projectID, err = strconv.ParseInt(pid, 10, 64)
-		if err != nil {
-			BadRequest("invalid project_id").Write(w)
-			return
-		}
+		projectID = strings.TrimSpace(pid)
 	}
 
 	result, err := stats.SessionsWithQuery(ctx, h.store, stats.SessionQuery{

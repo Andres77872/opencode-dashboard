@@ -159,7 +159,7 @@ type SessionQuery struct {
 	Page      int
 	PageSize  int
 	Filter    string
-	ProjectID int64 // exact project ID filter, 0 = no filter
+	ProjectID string // exact project ID filter, empty = no filter
 	Sort      SessionSortMode
 	Period    string // "1d", "7d", "30d", "1y", "all" — filters by message activity time
 }

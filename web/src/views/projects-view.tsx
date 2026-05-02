@@ -72,7 +72,7 @@ export function ProjectsView() {
   const { requestRefresh } = useDashboardContext()
   const [searchParams, setSearchParams] = useSearchParams()
   const [sortState, setSortState] = useState<SortState<string> | null>(null)
-  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null)
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
 
   const rawPeriod = searchParams.get('period')
   const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
@@ -131,6 +131,11 @@ export function ProjectsView() {
   }, [data, sortState])
 
   const handleRetry = () => requestRefresh()
+
+  const handleProjectSelect = (project: EnrichedProjectRow) => {
+    if (!project.project_id) return
+    setSelectedProjectId(project.project_id)
+  }
 
   // DataTable columns
   const columns: DataTableColumn<EnrichedProjectRow>[] = [
@@ -254,14 +259,26 @@ export function ProjectsView() {
       {summary ? (
         <>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <MetricCard label="Tracked projects" value={formatInteger(summary.rows.length)}
-              hint={summary.rows.length === 1 ? 'One project is visible' : 'Distinct projects aggregated from the OpenCode project table'} />
-            <MetricCard label="Total project cost" value={formatCurrency(summary.totalCost)}
-              hint={`${formatCompactInteger(summary.totalMessages)} assistant messages attributed`} />
-            <MetricCard label="Sessions touched" value={formatInteger(summary.totalSessions)}
-              hint={summary.activityLeader ? `${getProjectLabel(summary.activityLeader)} leads message volume` : 'Awaiting activity'} />
-            <MetricCard label="Token load" value={formatTokenCount(summary.totalTokens)}
-              hint={summary.costLeader ? `${getProjectLabel(summary.costLeader)} owns ${formatPercentage(summary.costLeader.costShare)} of spend` : 'No spend recorded yet'} />
+            <MetricCard
+              label="Tracked projects"
+              value={formatInteger(summary.rows.length)}
+              hint={summary.rows.length === 1 ? 'One project is visible' : 'Distinct projects aggregated from the OpenCode project table'}
+            />
+            <MetricCard
+              label="Total project cost"
+              value={formatCurrency(summary.totalCost)}
+              hint={`${formatCompactInteger(summary.totalMessages)} assistant messages attributed`}
+            />
+            <MetricCard
+              label="Sessions touched"
+              value={formatInteger(summary.totalSessions)}
+              hint={summary.activityLeader ? `${getProjectLabel(summary.activityLeader)} leads message volume` : 'Awaiting activity'}
+            />
+            <MetricCard
+              label="Token load"
+              value={formatTokenCount(summary.totalTokens)}
+              hint={summary.costLeader ? `${getProjectLabel(summary.costLeader)} owns ${formatPercentage(summary.costLeader.costShare)} of spend` : 'No spend recorded yet'}
+            />
           </div>
 
           <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_18rem] 2xl:items-start">
@@ -296,23 +313,27 @@ export function ProjectsView() {
                       columns={columns}
                       sortState={sortState}
                       onSortChange={handleSortChange}
-                      rowKey={(row) => row.name}
+                      rowKey={(row) => row.project_id}
+                      onRowClick={handleProjectSelect}
                       mobileCard={(row) => (
-                        <div className="rounded-2xl border border-border/70 bg-panel/65 p-4">
+                        <button
+                          type="button"
+                          onClick={() => handleProjectSelect(row)}
+                          className="w-full rounded-2xl border border-border/70 bg-panel/65 p-4 text-left transition-colors hover:bg-panel/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                          aria-label={`View details for ${getProjectLabel(row)}`}
+                        >
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
                               <div className="truncate font-medium text-foreground">{getProjectLabel(row)}</div>
                               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.14em] text-muted-foreground">
-                                <span>{formatCurrency(row.cost)}</span>
+                                <span>id {getProjectIdentifier(row)}</span>
                                 <span aria-hidden="true">•</span>
-                                <span>{formatCompactInteger(row.sessions)} sessions</span>
-                                <span aria-hidden="true">•</span>
-                                <span>{formatCompactInteger(row.messages)} msgs</span>
+                                <span>{formatPercentage(row.costShare)} share</span>
                               </div>
                             </div>
-                            <Badge>{formatPercentage(row.costShare)}</Badge>
+                            <div className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</div>
                           </div>
-                          <Progress className="mt-3" value={Math.max(row.costShare, row.sessions > 0 ? 4 : 0)} />
+                          <Progress className="mt-3" value={Math.max(row.costShare, row.cost > 0 ? 4 : 0)} />
                           <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                             <div className="rounded-lg bg-background/40 px-2.5 py-2">
                               <div className="uppercase tracking-[0.14em]">Sessions</div>
@@ -327,7 +348,9 @@ export function ProjectsView() {
                               <TooltipProvider>
                                 <Tooltip>
                                   <TooltipTrigger asChild>
-                                    <div className="mt-1 font-mono text-sm text-foreground">{formatTokenCount(row.totalTokens)}</div>
+                                    <div className="mt-1 cursor-default font-mono text-sm text-foreground transition-opacity hover:opacity-80">
+                                      {formatTokenCount(row.totalTokens)}
+                                    </div>
                                   </TooltipTrigger>
                                   <TooltipContent side="top" className="font-mono">
                                     <p>{formatInteger(row.totalTokens)}</p>
@@ -340,7 +363,8 @@ export function ProjectsView() {
                               <div className="mt-1 font-mono text-sm text-foreground">{formatCurrency(row.avgCostPerSession)}</div>
                             </div>
                           </div>
-                        </div>
+                          <div className="mt-3 text-sm font-medium text-accent">Open project drilldown</div>
+                        </button>
                       )}
                       emptyState={
                         <div className="text-sm text-muted-foreground">
@@ -353,7 +377,6 @@ export function ProjectsView() {
               )}
             </div>
 
-            {/* Sidebar cues */}
             <Card className="hidden border-border/70 bg-panel/55 2xl:block 2xl:sticky self-start" style={{ top: 'var(--header-height)' }}>
               <CardHeader>
                 <CardDescription>Project cues</CardDescription>
@@ -394,123 +417,6 @@ export function ProjectsView() {
               </CardContent>
             </Card>
           </div>
-          ) : (
-            <Card>
-              <CardHeader className="gap-3 lg:flex-row lg:items-end lg:justify-between">
-                <div className="space-y-1.5">
-                  <CardDescription>Primary artifact</CardDescription>
-                  <CardTitle>Project usage ranking</CardTitle>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone="success">Dense table</Badge>
-                  {summary.costLeader && <Badge tone="accent">Top spend · {getProjectLabel(summary.costLeader)}</Badge>}
-                  {summary.activityLeader && <Badge>Top traffic · {getProjectLabel(summary.activityLeader)}</Badge>}
-                </div>
-              </CardHeader>
-
-              <CardContent className="space-y-4">
-                <DataTable<EnrichedProjectRow>
-                  rows={summary.rows}
-                  columns={columns}
-                  sortState={sortState}
-                  onSortChange={handleSortChange}
-                  rowKey={(row) => row.project_id}
-                  onRowClick={(row) => setSelectedProjectId(Number(row.project_id) || null)}
-                  mobileCard={(row) => (
-                    <div className="rounded-2xl border border-border/70 bg-panel/65 p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="truncate font-medium text-foreground">{getProjectLabel(row)}</div>
-                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.14em] text-muted-foreground">
-                            <span>id {getProjectIdentifier(row)}</span>
-                            <span aria-hidden="true">•</span>
-                            <span>{formatPercentage(row.costShare)} share</span>
-                          </div>
-                        </div>
-                        <div className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</div>
-                      </div>
-                      <Progress className="mt-3" value={Math.max(row.costShare, row.cost > 0 ? 4 : 0)} />
-                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                        <div className="rounded-lg bg-background/40 px-2.5 py-2">
-                          <div className="uppercase tracking-[0.14em]">Sessions</div>
-                          <div className="mt-1 font-mono text-sm text-foreground">{formatCompactInteger(row.sessions)}</div>
-                        </div>
-                        <div className="rounded-lg bg-background/40 px-2.5 py-2">
-                          <div className="uppercase tracking-[0.14em]">Messages</div>
-                          <div className="mt-1 font-mono text-sm text-foreground">{formatCompactInteger(row.messages)}</div>
-                        </div>
-                        <div className="rounded-lg bg-background/40 px-2.5 py-2">
-                          <div className="uppercase tracking-[0.14em]">Tokens</div>
-                          <TooltipProvider>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <div className="mt-1 cursor-default font-mono text-sm text-foreground transition-opacity hover:opacity-80">
-                                  {formatTokenCount(row.totalTokens)}
-                                </div>
-                              </TooltipTrigger>
-                              <TooltipContent side="top" className="font-mono">
-                                <p>{formatInteger(row.totalTokens)}</p>
-                              </TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
-                        </div>
-                        <div className="rounded-lg bg-background/40 px-2.5 py-2">
-                          <div className="uppercase tracking-[0.14em]">$/session</div>
-                          <div className="mt-1 font-mono text-sm text-foreground">{formatCurrency(row.avgCostPerSession)}</div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  emptyState={
-                    <div className="text-sm text-muted-foreground">
-                      No project activity recorded yet.
-                    </div>
-                  }
-                />
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Sidebar cues */}
-          <Card className="border-border/70 bg-panel/55">
-            <CardHeader>
-              <CardDescription>Project cues</CardDescription>
-              <CardTitle>Read the table faster</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm text-muted-foreground">
-              <div className="rounded-xl border border-border/70 bg-background/40 px-3 py-3">
-                <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Top spend</div>
-                <div className="mt-2 font-mono text-base text-foreground">
-                  {summary.costLeader ? getProjectLabel(summary.costLeader) : 'No data'}
-                </div>
-                <div className="mt-1 text-sm">
-                  {summary.costLeader ? `${formatCurrency(summary.costLeader.cost)} across ${formatCompactInteger(summary.costLeader.sessions)} sessions` : 'Awaiting activity'}
-                </div>
-              </div>
-              <div className="rounded-xl border border-border/70 bg-background/40 px-3 py-3">
-                <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Most active project</div>
-                <div className="mt-2 font-mono text-base text-foreground">
-                  {summary.activityLeader ? getProjectLabel(summary.activityLeader) : 'No data'}
-                </div>
-                <div className="mt-1 text-sm">
-                  {summary.activityLeader
-                    ? `${formatCompactInteger(summary.activityLeader.messages)} messages · ${formatTokenCount(summary.activityLeader.totalTokens)} tokens`
-                    : 'No usage recorded yet'}
-                </div>
-              </div>
-              <div className="rounded-xl border border-border/70 bg-background/40 px-3 py-3">
-                <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Lowest spend / session</div>
-                <div className="mt-2 font-mono text-base text-foreground">
-                  {summary.efficiencyLeader ? getProjectLabel(summary.efficiencyLeader) : 'Insufficient data'}
-                </div>
-                <div className="mt-1 text-sm">
-                  {summary.efficiencyLeader
-                    ? `${formatCurrency(summary.efficiencyLeader.avgCostPerSession)} per session in the current aggregate`
-                    : 'Need at least one project with sessions'}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
         </>
       ) : null}
 

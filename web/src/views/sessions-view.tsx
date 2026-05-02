@@ -61,8 +61,7 @@ export function SessionsView() {
   const rawPeriod = searchParams.get('period')
   const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
   const rawFilter = searchParams.get('filter') ?? ''
-  const rawProjectId = searchParams.get('project_id')
-  const projectId = rawProjectId ? parseInt(rawProjectId, 10) : undefined
+  const projectId = searchParams.get('project_id') ?? undefined
 
   const pageFromUrl = parseInt(searchParams.get('page') ?? '1', 10)
   const page = isNaN(pageFromUrl) || pageFromUrl < 1 ? 1 : pageFromUrl

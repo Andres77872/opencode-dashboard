@@ -780,11 +780,11 @@ func TestProjectByIDWithFixture(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Create custom fixture with numeric project IDs (SQLite TEXT vs INTEGER comparison works)
+	// Create custom fixture with string project IDs, matching the real store schema.
 	b := fixture.NewBuilder()
-	b.AddProject(fixture.NewProject("1", "/test/alpha").Name("test-alpha"))
+	b.AddProject(fixture.NewProject("proj-alpha-123abc", "/test/alpha").Name("test-alpha"))
 
-	s1 := fixture.NewSession("s-001", "1").
+	s1 := fixture.NewSession("s-001", "proj-alpha-123abc").
 		Title("Session one").
 		CreatedAt(now.Add(-2 * time.Hour)).
 		UpdatedAt(now.Add(-1 * time.Hour))
@@ -794,7 +794,7 @@ func TestProjectByIDWithFixture(t *testing.T) {
 	s1.AddMessage(msg1)
 	b.AddSession(s1)
 
-	s2 := fixture.NewSession("s-002", "1").
+	s2 := fixture.NewSession("s-002", "proj-alpha-123abc").
 		Title("Session two").
 		CreatedAt(now.Add(-3 * time.Hour)).
 		UpdatedAt(now.Add(-2 * time.Hour))
@@ -816,10 +816,10 @@ func TestProjectByIDWithFixture(t *testing.T) {
 	}
 	defer st.Close()
 
-	// Test happy path with project ID 1
-	detail, err := ProjectByID(ctx, st, 1, "all", 1, 10)
+	// Test happy path with a string project ID.
+	detail, err := ProjectByID(ctx, st, "proj-alpha-123abc", "all", 1, 10)
 	if err != nil {
-		t.Fatalf("ProjectByID(1, all) failed: %v", err)
+		t.Fatalf("ProjectByID(proj-alpha-123abc, all) failed: %v", err)
 	}
 	if detail == nil {
 		t.Fatal("ProjectByID returned nil, want project detail")
@@ -851,12 +851,12 @@ func TestProjectByIDWithFixture(t *testing.T) {
 	}
 
 	// Test 404 for non-existent project
-	missing, err := ProjectByID(ctx, st, 99999, "7d", 1, 10)
+	missing, err := ProjectByID(ctx, st, "does-not-exist", "7d", 1, 10)
 	if err != nil {
-		t.Fatalf("ProjectByID(99999) unexpected error: %v", err)
+		t.Fatalf("ProjectByID(does-not-exist) unexpected error: %v", err)
 	}
 	if missing != nil {
-		t.Error("ProjectByID(99999) returned non-nil, want nil (404)")
+		t.Error("ProjectByID(does-not-exist) returned non-nil, want nil (404)")
 	}
 }
 
@@ -936,24 +936,24 @@ func TestSessionQueryProjectID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Create custom fixture with numeric project IDs for SQLite TEXT/INTEGER comparison
+	// Create custom fixture with string project IDs, matching the real store schema.
 	b := fixture.NewBuilder()
-	b.AddProject(fixture.NewProject("1", "/test/alpha").Name("alpha"))
-	b.AddProject(fixture.NewProject("2", "/test/beta").Name("beta"))
+	b.AddProject(fixture.NewProject("proj-alpha", "/test/alpha").Name("alpha"))
+	b.AddProject(fixture.NewProject("proj-beta", "/test/beta").Name("beta"))
 
-	s1 := fixture.NewSession("s-001", "1").Title("Alpha session 1").
+	s1 := fixture.NewSession("s-001", "proj-alpha").Title("Alpha session 1").
 		CreatedAt(now.Add(-1 * time.Hour)).UpdatedAt(now)
 	s1.AddMessage(fixture.NewMessage("m-001", "s-001", "assistant").
 		CreatedAt(now.Add(-1*time.Hour)).Cost(0.05).ModelID("gpt-4").ProviderID("openai").Tokens(500, 200, 50, 100, 50))
 	b.AddSession(s1)
 
-	s2 := fixture.NewSession("s-002", "1").Title("Alpha session 2").
+	s2 := fixture.NewSession("s-002", "proj-alpha").Title("Alpha session 2").
 		CreatedAt(now.Add(-2 * time.Hour)).UpdatedAt(now.Add(-1 * time.Hour))
 	s2.AddMessage(fixture.NewMessage("m-002", "s-002", "assistant").
 		CreatedAt(now.Add(-2*time.Hour)).Cost(0.03).ModelID("gpt-4").ProviderID("openai").Tokens(300, 100, 20, 0, 0))
 	b.AddSession(s2)
 
-	s3 := fixture.NewSession("s-003", "2").Title("Beta session 1").
+	s3 := fixture.NewSession("s-003", "proj-beta").Title("Beta session 1").
 		CreatedAt(now.Add(-3 * time.Hour)).UpdatedAt(now.Add(-2 * time.Hour))
 	s3.AddMessage(fixture.NewMessage("m-003", "s-003", "assistant").
 		CreatedAt(now.Add(-3*time.Hour)).Cost(0.02).ModelID("gpt-3.5-turbo").ProviderID("openai").Tokens(200, 100, 10, 0, 0))
@@ -971,54 +971,54 @@ func TestSessionQueryProjectID(t *testing.T) {
 	}
 	defer st.Close()
 
-	// Filter by project 1 (alpha) — should get 2 sessions
+	// Filter by alpha project ID — should get 2 sessions.
 	filtered, err := SessionsWithQuery(ctx, st, SessionQuery{
 		Page:      1,
 		PageSize:  10,
-		ProjectID: 1,
+		ProjectID: "proj-alpha",
 		Sort:      SessionSortNewest,
 	})
 	if err != nil {
-		t.Fatalf("SessionsWithQuery(projectID=1) failed: %v", err)
+		t.Fatalf("SessionsWithQuery(projectID=proj-alpha) failed: %v", err)
 	}
 	if filtered.Total != 2 {
-		t.Errorf("SessionsWithQuery(projectID=1).Total = %d, want 2", filtered.Total)
+		t.Errorf("SessionsWithQuery(projectID=proj-alpha).Total = %d, want 2", filtered.Total)
 	}
 	if len(filtered.Sessions) != 2 {
-		t.Errorf("len(SessionsWithQuery(projectID=1).Sessions) = %d, want 2", len(filtered.Sessions))
+		t.Errorf("len(SessionsWithQuery(projectID=proj-alpha).Sessions) = %d, want 2", len(filtered.Sessions))
 	}
 	for _, s := range filtered.Sessions {
-		if s.ProjectID != "1" {
-			t.Errorf("Session %q has ProjectID=%q, want %q", s.ID, s.ProjectID, "1")
+		if s.ProjectID != "proj-alpha" {
+			t.Errorf("Session %q has ProjectID=%q, want %q", s.ID, s.ProjectID, "proj-alpha")
 		}
 	}
 
-	// Filter by project 2 (beta) — should get 1 session
+	// Filter by beta project ID — should get 1 session.
 	filtered2, err := SessionsWithQuery(ctx, st, SessionQuery{
 		Page:      1,
 		PageSize:  10,
-		ProjectID: 2,
+		ProjectID: "proj-beta",
 		Sort:      SessionSortNewest,
 	})
 	if err != nil {
-		t.Fatalf("SessionsWithQuery(projectID=2) failed: %v", err)
+		t.Fatalf("SessionsWithQuery(projectID=proj-beta) failed: %v", err)
 	}
 	if filtered2.Total != 1 {
-		t.Errorf("SessionsWithQuery(projectID=2).Total = %d, want 1", filtered2.Total)
+		t.Errorf("SessionsWithQuery(projectID=proj-beta).Total = %d, want 1", filtered2.Total)
 	}
 
 	// Filter by non-existent project — should get 0
 	filtered0, err := SessionsWithQuery(ctx, st, SessionQuery{
 		Page:      1,
 		PageSize:  10,
-		ProjectID: 999,
+		ProjectID: "proj-missing",
 		Sort:      SessionSortNewest,
 	})
 	if err != nil {
-		t.Fatalf("SessionsWithQuery(projectID=999) failed: %v", err)
+		t.Fatalf("SessionsWithQuery(projectID=proj-missing) failed: %v", err)
 	}
 	if filtered0.Total != 0 {
-		t.Errorf("SessionsWithQuery(projectID=999).Total = %d, want 0", filtered0.Total)
+		t.Errorf("SessionsWithQuery(projectID=proj-missing).Total = %d, want 0", filtered0.Total)
 	}
 }
 

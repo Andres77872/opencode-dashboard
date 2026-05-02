@@ -148,7 +148,7 @@ func resolveProjectName(projectID string, name string, worktree string) string {
 
 // ProjectByID returns aggregate stats and recent sessions for a specific project.
 // Returns nil if the project does not exist.
-func ProjectByID(ctx context.Context, s *store.Store, id int64, period string, page, limit int) (*ProjectDetail, error) {
+func ProjectByID(ctx context.Context, s *store.Store, id string, period string, page, limit int) (*ProjectDetail, error) {
 	if !s.IsValidSchema() {
 		return nil, store.ErrInvalidSchema
 	}

@@ -36,7 +36,7 @@ import type { DailyPeriod, ProjectDetail, SessionEntry } from '../../types/api'
 // ── Props ──────────────────────────────────────────────────────
 
 interface ProjectDrilldownDrawerProps {
-  projectId: number | null
+  projectId: string | null
   period: DailyPeriod
   onClose: () => void
 }
@@ -58,17 +58,21 @@ export function ProjectDrilldownDrawer({ projectId, period, onClose }: ProjectDr
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [sessionPage, setSessionPage] = useState(1)
+  const [requestNonce, setRequestNonce] = useState(0)
 
   // Reset page when project changes
   useEffect(() => {
     setSessionPage(1)
     setDetail(null)
     setError(null)
+    setRequestNonce(0)
   }, [projectId])
 
   // Fetch project detail
   useEffect(() => {
     if (projectId === null) return
+
+    const activeProjectId = projectId
 
     const ctrl = new AbortController()
 
@@ -77,7 +81,7 @@ export function ProjectDrilldownDrawer({ projectId, period, onClose }: ProjectDr
       setError(null)
 
       try {
-        const next = await getProjectDetail(projectId!, period, sessionPage, 10, ctrl.signal)
+        const next = await getProjectDetail(activeProjectId, period, sessionPage, 10, ctrl.signal)
         setDetail(next)
       } catch (caught) {
         if (ctrl.signal.aborted) return
@@ -89,7 +93,7 @@ export function ProjectDrilldownDrawer({ projectId, period, onClose }: ProjectDr
 
     void load()
     return () => ctrl.abort()
-  }, [projectId, period, sessionPage])
+  }, [projectId, period, sessionPage, requestNonce])
 
   const open = projectId !== null
   const totalPages = detail ? Math.max(1, Math.ceil(detail.total_sessions / 10)) : 0
@@ -142,7 +146,7 @@ export function ProjectDrilldownDrawer({ projectId, period, onClose }: ProjectDr
                 <div className="font-medium text-foreground">Project detail failed to load</div>
                 <div className="text-sm opacity-90">{error}</div>
               </div>
-              <Button variant="ghost" onClick={() => setSessionPage((p) => p)}>
+              <Button variant="ghost" onClick={() => setRequestNonce((value) => value + 1)}>
                 Retry
               </Button>
             </Alert>

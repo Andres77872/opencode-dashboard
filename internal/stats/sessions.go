@@ -62,7 +62,7 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 	`
 	countArgs := []interface{}{filter, filterLike, filterLike}
 
-	if query.ProjectID > 0 {
+	if query.ProjectID != "" {
 		countQuery += ` AND p.id = ?`
 		countArgs = append(countArgs, query.ProjectID)
 	}
@@ -113,7 +113,7 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 	`
 	listArgs := []interface{}{startMs, endMs, filter, filterLike, filterLike}
 
-	if query.ProjectID > 0 {
+	if query.ProjectID != "" {
 		listQuery += ` AND p.id = ?`
 		listArgs = append(listArgs, query.ProjectID)
 	}
