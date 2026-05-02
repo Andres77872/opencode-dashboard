@@ -15,7 +15,7 @@ interface MetricCardProps {
 export function MetricCard({ label, value, hint, tooltipValue, loading }: MetricCardProps) {
   if (loading) {
     return (
-      <Card className="border-border/70 bg-linear-to-b from-card to-panel">
+      <Card>
         <CardHeader className="pb-3">
           <Skeleton className="h-4 w-24" />
           <Skeleton className="h-9 w-20 mt-2" />
@@ -43,7 +43,7 @@ export function MetricCard({ label, value, hint, tooltipValue, loading }: Metric
   )
 
   return (
-    <Card className="border-border/70 bg-linear-to-b from-card to-panel">
+    <Card>
       <CardHeader className="pb-3">
         <p className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">{label}</p>
         {valueElement}

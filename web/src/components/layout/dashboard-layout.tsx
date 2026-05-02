@@ -6,12 +6,14 @@ import { SidebarProvider } from './sidebar-context'
 export function DashboardLayout() {
   return (
     <SidebarProvider>
-      <div className="min-h-screen bg-background text-foreground">
-        <Header />
-        <div className="flex px-4 pb-8 sm:px-6 xl:px-8">
-          <PrimaryNav />
-          <main className="min-w-0 flex-1 mx-auto w-full max-w-7xl">
-            <Outlet />
+      <div className="flex min-h-screen text-foreground">
+        <PrimaryNav />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <Header />
+          <main className="flex-1 px-6 pb-8 pt-6 xl:px-8">
+            <div className="mx-auto w-full max-w-7xl">
+              <Outlet />
+            </div>
           </main>
         </div>
       </div>
