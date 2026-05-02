@@ -1,3 +1,4 @@
+import { ChevronRight } from 'lucide-react'
 import { summarizeValue, titleizeKey } from '../../lib/config-utils'
 import { formatInteger } from '../../lib/format'
 import { cn } from '../../lib/utils'
@@ -12,7 +13,7 @@ interface ConfigOverviewTabProps {
 
 export function ConfigOverviewTab({ sectionProjections, searchQuery, onOpenSection }: ConfigOverviewTabProps) {
   return (
-    <div className="rounded-lg border border-border/60 bg-card/50 divide-y divide-border/30">
+    <div className="divide-y divide-border/30 overflow-hidden rounded-xl border border-border/60 bg-card/50">
       {sectionProjections.map((projection) => {
         const matchesFilter = projection.filteredValue !== null
 
@@ -21,7 +22,7 @@ export function ConfigOverviewTab({ sectionProjections, searchQuery, onOpenSecti
             key={projection.section.key}
             type="button"
             className={cn(
-              'flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-muted/20',
+              'group flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/20',
               searchQuery && !matchesFilter ? 'opacity-40' : '',
             )}
             onClick={() => onOpenSection(projection.section.key)}
@@ -29,22 +30,21 @@ export function ConfigOverviewTab({ sectionProjections, searchQuery, onOpenSecti
             {/* Section name */}
             <span className="text-sm font-medium text-foreground">{titleizeKey(projection.section.key)}</span>
 
-            {/* Key/items count */}
+            {/* Size summary */}
             <span className="text-xs text-muted-foreground">{summarizeValue(projection.section.value)}</span>
 
-            {/* Leaf values */}
-            <span className="text-xs text-muted-foreground">
-              · {formatInteger(projection.insights.leafValues)} values
-            </span>
+            {/* Leaf values count — dot-separated */}
+            <span aria-hidden="true" className="text-muted-foreground/40">·</span>
+            <span className="text-xs text-muted-foreground">{formatInteger(projection.insights.leafValues)} values</span>
 
-            {/* Redacted badge if any */}
+            {/* Redacted badge */}
             {projection.insights.redactedValues > 0 ? (
-              <Badge tone="warning" className="text-[10px] py-0.5 px-1.5">
+              <Badge tone="warning" className="px-1.5 py-px text-[10px]">
                 {formatInteger(projection.insights.redactedValues)} redacted
               </Badge>
             ) : null}
 
-            {/* Filter match status */}
+            {/* Filter match indicator */}
             {searchQuery ? (
               <span className={cn('text-xs', matchesFilter ? 'text-accent' : 'text-muted-foreground')}>
                 {matchesFilter
@@ -53,18 +53,16 @@ export function ConfigOverviewTab({ sectionProjections, searchQuery, onOpenSecti
               </span>
             ) : null}
 
-            {/* Open arrow */}
-            <span className="ml-auto text-muted-foreground">
-              <svg className="h-4 w-4" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M6 4l4 4-4 4" />
-              </svg>
+            {/* Chevron */}
+            <span className="ml-auto shrink-0 text-muted-foreground/50 transition-colors group-hover:text-muted-foreground">
+              <ChevronRight className="size-4" />
             </span>
           </button>
         )
       })}
 
       {sectionProjections.length === 0 ? (
-        <div className="px-4 py-6 text-center text-sm text-muted-foreground">No sections available.</div>
+        <div className="px-4 py-8 text-center text-sm text-muted-foreground">No sections available.</div>
       ) : null}
     </div>
   )

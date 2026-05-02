@@ -17,14 +17,12 @@ export function PrimitiveField({ label, value, path, copiedId, onCopy }: Primiti
   const formattedValue = formatPrimitiveValue(value)
 
   return (
-    <div className="group/row flex min-h-[32px] items-baseline gap-2 border-b border-border/30 px-1 py-1.5 last:border-b-0 hover:bg-muted/20">
+    <div className="group/row flex min-h-[32px] items-center gap-3 border-b border-border/20 px-1 py-1.5 last:border-b-0 hover:bg-muted/20">
       <span className="shrink-0 text-sm text-muted-foreground">{displayLabel}</span>
-
-      <span className="min-w-0 flex-1 border-b border-dotted border-border/40" />
 
       <span
         className={cn(
-          'min-w-0 shrink text-sm',
+          'min-w-0 flex-1 text-sm',
           redacted
             ? 'font-mono text-warning'
             : typeof value === 'string'

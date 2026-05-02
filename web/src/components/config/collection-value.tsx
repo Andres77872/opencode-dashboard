@@ -1,4 +1,5 @@
 import { Fragment, type ReactNode, useState } from 'react'
+import { ChevronRight } from 'lucide-react'
 import {
   formatDisplayLabel,
   formatPrimitiveValue,
@@ -56,17 +57,15 @@ export function CollectionValue({
         type="button"
         className="group/header flex w-full items-center gap-1.5 rounded px-1 py-1 text-left hover:bg-muted/20"
         onClick={() => setOpen((current) => !current)}
+        aria-expanded={expanded}
+        aria-label={`Toggle ${displayLabel} section`}
       >
-        <svg
+        <ChevronRight
           className={cn(
-            'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-150',
+            'size-3.5 shrink-0 text-muted-foreground transition-transform duration-150',
             expanded ? 'rotate-90' : '',
           )}
-          viewBox="0 0 16 16"
-          fill="currentColor"
-        >
-          <path d="M6 4l4 4-4 4" />
-        </svg>
+        />
 
         <span className="text-sm font-medium text-foreground">{displayLabel}</span>
 

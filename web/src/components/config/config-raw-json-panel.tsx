@@ -22,7 +22,7 @@ export function ConfigRawJsonPanel({ content, copiedId, onCopy }: ConfigRawJsonP
       </CardHeader>
       <CardContent className="space-y-3 pt-4">
         <p className="text-sm text-muted-foreground">
-          Keep this for exact payload verification. The focused section tabs are better for scanning, but this preserves the literal snapshot the browser received.
+          For exact payload verification. The section tabs above are better for browsing.
         </p>
         <div className="max-h-[40rem] overflow-auto rounded-xl border border-border/70 bg-background/45 p-3 font-mono text-xs leading-6 text-foreground">
           <pre className="whitespace-pre-wrap break-words">{content}</pre>

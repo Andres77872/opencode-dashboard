@@ -1,5 +1,6 @@
+import { Search, X } from 'lucide-react'
 import type { ConfigStats } from '../../types/api'
-import { Button } from '../ui/button'
+import { Input } from '../ui/input'
 import { CopyButton } from './copy-button'
 
 interface ConfigWorkspaceHeaderProps {
@@ -27,24 +28,32 @@ export function ConfigWorkspaceHeader({
 }: ConfigWorkspaceHeaderProps) {
   return (
     <div className="space-y-2">
-      {/* Search row */}
+      {/* Search + actions row */}
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
-          <input
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <label htmlFor="config-search" className="sr-only">
+            Filter config keys and values
+          </label>
+          <Input
             id="config-search"
             type="search"
             value={searchValue}
             onChange={(event) => onSearchChange(event.target.value)}
             placeholder="Filter keys and values…"
-            className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            className="pl-8"
           />
+          {searchValue ? (
+            <button
+              type="button"
+              onClick={onClearFilter}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
+              aria-label="Clear search filter"
+            >
+              <X className="size-4" />
+            </button>
+          ) : null}
         </div>
-
-        {searchValue ? (
-          <Button type="button" variant="ghost" size="xs" onClick={onClearFilter}>
-            Clear
-          </Button>
-        ) : null}
 
         <CopyButton
           copyId="config-path"
@@ -64,14 +73,16 @@ export function ConfigWorkspaceHeader({
         ) : null}
       </div>
 
-      {/* Subtle context line */}
+      {/* Context line */}
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         {data?.path ? (
-          <span className="font-mono truncate">{data.path}</span>
+          <span className="font-mono truncate" title={data.path}>
+            {data.path}
+          </span>
         ) : null}
-        {searchQuery ? (
+        {searchQuery && totalSectionCount > 0 ? (
           <span>
-            · Filtering {visibleSectionCount}/{totalSectionCount} sections
+            · {visibleSectionCount}/{totalSectionCount} sections match
           </span>
         ) : null}
       </div>

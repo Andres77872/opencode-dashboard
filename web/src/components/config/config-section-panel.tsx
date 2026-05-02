@@ -19,11 +19,11 @@ export function ConfigSectionPanel({ section, visibleValue, searchActive, copied
   const visibleInsights = collectInsights(visibleValue)
 
   return (
-    <div className="rounded-lg border border-border/60 bg-card/50">
+    <div className="overflow-hidden rounded-xl border border-border/60 bg-card/50">
       {/* Compact header */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 px-4 py-2.5">
         <div className="flex items-center gap-2">
-          <h3 className="text-base font-semibold text-foreground">{titleizeKey(section.key)}</h3>
+          <h3 className="text-sm font-semibold text-foreground">{titleizeKey(section.key)}</h3>
           <Badge className="font-mono text-[10px]">{section.key}</Badge>
           {totalInsights.redactedValues > 0 ? (
             <Badge tone="warning" className="text-[10px]">
@@ -59,7 +59,8 @@ export function ConfigSectionPanel({ section, visibleValue, searchActive, copied
       <div className="px-3 py-2">
         {searchActive ? (
           <Alert tone="info" className="mb-2 text-xs">
-            Showing only keys and values matching the current filter inside <span className="font-medium text-foreground">{section.key}</span>.
+            Showing only keys and values matching the current filter inside{' '}
+            <span className="font-medium text-foreground">{section.key}</span>.
           </Alert>
         ) : null}
 

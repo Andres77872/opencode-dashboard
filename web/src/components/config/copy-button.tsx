@@ -1,3 +1,4 @@
+import { Check, Copy } from 'lucide-react'
 import { Button } from '../ui/button'
 import { cn } from '../../lib/utils'
 
@@ -11,15 +12,22 @@ interface CopyButtonProps {
 }
 
 export function CopyButton({ copyId, copiedId, label, value, onCopy, className }: CopyButtonProps) {
+  const isCopied = copiedId === copyId
+
   return (
     <Button
       type="button"
       variant="ghost"
       size="xs"
-      className={cn('text-xs text-muted-foreground hover:text-foreground', className)}
+      className={cn(
+        'gap-1 text-xs text-muted-foreground hover:text-foreground',
+        isCopied ? 'text-success hover:text-success' : '',
+        className,
+      )}
       onClick={() => onCopy(copyId, value)}
     >
-      {copiedId === copyId ? 'Copied' : label}
+      {isCopied ? <Check className="size-3" /> : <Copy className="size-3" />}
+      {isCopied ? 'Copied' : label}
     </Button>
   )
 }

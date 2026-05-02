@@ -109,13 +109,13 @@ export function ConfigView() {
 
   if (loading && !data) {
     return (
-      <section className="space-y-4">
-        <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
-          <div className="space-y-1">
+      <section className="space-y-6">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-2">
             <Badge tone="accent">Live route</Badge>
             <h2 className="text-2xl font-semibold tracking-tight text-foreground">Config</h2>
             <p className="max-w-3xl text-sm text-muted-foreground">
-              Focused inspection of <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>, reorganized into a section-first explorer instead of a scattered JSON wall.
+              Redacted OpenCode config snapshot from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>.
             </p>
           </div>
         </div>
@@ -127,13 +127,13 @@ export function ConfigView() {
   const contentValue = typeof data?.content === 'string' ? data.content : JSON.stringify(data?.content, null, 2)
 
   return (
-    <section className="space-y-4">
-      <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
-        <div className="space-y-1">
+    <section className="space-y-6">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div className="space-y-2">
           <Badge tone="accent">Live route</Badge>
           <h2 className="text-2xl font-semibold tracking-tight text-foreground">Config</h2>
           <p className="max-w-3xl text-sm text-muted-foreground">
-            Browse the redacted OpenCode config snapshot through focused sections, collapsible nested groups, and search that keeps the JSON structure readable instead of dumping everything at once.
+            Redacted OpenCode config snapshot from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>.
           </p>
         </div>
 
@@ -173,10 +173,10 @@ export function ConfigView() {
           {!data?.exists ? (
             <ConfigStateCard description="Empty state" title="No config file found">
               <p>
-                Nothing is broken. The route checked the resolved XDG config path and found no file to inspect, so the UI stays honest about where it looked.
+                The route checked the resolved XDG config path and found no file to inspect.
               </p>
               <p>
-                Once <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">opencode.json</code> exists, this workspace will organize the redacted payload into focused section tabs automatically.
+                Once <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">opencode.json</code> exists, the payload will be organized into focused section tabs automatically.
               </p>
             </ConfigStateCard>
           ) : summary.parseError ? (
@@ -190,7 +190,7 @@ export function ConfigView() {
               }
             >
               <p>
-                The config endpoint returned a payload, but the browser could not re-parse it into the explorer. The raw redacted snapshot is still available below so inspection does not stop.
+                The config endpoint returned a payload, but the browser could not re-parse it. The raw redacted snapshot is still available below.
               </p>
               <Alert tone="warning">{summary.parseError}</Alert>
               <div className="max-h-[32rem] overflow-auto rounded-xl border border-border/70 bg-background/40 p-3 font-mono text-xs leading-6 text-foreground">
@@ -200,11 +200,11 @@ export function ConfigView() {
           ) : summary.emptyObject ? (
             <ConfigStateCard description="Empty state" title="Config file is present but has no inspectable keys">
               <p>
-                The file exists, but the redacted JSON payload is effectively empty. That usually means the file is blank, intentionally minimal, or all meaningful content was removed before aggregation.
+                The file exists, but the redacted JSON payload is effectively empty. This usually means the file is blank, intentionally minimal, or all meaningful content was removed before aggregation.
               </p>
             </ConfigStateCard>
           ) : (
-            <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-3">
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
               <div className="overflow-x-auto">
                 <TabsList aria-label="Configuration sections" className="min-w-max">
                   <TabsTrigger value="overview">Overview</TabsTrigger>
