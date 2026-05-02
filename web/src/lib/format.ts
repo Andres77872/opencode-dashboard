@@ -61,10 +61,16 @@ export function formatCompactInteger(value: number) {
 }
 
 export function formatCurrency(value: number) {
+  if (value == null || !Number.isFinite(value)) {
+    return currencyFormatter.format(0)
+  }
   return currencyFormatter.format(value)
 }
 
 export function formatCompactCurrency(value: number) {
+  if (value == null || !Number.isFinite(value)) {
+    return formatCurrency(0)
+  }
   if (Math.abs(value) < 1000) {
     return formatCurrency(value)
   }

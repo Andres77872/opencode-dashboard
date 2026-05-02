@@ -221,7 +221,7 @@ export function RequestsHistoryTable({
                       </TableCell>
 
                       <TableCell className="w-[6rem] px-4 py-3 text-right">
-                        <span className="font-mono text-sm text-foreground">{formatCompactCurrency(message.cost)}</span>
+                        <span className="font-mono text-sm text-foreground">{message.cost && Number.isFinite(message.cost) ? formatCompactCurrency(message.cost) : '$0'}</span>
                       </TableCell>
 
                       <TableCell className="w-[7rem] px-4 py-3 text-right">
@@ -301,7 +301,7 @@ export function RequestsHistoryTable({
                     </div>
 
 <div className="text-right">
-                       <div className="font-mono text-sm text-foreground">{formatCompactCurrency(message.cost)}</div>
+                       <div className="font-mono text-sm text-foreground">{message.cost && Number.isFinite(message.cost) ? formatCompactCurrency(message.cost) : '$0'}</div>
                        {tokenTotal > 0 ? (
                          <TooltipProvider>
                            <Tooltip>

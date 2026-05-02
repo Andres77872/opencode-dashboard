@@ -410,8 +410,8 @@ export function MessageDetailSheet({
               <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
                 <DetailMetric
                   label="Request spend"
-                  value={formatCurrency(detail.cost)}
-                  hint={`${detail.role || 'unknown'} role · ${detail.model_id || 'model unavailable'}`}
+value={detail.cost && Number.isFinite(detail.cost) ? formatCurrency(detail.cost) : '$0'}
+                   hint={`${detail.role || 'unknown'} role · ${detail.model_id || 'model unavailable'}`}
                 />
                 <DetailMetric
                   label="Token load"
@@ -476,7 +476,7 @@ export function MessageDetailSheet({
                         </TooltipProvider>
                         <span>token load</span>
                         <span className="text-border">·</span>
-                        <span>{formatCurrency(detail.cost)} spend</span>
+                        <span>{detail.cost && Number.isFinite(detail.cost) ? formatCurrency(detail.cost) : '$0'} spend</span>
                       </div>
 
                       {detail.tokens ? (
