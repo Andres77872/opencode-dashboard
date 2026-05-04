@@ -313,7 +313,7 @@ func parsePeriodQuery(r *http.Request) (stats.PeriodQuery, *APIError) {
 		}
 
 		// Reject future from date
-		if fromTime.After(time.Now()) {
+		if fromTime.After(time.Now().UTC()) {
 			return stats.PeriodQuery{}, &APIError{
 				Error:   http.StatusText(http.StatusBadRequest),
 				Code:    http.StatusBadRequest,
@@ -333,7 +333,7 @@ func parsePeriodQuery(r *http.Request) (stats.PeriodQuery, *APIError) {
 			}
 
 			// Reject future to date
-			if toTime.After(time.Now()) {
+			if toTime.After(time.Now().UTC()) {
 				return stats.PeriodQuery{}, &APIError{
 					Error:   http.StatusText(http.StatusBadRequest),
 					Code:    http.StatusBadRequest,

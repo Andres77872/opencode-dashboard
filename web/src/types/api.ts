@@ -31,13 +31,13 @@ export function isDailyPeriod(value: string | null): value is DailyPeriod {
 // Uses regex + roundtrip to catch rollover dates (e.g., "2026-02-31" → "2026-03-03").
 function isValidISODate(dateStr: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false
-  const parsed = new Date(dateStr + 'T00:00:00')
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const parsed = new Date(Date.UTC(y, m - 1, d))
   if (isNaN(parsed.getTime())) return false
-  // Roundtrip check: format back to YYYY-MM-DD and compare
-  const y = parsed.getFullYear()
-  const m = String(parsed.getMonth() + 1).padStart(2, '0')
-  const d = String(parsed.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}` === dateStr
+  const uy = parsed.getUTCFullYear()
+  const um = String(parsed.getUTCMonth() + 1).padStart(2, '0')
+  const ud = String(parsed.getUTCDate()).padStart(2, '0')
+  return `${uy}-${um}-${ud}` === dateStr
 }
 
 export function isValidCustomRange(from: string, to?: string): boolean {
@@ -45,7 +45,7 @@ export function isValidCustomRange(from: string, to?: string): boolean {
 
   if (to !== undefined) {
     if (!isValidISODate(to)) return false
-    return new Date(from + 'T00:00:00') <= new Date(to + 'T00:00:00')
+    return from <= to
   }
 
   return true

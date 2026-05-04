@@ -1114,14 +1114,15 @@ func TestDailyHourlyNoInflationForRolling(t *testing.T) {
 	defer st.Close()
 
 	tests := []struct {
-		period    string
-		wantHours int
+		period   string
+		minHours int
+		maxHours int
 	}{
-		{period: "1h", wantHours: 1},
-		{period: "6h", wantHours: 6},
-		{period: "12h", wantHours: 12},
-		{period: "24h", wantHours: 24},
-		{period: "72h", wantHours: 72},
+		{period: "1h", minHours: 1, maxHours: 2},
+		{period: "6h", minHours: 6, maxHours: 7},
+		{period: "12h", minHours: 12, maxHours: 13},
+		{period: "24h", minHours: 24, maxHours: 25},
+		{period: "72h", minHours: 72, maxHours: 73},
 	}
 
 	for _, tt := range tests {
@@ -1131,8 +1132,8 @@ func TestDailyHourlyNoInflationForRolling(t *testing.T) {
 				t.Fatalf("Daily(%q) failed: %v", tt.period, err)
 			}
 			got := len(stats.Days)
-			if got != tt.wantHours {
-				t.Errorf("Daily(%q) returned %d buckets, want %d", tt.period, got, tt.wantHours)
+			if got < tt.minHours || got > tt.maxHours {
+				t.Errorf("Daily(%q) returned %d buckets, want between %d and %d", tt.period, got, tt.minHours, tt.maxHours)
 			}
 		})
 	}

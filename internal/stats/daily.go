@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"time"
 
 	"opencode-dashboard/internal/store"
@@ -314,7 +315,9 @@ func dailyHourly(ctx context.Context, db *store.Store, pq PeriodQuery) (DailySta
 		}
 	}
 
-	totalHours := int(endTime.Sub(startTime).Hours())
+	startTime = startTime.Truncate(time.Hour)
+
+	totalHours := int(math.Ceil(endTime.Sub(startTime).Hours()))
 	if totalHours <= 0 {
 		totalHours = 24 // safety fallback
 	}
