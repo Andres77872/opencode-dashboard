@@ -8,8 +8,13 @@ import (
 	"opencode-dashboard/internal/store"
 )
 
-func Models(ctx context.Context, s *store.Store, period string) (ModelStats, error) {
-	pw, err := ComputePeriodWindow(ctx, s, period)
+// ModelsString is a backward-compatible wrapper that accepts a string period.
+func ModelsString(ctx context.Context, s *store.Store, period string) (ModelStats, error) {
+	return Models(ctx, s, PeriodQuery{Period: period})
+}
+
+func Models(ctx context.Context, s *store.Store, pq PeriodQuery) (ModelStats, error) {
+	pw, err := ComputePeriodWindowFromQuery(ctx, s, pq)
 	if err != nil {
 		return ModelStats{}, err
 	}

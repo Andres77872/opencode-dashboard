@@ -31,13 +31,13 @@ import {
   safeDivide,
 } from '../../lib/format'
 import { getTokenTotal } from '../../lib/token-breakdown'
-import type { DailyPeriod, ProjectDetail, SessionEntry } from '../../types/api'
+import type { ProjectDetail, SessionEntry } from '../../types/api'
 
 // ── Props ──────────────────────────────────────────────────────
 
 interface ProjectDrilldownDrawerProps {
   projectId: string | null
-  period: DailyPeriod
+  period: string
   onClose: () => void
 }
 

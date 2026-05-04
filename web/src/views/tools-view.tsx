@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { PeriodToggle } from '../components/daily/period-toggle'
+import type { PeriodMode } from '../components/daily/period-toggle'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { MetricCard } from '../components/overview/metric-card'
 import { DataPageSkeleton } from '../components/common/data-page-skeleton'
@@ -14,8 +15,8 @@ import { getTools } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
 import { formatCompactInteger, formatInteger, formatPercentage, safeDivide } from '../lib/format'
 import { type SortDirection, type SortState } from '../lib/table-sort'
-import type { ToolEntry } from '../types/api'
-import { isDailyPeriod, type DailyPeriod } from '../types/api'
+import { usePeriodState, serializeCustomPeriod, applyPeriodToUrl } from '../lib/use-period-state'
+import type { CustomPeriod, DailyPeriod, ToolEntry } from '../types/api'
 
 type SortKey = 'invocations' | 'sessions' | 'tool' | 'successRate' | 'failures'
 
@@ -59,12 +60,14 @@ function getFailureTone(failures: number) {
 
 export function ToolsView() {
   const { requestRefresh } = useDashboardContext()
-  const [searchParams, setSearchParams] = useSearchParams()
+  const [, setSearchParams] = useSearchParams()
   const [sortState, setSortState] = useState<SortState<string> | null>(null)
 
-  const rawPeriod = searchParams.get('period')
-  const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
-  const { data, loading, error } = usePeriodResource(getTools, period)
+  const periodState = usePeriodState()
+  const cacheKey = periodState.mode === 'custom' && periodState.customRange
+    ? serializeCustomPeriod(periodState.customRange.from, periodState.customRange.to)
+    : periodState.preset
+  const { data, loading, error } = usePeriodResource(getTools, cacheKey)
 
   const handleSortChange = (key: string) => {
     setSortState((current) => {
@@ -76,10 +79,26 @@ export function ToolsView() {
     })
   }
 
-  const handlePeriodChange = (nextPeriod: DailyPeriod) => {
-    if (nextPeriod === period) return
+  const handlePresetChange = (nextPeriod: DailyPeriod) => {
     setSortState(null)
-    setSearchParams((prev) => { const n = new URLSearchParams(prev); n.set('period', nextPeriod); return n })
+    setSearchParams((prev) => applyPeriodToUrl(prev, { mode: 'preset', preset: nextPeriod }))
+  }
+
+  const handleCustomRangeChange = (range: CustomPeriod) => {
+    setSortState(null)
+    setSearchParams((prev) => applyPeriodToUrl(prev, { mode: 'custom', customRange: range }))
+  }
+
+  const handleModeChange = (mode: PeriodMode) => {
+    setSortState(null)
+    if (mode === 'preset') {
+      setSearchParams((prev) => applyPeriodToUrl(prev, { mode: 'preset', preset: periodState.preset }))
+    } else {
+      setSearchParams((prev) => applyPeriodToUrl(prev, {
+        mode: 'custom',
+        customRange: periodState.customRange ?? { from: '' },
+      }))
+    }
   }
 
   const summary = useMemo(() => {
@@ -214,9 +233,17 @@ export function ToolsView() {
 
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
           <div className="text-sm text-muted-foreground">
-            Endpoint: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/tools?period={period}</code>
+            Endpoint: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/tools?period={cacheKey}</code>
           </div>
-          <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
+          <PeriodToggle
+              mode={periodState.mode}
+              preset={periodState.preset}
+              customRange={periodState.customRange}
+              onPresetChange={handlePresetChange}
+              onCustomRangeChange={handleCustomRangeChange}
+              onModeChange={handleModeChange}
+              disabled={loading}
+            />
         </div>
       </div>
 

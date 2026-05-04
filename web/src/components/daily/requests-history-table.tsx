@@ -10,7 +10,7 @@ import { formatCompactCurrency, formatDateTime, formatInteger, formatTokenCount 
 import { getTokenTotal } from '../../lib/token-breakdown'
 import { getAriaSort } from '../../lib/table-sort'
 import type { SortDirection, SortState } from '../../lib/table-sort'
-import type { DailyPeriod, MessageEntry, MessageList } from '../../types/api'
+import type { MessageEntry, MessageList } from '../../types/api'
 
 const FALLBACK_PAGE_SIZE = 12
 
@@ -111,7 +111,7 @@ export function RequestsHistoryTable({
   error: string | null
   loading: boolean
   page: number
-  period: DailyPeriod
+  period: string
   sortState: SortState<RequestsSortKey> | null
   onOpenMessage: (messageId: string, trigger: HTMLElement) => void
   onPageChange: (page: number) => void

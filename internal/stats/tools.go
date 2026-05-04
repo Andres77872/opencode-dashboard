@@ -24,12 +24,17 @@ func useLegacyToolsPath() bool {
 	return os.Getenv("OPCODE_TOOLS_LEGACY") == "true"
 }
 
-func Tools(ctx context.Context, st *store.Store, period string) (ToolStats, error) {
+// ToolsString is a backward-compatible wrapper that accepts a string period.
+func ToolsString(ctx context.Context, st *store.Store, period string) (ToolStats, error) {
+	return Tools(ctx, st, PeriodQuery{Period: period})
+}
+
+func Tools(ctx context.Context, st *store.Store, pq PeriodQuery) (ToolStats, error) {
 	if !st.IsValidSchema() {
 		return ToolStats{}, store.ErrInvalidSchema
 	}
 
-	pw, err := ComputePeriodWindow(ctx, st, period)
+	pw, err := ComputePeriodWindowFromQuery(ctx, st, pq)
 	if err != nil {
 		return ToolStats{}, err
 	}

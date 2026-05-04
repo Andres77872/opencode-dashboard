@@ -40,11 +40,12 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 	offset := (query.Page - 1) * query.PageSize
 	orderBy := sessionOrderBy(query.Sort)
 
-	// Compute period window if period is specified
+	// Compute period window if period or from is specified
 	var startMs, endMs int64
 	var hasPeriod bool
-	if query.Period != "" {
-		pw, err := ComputePeriodWindow(ctx, s, query.Period)
+	if query.Period != "" || query.From != "" {
+		pq := PeriodQuery{Period: query.Period, From: query.From, To: query.To}
+		pw, err := ComputePeriodWindowFromQuery(ctx, s, pq)
 		if err != nil {
 			return SessionList{}, err
 		}

@@ -162,6 +162,18 @@ type SessionQuery struct {
 	ProjectID string // exact project ID filter, empty = no filter
 	Sort      SessionSortMode
 	Period    string // "1d", "7d", "30d", "1y", "all" — filters by message activity time
+	From      string // ISO 8601 date "2006-01-02" for custom range
+	To        string // ISO 8601 date "2006-01-02" for custom range (optional)
+}
+
+// PeriodQuery carries either a preset period string OR explicit from/to dates.
+// Exactly one mode should be active:
+//   - Period != ""  → preset mode (from/to ignored)
+//   - From != ""    → explicit range mode (Period ignored)
+type PeriodQuery struct {
+	Period string // preset: "1h", "6h", "12h", "24h", "72h", "1d", "7d", "14d", "30d", "1y", "all"
+	From   string // ISO 8601 date "2006-01-02". When From is set, Period is ignored.
+	To     string // ISO 8601 date "2006-01-02". Optional — empty = now in server timezone.
 }
 
 type MessageSortField string

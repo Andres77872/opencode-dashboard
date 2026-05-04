@@ -32,7 +32,7 @@ func TestOverviewWithFixture(t *testing.T) {
 	}
 	defer st.Close()
 
-	overview, err := Overview(ctx, st, "all")
+	overview, err := Overview(ctx, st, PeriodQuery{Period: "all"})
 	if err != nil {
 		t.Fatalf("Overview() failed: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestModelsWithFixture(t *testing.T) {
 	}
 	defer st.Close()
 
-	models, err := Models(ctx, st, "all")
+	models, err := Models(ctx, st, PeriodQuery{Period: "all"})
 	if err != nil {
 		t.Fatalf("Models() failed: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestModelsWithFixture_MultiStepTokens(t *testing.T) {
 	}
 	defer st.Close()
 
-	models, err := Models(ctx, st, "all")
+	models, err := Models(ctx, st, PeriodQuery{Period: "all"})
 	if err != nil {
 		t.Fatalf("Models() failed: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestProjectsWithFixture(t *testing.T) {
 	}
 	defer st.Close()
 
-	projects, err := Projects(ctx, st, "all")
+	projects, err := Projects(ctx, st, PeriodQuery{Period: "all"})
 	if err != nil {
 		t.Fatalf("Projects() failed: %v", err)
 	}
@@ -504,7 +504,7 @@ func TestDailyWithFixture(t *testing.T) {
 	defer st.Close()
 
 	// Test 1d period (hourly distribution)
-	daily1, err := Daily(ctx, st, "1d")
+	daily1, err := Daily(ctx, st, PeriodQuery{Period: "1d"})
 	if err != nil {
 		t.Fatalf("Daily(1d) failed: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestDailyWithFixture(t *testing.T) {
 	}
 
 	// Test 7d period
-	daily7, err := Daily(ctx, st, "7d")
+	daily7, err := Daily(ctx, st, PeriodQuery{Period: "7d"})
 	if err != nil {
 		t.Fatalf("Daily(7d) failed: %v", err)
 	}
@@ -547,7 +547,7 @@ func TestDailyWithFixture(t *testing.T) {
 	}
 
 	// Test 30d period
-	daily30, err := Daily(ctx, st, "30d")
+	daily30, err := Daily(ctx, st, PeriodQuery{Period: "30d"})
 	if err != nil {
 		t.Fatalf("Daily(30d) failed: %v", err)
 	}
@@ -557,7 +557,7 @@ func TestDailyWithFixture(t *testing.T) {
 	}
 
 	// Test 1y period
-	daily1Y, err := Daily(ctx, st, "1y")
+	daily1Y, err := Daily(ctx, st, PeriodQuery{Period: "1y"})
 	if err != nil {
 		t.Fatalf("Daily(1y) failed: %v", err)
 	}
@@ -567,7 +567,7 @@ func TestDailyWithFixture(t *testing.T) {
 	}
 
 	// Test all historic period
-	dailyAll, err := Daily(ctx, st, "all")
+	dailyAll, err := Daily(ctx, st, PeriodQuery{Period: "all"})
 	if err != nil {
 		t.Fatalf("Daily(all) failed: %v", err)
 	}
@@ -577,7 +577,7 @@ func TestDailyWithFixture(t *testing.T) {
 	}
 
 	// Test invalid period
-	_, err = Daily(ctx, st, "invalid")
+	_, err = Daily(ctx, st, PeriodQuery{Period: "invalid"})
 	if err == nil {
 		t.Error("Daily(invalid) should return error")
 	}
@@ -605,7 +605,7 @@ func TestDailyWithExplicitGranularity(t *testing.T) {
 	defer st.Close()
 
 	// 1d with explicit granularity=day → 1 daily bucket
-	dailyDay, err := Daily(ctx, st, "1d", GranularityDay)
+	dailyDay, err := Daily(ctx, st, PeriodQuery{Period: "1d"}, GranularityDay)
 	if err != nil {
 		t.Fatalf("Daily(1d, GranularityDay) failed: %v", err)
 	}
@@ -620,7 +620,7 @@ func TestDailyWithExplicitGranularity(t *testing.T) {
 	}
 
 	// 7d with explicit granularity=hour → 168 hourly buckets (7d × 24h)
-	dailyHour, err := Daily(ctx, st, "7d", GranularityHour)
+	dailyHour, err := Daily(ctx, st, PeriodQuery{Period: "7d"}, GranularityHour)
 	if err != nil {
 		t.Fatalf("Daily(7d, GranularityHour) failed: %v", err)
 	}
@@ -653,7 +653,7 @@ func TestDailyWithExplicitGranularity(t *testing.T) {
 	}
 
 	// 1d with granularity=hour (same as default for 1d) → 24 hourly
-	dailyHour1d, err := Daily(ctx, st, "1d", GranularityHour)
+	dailyHour1d, err := Daily(ctx, st, PeriodQuery{Period: "1d"}, GranularityHour)
 	if err != nil {
 		t.Fatalf("Daily(1d, GranularityHour) failed: %v", err)
 	}
@@ -687,7 +687,7 @@ func TestDailyDimensionWithFixture(t *testing.T) {
 	defer st.Close()
 
 	// Test model dimension
-	result, err := DailyDimension(ctx, st, "model", "all")
+	result, err := DailyDimension(ctx, st, "model", PeriodQuery{Period: "all"})
 	if err != nil {
 		t.Fatalf("DailyDimension(model, all) failed: %v", err)
 	}
@@ -720,7 +720,7 @@ func TestDailyDimensionWithFixture(t *testing.T) {
 	}
 
 	// Test tool dimension
-	toolResult, err := DailyDimension(ctx, st, "tool", "all")
+	toolResult, err := DailyDimension(ctx, st, "tool", PeriodQuery{Period: "all"})
 	if err != nil {
 		t.Fatalf("DailyDimension(tool, all) failed: %v", err)
 	}
@@ -729,7 +729,7 @@ func TestDailyDimensionWithFixture(t *testing.T) {
 	}
 
 	// Test project dimension
-	projResult, err := DailyDimension(ctx, st, "project", "all")
+	projResult, err := DailyDimension(ctx, st, "project", PeriodQuery{Period: "all"})
 	if err != nil {
 		t.Fatalf("DailyDimension(project, all) failed: %v", err)
 	}
@@ -762,7 +762,7 @@ func TestDailyDimensionInvalidDimension(t *testing.T) {
 	invalidDims := []string{"invalid", "", "  ", "MODEL"}
 	for _, dim := range invalidDims {
 		t.Run("dimension_"+dim, func(t *testing.T) {
-			_, err := DailyDimension(ctx, st, dim, "7d")
+			_, err := DailyDimension(ctx, st, dim, PeriodQuery{Period: "7d"})
 			if err == nil {
 				t.Errorf("DailyDimension(%q, 7d) should return error", dim)
 			}
@@ -817,7 +817,7 @@ func TestProjectByIDWithFixture(t *testing.T) {
 	defer st.Close()
 
 	// Test happy path with a string project ID.
-	detail, err := ProjectByID(ctx, st, "proj-alpha-123abc", "all", 1, 10)
+	detail, err := ProjectByID(ctx, st, "proj-alpha-123abc", PeriodQuery{Period: "all"}, 1, 10)
 	if err != nil {
 		t.Fatalf("ProjectByID(proj-alpha-123abc, all) failed: %v", err)
 	}
@@ -851,7 +851,7 @@ func TestProjectByIDWithFixture(t *testing.T) {
 	}
 
 	// Test 404 for non-existent project
-	missing, err := ProjectByID(ctx, st, "does-not-exist", "7d", 1, 10)
+	missing, err := ProjectByID(ctx, st, "does-not-exist", PeriodQuery{Period: "7d"}, 1, 10)
 	if err != nil {
 		t.Fatalf("ProjectByID(does-not-exist) unexpected error: %v", err)
 	}
@@ -1089,6 +1089,179 @@ func TestToolsSQLMatchLegacy(t *testing.T) {
 		}
 		if sqlTool.Sessions != legacyTool.Sessions {
 			t.Errorf("Tool %q: SQL sessions=%d, legacy sessions=%d", sqlTool.Name, sqlTool.Sessions, legacyTool.Sessions)
+		}
+	}
+}
+
+func TestDailyHourlyNoInflationForRolling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	dbPath, err := fixture.SampleFixture(ctx)
+	if err != nil {
+		t.Fatalf("Failed to create fixture database: %v", err)
+	}
+	defer os.RemoveAll(filepath.Dir(dbPath))
+
+	st, err := store.Connect(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Failed to connect to fixture: %v", err)
+	}
+	defer st.Close()
+
+	tests := []struct {
+		period    string
+		wantHours int
+	}{
+		{period: "1h", wantHours: 1},
+		{period: "6h", wantHours: 6},
+		{period: "12h", wantHours: 12},
+		{period: "24h", wantHours: 24},
+		{period: "72h", wantHours: 72},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.period, func(t *testing.T) {
+			stats, err := Daily(ctx, st, PeriodQuery{Period: tt.period})
+			if err != nil {
+				t.Fatalf("Daily(%q) failed: %v", tt.period, err)
+			}
+			got := len(stats.Days)
+			if got != tt.wantHours {
+				t.Errorf("Daily(%q) returned %d buckets, want %d", tt.period, got, tt.wantHours)
+			}
+		})
+	}
+}
+
+func TestDailyHourlyUTCKeysAreRealUTC(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	dbPath, err := fixture.SampleFixture(ctx)
+	if err != nil {
+		t.Fatalf("Failed to create fixture database: %v", err)
+	}
+	defer os.RemoveAll(filepath.Dir(dbPath))
+
+	st, err := store.Connect(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Failed to connect to fixture: %v", err)
+	}
+	defer st.Close()
+
+	stats, err := Daily(ctx, st, PeriodQuery{Period: "1d"})
+	if err != nil {
+		t.Fatalf("Daily(1d) failed: %v", err)
+	}
+
+	if len(stats.Days) != 24 {
+		t.Fatalf("Daily(1d) returned %d buckets, want 24", len(stats.Days))
+	}
+
+	for _, h := range stats.Days {
+		parsed, err := time.Parse(time.RFC3339, h.Date)
+		if err != nil {
+			t.Errorf("Failed to parse date %q as RFC3339: %v", h.Date, err)
+			continue
+		}
+		if parsed.Location() != time.UTC {
+			t.Errorf("Date %q parsed location = %v, want UTC", h.Date, parsed.Location())
+		}
+	}
+}
+
+func TestDailyHourlyDayPresetWindow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	dbPath, err := fixture.SampleFixture(ctx)
+	if err != nil {
+		t.Fatalf("Failed to create fixture database: %v", err)
+	}
+	defer os.RemoveAll(filepath.Dir(dbPath))
+
+	st, err := store.Connect(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Failed to connect to fixture: %v", err)
+	}
+	defer st.Close()
+
+	tests := []struct {
+		period    string
+		wantHours int
+	}{
+		{period: "7d", wantHours: 168},
+		{period: "14d", wantHours: 336},
+		{period: "30d", wantHours: 720},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.period, func(t *testing.T) {
+			stats, err := Daily(ctx, st, PeriodQuery{Period: tt.period}, GranularityHour)
+			if err != nil {
+				t.Fatalf("Daily(%q, GranularityHour) failed: %v", tt.period, err)
+			}
+			got := len(stats.Days)
+			if got != tt.wantHours {
+				t.Errorf("Daily(%q, GranularityHour) returned %d buckets, want %d", tt.period, got, tt.wantHours)
+			}
+		})
+	}
+}
+
+func TestDailyHourlyExplicitRangeUTC(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	dbPath, err := fixture.SampleFixture(ctx)
+	if err != nil {
+		t.Fatalf("Failed to create fixture database: %v", err)
+	}
+	defer os.RemoveAll(filepath.Dir(dbPath))
+
+	st, err := store.Connect(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Failed to connect to fixture: %v", err)
+	}
+	defer st.Close()
+
+	stats, err := Daily(ctx, st, PeriodQuery{
+		From: "2026-01-15",
+		To:   "2026-01-17",
+	}, GranularityHour)
+	if err != nil {
+		t.Fatalf("Daily(explicit range, GranularityHour) failed: %v", err)
+	}
+
+	if len(stats.Days) != 72 {
+		t.Errorf("Daily(explicit 3d) returned %d buckets, want 72", len(stats.Days))
+	}
+
+	for _, h := range stats.Days {
+		parsed, err := time.Parse(time.RFC3339, h.Date)
+		if err != nil {
+			t.Errorf("Failed to parse date %q as RFC3339: %v", h.Date, err)
+			continue
+		}
+		if parsed.Location() != time.UTC {
+			t.Errorf("Date %q parsed location = %v, want UTC", h.Date, parsed.Location())
 		}
 	}
 }

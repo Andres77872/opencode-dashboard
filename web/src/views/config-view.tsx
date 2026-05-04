@@ -45,7 +45,7 @@ export function ConfigView() {
   // Config is periodless — use a fixed '7d' as period arg (fetcher ignores it).
   // cachePeriods: false ensures always re-fetch on refreshNonce.
   const { data: rawData, loading, error } = usePeriodResource(
-    (_p: DailyPeriod, signal?: AbortSignal) => getConfig(signal),
+    (_p: string, signal?: AbortSignal) => getConfig(signal),
     '7d' as DailyPeriod,
     { cachePeriods: false },
   )

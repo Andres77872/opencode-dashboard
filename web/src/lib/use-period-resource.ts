@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { setBypassCache } from './api'
-import type { DailyPeriod } from '../types/api'
 
 export interface UsePeriodResourceOptions {
   /** When false, always fetch even if the period is already cached. Default: true. */
@@ -12,38 +11,32 @@ export interface UsePeriodResourceResult<T> {
   data: T | null
   loading: boolean
   error: string | null
-  /** Returns cached data for ANY period without triggering a fetch. Returns null if uncached. */
-  dataForPeriod: (period: DailyPeriod) => T | null
+  /** Returns cached data for ANY period key without triggering a fetch. Returns null if uncached. */
+  dataForPeriod: (period: string) => T | null
   /** Silently prefetches a period in the background. Loading state is NOT affected. */
-  prefetch: (period: DailyPeriod) => void
+  prefetch: (period: string) => void
 }
 
-type Fetcher<T> = (period: DailyPeriod, signal?: AbortSignal) => Promise<T>
+type Fetcher<T> = (period: string, signal?: AbortSignal) => Promise<T>
 
 /**
  * Generic per-period fetch + cache + refresh hook.
  *
- * - Caches results keyed by DailyPeriod.
+ * - Caches results keyed by string (supports both preset periods and serialized custom range keys).
  * - Aborts in-flight requests when period changes.
  * - Re-fetches when `refreshNonce` changes (from DashboardContext).
  * - `cachePeriods: false` skips the cache — always fetches.
- * - `dataForPeriod(period)` returns cached data for any period without triggering a fetch.
- * - `prefetch(period)` silently fetches in the background.
- *
- * For periodless endpoints (e.g. config), wrap the fetcher:
- * ```
- * usePeriodResource((_p, signal) => getConfig(signal), '7d', { cachePeriods: false })
- * ```
+ * - `dataForPeriod(key)` returns cached data for any key without triggering a fetch.
+ * - `prefetch(key)` silently fetches in the background. Skips keys starting with "from_" (custom ranges).
  *
  * @example
  * ```tsx
- * const period = searchParams.get('period') ?? '7d'
  * const { data, loading, error } = usePeriodResource(getOverview, period)
  * ```
  */
 export function usePeriodResource<T>(
   fetcher: Fetcher<T>,
-  period: DailyPeriod,
+  period: string,
   options?: UsePeriodResourceOptions,
 ): UsePeriodResourceResult<T> {
   const { refreshNonce, setLastUpdatedAt, setRefreshing } = useDashboardContext()
@@ -52,7 +45,7 @@ export function usePeriodResource<T>(
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const cacheRef = useRef<Map<DailyPeriod, T>>(new Map())
+  const cacheRef = useRef<Map<string, T>>(new Map())
   const activeControllerRef = useRef<AbortController | null>(null)
   const mountedRef = useRef(true)
   /**
@@ -72,7 +65,7 @@ export function usePeriodResource<T>(
     }
   }, [])
 
-  const dataForPeriod = useCallback((p: DailyPeriod): T | null => {
+  const dataForPeriod = useCallback((p: string): T | null => {
     return cacheRef.current.get(p) ?? null
   }, [])
 
@@ -144,7 +137,9 @@ export function usePeriodResource<T>(
   }, [period, refreshNonce])
 
   const prefetch = useCallback(
-    (p: DailyPeriod) => {
+    (p: string) => {
+      // Skip prefetch for custom ranges (unbounded key space)
+      if (p.startsWith('from_')) return
       if (cacheRef.current.has(p)) return
       const controller = new AbortController()
       fetcher(p, controller.signal)

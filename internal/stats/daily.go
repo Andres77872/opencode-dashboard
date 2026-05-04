@@ -11,11 +11,17 @@ import (
 
 const allHistoricPeriodDays = -1
 
-// Daily returns per-day stats for the given period.
-// When no granularity is passed, defaults: 1d → hourly (24 buckets), 7d+ → daily.
-// Explicit granularity=day disables auto-hour for 1d.
+// Daily returns per-day stats for the given period query.
+// When no granularity is passed, defaults: 1d + hour presets → hourly, 7d+ → daily.
+// Explicit granularity=day disables auto-hour for presets.
 // Explicit granularity=hour forces hourly regardless of period (multi-day supported).
-func Daily(ctx context.Context, db *store.Store, period string, granularity ...Granularity) (DailyStats, error) {
+// DailyString is a backward-compatible wrapper that accepts a string period.
+// It constructs a PeriodQuery and delegates to Daily.
+func DailyString(ctx context.Context, db *store.Store, period string, granularity ...Granularity) (DailyStats, error) {
+	return Daily(ctx, db, PeriodQuery{Period: period}, granularity...)
+}
+
+func Daily(ctx context.Context, db *store.Store, pq PeriodQuery, granularity ...Granularity) (DailyStats, error) {
 	// Determine if granularity was explicitly provided (vs. handler passing empty or not at all)
 	var gran Granularity
 	explicit := false
@@ -24,18 +30,29 @@ func Daily(ctx context.Context, db *store.Store, period string, granularity ...G
 		explicit = true
 	}
 
+	// Get the period string for the auto-hour heuristic. Only applies for preset mode.
+	period := pq.Period
+	if period == "" && pq.From != "" {
+		period = "custom"
+	}
+
 	// Auto-hour for 1d by default (no explicit granularity override)
 	if period == "1d" && !explicit {
-		return dailyHourly(ctx, db, period)
+		return dailyHourly(ctx, db, pq)
 	}
 
 	// Explicit hour override (for any period including 1d — multi-day hourly supported)
 	if gran == GranularityHour {
-		return dailyHourly(ctx, db, period)
+		return dailyHourly(ctx, db, pq)
 	}
 
-	// Migrate  to ComputePeriodWindow in Daily
-	pw, err := ComputePeriodWindow(ctx, db, period)
+	// Auto-hour for hour presets (1h, 6h, 12h, 24h, 72h) when no explicit granularity
+	if _, ok := parseHourPreset(period); ok && !explicit {
+		return dailyHourly(ctx, db, pq)
+	}
+
+	// Use the new dispatcher
+	pw, err := ComputePeriodWindowFromQuery(ctx, db, pq)
 	if err != nil {
 		return DailyStats{}, err
 	}
@@ -96,14 +113,18 @@ func parsePeriod(period string) (int, error) {
 		return 1, nil
 	case "7d":
 		return 7, nil
+	case "14d":
+		return 14, nil
 	case "30d":
 		return 30, nil
 	case "1y":
 		return 365, nil
 	case "all":
 		return allHistoricPeriodDays, nil
+	case "1h", "6h", "12h", "24h", "72h":
+		return 0, fmt.Errorf("invalid period: %q is an hour preset and should be handled by presetPeriodWindow directly", period)
 	default:
-		return 0, fmt.Errorf("invalid period: %q (supported: 1d, 7d, 30d, 1y, all)", period)
+		return 0, fmt.Errorf("invalid period: %q (supported: 1d, 7d, 14d, 30d, 1y, all, plus hour presets 1h, 6h, 12h, 24h, 72h)", period)
 	}
 }
 
@@ -127,7 +148,7 @@ func queryEarliestActivityDate(ctx context.Context, db *store.Store) (time.Time,
 		return time.Time{}, nil
 	}
 
-	date := time.UnixMilli(earliest.Int64).UTC()
+	date := time.UnixMilli(earliest.Int64).In(time.UTC)
 	return time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC), nil
 }
 
@@ -257,28 +278,40 @@ func queryMessageStatsByDay(ctx context.Context, db *store.Store, startDate, end
 	return result, rows.Err()
 }
 
-// dailyHourly returns per-hour stats across the given period.
+// dailyHourly returns per-hour stats across the given period query.
 // When period is "1d" (or empty), returns 24 hourly buckets for today (UTC midnight to midnight).
 // When period is broader (e.g. "7d", "30d"), generates hourly buckets across the full window
-// using ComputePeriodWindow. Example: "7d" → 168 hourly buckets (7 × 24).
-func dailyHourly(ctx context.Context, db *store.Store, period string) (DailyStats, error) {
+// using ComputePeriodWindowFromQuery. Example: "7d" → 168 hourly buckets (7 × 24).
+func dailyHourly(ctx context.Context, db *store.Store, pq PeriodQuery) (DailyStats, error) {
 	var startTime, endTime time.Time
 
-	if period == "" || period == "1d" {
-		// Single day: today's 24 hours (UTC midnight → midnight)
+	period := pq.Period
+	if period == "" {
+		period = "custom"
+	}
+
+	if period == "1d" {
 		now := time.Now().UTC()
 		startTime = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 		endTime = startTime.Add(24 * time.Hour)
-	} else {
-		// Multi-day hourly: compute the full window.
-		// endTime extends 24h past pw.EndDate to include the full last day,
-		// matching the daily iteration pattern (inclusive of EndDate).
-		pw, err := ComputePeriodWindow(ctx, db, period)
+	} else if pq.From != "" {
+		pw, err := ComputePeriodWindowFromQuery(ctx, db, pq)
 		if err != nil {
 			return DailyStats{}, err
 		}
 		startTime = pw.StartDate
-		endTime = pw.EndDate.Add(24 * time.Hour)
+		endTime = pw.EndDate
+	} else {
+		pw, err := ComputePeriodWindowFromQuery(ctx, db, pq)
+		if err != nil {
+			return DailyStats{}, err
+		}
+		startTime = pw.StartDate
+		endTime = pw.EndDate
+		// Extend by 24h for day-aligned windows (not rolling presets) so the last day's hours are covered
+		if _, ok := parseHourPreset(period); !ok {
+			endTime = endTime.Add(24 * time.Hour)
+		}
 	}
 
 	totalHours := int(endTime.Sub(startTime).Hours())
@@ -466,13 +499,13 @@ var validDimensions = map[string]string{
 
 // DailyDimension returns per-day, per-dimension stats grouped by the given dimension field.
 // Supported dimensions: "model" (JSON_EXTRACT $.modelID), "tool" ($.tool), "project" ($.projectID).
-func DailyDimension(ctx context.Context, db *store.Store, dimension, period string) (DailyDimensionStats, error) {
+func DailyDimension(ctx context.Context, db *store.Store, dimension string, pq PeriodQuery) (DailyDimensionStats, error) {
 	path, ok := validDimensions[dimension]
 	if !ok {
 		return DailyDimensionStats{}, fmt.Errorf("invalid dimension %q: supported values are model, tool, project", dimension)
 	}
 
-	pw, err := ComputePeriodWindow(ctx, db, period)
+	pw, err := ComputePeriodWindowFromQuery(ctx, db, pq)
 	if err != nil {
 		return DailyDimensionStats{}, err
 	}
@@ -556,9 +589,13 @@ func DailyDimension(ctx context.Context, db *store.Store, dimension, period stri
 		return DailyDimensionStats{}, fmt.Errorf("iterate dimension rows: %w", err)
 	}
 
+	periodLabel := pq.Period
+	if periodLabel == "" && pq.From != "" {
+		periodLabel = "from_" + pq.From
+	}
 	return DailyDimensionStats{
 		Days:      days,
 		Dimension: dimension,
-		Period:    period,
+		Period:    periodLabel,
 	}, nil
 }

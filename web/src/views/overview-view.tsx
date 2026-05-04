@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { PeriodToggle } from '../components/daily/period-toggle'
+import type { PeriodMode } from '../components/daily/period-toggle'
 import { Alert } from '../components/ui/alert'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
@@ -11,26 +12,48 @@ import { useDashboardContext } from '../components/layout/dashboard-context'
 import { getOverview } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
 import { formatCompactInteger, formatCurrency, formatInteger, safeDivide } from '../lib/format'
-import { isDailyPeriod, type DailyPeriod } from '../types/api'
+import { usePeriodState, serializeCustomPeriod, applyPeriodToUrl } from '../lib/use-period-state'
+import type { CustomPeriod, DailyPeriod } from '../types/api'
 
 export function OverviewView() {
   const { requestRefresh } = useDashboardContext()
-  const [searchParams, setSearchParams] = useSearchParams()
+  const [, setSearchParams] = useSearchParams()
 
-  const rawPeriod = searchParams.get('period')
-  const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
-  const { data, loading, error } = usePeriodResource(getOverview, period)
+  const periodState = usePeriodState()
+  const cacheKey = periodState.mode === 'custom' && periodState.customRange
+    ? serializeCustomPeriod(periodState.customRange.from, periodState.customRange.to)
+    : periodState.preset
+  const { data, loading, error } = usePeriodResource(getOverview, cacheKey)
 
-  const handlePeriodChange = (nextPeriod: DailyPeriod) => {
-    if (nextPeriod === period) {
-      return
-    }
-
+  const handlePresetChange = (nextPeriod: DailyPeriod) => {
+    if (nextPeriod === periodState.preset && periodState.mode === 'preset') return
     setSearchParams((previous) => {
-      const next = new URLSearchParams(previous)
-      next.set('period', nextPeriod)
-      return next
+      return applyPeriodToUrl(previous, { mode: 'preset', preset: nextPeriod })
     })
+  }
+
+  const handleCustomRangeChange = (range: CustomPeriod) => {
+    setSearchParams((previous) => {
+      return applyPeriodToUrl(previous, {
+        mode: 'custom',
+        customRange: range,
+      })
+    })
+  }
+
+  const handleModeChange = (mode: PeriodMode) => {
+    if (mode === 'preset') {
+      setSearchParams((previous) => {
+        return applyPeriodToUrl(previous, { mode: 'preset', preset: periodState.preset })
+      })
+    } else {
+      setSearchParams((previous) => {
+        return applyPeriodToUrl(previous, {
+          mode: 'custom',
+          customRange: periodState.customRange ?? { from: '' },
+        })
+      })
+    }
   }
 
   const dataForPeriod = data
@@ -76,7 +99,15 @@ export function OverviewView() {
             Executive summary of sessions, messages, spend, and token mix
           </p>
         </div>
-        <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
+        <PeriodToggle
+          mode={periodState.mode}
+          preset={periodState.preset}
+          customRange={periodState.customRange}
+          onPresetChange={handlePresetChange}
+          onCustomRangeChange={handleCustomRangeChange}
+          onModeChange={handleModeChange}
+          disabled={loading}
+        />
       </div>
 
       {/* Error state */}

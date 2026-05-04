@@ -10,14 +10,45 @@ export interface TokenStats {
   cache: CacheStats
 }
 
-export const DAILY_PERIOD_VALUES = ['1d', '7d', '30d', '1y', 'all'] as const
+export const DAILY_PERIOD_VALUES = ['1h', '6h', '12h', '24h', '72h', '1d', '7d', '14d', '30d', '1y', 'all'] as const
 
 export type DailyPeriod = (typeof DAILY_PERIOD_VALUES)[number]
 
 export type Granularity = 'day' | 'hour'
 
+export type PeriodMode = 'preset' | 'custom'
+
+export interface CustomPeriod {
+  from: string // ISO 8601 "YYYY-MM-DD"
+  to?: string // ISO 8601 "YYYY-MM-DD", optional — defaults to now
+}
+
 export function isDailyPeriod(value: string | null): value is DailyPeriod {
   return value !== null && DAILY_PERIOD_VALUES.includes(value as DailyPeriod)
+}
+
+// Validates that a string is a valid YYYY-MM-DD date.
+// Uses regex + roundtrip to catch rollover dates (e.g., "2026-02-31" → "2026-03-03").
+function isValidISODate(dateStr: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false
+  const parsed = new Date(dateStr + 'T00:00:00')
+  if (isNaN(parsed.getTime())) return false
+  // Roundtrip check: format back to YYYY-MM-DD and compare
+  const y = parsed.getFullYear()
+  const m = String(parsed.getMonth() + 1).padStart(2, '0')
+  const d = String(parsed.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}` === dateStr
+}
+
+export function isValidCustomRange(from: string, to?: string): boolean {
+  if (!isValidISODate(from)) return false
+
+  if (to !== undefined) {
+    if (!isValidISODate(to)) return false
+    return new Date(from + 'T00:00:00') <= new Date(to + 'T00:00:00')
+  }
+
+  return true
 }
 
 export interface DayStats {

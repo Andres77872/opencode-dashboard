@@ -1071,7 +1071,7 @@ func loadSnapshotCmd(st *store.Store, query stats.SessionQuery) tea.Cmd {
 		func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			data.Overview, err = stats.Overview(ctx, st, "all")
+			data.Overview, err = stats.OverviewString(ctx, st, "all")
 		}()
 		if err != nil {
 			return snapshotLoadedMsg{err: err}
@@ -1084,7 +1084,7 @@ func loadSnapshotCmd(st *store.Store, query stats.SessionQuery) tea.Cmd {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			var daily7 stats.DailyStats
-			daily7, err = stats.Daily(ctx, st, "7d")
+			daily7, err = stats.DailyString(ctx, st, "7d")
 			if err == nil {
 				data.DailyByPeriod["7d"] = daily7
 			}
@@ -1096,7 +1096,7 @@ func loadSnapshotCmd(st *store.Store, query stats.SessionQuery) tea.Cmd {
 		func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			data.Models, err = stats.Models(ctx, st, "all")
+			data.Models, err = stats.ModelsString(ctx, st, "all")
 		}()
 		if err != nil {
 			return snapshotLoadedMsg{err: err}
@@ -1107,7 +1107,7 @@ func loadSnapshotCmd(st *store.Store, query stats.SessionQuery) tea.Cmd {
 		func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			data.Tools, err = stats.Tools(ctx, st, "all")
+			data.Tools, err = stats.ToolsString(ctx, st, "all")
 		}()
 		if err != nil {
 			return snapshotLoadedMsg{err: err}
@@ -1118,7 +1118,7 @@ func loadSnapshotCmd(st *store.Store, query stats.SessionQuery) tea.Cmd {
 		func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			data.Projects, err = stats.Projects(ctx, st, "all")
+			data.Projects, err = stats.ProjectsString(ctx, st, "all")
 		}()
 		if err != nil {
 			return snapshotLoadedMsg{err: err}
@@ -1163,7 +1163,7 @@ func loadDailyPeriodCmd(st *store.Store, period string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		data, err := stats.Daily(ctx, st, period)
+		data, err := stats.DailyString(ctx, st, period)
 		return dailyPeriodLoadedMsg{period: period, data: data, err: err}
 	}
 }
@@ -1173,7 +1173,7 @@ func loadOverviewPeriodCmd(st *store.Store, period string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		data, err := stats.Overview(ctx, st, period)
+		data, err := stats.OverviewString(ctx, st, period)
 		return overviewPeriodLoadedMsg{period: period, data: data, err: err}
 	}
 }
@@ -1183,7 +1183,7 @@ func loadToolsPeriodCmd(st *store.Store, period string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		data, err := stats.Tools(ctx, st, period)
+		data, err := stats.ToolsString(ctx, st, period)
 		return toolsPeriodLoadedMsg{period: period, data: data, err: err}
 	}
 }
@@ -1193,7 +1193,7 @@ func loadProjectsPeriodCmd(st *store.Store, period string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		data, err := stats.Projects(ctx, st, period)
+		data, err := stats.ProjectsString(ctx, st, period)
 		return projectsPeriodLoadedMsg{period: period, data: data, err: err}
 	}
 }
@@ -1203,20 +1203,20 @@ func loadModelsPeriodCmd(st *store.Store, period string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		data, err := stats.Models(ctx, st, period)
+		data, err := stats.ModelsString(ctx, st, period)
 		return modelsPeriodLoadedMsg{period: period, data: data, err: err}
 	}
 }
 
 func nextDailyPeriod(current string) string {
-	periods := []string{"1d", "7d", "30d", "1y", "all"}
+	periods := []string{"1h", "6h", "12h", "24h", "72h", "1d", "7d", "14d", "30d", "1y", "all"}
 	for i, p := range periods {
 		if p == current {
 			nextIdx := (i + 1) % len(periods)
 			return periods[nextIdx]
 		}
 	}
-	return "7d"
+	return "1h"
 }
 
 func nextDailyMetric(current dailyMetric) dailyMetric {

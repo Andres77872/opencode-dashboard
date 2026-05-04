@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SegmentedControl } from '../components/daily/segmented-control'
 import { PeriodToggle } from '../components/daily/period-toggle'
+import type { PeriodMode } from '../components/daily/period-toggle'
 import {
   getModelsMetricMeta,
   getModelsMetricValue,
@@ -33,9 +34,10 @@ import { usePeriodResource } from '../lib/use-period-resource'
 import { formatCompactInteger, formatCurrency, formatInteger, formatPercentage, formatTokenCount, safeDivide } from '../lib/format'
 import { getNextSortState, type SortState } from '../lib/table-sort'
 import { getAvgTokenTotal, getTokenTotal } from '../lib/token-breakdown'
-import { isDailyPeriod, type DailyPeriod } from '../types/api'
+import { usePeriodState, serializeCustomPeriod, applyPeriodToUrl } from '../lib/use-period-state'
+import type { CustomPeriod, DailyPeriod } from '../types/api'
 
-function getEmptyWindowCopy(period: DailyPeriod): string {
+function getEmptyWindowCopy(period: string): string {
   if (period === 'all') {
     return 'All historic stretches from the first recorded activity day through today when data exists.'
   }
@@ -44,13 +46,15 @@ function getEmptyWindowCopy(period: DailyPeriod): string {
 
 export function ModelsView() {
   const { requestRefresh } = useDashboardContext()
-  const [searchParams, setSearchParams] = useSearchParams()
+  const [, setSearchParams] = useSearchParams()
   const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
   const [metric, setMetric] = useState<ModelsMetric>('cost')
 
-  const rawPeriod = searchParams.get('period')
-  const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
-  const { data, loading, error } = usePeriodResource(getModels, period)
+  const periodState = usePeriodState()
+  const cacheKey = periodState.mode === 'custom' && periodState.customRange
+    ? serializeCustomPeriod(periodState.customRange.from, periodState.customRange.to)
+    : periodState.preset
+  const { data, loading, error } = usePeriodResource(getModels, cacheKey)
 
   const summary = useMemo(() => {
     if (!data) {
@@ -131,18 +135,34 @@ export function ModelsView() {
     setSortState((current) => getNextSortState(current, key, DEFAULT_SORT_DIRECTIONS[key]))
   }
 
-  const handlePeriodChange = (nextPeriod: DailyPeriod) => {
-    if (nextPeriod === period) {
-      return
-    }
-
+  const handlePresetChange = (nextPeriod: DailyPeriod) => {
     setSortState(null)
-
     setSearchParams((previous) => {
-      const next = new URLSearchParams(previous)
-      next.set('period', nextPeriod)
-      return next
+      return applyPeriodToUrl(previous, { mode: 'preset', preset: nextPeriod })
     })
+  }
+
+  const handleCustomRangeChange = (range: CustomPeriod) => {
+    setSortState(null)
+    setSearchParams((previous) => {
+      return applyPeriodToUrl(previous, { mode: 'custom', customRange: range })
+    })
+  }
+
+  const handleModeChange = (mode: PeriodMode) => {
+    setSortState(null)
+    if (mode === 'preset') {
+      setSearchParams((previous) => {
+        return applyPeriodToUrl(previous, { mode: 'preset', preset: periodState.preset })
+      })
+    } else {
+      setSearchParams((previous) => {
+        return applyPeriodToUrl(previous, {
+          mode: 'custom',
+          customRange: periodState.customRange ?? { from: '' },
+        })
+      })
+    }
   }
 
   const handleMetricChange = (nextMetric: ModelsMetric) => {
@@ -187,9 +207,17 @@ export function ModelsView() {
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
           <div className="text-sm text-muted-foreground">
             Endpoint:{' '}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/models?period={period}</code>
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/models?period={cacheKey}</code>
           </div>
-          <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
+          <PeriodToggle
+              mode={periodState.mode}
+              preset={periodState.preset}
+              customRange={periodState.customRange}
+              onPresetChange={handlePresetChange}
+              onCustomRangeChange={handleCustomRangeChange}
+              onModeChange={handleModeChange}
+              disabled={loading}
+            />
         </div>
       </div>
 
@@ -240,7 +268,7 @@ export function ModelsView() {
                 <CardTitle>No model usage in this window</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 text-sm text-muted-foreground">
-                <p>{getEmptyWindowCopy(period)}</p>
+                <p>{getEmptyWindowCopy(cacheKey)}</p>
                 <p>
                   Once data exists, this route will rank models by cost and expose message volume, token load, and per-message spend.
                 </p>

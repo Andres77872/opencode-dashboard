@@ -2,7 +2,6 @@ import type {
   ApiErrorResponse,
   ConfigStats,
   DailyDimensionStats,
-  DailyPeriod,
   DailyStats,
   MessageDetail,
   MessageList,
@@ -83,29 +82,52 @@ async function request<T>(path: string, init?: RequestInit) {
   return (await response.json()) as T
 }
 
-export function getOverview(period: DailyPeriod, signal?: AbortSignal) {
-  const params = new URLSearchParams({ period })
-  return request<OverviewStats>(`/api/v1/overview?${params.toString()}`, { signal })
+/**
+ * Builds a URL with the correct query parameters for a given period/custom range key.
+ *
+ * If the key starts with "from_", it is a serialized custom range key:
+ *   "from_2026-04-01_to_2026-04-15" → ?from=2026-04-01&to=2026-04-15
+ *   "from_2026-04-01_to__now__"     → ?from=2026-04-01
+ *   "from_2026-04-01_to_"           → ?from=2026-04-01
+ *
+ * Otherwise, it is a preset period key:
+ *   "7d" → ?period=7d
+ */
+function buildUrl(basePath: string, period: string, extraParams?: Record<string, string>): string {
+  const params = new URLSearchParams(extraParams)
+
+  if (period.startsWith('from_')) {
+    // Parse custom range: "from_YYYY-MM-DD_to_YYYY-MM-DD" or "from_YYYY-MM-DD_to__now__"
+    const parts = period.replace('from_', '').split('_to_')
+    params.set('from', parts[0])
+    if (parts[1] && parts[1] !== '__now__' && parts[1] !== '') {
+      params.set('to', parts[1])
+    }
+  } else {
+    params.set('period', period)
+  }
+
+  return `${basePath}?${params.toString()}`
 }
 
-export function getDaily(period: DailyPeriod, signal?: AbortSignal) {
-  const params = new URLSearchParams({ period })
-  return request<DailyStats>(`/api/v1/daily?${params.toString()}`, { signal })
+export function getOverview(period: string, signal?: AbortSignal) {
+  return request<OverviewStats>(buildUrl('/api/v1/overview', period), { signal })
 }
 
-export function getModels(period: DailyPeriod, signal?: AbortSignal) {
-  const params = new URLSearchParams({ period })
-  return request<ModelStats>(`/api/v1/models?${params.toString()}`, { signal })
+export function getDaily(period: string, signal?: AbortSignal) {
+  return request<DailyStats>(buildUrl('/api/v1/daily', period), { signal })
 }
 
-export function getTools(period: DailyPeriod, signal?: AbortSignal) {
-  const params = new URLSearchParams({ period })
-  return request<ToolStats>(`/api/v1/tools?${params.toString()}`, { signal })
+export function getModels(period: string, signal?: AbortSignal) {
+  return request<ModelStats>(buildUrl('/api/v1/models', period), { signal })
 }
 
-export function getProjects(period: DailyPeriod, signal?: AbortSignal) {
-  const params = new URLSearchParams({ period })
-  return request<ProjectStats>(`/api/v1/projects?${params.toString()}`, { signal })
+export function getTools(period: string, signal?: AbortSignal) {
+  return request<ToolStats>(buildUrl('/api/v1/tools', period), { signal })
+}
+
+export function getProjects(period: string, signal?: AbortSignal) {
+  return request<ProjectStats>(buildUrl('/api/v1/projects', period), { signal })
 }
 
 export function getConfig(signal?: AbortSignal) {
@@ -115,78 +137,75 @@ export function getConfig(signal?: AbortSignal) {
 export function getSessions(
   page: number,
   limit: number,
-  period: DailyPeriod,
+  period: string,
   signal?: AbortSignal,
 ) {
-  const params = new URLSearchParams({
-    page: String(page),
-    limit: String(limit),
-    period,
-  })
-
-  return request<SessionList>(`/api/v1/sessions?${params.toString()}`, { signal })
+  return request<SessionList>(
+    buildUrl('/api/v1/sessions', period, { page: String(page), limit: String(limit) }),
+    { signal },
+  )
 }
 
 export function getSessionsWithFilter(
   page: number,
   limit: number,
-  period: DailyPeriod,
+  period: string,
   filter?: string,
   projectId?: string,
   signal?: AbortSignal,
 ) {
-  const params = new URLSearchParams({
+  const extraParams: Record<string, string> = {
     page: String(page),
     limit: String(limit),
-    period,
-  })
+  }
 
   if (filter) {
-    params.set('filter', filter)
+    extraParams.filter = filter
   }
 
   if (projectId) {
-    params.set('project_id', projectId)
+    extraParams.project_id = projectId
   }
 
-  return request<SessionList>(`/api/v1/sessions?${params.toString()}`, { signal })
+  return request<SessionList>(buildUrl('/api/v1/sessions', period, extraParams), { signal })
 }
 
-export function getDailyDimension(dimension: string, period: DailyPeriod, signal?: AbortSignal) {
-  const params = new URLSearchParams({ dimension, period })
-  return request<DailyDimensionStats>(`/api/v1/daily?${params.toString()}`, { signal })
+export function getDailyDimension(dimension: string, period: string, signal?: AbortSignal) {
+  return request<DailyDimensionStats>(buildUrl('/api/v1/daily', period, { dimension }), { signal })
 }
 
-export function getProjectDetail(id: string, period: DailyPeriod, page?: number, limit?: number, signal?: AbortSignal) {
-  const params = new URLSearchParams({ period })
+export function getProjectDetail(id: string, period: string, page?: number, limit?: number, signal?: AbortSignal) {
+  const extraParams: Record<string, string> = {}
 
   if (page !== undefined) {
-    params.set('page', String(page))
+    extraParams.page = String(page)
   }
 
   if (limit !== undefined) {
-    params.set('limit', String(limit))
+    extraParams.limit = String(limit)
   }
 
-  return request<ProjectDetail>(`/api/v1/projects/${encodeURIComponent(id)}?${params.toString()}`, { signal })
+  return request<ProjectDetail>(
+    buildUrl(`/api/v1/projects/${encodeURIComponent(id)}`, period, extraParams),
+    { signal },
+  )
 }
 
 export function getSessionDetail(id: string, signal?: AbortSignal) {
   return request<SessionDetail>(`/api/v1/sessions/${encodeURIComponent(id)}`, { signal })
 }
 
-export function getMessages(period: DailyPeriod, page: number, limit: number, sort?: string, signal?: AbortSignal) {
-  const params = new URLSearchParams({
-    period,
+export function getMessages(period: string, page: number, limit: number, sort?: string, signal?: AbortSignal) {
+  const extraParams: Record<string, string> = {
     page: String(page),
     limit: String(limit),
-  })
-
-  if (sort) {
-    params.set('sort', sort)
   }
 
-  return request<MessageList>(`/api/v1/messages?${params.toString()}`, { signal })
+  if (sort) {
+    extraParams.sort = sort
+  }
+
+  return request<MessageList>(buildUrl('/api/v1/messages', period, extraParams), { signal })
 }
 
 export function getMessageDetail(id: string, signal?: AbortSignal) {

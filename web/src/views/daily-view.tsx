@@ -5,6 +5,7 @@ import { DailyChart } from '../components/daily/daily-chart'
 import { MessageDetailSheet } from '../components/daily/message-detail-sheet'
 import { getDailyMetricMeta, getDailyMetricValue, type DailyMetric } from '../components/daily/daily-metrics'
 import { PeriodToggle } from '../components/daily/period-toggle'
+import type { PeriodMode } from '../components/daily/period-toggle'
 import { RequestsHistoryTable, REQUESTS_SORT_DEFAULTS } from '../components/daily/requests-history-table'
 import type { RequestsSortKey } from '../components/daily/requests-history-table'
 import { MetricCard } from '../components/overview/metric-card'
@@ -21,7 +22,8 @@ import { formatCompactInteger, formatCurrency, formatInteger, formatShortDate, f
 import { getNextSortState } from '../lib/table-sort'
 import type { SortState } from '../lib/table-sort'
 import { getTokenTotal } from '../lib/token-breakdown'
-import { isDailyPeriod, type DailyPeriod, type DailyStats, type DayStats, type MessageList } from '../types/api'
+import { usePeriodState, serializeCustomPeriod, applyPeriodToUrl } from '../lib/use-period-state'
+import type { CustomPeriod, DailyPeriod, DailyStats, DayStats, MessageList } from '../types/api'
 
 const REQUESTS_PAGE_SIZE = 12
 
@@ -83,14 +85,31 @@ function getWindowTokens(data: DailyStats) {
   )
 }
 
-function getPeriodWindowHint(period: DailyPeriod, dayCount: number, granularity?: string) {
-  if (granularity === 'hour') {
-    return `Current UTC day · ${dayCount} hourly buckets`
+function getPeriodWindowHint(period: string, dayCount: number, granularity?: string) {
+  // Custom range (serialized cache key starts with "from_")
+  if (period.startsWith('from_')) {
+    if (granularity === 'hour') {
+      return `Custom range · ${dayCount} hourly buckets`
+    }
+    return `Custom range · ${formatCompactInteger(dayCount)} days`
   }
-  
+
+  // Hour presets (rolling window)
+  if (['1h', '6h', '12h', '24h', '72h'].includes(period)) {
+    if (granularity === 'hour') {
+      return `Last ${period} · ${dayCount} hourly buckets`
+    }
+    return `Last ${period}`
+  }
+
+  // Day presets (server-timezone-aligned)
+  if (granularity === 'hour') {
+    return `Current day · ${dayCount} hourly buckets`
+  }
+
   switch (period) {
     case '1d':
-      return 'Current UTC day'
+      return 'Current day (server timezone)'
     case '1y':
       return `${formatCompactInteger(dayCount)}-day trailing year`
     case 'all':
@@ -100,7 +119,7 @@ function getPeriodWindowHint(period: DailyPeriod, dayCount: number, granularity?
   }
 }
 
-function getEmptyWindowCopy(period: DailyPeriod) {
+function getEmptyWindowCopy(period: string) {
   if (period === 'all') {
     return 'All recorded activity since the first data point. Falls back to today when no data exists.'
   }
@@ -110,7 +129,7 @@ function getEmptyWindowCopy(period: DailyPeriod) {
 
 export function DailyView() {
   const { requestRefresh, refreshNonce } = useDashboardContext()
-  const [searchParams, setSearchParams] = useSearchParams()
+  const [, setSearchParams] = useSearchParams()
   const [messages, setMessages] = useState<MessageList | null>(null)
   const [messagesLoading, setMessagesLoading] = useState(true)
   const [messagesError, setMessagesError] = useState<string | null>(null)
@@ -120,9 +139,12 @@ export function DailyView() {
   const [metric, setMetric] = useState<DailyMetric>('cost')
   const messageTriggerRef = useRef<HTMLElement | null>(null)
 
-  const rawPeriod = searchParams.get('period')
-  const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
-  const { data: dataForPeriod, loading, error } = usePeriodResource(getDaily, period)
+  const periodState = usePeriodState()
+  const cacheKey = periodState.mode === 'custom' && periodState.customRange
+    ? serializeCustomPeriod(periodState.customRange.from, periodState.customRange.to)
+    : periodState.preset
+  const period: string = cacheKey
+  const { data: dataForPeriod, loading, error } = usePeriodResource(getDaily, cacheKey)
 
   // Messages pagination stays inline — different state shape from daily stats
   useEffect(() => {
@@ -218,20 +240,40 @@ export function DailyView() {
     setSelectedMessageId(messageId)
   }
 
-  const handlePeriodChange = (nextPeriod: DailyPeriod) => {
-    if (nextPeriod === period) {
-      return
-    }
-
+  const handlePresetChange = (nextPeriod: DailyPeriod) => {
     setMessagesPage(1)
     setMessagesSort(null)
     setSelectedMessageId(null)
-
     setSearchParams((previous) => {
-      const next = new URLSearchParams(previous)
-      next.set('period', nextPeriod)
-      return next
+      return applyPeriodToUrl(previous, { mode: 'preset', preset: nextPeriod })
     })
+  }
+
+  const handleCustomRangeChange = (range: CustomPeriod) => {
+    setMessagesPage(1)
+    setMessagesSort(null)
+    setSelectedMessageId(null)
+    setSearchParams((previous) => {
+      return applyPeriodToUrl(previous, { mode: 'custom', customRange: range })
+    })
+  }
+
+  const handleModeChange = (mode: PeriodMode) => {
+    setMessagesPage(1)
+    setMessagesSort(null)
+    setSelectedMessageId(null)
+    if (mode === 'preset') {
+      setSearchParams((previous) => {
+        return applyPeriodToUrl(previous, { mode: 'preset', preset: periodState.preset })
+      })
+    } else {
+      setSearchParams((previous) => {
+        return applyPeriodToUrl(previous, {
+          mode: 'custom',
+          customRange: periodState.customRange ?? { from: '' },
+        })
+      })
+    }
   }
 
   if (loading && !dataForPeriod) {
@@ -268,7 +310,15 @@ export function DailyView() {
               Endpoint:{' '}
               <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/daily?period={period}</code>
             </div>
-            <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
+            <PeriodToggle
+              mode={periodState.mode}
+              preset={periodState.preset}
+              customRange={periodState.customRange}
+              onPresetChange={handlePresetChange}
+              onCustomRangeChange={handleCustomRangeChange}
+              onModeChange={handleModeChange}
+              disabled={loading}
+            />
           </div>
         </div>
 

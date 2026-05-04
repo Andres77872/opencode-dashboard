@@ -16,11 +16,17 @@ func TestParsePeriod(t *testing.T) {
 	}{
 		{name: "1d", input: "1d", expected: 1, wantErr: false},
 		{name: "7d", input: "7d", expected: 7, wantErr: false},
+		{name: "14d", input: "14d", expected: 14, wantErr: false},
 		{name: "30d", input: "30d", expected: 30, wantErr: false},
 		{name: "1y", input: "1y", expected: 365, wantErr: false},
 		{name: "all", input: "all", expected: allHistoricPeriodDays, wantErr: false},
+		{name: "1h rejected", input: "1h", expected: 0, wantErr: true, errContains: "invalid period"},
+		{name: "6h rejected", input: "6h", expected: 0, wantErr: true, errContains: "invalid period"},
+		{name: "12h rejected", input: "12h", expected: 0, wantErr: true, errContains: "invalid period"},
+		{name: "24h rejected", input: "24h", expected: 0, wantErr: true, errContains: "invalid period"},
+		{name: "72h rejected", input: "72h", expected: 0, wantErr: true, errContains: "invalid period"},
+		{name: "2h rejected", input: "2h", expected: 0, wantErr: true, errContains: "invalid period"},
 		{name: "invalid empty", input: "", expected: 0, wantErr: true, errContains: "invalid period"},
-		{name: "invalid 14d", input: "14d", expected: 0, wantErr: true, errContains: "invalid period"},
 		{name: "invalid format", input: "seven", expected: 0, wantErr: true, errContains: "invalid period"},
 		{name: "invalid number only", input: "7", expected: 0, wantErr: true, errContains: "invalid period"},
 		{name: "invalid day letter", input: "7x", expected: 0, wantErr: true, errContains: "invalid period"},
@@ -169,6 +175,71 @@ func TestDailyGranularityLogic(t *testing.T) {
 
 		if g := fn("7d"); g != GranularityDay {
 			t.Errorf("no granularity + 7d: got %q, want %q", g, GranularityDay)
+		}
+	})
+
+	t.Run("no granularity with 24h returns hourly", func(t *testing.T) {
+		fn := func(period string, granularity ...Granularity) Granularity {
+			explicit := false
+			if len(granularity) > 0 && granularity[0] != "" {
+				explicit = true
+			}
+			if period == "1d" && !explicit {
+				return GranularityHour
+			}
+			if _, ok := parseHourPreset(period); ok && !explicit {
+				return GranularityHour
+			}
+			return GranularityDay
+		}
+
+		if g := fn("24h"); g != GranularityHour {
+			t.Errorf("no granularity + 24h: got %q, want %q", g, GranularityHour)
+		}
+	})
+
+	t.Run("no granularity with 72h returns hourly", func(t *testing.T) {
+		fn := func(period string, granularity ...Granularity) Granularity {
+			explicit := false
+			if len(granularity) > 0 && granularity[0] != "" {
+				explicit = true
+			}
+			if period == "1d" && !explicit {
+				return GranularityHour
+			}
+			if _, ok := parseHourPreset(period); ok && !explicit {
+				return GranularityHour
+			}
+			return GranularityDay
+		}
+
+		if g := fn("72h"); g != GranularityHour {
+			t.Errorf("no granularity + 72h: got %q, want %q", g, GranularityHour)
+		}
+	})
+
+	t.Run("granularity=day with 24h returns daily (explicit override)", func(t *testing.T) {
+		fn := func(period string, granularity ...Granularity) Granularity {
+			explicit := false
+			var gran Granularity
+			if len(granularity) > 0 && granularity[0] != "" {
+				gran = granularity[0]
+				explicit = true
+			}
+			if period == "1d" && !explicit {
+				return GranularityHour
+			}
+			if _, ok := parseHourPreset(period); ok && !explicit {
+				return GranularityHour
+			}
+			if gran == GranularityHour {
+				return GranularityHour
+			}
+			return GranularityDay
+		}
+
+		if g := fn("24h", GranularityDay); g != GranularityDay {
+			t.Errorf("granularity=day + 24h: got %q, want %q", g, GranularityDay)
 		}
 	})
 }

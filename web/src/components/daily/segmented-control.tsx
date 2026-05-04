@@ -27,7 +27,7 @@ export function SegmentedControl<T extends string>({
       role="group"
       aria-label={ariaLabel}
       className={cn(
-        'inline-flex flex-wrap rounded-xl border border-border/70 bg-panel/80 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]',
+        'inline-flex rounded-xl border border-border/70 bg-panel/80 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]',
         className,
       )}
     >
@@ -42,9 +42,9 @@ export function SegmentedControl<T extends string>({
             disabled={disabled}
             onClick={() => onChange(option.value)}
             className={cn(
-              'rounded-lg px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50',
+              'flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50',
               active
-                ? 'bg-accent text-accent-foreground shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-accent)_55%,transparent)]'
+                ? 'bg-accent text-accent-foreground shadow-sm'
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground',
             )}
           >

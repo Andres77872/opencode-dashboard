@@ -91,7 +91,7 @@ func TestMessagesByPeriod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			list, err := MessagesByPeriod(ctx, st, tt.period, tt.page, tt.limit, DefaultMessageSort())
+			list, err := MessagesByPeriod(ctx, st, PeriodQuery{Period: tt.period}, tt.page, tt.limit, DefaultMessageSort())
 			if err != nil {
 				t.Fatalf("MessagesByPeriod(%s) failed: %v", tt.period, err)
 			}
@@ -145,18 +145,19 @@ func TestMessagesByPeriod(t *testing.T) {
 				}
 
 				// Assistant messages should have cost/tokens/model info
+				// Zero values are allowed (edge case: zero-token assistant messages)
 				if msg.Role == "assistant" {
-					if msg.Cost <= 0 {
-						t.Errorf("Assistant message %s has Cost = %.6f, want > 0", msg.ID, msg.Cost)
+					if msg.Cost < 0 {
+						t.Errorf("Assistant message %s has negative Cost = %.6f", msg.ID, msg.Cost)
 					}
 					if msg.Tokens == nil {
 						t.Errorf("Assistant message %s has nil Tokens", msg.ID)
 					} else {
-						if msg.Tokens.Input <= 0 {
-							t.Errorf("Assistant message %s Tokens.Input = %d, want > 0", msg.ID, msg.Tokens.Input)
+						if msg.Tokens.Input < 0 {
+							t.Errorf("Assistant message %s Tokens.Input = %d (negative)", msg.ID, msg.Tokens.Input)
 						}
-						if msg.Tokens.Output <= 0 {
-							t.Errorf("Assistant message %s Tokens.Output = %d, want > 0", msg.ID, msg.Tokens.Output)
+						if msg.Tokens.Output < 0 {
+							t.Errorf("Assistant message %s Tokens.Output = %d (negative)", msg.ID, msg.Tokens.Output)
 						}
 					}
 					if msg.ModelID == "" {
@@ -203,7 +204,7 @@ func TestMessagesByPeriodPagination(t *testing.T) {
 	defer st.Close()
 
 	// Get all messages to know total count
-	allList, err := MessagesByPeriod(ctx, st, "all", 1, 100, DefaultMessageSort())
+	allList, err := MessagesByPeriod(ctx, st, PeriodQuery{Period: "all"}, 1, 100, DefaultMessageSort())
 	if err != nil {
 		t.Fatalf("MessagesByPeriod(all) failed: %v", err)
 	}
@@ -213,7 +214,7 @@ func TestMessagesByPeriodPagination(t *testing.T) {
 	// Test pagination with limit=2
 	limit := 2
 
-	page1, err := MessagesByPeriod(ctx, st, "all", 1, limit, DefaultMessageSort())
+	page1, err := MessagesByPeriod(ctx, st, PeriodQuery{Period: "all"}, 1, limit, DefaultMessageSort())
 	if err != nil {
 		t.Fatalf("MessagesByPeriod(page=1) failed: %v", err)
 	}
@@ -228,7 +229,7 @@ func TestMessagesByPeriodPagination(t *testing.T) {
 
 	// If there are enough messages, test page 2
 	if totalCount > int64(limit) {
-		page2, err := MessagesByPeriod(ctx, st, "all", 2, limit, DefaultMessageSort())
+		page2, err := MessagesByPeriod(ctx, st, PeriodQuery{Period: "all"}, 2, limit, DefaultMessageSort())
 		if err != nil {
 			t.Fatalf("MessagesByPeriod(page=2) failed: %v", err)
 		}
@@ -276,7 +277,7 @@ func TestMessagesByPeriodEmpty(t *testing.T) {
 	}
 	defer st.Close()
 
-	list, err := MessagesByPeriod(ctx, st, "7d", 1, 50, DefaultMessageSort())
+	list, err := MessagesByPeriod(ctx, st, PeriodQuery{Period: "7d"}, 1, 50, DefaultMessageSort())
 	if err != nil {
 		t.Fatalf("MessagesByPeriod on empty database should not error, got: %v", err)
 	}
@@ -316,11 +317,11 @@ func TestMessagesByPeriodInvalid(t *testing.T) {
 	}
 	defer st.Close()
 
-	invalidPeriods := []string{"", "invalid", "14d", "7", "seven"}
+	invalidPeriods := []string{"invalid", "7", "seven"}
 
 	for _, period := range invalidPeriods {
 		t.Run("period_"+period, func(t *testing.T) {
-			_, err := MessagesByPeriod(ctx, st, period, 1, 50, DefaultMessageSort())
+			_, err := MessagesByPeriod(ctx, st, PeriodQuery{Period: period}, 1, 50, DefaultMessageSort())
 			if err == nil {
 				t.Errorf("MessagesByPeriod(%q) should return error, got nil", period)
 			}

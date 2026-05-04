@@ -11,12 +11,17 @@ import (
 
 // MessagesByPeriod returns a paginated list of messages across all sessions
 // within the specified time period. Messages are ordered by creation time descending.
-func MessagesByPeriod(ctx context.Context, s *store.Store, period string, page, limit int, sort MessageSort) (MessageList, error) {
+// MessagesByPeriodString is a backward-compatible wrapper that accepts a string period.
+func MessagesByPeriodString(ctx context.Context, s *store.Store, period string, page, limit int, sort MessageSort) (MessageList, error) {
+	return MessagesByPeriod(ctx, s, PeriodQuery{Period: period}, page, limit, sort)
+}
+
+func MessagesByPeriod(ctx context.Context, s *store.Store, pq PeriodQuery, page, limit int, sort MessageSort) (MessageList, error) {
 	if !s.IsValidSchema() {
 		return MessageList{}, store.ErrInvalidSchema
 	}
 
-	pw, err := ComputePeriodWindow(ctx, s, period)
+	pw, err := ComputePeriodWindowFromQuery(ctx, s, pq)
 	if err != nil {
 		return MessageList{}, err
 	}

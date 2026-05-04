@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"opencode-dashboard/internal/stats"
 	"opencode-dashboard/internal/store"
@@ -20,11 +21,12 @@ func NewHandlers(s *store.Store) *Handlers {
 
 func (h *Handlers) Overview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	period := r.URL.Query().Get("period")
-	if period == "" {
-		period = "7d"
+	pq, apierr := parsePeriodQuery(r)
+	if apierr != nil {
+		apierr.Write(w)
+		return
 	}
-	result, err := stats.Overview(ctx, h.store, period)
+	result, err := stats.Overview(ctx, h.store, pq)
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid period") {
 			BadRequest(err.Error()).Write(w)
@@ -38,14 +40,15 @@ func (h *Handlers) Overview(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) Daily(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	period := r.URL.Query().Get("period")
-	if period == "" {
-		period = "7d"
+	pq, apierr := parsePeriodQuery(r)
+	if apierr != nil {
+		apierr.Write(w)
+		return
 	}
 
 	// Check for dimension query param — if present, route to dimension endpoint
 	if dim := r.URL.Query().Get("dimension"); dim != "" {
-		result, err := stats.DailyDimension(ctx, h.store, dim, period)
+		result, err := stats.DailyDimension(ctx, h.store, dim, pq)
 		if err != nil {
 			if strings.Contains(err.Error(), "invalid dimension") {
 				BadRequest(err.Error()).Write(w)
@@ -68,12 +71,12 @@ func (h *Handlers) Daily(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch granStr {
 	case "hour":
-		result, err = stats.Daily(ctx, h.store, period, stats.GranularityHour)
+		result, err = stats.Daily(ctx, h.store, pq, stats.GranularityHour)
 	case "day":
-		result, err = stats.Daily(ctx, h.store, period, stats.GranularityDay)
+		result, err = stats.Daily(ctx, h.store, pq, stats.GranularityDay)
 	default:
 		// Don't pass granularity — let Daily decide based on period (auto-hour for 1d)
-		result, err = stats.Daily(ctx, h.store, period)
+		result, err = stats.Daily(ctx, h.store, pq)
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid period") {
@@ -88,11 +91,12 @@ func (h *Handlers) Daily(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) Models(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	period := r.URL.Query().Get("period")
-	if period == "" {
-		period = "7d"
+	pq, apierr := parsePeriodQuery(r)
+	if apierr != nil {
+		apierr.Write(w)
+		return
 	}
-	result, err := stats.Models(ctx, h.store, period)
+	result, err := stats.Models(ctx, h.store, pq)
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid period") {
 			BadRequest(err.Error()).Write(w)
@@ -106,11 +110,12 @@ func (h *Handlers) Models(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) Tools(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	period := r.URL.Query().Get("period")
-	if period == "" {
-		period = "7d"
+	pq, apierr := parsePeriodQuery(r)
+	if apierr != nil {
+		apierr.Write(w)
+		return
 	}
-	result, err := stats.Tools(ctx, h.store, period)
+	result, err := stats.Tools(ctx, h.store, pq)
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid period") {
 			BadRequest(err.Error()).Write(w)
@@ -128,11 +133,12 @@ func (h *Handlers) Tools(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) Projects(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	period := r.URL.Query().Get("period")
-	if period == "" {
-		period = "7d"
+	pq, apierr := parsePeriodQuery(r)
+	if apierr != nil {
+		apierr.Write(w)
+		return
 	}
-	result, err := stats.Projects(ctx, h.store, period)
+	result, err := stats.Projects(ctx, h.store, pq)
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid period") {
 			BadRequest(err.Error()).Write(w)
@@ -155,14 +161,15 @@ func (h *Handlers) ProjectDetail(w http.ResponseWriter, r *http.Request) {
 		BadRequest("missing project id").Write(w)
 		return
 	}
-	period := r.URL.Query().Get("period")
-	if period == "" {
-		period = "7d"
+	pq, apierr := parsePeriodQuery(r)
+	if apierr != nil {
+		apierr.Write(w)
+		return
 	}
 	page := parseIntQuery(r, "page", 1)
 	limit := parseIntQuery(r, "limit", 10)
 
-	result, err := stats.ProjectByID(ctx, h.store, id, period, page, limit)
+	result, err := stats.ProjectByID(ctx, h.store, id, pq, page, limit)
 	if err != nil {
 		if err == store.ErrInvalidSchema {
 			InternalError("database schema invalid").Write(w)
@@ -189,9 +196,10 @@ func (h *Handlers) Sessions(w http.ResponseWriter, r *http.Request) {
 	if limit > 100 {
 		limit = 100
 	}
-	period := r.URL.Query().Get("period")
-	if period == "" {
-		period = "7d"
+	pq, apierr := parsePeriodQuery(r)
+	if apierr != nil {
+		apierr.Write(w)
+		return
 	}
 
 	var projectID string
@@ -205,7 +213,9 @@ func (h *Handlers) Sessions(w http.ResponseWriter, r *http.Request) {
 		Filter:    r.URL.Query().Get("filter"),
 		ProjectID: projectID,
 		Sort:      stats.SessionSortNewest,
-		Period:    period,
+		Period:    pq.Period,
+		From:      pq.From,
+		To:        pq.To,
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid period") {
@@ -282,6 +292,75 @@ func parseIntQuery(r *http.Request, key string, defaultVal int) int {
 	return n
 }
 
+// parsePeriodQuery parses period, from, and to query parameters into a PeriodQuery.
+// Priority: from > period > default "7d".
+// Returns an APIError (HTTP 400) on validation failure.
+func parsePeriodQuery(r *http.Request) (stats.PeriodQuery, *APIError) {
+	from := r.URL.Query().Get("from")
+	to := r.URL.Query().Get("to")
+	period := r.URL.Query().Get("period")
+
+	// If from is present, use explicit range mode
+	if from != "" {
+		// Validate from format
+		fromTime, err := time.Parse("2006-01-02", from)
+		if err != nil {
+			return stats.PeriodQuery{}, &APIError{
+				Error:   http.StatusText(http.StatusBadRequest),
+				Code:    http.StatusBadRequest,
+				Message: "invalid from date: expected YYYY-MM-DD format",
+			}
+		}
+
+		// Reject future from date
+		if fromTime.After(time.Now()) {
+			return stats.PeriodQuery{}, &APIError{
+				Error:   http.StatusText(http.StatusBadRequest),
+				Code:    http.StatusBadRequest,
+				Message: "from date cannot be in the future",
+			}
+		}
+
+		// Validate to format and constraints when present
+		if to != "" {
+			toTime, err := time.Parse("2006-01-02", to)
+			if err != nil {
+				return stats.PeriodQuery{}, &APIError{
+					Error:   http.StatusText(http.StatusBadRequest),
+					Code:    http.StatusBadRequest,
+					Message: "invalid to date: expected YYYY-MM-DD format",
+				}
+			}
+
+			// Reject future to date
+			if toTime.After(time.Now()) {
+				return stats.PeriodQuery{}, &APIError{
+					Error:   http.StatusText(http.StatusBadRequest),
+					Code:    http.StatusBadRequest,
+					Message: "to date cannot be in the future",
+				}
+			}
+
+			if fromTime.After(toTime) {
+				return stats.PeriodQuery{}, &APIError{
+					Error:   http.StatusText(http.StatusBadRequest),
+					Code:    http.StatusBadRequest,
+					Message: "from date must be before or equal to to date",
+				}
+			}
+		}
+
+		return stats.PeriodQuery{From: from, To: to}, nil
+	}
+
+	// Period mode: use period or default to "7d"
+	if period == "" {
+		period = "7d"
+	}
+
+	return stats.PeriodQuery{Period: period}, nil
+}
+
 func extractSessionID(path string) string {
 	prefix := "/api/v1/sessions/"
 	if !strings.HasPrefix(path, prefix) {
@@ -297,9 +376,10 @@ func extractSessionID(path string) string {
 
 func (h *Handlers) Messages(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	period := r.URL.Query().Get("period")
-	if period == "" {
-		period = "7d"
+	pq, apierr := parsePeriodQuery(r)
+	if apierr != nil {
+		apierr.Write(w)
+		return
 	}
 	page := parseIntQuery(r, "page", 1)
 	limit := parseIntQuery(r, "limit", 50)
@@ -308,7 +388,7 @@ func (h *Handlers) Messages(w http.ResponseWriter, r *http.Request) {
 	}
 	sort := stats.ParseMessageSort(r.URL.Query().Get("sort"))
 
-	result, err := stats.MessagesByPeriod(ctx, h.store, period, page, limit, sort)
+	result, err := stats.MessagesByPeriod(ctx, h.store, pq, page, limit, sort)
 	if err != nil {
 		if err == store.ErrInvalidSchema {
 			InternalError("database schema invalid").Write(w)

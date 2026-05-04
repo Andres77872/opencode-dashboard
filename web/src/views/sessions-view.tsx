@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { PeriodToggle } from '../components/daily/period-toggle'
+import type { PeriodMode } from '../components/daily/period-toggle'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { DataPageSkeleton } from '../components/common/data-page-skeleton'
 import { SessionsKpiGrid, type SessionsSummary } from '../components/sessions/sessions-kpi-grid'
@@ -23,8 +24,8 @@ import {
 import { getSessionDetail, getSessionsWithFilter } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
 import { formatDateTime, formatInteger } from '../lib/format'
-import type { SessionDetail, SessionEntry, SessionList } from '../types/api'
-import { isDailyPeriod, type DailyPeriod } from '../types/api'
+import { usePeriodState, serializeCustomPeriod, applyPeriodToUrl } from '../lib/use-period-state'
+import type { CustomPeriod, DailyPeriod, SessionDetail, SessionEntry, SessionList } from '../types/api'
 
 const PAGE_SIZE = 12
 const SEARCH_DEBOUNCE_MS = 300
@@ -58,8 +59,10 @@ export function SessionsView() {
   const triggerButtonRef = useRef<HTMLButtonElement | null>(null)
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const rawPeriod = searchParams.get('period')
-  const period: DailyPeriod = isDailyPeriod(rawPeriod) ? rawPeriod : '7d'
+  const periodState = usePeriodState()
+  const cacheKey = periodState.mode === 'custom' && periodState.customRange
+    ? serializeCustomPeriod(periodState.customRange.from, periodState.customRange.to)
+    : periodState.preset
   const rawFilter = searchParams.get('filter') ?? ''
   const projectId = searchParams.get('project_id') ?? undefined
 
@@ -68,12 +71,10 @@ export function SessionsView() {
 
   // Normalize URL params on mount
   useEffect(() => {
-    const needs = !isDailyPeriod(rawPeriod) || !searchParams.has('page')
-    if (needs) {
+    if (!searchParams.has('page')) {
       setSearchParams((prev) => {
         const n = new URLSearchParams(prev)
-        if (!isDailyPeriod(rawPeriod)) n.set('period', '7d')
-        if (!n.has('page')) n.set('page', '1')
+        n.set('page', '1')
         return n
       })
     }
@@ -97,12 +98,12 @@ export function SessionsView() {
   const sessionQueryRef = useRef({ page, filter: rawFilter, projectId })
   sessionQueryRef.current = { page, filter: rawFilter, projectId }
 
-  const fetcher = useCallback((p: DailyPeriod, signal?: AbortSignal) => {
+  const fetcher = useCallback((p: string, signal?: AbortSignal) => {
     const q = sessionQueryRef.current
     return getSessionsWithFilter(q.page, PAGE_SIZE, p, q.filter || undefined, q.projectId, signal)
   }, [])
 
-  const { data, loading, error } = usePeriodResource<SessionList>(fetcher, period, { cachePeriods: false })
+  const { data, loading, error } = usePeriodResource<SessionList>(fetcher, cacheKey, { cachePeriods: false })
 
   // Trigger re-fetch when page/filter/projectId changes (the hook only watches period/refreshNonce)
   const sessionVersion = `${page}:${rawFilter}:${projectId ?? ''}`
@@ -158,9 +159,39 @@ export function SessionsView() {
 
   // Handlers
   const handleRetry = () => requestRefresh()
-  const handlePeriodChange = (np: DailyPeriod) => {
-    if (np === period) return
-    setSearchParams((prev) => { const n = new URLSearchParams(prev); n.set('period', np); n.set('page', '1'); return n })
+  const handlePresetChange = (np: DailyPeriod) => {
+    setSearchParams((prev) => {
+      const n = applyPeriodToUrl(prev, { mode: 'preset', preset: np })
+      n.set('page', '1')
+      return n
+    })
+  }
+
+  const handleCustomRangeChange = (range: CustomPeriod) => {
+    setSearchParams((prev) => {
+      const n = applyPeriodToUrl(prev, { mode: 'custom', customRange: range })
+      n.set('page', '1')
+      return n
+    })
+  }
+
+  const handleModeChange = (mode: PeriodMode) => {
+    if (mode === 'preset') {
+      setSearchParams((prev) => {
+        const n = applyPeriodToUrl(prev, { mode: 'preset', preset: periodState.preset })
+        n.set('page', '1')
+        return n
+      })
+    } else {
+      setSearchParams((prev) => {
+        const n = applyPeriodToUrl(prev, {
+          mode: 'custom',
+          customRange: periodState.customRange ?? { from: '' },
+        })
+        n.set('page', '1')
+        return n
+      })
+    }
   }
   const handleDetailRetry = () => { if (selectedSessionId) setDetailRequestNonce((c) => c + 1) }
   const handleSelectSession = (s: SessionEntry) => setSelectedSessionId(s.id)
@@ -201,7 +232,15 @@ export function SessionsView() {
               {' '}+ <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions/:id</code>.
             </p>
           </div>
-          <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
+            <PeriodToggle
+              mode={periodState.mode}
+              preset={periodState.preset}
+              customRange={periodState.customRange}
+              onPresetChange={handlePresetChange}
+              onCustomRangeChange={handleCustomRangeChange}
+              onModeChange={handleModeChange}
+              disabled={loading}
+            />
         </div>
         <DataPageSkeleton sections={['kpi-grid', 'table']} tableRows={8} />
       </section>
@@ -221,10 +260,18 @@ export function SessionsView() {
           </div>
           <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
             <div className="text-sm text-muted-foreground">
-              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions?period={period}</code>
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions?period={cacheKey}</code>
               {' '}+ <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions/:id</code>
             </div>
-            <PeriodToggle value={period} onChange={handlePeriodChange} disabled={loading} />
+            <PeriodToggle
+              mode={periodState.mode}
+              preset={periodState.preset}
+              customRange={periodState.customRange}
+              onPresetChange={handlePresetChange}
+              onCustomRangeChange={handleCustomRangeChange}
+              onModeChange={handleModeChange}
+              disabled={loading}
+            />
           </div>
         </div>
 

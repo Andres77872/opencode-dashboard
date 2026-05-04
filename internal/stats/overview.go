@@ -7,10 +7,16 @@ import (
 	"opencode-dashboard/internal/store"
 )
 
-func Overview(ctx context.Context, store *store.Store, period string) (OverviewStats, error) {
+// OverviewString is a backward-compatible wrapper that accepts a string period.
+// It constructs a PeriodQuery and delegates to Overview.
+func OverviewString(ctx context.Context, store *store.Store, period string) (OverviewStats, error) {
+	return Overview(ctx, store, PeriodQuery{Period: period})
+}
+
+func Overview(ctx context.Context, store *store.Store, pq PeriodQuery) (OverviewStats, error) {
 	var result OverviewStats
 
-	pw, err := ComputePeriodWindow(ctx, store, period)
+	pw, err := ComputePeriodWindowFromQuery(ctx, store, pq)
 	if err != nil {
 		return result, err
 	}

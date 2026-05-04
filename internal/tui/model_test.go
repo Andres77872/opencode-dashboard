@@ -20,13 +20,19 @@ func TestNextDailyPeriod(t *testing.T) {
 		input    string
 		expected string
 	}{
+		{name: "1h cycles to 6h", input: "1h", expected: "6h"},
+		{name: "6h cycles to 12h", input: "6h", expected: "12h"},
+		{name: "12h cycles to 24h", input: "12h", expected: "24h"},
+		{name: "24h cycles to 72h", input: "24h", expected: "72h"},
+		{name: "72h cycles to 1d", input: "72h", expected: "1d"},
 		{name: "1d cycles to 7d", input: "1d", expected: "7d"},
-		{name: "7d cycles to 30d", input: "7d", expected: "30d"},
+		{name: "7d cycles to 14d", input: "7d", expected: "14d"},
+		{name: "14d cycles to 30d", input: "14d", expected: "30d"},
 		{name: "30d cycles to 1y", input: "30d", expected: "1y"},
 		{name: "1y cycles to all", input: "1y", expected: "all"},
-		{name: "all cycles to 1d", input: "all", expected: "1d"},
-		{name: "unknown defaults to 7d", input: "14d", expected: "7d"},
-		{name: "empty defaults to 7d", input: "", expected: "7d"},
+		{name: "all cycles to 1h", input: "all", expected: "1h"},
+		{name: "unknown defaults to 1h", input: "invalid", expected: "1h"},
+		{name: "empty defaults to 1h", input: "", expected: "1h"},
 	}
 
 	for _, tt := range tests {

@@ -10,12 +10,17 @@ import (
 	"opencode-dashboard/internal/store"
 )
 
-func Projects(ctx context.Context, s *store.Store, period string) (ProjectStats, error) {
+// ProjectsString is a backward-compatible wrapper that accepts a string period.
+func ProjectsString(ctx context.Context, s *store.Store, period string) (ProjectStats, error) {
+	return Projects(ctx, s, PeriodQuery{Period: period})
+}
+
+func Projects(ctx context.Context, s *store.Store, pq PeriodQuery) (ProjectStats, error) {
 	if !s.IsValidSchema() {
 		return ProjectStats{}, store.ErrInvalidSchema
 	}
 
-	pw, err := ComputePeriodWindow(ctx, s, period)
+	pw, err := ComputePeriodWindowFromQuery(ctx, s, pq)
 	if err != nil {
 		return ProjectStats{}, err
 	}
@@ -148,7 +153,12 @@ func resolveProjectName(projectID string, name string, worktree string) string {
 
 // ProjectByID returns aggregate stats and recent sessions for a specific project.
 // Returns nil if the project does not exist.
-func ProjectByID(ctx context.Context, s *store.Store, id string, period string, page, limit int) (*ProjectDetail, error) {
+// ProjectByIDString is a backward-compatible wrapper that accepts a string period.
+func ProjectByIDString(ctx context.Context, s *store.Store, id string, period string, page, limit int) (*ProjectDetail, error) {
+	return ProjectByID(ctx, s, id, PeriodQuery{Period: period}, page, limit)
+}
+
+func ProjectByID(ctx context.Context, s *store.Store, id string, pq PeriodQuery, page, limit int) (*ProjectDetail, error) {
 	if !s.IsValidSchema() {
 		return nil, store.ErrInvalidSchema
 	}
@@ -166,7 +176,7 @@ func ProjectByID(ctx context.Context, s *store.Store, id string, period string, 
 		return nil, err
 	}
 
-	pw, err := ComputePeriodWindow(ctx, s, period)
+	pw, err := ComputePeriodWindowFromQuery(ctx, s, pq)
 	if err != nil {
 		return nil, err
 	}

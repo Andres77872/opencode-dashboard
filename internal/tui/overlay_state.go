@@ -103,7 +103,7 @@ func loadProjectDetailCmd(st *store.Store, id string, period string, page int) t
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		detail, err := stats.ProjectByID(ctx, st, id, period, page, defaultSessionsPageSize)
+		detail, err := stats.ProjectByIDString(ctx, st, id, period, page, defaultSessionsPageSize)
 		return projectDetailLoadedMsg{id: id, detail: detail, err: err}
 	}
 }
@@ -117,7 +117,7 @@ func loadDayMessagesCmd(st *store.Store, date string, page int) tea.Cmd {
 		if len(date) == 10 {
 			period = "1d"
 		}
-		list, err := stats.MessagesByPeriod(ctx, st, period, page, 20, stats.DefaultMessageSort())
+		list, err := stats.MessagesByPeriodString(ctx, st, period, page, 20, stats.DefaultMessageSort())
 		if err == nil && len(date) == 10 {
 			var filtered []stats.MessageEntry
 			for _, msg := range list.Messages {
