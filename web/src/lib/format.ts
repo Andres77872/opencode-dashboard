@@ -7,7 +7,7 @@ const currencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
   minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
+  maximumFractionDigits: 6,
 })
 const compactCurrencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -71,7 +71,7 @@ export function formatCompactCurrency(value: number) {
   if (value == null || !Number.isFinite(value)) {
     return formatCurrency(0)
   }
-  if (Math.abs(value) < 1000) {
+  if (Math.abs(value) < 1000000) {
     return formatCurrency(value)
   }
 
