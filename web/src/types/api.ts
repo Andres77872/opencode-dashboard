@@ -3,6 +3,88 @@ export interface CacheStats {
   write: number
 }
 
+export const SOURCE_ID_VALUES = ['opencode', 'claude_code'] as const
+
+export type SourceID = (typeof SOURCE_ID_VALUES)[number]
+
+export const DEFAULT_SOURCE_ID: SourceID = 'opencode'
+
+export function isSourceID(value: string | null): value is SourceID {
+  return value !== null && SOURCE_ID_VALUES.includes(value as SourceID)
+}
+
+export interface SourceDiagnostics {
+  status?: string
+  reason?: string
+  scanned_files?: number
+  malformed_lines?: number
+  unsupported_events?: number
+}
+
+export interface CostPolicy {
+  status?: string
+  currency?: string
+  pricing_snapshot_id?: string
+  note?: string
+}
+
+export interface PrivacyInfo {
+  plaintext_transcripts?: boolean
+  read_only?: boolean
+  local_only?: boolean
+  redaction?: boolean
+  warnings?: string[]
+}
+
+export interface SourceInfo {
+  id: SourceID
+  label: string
+  kind: 'sqlite' | 'jsonl' | string
+  available: boolean
+  default: boolean
+  selected?: boolean
+  path?: string
+  path_source?: string
+  read_only: boolean
+  local_only: boolean
+  capabilities: string[]
+  warnings?: string[]
+  diagnostics?: SourceDiagnostics
+  cost_policy?: CostPolicy
+  privacy?: PrivacyInfo
+}
+
+export interface SourceListResponse {
+  default_source_id: SourceID
+  startup_source_id?: SourceID
+  sources: SourceInfo[]
+}
+
+export type CostStatus = 'reported' | 'computed' | 'approximate' | 'mixed' | 'missing'
+
+export interface CostProvenance {
+  status: CostStatus
+  currency?: string
+  pricing_snapshot_id?: string
+  pricing_source?: string
+  missing_count?: number
+  computed_count?: number
+  reported_count?: number
+  note?: string
+}
+
+export interface TruncationInfo {
+  truncated?: boolean
+  original_bytes?: number
+  display_bytes?: number
+}
+
+export interface SourceTagged {
+  source_id?: SourceID
+  cost_status?: CostStatus
+  cost_provenance?: CostProvenance
+}
+
 export interface TokenStats {
   input: number
   output: number
@@ -51,7 +133,7 @@ export function isValidCustomRange(from: string, to?: string): boolean {
   return true
 }
 
-export interface DayStats {
+export interface DayStats extends SourceTagged {
   date: string
   sessions: number
   messages: number
@@ -59,7 +141,7 @@ export interface DayStats {
   tokens: TokenStats
 }
 
-export interface DailyStats {
+export interface DailyStats extends SourceTagged {
   days: DayStats[]
   granularity: Granularity
 }
@@ -72,7 +154,7 @@ export interface AvgTokenStats {
   cache_write: number
 }
 
-export interface ModelEntry {
+export interface ModelEntry extends SourceTagged {
   model_id: string
   provider_id: string
   sessions: number
@@ -83,11 +165,12 @@ export interface ModelEntry {
   avg_tokens_per_session?: AvgTokenStats
 }
 
-export interface ModelStats {
+export interface ModelStats extends SourceTagged {
   models: ModelEntry[]
 }
 
 export interface ToolEntry {
+  source_id?: SourceID
   name: string
   invocations: number
   successes: number
@@ -96,10 +179,11 @@ export interface ToolEntry {
 }
 
 export interface ToolStats {
+  source_id?: SourceID
   tools: ToolEntry[]
 }
 
-export interface ProjectEntry {
+export interface ProjectEntry extends SourceTagged {
   project_id: string
   project_name: string
   sessions: number
@@ -108,11 +192,11 @@ export interface ProjectEntry {
   tokens: TokenStats
 }
 
-export interface ProjectStats {
+export interface ProjectStats extends SourceTagged {
   projects: ProjectEntry[]
 }
 
-export interface DimensionDayStats {
+export interface DimensionDayStats extends SourceTagged {
   date: string
   dimension_key: string
   sessions: number
@@ -121,13 +205,13 @@ export interface DimensionDayStats {
   tokens: TokenStats
 }
 
-export interface DailyDimensionStats {
+export interface DailyDimensionStats extends SourceTagged {
   days: DimensionDayStats[]
   dimension: string
   period: string
 }
 
-export interface ProjectDetail {
+export interface ProjectDetail extends SourceTagged {
   project_id: string
   project_name: string
   worktree?: string
@@ -140,12 +224,14 @@ export interface ProjectDetail {
 }
 
 export interface ConfigStats {
+  source_id?: SourceID
   path: string
   exists: boolean
   content?: Record<string, unknown>
+  redacted?: boolean
 }
 
-export interface SessionEntry {
+export interface SessionEntry extends SourceTagged {
   id: string
   title: string
   project_id: string
@@ -156,14 +242,14 @@ export interface SessionEntry {
   cost: number
 }
 
-export interface SessionList {
+export interface SessionList extends SourceTagged {
   sessions: SessionEntry[]
   total: number
   page: number
   page_size: number
 }
 
-export interface SessionMessage {
+export interface SessionMessage extends SourceTagged {
   id: string
   role: string
   time_created: string
@@ -174,7 +260,7 @@ export interface SessionMessage {
   agent?: string
 }
 
-export interface SessionDetail {
+export interface SessionDetail extends SourceTagged {
   id: string
   title: string
   project_id: string
@@ -188,7 +274,7 @@ export interface SessionDetail {
   message_count: number
 }
 
-export interface MessageEntry {
+export interface MessageEntry extends SourceTagged {
   id: string
   session_id: string
   session_title: string
@@ -198,9 +284,11 @@ export interface MessageEntry {
   tokens?: TokenStats
   model_id?: string
   provider_id?: string
+  folded_assistant_calls?: number
+  folded_tool_calls?: number
 }
 
-export interface MessageList {
+export interface MessageList extends SourceTagged {
   messages: MessageEntry[]
   total: number
   page: number
@@ -210,6 +298,8 @@ export interface MessageList {
 export interface MessagePart {
   type: 'text' | 'reasoning'
   text: string
+  truncation?: TruncationInfo
+  redacted?: boolean
 }
 
 export interface ToolTime {
@@ -226,9 +316,12 @@ export interface ToolState {
   error?: string
   metadata?: Record<string, unknown>
   time?: ToolTime
+  truncation?: TruncationInfo
+  redacted?: boolean
 }
 
 export interface ToolPart {
+  source_id?: SourceID
   type: 'tool'
   call_id: string
   tool: string
@@ -245,7 +338,7 @@ export interface MessageDetail extends MessageEntry {
   content: MessageContent
 }
 
-export interface OverviewStats {
+export interface OverviewStats extends SourceTagged {
   sessions: number
   messages: number
   cost: number

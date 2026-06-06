@@ -20,11 +20,12 @@ import {
   TableRow,
 } from '../ui/table'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
+import { useDashboardContext } from '../layout/dashboard-context'
 import { getProjectDetail } from '../../lib/api'
 import {
-  formatCompactCurrency,
+  formatCompactCurrencyWithProvenance,
   formatCompactInteger,
-  formatCurrency,
+  formatCurrencyWithProvenance,
   formatDateTime,
   formatInteger,
   formatTokenCount,
@@ -54,6 +55,7 @@ function getSessionProjectLabel(session: SessionEntry) {
 // ── Component ──────────────────────────────────────────────────
 
 export function ProjectDrilldownDrawer({ projectId, period, onClose }: ProjectDrilldownDrawerProps) {
+  const { selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [detail, setDetail] = useState<ProjectDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -81,7 +83,7 @@ export function ProjectDrilldownDrawer({ projectId, period, onClose }: ProjectDr
       setError(null)
 
       try {
-        const next = await getProjectDetail(activeProjectId, period, sessionPage, 10, ctrl.signal)
+        const next = await getProjectDetail(activeProjectId, period, sessionPage, 10, ctrl.signal, selectedSourceId)
         setDetail(next)
       } catch (caught) {
         if (ctrl.signal.aborted) return
@@ -93,7 +95,7 @@ export function ProjectDrilldownDrawer({ projectId, period, onClose }: ProjectDr
 
     void load()
     return () => ctrl.abort()
-  }, [projectId, period, sessionPage, requestNonce])
+  }, [projectId, period, sessionPage, requestNonce, selectedSourceId])
 
   const open = projectId !== null
   const totalPages = detail ? Math.max(1, Math.ceil(detail.total_sessions / 10)) : 0
@@ -109,6 +111,7 @@ export function ProjectDrilldownDrawer({ projectId, period, onClose }: ProjectDr
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone="accent">Project drilldown</Badge>
               {detail?.project_name && <Badge>{detail.project_name}</Badge>}
+              <Badge>{selectedSourceInfo?.label ?? selectedSourceId}</Badge>
               {detail?.project_id && <span className="font-mono text-xs text-muted-foreground">id {detail.project_id.slice(0, 12)}</span>}
             </div>
 
@@ -166,8 +169,8 @@ export function ProjectDrilldownDrawer({ projectId, period, onClose }: ProjectDr
                 </div>
                 <div className="rounded-2xl border border-border/70 bg-background/45 px-4 py-4">
                   <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Cost</div>
-                  <div className="mt-2 font-mono text-lg text-foreground sm:text-xl">{formatCompactCurrency(detail.cost)}</div>
-                  <div className="mt-2 text-sm leading-6 text-muted-foreground">{formatCurrency(safeDivide(detail.cost, Math.max(1, detail.sessions)))} avg per session</div>
+                  <div className="mt-2 font-mono text-lg text-foreground sm:text-xl">{formatCompactCurrencyWithProvenance(detail.cost, detail.cost_status, detail.cost_provenance)}</div>
+                  <div className="mt-2 text-sm leading-6 text-muted-foreground">{formatCurrencyWithProvenance(safeDivide(detail.cost, Math.max(1, detail.sessions)), detail.cost_status, detail.cost_provenance)} avg per session</div>
                 </div>
                 <div className="rounded-2xl border border-border/70 bg-background/45 px-4 py-4">
                   <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Token load</div>
@@ -216,7 +219,7 @@ export function ProjectDrilldownDrawer({ projectId, period, onClose }: ProjectDr
                                 <div>{formatDateTime(session.time_created)}</div>
                               </TableCell>
                               <TableCell className="px-3 py-2 font-mono text-sm text-foreground">{formatCompactInteger(session.message_count)}</TableCell>
-                              <TableCell className="px-3 py-2 font-mono text-sm text-foreground">{formatCompactCurrency(session.cost)}</TableCell>
+                              <TableCell className="px-3 py-2 font-mono text-sm text-foreground">{formatCompactCurrencyWithProvenance(session.cost, session.cost_status, session.cost_provenance)}</TableCell>
                             </TableRow>
                           ))}
                         </TableBody>

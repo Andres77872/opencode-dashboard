@@ -1,0 +1,11 @@
+{
+  "oauthAccount": {
+    "accessToken": "oauth-access-token-must-not-leak",
+    "refreshToken": "oauth-refresh-token-must-not-leak"
+  },
+  "projects": {
+    "/home/andres/projects/alpha": {
+      "lastSessionId": "reported-session"
+    }
+  }
+}

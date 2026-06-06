@@ -1,0 +1,1 @@
+{"type":"user","uuid":"safe-tool-results-user-1","sessionId":"safe-tool-results-session","timestamp":"2026-04-01T12:00:00Z","cwd":"/redacted/safe-project","message":{"role":"user","content":"Nested tool-results prompt must be skipped by main discovery."}}

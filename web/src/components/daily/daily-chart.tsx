@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts'
 
 import type { DayStats, Granularity, TokenStats } from '../../types/api'
-import { formatCompactCurrency, formatCompactInteger, formatShortDate, formatTokenCount } from '../../lib/format'
+import { formatCompactCurrency, formatCompactCurrencyWithProvenance, formatCompactInteger, formatShortDate, formatTokenCount } from '../../lib/format'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartLegend, ChartLegendContent } from '../ui/chart'
 import { dailyMetricOptions, formatDailyMetricValue, getDailyMetricMeta, getDailyMetricValue, type DailyMetric } from './daily-metrics'
@@ -66,6 +66,14 @@ function tickFormatterForMetric(metric: DailyMetric) {
       // Absolute scale — only used for non-token views; token uses percentage formatter in render
       return (value: number) => formatCompactInteger(value)
   }
+}
+
+function formatDayMetricValue(metric: DailyMetric, value: number, day?: DayStats) {
+  if (metric === 'cost') {
+    return formatCompactCurrencyWithProvenance(value, day?.cost_status, day?.cost_provenance)
+  }
+
+  return formatDailyMetricValue(metric, value, true)
 }
 
 /** Format 0–1 proportion as a percentage label for the Y-axis. */
@@ -154,19 +162,19 @@ export function DailyChart({ days, metric, granularity, onMetricChange }: DailyC
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="rounded-xl border border-border/70 bg-panel/75 px-3 py-3">
             <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{peakLabel}</div>
-            <div className="mt-2 font-mono text-lg text-foreground">{formatDailyMetricValue(metric, getDailyMetricValue(peakDay, metric), true)}</div>
+            <div className="mt-2 font-mono text-lg text-foreground">{formatDayMetricValue(metric, getDailyMetricValue(peakDay, metric), peakDay)}</div>
             <div className="text-sm text-muted-foreground">{peakDay.date ? formatShortDate(peakDay.date) : 'No data'}</div>
           </div>
 
           <div className="rounded-xl border border-border/70 bg-panel/75 px-3 py-3">
             <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{averageLabel}</div>
-            <div className="mt-2 font-mono text-lg text-foreground">{formatDailyMetricValue(metric, averageValue, true)}</div>
+            <div className="mt-2 font-mono text-lg text-foreground">{formatDayMetricValue(metric, averageValue, peakDay)}</div>
             <div className="text-sm text-muted-foreground">{averageHint}</div>
           </div>
 
           <div className="rounded-xl border border-border/70 bg-panel/75 px-3 py-3">
             <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{latestLabel}</div>
-            <div className="mt-2 font-mono text-lg text-foreground">{formatDailyMetricValue(metric, getDailyMetricValue(latestDay, metric), true)}</div>
+            <div className="mt-2 font-mono text-lg text-foreground">{formatDayMetricValue(metric, getDailyMetricValue(latestDay, metric), latestDay)}</div>
             <div className="text-sm text-muted-foreground">{latestDay.date ? getLatestDeltaLabel(days, metric) : 'No data yet'}</div>
           </div>
         </div>
@@ -259,12 +267,17 @@ export function DailyChart({ days, metric, granularity, onMetricChange }: DailyC
                       <ChartTooltipContent
                         hideIndicator
                         labelFormatter={(value) => formatShortDate(String(value))}
-                        formatter={(value) => (
-                          <div className="flex w-full items-center justify-between gap-4">
-                            <span className="text-muted-foreground">Cost</span>
-                            <span className="font-mono font-medium text-foreground tabular-nums">{formatCompactCurrency(Number(value))}</span>
-                          </div>
-                        )}
+                        formatter={(value, _name, item) => {
+                          const originalDay = days.find((day) => day.date === item?.payload?.date)
+                          return (
+                            <div className="flex w-full items-center justify-between gap-4">
+                              <span className="text-muted-foreground">Cost</span>
+                              <span className="font-mono font-medium text-foreground tabular-nums">
+                                {formatCompactCurrencyWithProvenance(Number(value), originalDay?.cost_status, originalDay?.cost_provenance)}
+                              </span>
+                            </div>
+                          )
+                        }}
                       />
                     }
                   />

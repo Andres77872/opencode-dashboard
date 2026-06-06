@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- table helpers are reused by the models view/cards. */
 import { Progress } from '../ui/progress'
 import { SortButton } from '../ui/sort-button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table'
@@ -11,7 +12,7 @@ import {
   type ModelsMetric,
 } from './models-metrics'
 import type { ModelEntry } from '../../types/api'
-import { formatCompactCurrency, formatCompactInteger, formatCurrency, formatInteger, formatTokenCount } from '../../lib/format'
+import { formatCompactCurrencyWithProvenance, formatCompactInteger, formatCurrencyWithProvenance, formatInteger, formatTokenCount } from '../../lib/format'
 import { getAriaSort, type SortDirection, type SortState } from '../../lib/table-sort'
 
 export type SortKey = 'cost' | 'messages' | 'sessions' | 'model' | 'provider' | 'avgCostPerMessage' | 'percent'
@@ -258,8 +259,8 @@ export function ModelsTable({ rows, metric, totalMetricValue, sortState, onSortC
                   </Tooltip>
                 </TooltipProvider>
               </TableCell>
-              <TableCell className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</TableCell>
-              <TableCell className="font-mono text-sm text-foreground">{formatCurrency(row.avgCostPerMessage)}</TableCell>
+              <TableCell className="font-mono text-sm text-foreground">{formatCompactCurrencyWithProvenance(row.cost, row.cost_status, row.cost_provenance)}</TableCell>
+              <TableCell className="font-mono text-sm text-foreground">{formatCurrencyWithProvenance(row.avgCostPerMessage, row.cost_status, row.cost_provenance)}</TableCell>
             </TableRow>
           )
         })}

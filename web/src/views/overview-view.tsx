@@ -11,12 +11,12 @@ import { DataPageSkeleton } from '../components/common/data-page-skeleton'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { getOverview } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
-import { formatCompactInteger, formatCurrency, formatInteger, safeDivide } from '../lib/format'
+import { formatCompactInteger, formatCurrencyWithProvenance, formatInteger, safeDivide } from '../lib/format'
 import { usePeriodState, serializeCustomPeriod, applyPeriodToUrl } from '../lib/use-period-state'
 import type { CustomPeriod, DailyPeriod } from '../types/api'
 
 export function OverviewView() {
-  const { requestRefresh } = useDashboardContext()
+  const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [, setSearchParams] = useSearchParams()
 
   const periodState = usePeriodState()
@@ -24,6 +24,7 @@ export function OverviewView() {
     ? serializeCustomPeriod(periodState.customRange.from, periodState.customRange.to)
     : periodState.preset
   const { data, loading, error } = usePeriodResource(getOverview, cacheKey)
+  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
 
   const handlePresetChange = (nextPeriod: DailyPeriod) => {
     if (nextPeriod === periodState.preset && periodState.mode === 'preset') return
@@ -137,11 +138,11 @@ export function OverviewView() {
               value={formatInteger(dataForPeriod.messages)}
               hint={`${formatCompactInteger(dataForPeriod.messages)} messages captured`}
             />
-            <MetricCard
-              label="Total cost"
-              value={formatCurrency(dataForPeriod.cost)}
-              hint={`${formatCurrency(dataForPeriod.cost_per_day)} avg per active day`}
-            />
+              <MetricCard
+                label="Total cost"
+                value={formatCurrencyWithProvenance(dataForPeriod.cost, dataForPeriod.cost_status, dataForPeriod.cost_provenance)}
+                hint={`${formatCurrencyWithProvenance(dataForPeriod.cost_per_day, dataForPeriod.cost_status, dataForPeriod.cost_provenance)} avg per active day`}
+              />
             <MetricCard
               label="Active days"
               value={formatInteger(dataForPeriod.days)}
@@ -152,7 +153,9 @@ export function OverviewView() {
           {/* Empty state */}
           {dataForPeriod.sessions === 0 ? (
             <Alert tone="info">
-              No sessions have been recorded yet. This is normal on a fresh OpenCode setup — once data exists, the cards above will fill automatically.
+              {selectedSourceId === 'claude_code'
+                ? 'No persisted Claude Code transcripts were found for this view. OpenCode data is not being mixed into the selected Claude source.'
+                : `No sessions have been recorded yet. This is normal on a fresh ${sourceLabel} setup — once data exists, the cards above will fill automatically.`}
             </Alert>
           ) : null}
 
@@ -169,7 +172,7 @@ export function OverviewView() {
                 <div className="divide-y divide-border/15">
                   <div className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0">
                     <span className="text-sm text-muted-foreground">Cost / day</span>
-                    <span className="font-mono text-sm text-foreground">{formatCurrency(dataForPeriod.cost_per_day)}</span>
+                    <span className="font-mono text-sm text-foreground">{formatCurrencyWithProvenance(dataForPeriod.cost_per_day, dataForPeriod.cost_status, dataForPeriod.cost_provenance)}</span>
                   </div>
                   <div className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0">
                     <span className="text-sm text-muted-foreground">Messages / session</span>
@@ -180,7 +183,7 @@ export function OverviewView() {
                   <div className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0">
                     <span className="text-sm text-muted-foreground">Cost / message</span>
                     <span className="font-mono text-sm text-foreground">
-                      {formatCurrency(efficiency ? efficiency.costPerMessage : 0)}
+                      {formatCurrencyWithProvenance(efficiency ? efficiency.costPerMessage : 0, dataForPeriod.cost_status, dataForPeriod.cost_provenance)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0">

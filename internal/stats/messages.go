@@ -303,9 +303,11 @@ func MessageByID(ctx context.Context, s *store.Store, id string) (*MessageDetail
 			continue
 		}
 
+		text, truncation := truncateContentWithInfo(partText.String, 1000)
 		part := MessagePart{
-			Type: partType.String,
-			Text: truncateContent(partText.String, 1000),
+			Type:       partType.String,
+			Text:       text,
+			Truncation: truncation,
 		}
 
 		if partType.String == "text" {
@@ -377,10 +379,20 @@ func MessageByID(ctx context.Context, s *store.Store, id string) (*MessageDetail
 
 // truncateContent truncates content to approximately maxChars characters.
 func truncateContent(content string, maxChars int) string {
+	truncated, _ := truncateContentWithInfo(content, maxChars)
+	return truncated
+}
+
+func truncateContentWithInfo(content string, maxChars int) (string, *TruncationInfo) {
 	if len(content) <= maxChars {
-		return content
+		return content, nil
 	}
-	return content[:maxChars] + "..."
+	truncated := content[:maxChars] + "..."
+	return truncated, &TruncationInfo{
+		Truncated:     true,
+		OriginalBytes: int64(len(content)),
+		DisplayBytes:  int64(len(truncated)),
+	}
 }
 
 const toolContentMaxChars = 2000
@@ -399,11 +411,19 @@ func parseToolPart(dataJSON string) (ToolPart, error) {
 		state.Status, _ = stateRaw["status"].(string)
 
 		if input, ok := stateRaw["input"].(map[string]interface{}); ok {
-			state.Input = truncateToolInput(input)
+			var truncation *TruncationInfo
+			state.Input, truncation = truncateToolInputWithInfo(input)
+			if truncation != nil {
+				state.Truncation = mergeTruncation(state.Truncation, truncation)
+			}
 		}
 
 		if output, ok := stateRaw["output"].(string); ok {
-			state.Output = truncateContent(output, toolContentMaxChars)
+			var truncation *TruncationInfo
+			state.Output, truncation = truncateContentWithInfo(output, toolContentMaxChars)
+			if truncation != nil {
+				state.Truncation = mergeTruncation(state.Truncation, truncation)
+			}
 		}
 
 		state.Title, _ = stateRaw["title"].(string)
@@ -437,13 +457,34 @@ func parseToolPart(dataJSON string) (ToolPart, error) {
 }
 
 func truncateToolInput(input map[string]interface{}) map[string]interface{} {
+	truncated, _ := truncateToolInputWithInfo(input)
+	return truncated
+}
+
+func truncateToolInputWithInfo(input map[string]interface{}) (map[string]interface{}, *TruncationInfo) {
 	result := make(map[string]interface{})
+	var aggregate *TruncationInfo
 	for k, v := range input {
 		if str, ok := v.(string); ok && len(str) > toolContentMaxChars {
-			result[k] = truncateContent(str, toolContentMaxChars)
+			truncated, info := truncateContentWithInfo(str, toolContentMaxChars)
+			result[k] = truncated
+			aggregate = mergeTruncation(aggregate, info)
 		} else {
 			result[k] = v
 		}
 	}
-	return result
+	return result, aggregate
+}
+
+func mergeTruncation(current, next *TruncationInfo) *TruncationInfo {
+	if next == nil {
+		return current
+	}
+	if current == nil {
+		return next
+	}
+	current.Truncated = current.Truncated || next.Truncated
+	current.OriginalBytes += next.OriginalBytes
+	current.DisplayBytes += next.DisplayBytes
+	return current
 }

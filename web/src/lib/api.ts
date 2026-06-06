@@ -11,10 +11,12 @@ import type {
   ProjectStats,
   SessionDetail,
   SessionList,
+  SourceID,
+  SourceListResponse,
   ToolStats,
 } from '../types/api'
 
-const DEFAULT_API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() ?? ''
+const DEFAULT_API_BASE_URL = import.meta.env?.VITE_API_BASE_URL?.trim() ?? ''
 
 /**
  * Module-level flag for HTTP cache bypass.
@@ -93,8 +95,15 @@ async function request<T>(path: string, init?: RequestInit) {
  * Otherwise, it is a preset period key:
  *   "7d" → ?period=7d
  */
-function buildUrl(basePath: string, period: string, extraParams?: Record<string, string>): string {
+function addSourceParam(params: URLSearchParams, sourceId?: SourceID) {
+  if (sourceId && sourceId !== 'opencode') {
+    params.set('source', sourceId)
+  }
+}
+
+function buildUrl(basePath: string, period: string, extraParams?: Record<string, string>, sourceId?: SourceID): string {
   const params = new URLSearchParams(extraParams)
+  addSourceParam(params, sourceId)
 
   if (period.startsWith('from_')) {
     // Parse custom range: "from_YYYY-MM-DD_to_YYYY-MM-DD" or "from_YYYY-MM-DD_to__now__"
@@ -110,28 +119,40 @@ function buildUrl(basePath: string, period: string, extraParams?: Record<string,
   return `${basePath}?${params.toString()}`
 }
 
-export function getOverview(period: string, signal?: AbortSignal) {
-  return request<OverviewStats>(buildUrl('/api/v1/overview', period), { signal })
+function buildDetailUrl(basePath: string, sourceId?: SourceID): string {
+  const params = new URLSearchParams()
+  addSourceParam(params, sourceId)
+
+  const query = params.toString()
+  return query ? `${basePath}?${query}` : basePath
 }
 
-export function getDaily(period: string, signal?: AbortSignal) {
-  return request<DailyStats>(buildUrl('/api/v1/daily', period), { signal })
+export function getSources(signal?: AbortSignal) {
+  return request<SourceListResponse>('/api/v1/sources', { signal })
 }
 
-export function getModels(period: string, signal?: AbortSignal) {
-  return request<ModelStats>(buildUrl('/api/v1/models', period), { signal })
+export function getOverview(period: string, signal?: AbortSignal, sourceId?: SourceID) {
+  return request<OverviewStats>(buildUrl('/api/v1/overview', period, undefined, sourceId), { signal })
 }
 
-export function getTools(period: string, signal?: AbortSignal) {
-  return request<ToolStats>(buildUrl('/api/v1/tools', period), { signal })
+export function getDaily(period: string, signal?: AbortSignal, sourceId?: SourceID) {
+  return request<DailyStats>(buildUrl('/api/v1/daily', period, undefined, sourceId), { signal })
 }
 
-export function getProjects(period: string, signal?: AbortSignal) {
-  return request<ProjectStats>(buildUrl('/api/v1/projects', period), { signal })
+export function getModels(period: string, signal?: AbortSignal, sourceId?: SourceID) {
+  return request<ModelStats>(buildUrl('/api/v1/models', period, undefined, sourceId), { signal })
 }
 
-export function getConfig(signal?: AbortSignal) {
-  return request<ConfigStats>('/api/v1/config', { signal })
+export function getTools(period: string, signal?: AbortSignal, sourceId?: SourceID) {
+  return request<ToolStats>(buildUrl('/api/v1/tools', period, undefined, sourceId), { signal })
+}
+
+export function getProjects(period: string, signal?: AbortSignal, sourceId?: SourceID) {
+  return request<ProjectStats>(buildUrl('/api/v1/projects', period, undefined, sourceId), { signal })
+}
+
+export function getConfig(signal?: AbortSignal, sourceId?: SourceID) {
+  return request<ConfigStats>(buildDetailUrl('/api/v1/config', sourceId), { signal })
 }
 
 export function getSessions(
@@ -139,9 +160,10 @@ export function getSessions(
   limit: number,
   period: string,
   signal?: AbortSignal,
+  sourceId?: SourceID,
 ) {
   return request<SessionList>(
-    buildUrl('/api/v1/sessions', period, { page: String(page), limit: String(limit) }),
+    buildUrl('/api/v1/sessions', period, { page: String(page), limit: String(limit) }, sourceId),
     { signal },
   )
 }
@@ -153,6 +175,7 @@ export function getSessionsWithFilter(
   filter?: string,
   projectId?: string,
   signal?: AbortSignal,
+  sourceId?: SourceID,
 ) {
   const extraParams: Record<string, string> = {
     page: String(page),
@@ -167,14 +190,14 @@ export function getSessionsWithFilter(
     extraParams.project_id = projectId
   }
 
-  return request<SessionList>(buildUrl('/api/v1/sessions', period, extraParams), { signal })
+  return request<SessionList>(buildUrl('/api/v1/sessions', period, extraParams, sourceId), { signal })
 }
 
-export function getDailyDimension(dimension: string, period: string, signal?: AbortSignal) {
-  return request<DailyDimensionStats>(buildUrl('/api/v1/daily', period, { dimension }), { signal })
+export function getDailyDimension(dimension: string, period: string, signal?: AbortSignal, sourceId?: SourceID) {
+  return request<DailyDimensionStats>(buildUrl('/api/v1/daily', period, { dimension }, sourceId), { signal })
 }
 
-export function getProjectDetail(id: string, period: string, page?: number, limit?: number, signal?: AbortSignal) {
+export function getProjectDetail(id: string, period: string, page?: number, limit?: number, signal?: AbortSignal, sourceId?: SourceID) {
   const extraParams: Record<string, string> = {}
 
   if (page !== undefined) {
@@ -186,16 +209,16 @@ export function getProjectDetail(id: string, period: string, page?: number, limi
   }
 
   return request<ProjectDetail>(
-    buildUrl(`/api/v1/projects/${encodeURIComponent(id)}`, period, extraParams),
+    buildUrl(`/api/v1/projects/${encodeURIComponent(id)}`, period, extraParams, sourceId),
     { signal },
   )
 }
 
-export function getSessionDetail(id: string, signal?: AbortSignal) {
-  return request<SessionDetail>(`/api/v1/sessions/${encodeURIComponent(id)}`, { signal })
+export function getSessionDetail(id: string, signal?: AbortSignal, sourceId?: SourceID) {
+  return request<SessionDetail>(buildDetailUrl(`/api/v1/sessions/${encodeURIComponent(id)}`, sourceId), { signal })
 }
 
-export function getMessages(period: string, page: number, limit: number, sort?: string, signal?: AbortSignal) {
+export function getMessages(period: string, page: number, limit: number, sort?: string, signal?: AbortSignal, sourceId?: SourceID) {
   const extraParams: Record<string, string> = {
     page: String(page),
     limit: String(limit),
@@ -205,9 +228,9 @@ export function getMessages(period: string, page: number, limit: number, sort?: 
     extraParams.sort = sort
   }
 
-  return request<MessageList>(buildUrl('/api/v1/messages', period, extraParams), { signal })
+  return request<MessageList>(buildUrl('/api/v1/messages', period, extraParams, sourceId), { signal })
 }
 
-export function getMessageDetail(id: string, signal?: AbortSignal) {
-  return request<MessageDetail>(`/api/v1/messages/${encodeURIComponent(id)}`, { signal })
+export function getMessageDetail(id: string, signal?: AbortSignal, sourceId?: SourceID) {
+  return request<MessageDetail>(buildDetailUrl(`/api/v1/messages/${encodeURIComponent(id)}`, sourceId), { signal })
 }

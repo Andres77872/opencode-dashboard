@@ -60,6 +60,10 @@ export function usePeriodState(): PeriodState {
 
 /**
  * Normalizes URL search params based on current period state.
+ *
+ * This intentionally clones and edits only period/range keys so unrelated
+ * share-state such as `source=claude_code`, pagination, filters, or project
+ * drilldowns survive period changes.
  */
 export function applyPeriodToUrl(
   searchParams: URLSearchParams,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useDashboardContext } from '../components/layout/dashboard-context'
-import { setBypassCache } from './api'
+import { useDashboardContext } from '../components/layout/dashboard-context.ts'
+import { setBypassCache } from './api.ts'
+import type { SourceID } from '../types/api.ts'
 
 export interface UsePeriodResourceOptions {
   /** When false, always fetch even if the period is already cached. Default: true. */
@@ -17,7 +18,11 @@ export interface UsePeriodResourceResult<T> {
   prefetch: (period: string) => void
 }
 
-type Fetcher<T> = (period: string, signal?: AbortSignal) => Promise<T>
+type Fetcher<T> = (period: string, signal?: AbortSignal, sourceId?: SourceID) => Promise<T>
+
+export function getSourceScopedCacheKey(sourceId: SourceID, period: string) {
+  return `${sourceId}::${period}`
+}
 
 /**
  * Generic per-period fetch + cache + refresh hook.
@@ -39,7 +44,15 @@ export function usePeriodResource<T>(
   period: string,
   options?: UsePeriodResourceOptions,
 ): UsePeriodResourceResult<T> {
-  const { refreshNonce, setLastUpdatedAt, setRefreshing } = useDashboardContext()
+  const {
+    refreshNonce,
+    selectedSourceId,
+    sourceAvailable,
+    sourceMetadataLoading,
+    sourceStateError,
+    setLastUpdatedAt,
+    setRefreshing,
+  } = useDashboardContext()
   const { cachePeriods = true } = options ?? {}
 
   const [data, setData] = useState<T | null>(null)
@@ -48,6 +61,7 @@ export function usePeriodResource<T>(
   const cacheRef = useRef<Map<string, T>>(new Map())
   const activeControllerRef = useRef<AbortController | null>(null)
   const mountedRef = useRef(true)
+  const lastCacheKeyRef = useRef<string | null>(null)
   /**
    * Tracks the refreshNonce value that was current when the last successful
    * fetch completed. Used to skip the cache short-circuit when refreshNonce
@@ -66,11 +80,32 @@ export function usePeriodResource<T>(
   }, [])
 
   const dataForPeriod = useCallback((p: string): T | null => {
-    return cacheRef.current.get(p) ?? null
-  }, [])
+    return cacheRef.current.get(getSourceScopedCacheKey(selectedSourceId, p)) ?? null
+  }, [selectedSourceId])
 
   // Main fetch effect — triggers on period change or refreshNonce change
   useEffect(() => {
+    if (sourceMetadataLoading) {
+      setLoading(true)
+      setError(null)
+      setData(null)
+      return
+    }
+
+    if (!sourceAvailable) {
+      if (activeControllerRef.current) {
+        activeControllerRef.current.abort()
+        activeControllerRef.current = null
+      }
+      setData(null)
+      setLoading(false)
+      setRefreshing(false)
+      setError(sourceStateError?.message ?? 'Selected source is unavailable')
+      return
+    }
+
+    const cacheKey = getSourceScopedCacheKey(selectedSourceId, period)
+
     // Determine whether this effect re-ran because refreshNonce changed.
     // On first render lastRefreshNonceRef is a Symbol so the !== check is true
     // (the cache will be empty, so the short-circuit below won't match anyway).
@@ -79,11 +114,17 @@ export function usePeriodResource<T>(
     // Cache short-circuit: use cached data only when NOT a refresh trigger.
     // When the user clicked Refresh (refreshNonce changed), force a real fetch
     // even if this period already has cached data.
-    if (cachePeriods && !isRefreshTriggered && cacheRef.current.has(period)) {
-      setData(cacheRef.current.get(period) ?? null)
+    if (cachePeriods && !isRefreshTriggered && cacheRef.current.has(cacheKey)) {
+      setData(cacheRef.current.get(cacheKey) ?? null)
       setLoading(false)
       setError(null)
+      lastCacheKeyRef.current = cacheKey
       return
+    }
+
+    if (!cachePeriods || lastCacheKeyRef.current !== cacheKey) {
+      setData(cachePeriods ? (cacheRef.current.get(cacheKey) ?? null) : null)
+      lastCacheKeyRef.current = cacheKey
     }
 
     const controller = new AbortController()
@@ -108,11 +149,11 @@ export function usePeriodResource<T>(
           setBypassCache(true)
         }
 
-        const next = await fetcher(period, controller.signal)
+        const next = await fetcher(period, controller.signal, selectedSourceId)
 
         if (controller.signal.aborted || !mountedRef.current) return
 
-        cacheRef.current.set(period, next)
+        cacheRef.current.set(cacheKey, next)
         lastRefreshNonceRef.current = refreshNonce
         setData(next)
         setLastUpdatedAt(new Date())
@@ -132,20 +173,22 @@ export function usePeriodResource<T>(
     return () => {
       controller.abort()
     }
-    // Period and refreshNonce are the reactive inputs
+    // Period, source, availability, and refreshNonce are the reactive inputs
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period, refreshNonce])
+  }, [period, refreshNonce, selectedSourceId, sourceAvailable, sourceMetadataLoading, sourceStateError?.message])
 
   const prefetch = useCallback(
     (p: string) => {
       // Skip prefetch for custom ranges (unbounded key space)
       if (p.startsWith('from_')) return
-      if (cacheRef.current.has(p)) return
+      if (!sourceAvailable) return
+      const cacheKey = getSourceScopedCacheKey(selectedSourceId, p)
+      if (cacheRef.current.has(cacheKey)) return
       const controller = new AbortController()
-      fetcher(p, controller.signal)
+      fetcher(p, controller.signal, selectedSourceId)
         .then((next) => {
           if (controller.signal.aborted || !mountedRef.current) return
-          cacheRef.current.set(p, next)
+          cacheRef.current.set(cacheKey, next)
         })
         .catch(() => {
           // Prefetch failures are intentionally silent
@@ -153,7 +196,7 @@ export function usePeriodResource<T>(
     },
     // fetcher is intentionally omitted — the ref pattern avoids stale closure issues
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+    [selectedSourceId, sourceAvailable],
   )
 
   return {

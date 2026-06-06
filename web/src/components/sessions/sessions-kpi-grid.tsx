@@ -1,5 +1,6 @@
 import { MetricCard } from '../overview/metric-card'
-import { formatCompactInteger, formatCurrency, formatInteger } from '../../lib/format'
+import { formatCompactInteger, formatCurrencyWithProvenance, formatInteger } from '../../lib/format'
+import type { CostProvenance, CostStatus } from '../../types/api'
 
 // ── Session summary type (extracted from sessions-view) ────────
 
@@ -10,11 +11,13 @@ export interface SessionsSummary {
   visibleCost: number
   visibleMessages: number
   visibleProjects: number
-  hottestSession: { label: string; cost: number; message_count: number } | null
+  hottestSession: { label: string; cost: number; message_count: number; cost_status?: CostStatus; cost_provenance?: CostProvenance } | null
   total: number
   pageSize: number
   page: number
   empty: boolean
+  costStatus?: CostStatus
+  costProvenance?: CostProvenance
 }
 
 // ── Props ──────────────────────────────────────────────────────
@@ -37,7 +40,7 @@ export function SessionsKpiGrid({ summary }: SessionsKpiGridProps) {
         value={formatInteger(summary.total)}
         hint={
           summary.empty
-            ? 'No sessions recorded in the current database'
+            ? 'No sessions recorded in the selected source'
             : `${formatInteger(summary.totalPages)} pages at ${formatInteger(summary.pageSize)} rows each`
         }
       />
@@ -52,7 +55,7 @@ export function SessionsKpiGrid({ summary }: SessionsKpiGridProps) {
       />
       <MetricCard
         label="Visible cost"
-        value={formatCurrency(summary.visibleCost)}
+        value={formatCurrencyWithProvenance(summary.visibleCost, summary.costStatus, summary.costProvenance)}
         hint={`${formatCompactInteger(summary.visibleMessages)} messages across the current page`}
       />
       <MetricCard

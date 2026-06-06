@@ -17,9 +17,9 @@ import { getProjects } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
 import { getTokenTotal } from '../lib/token-breakdown'
 import {
-  formatCompactCurrency,
+  formatCompactCurrencyWithProvenance,
   formatCompactInteger,
-  formatCurrency,
+  formatCurrencyWithProvenance,
   formatInteger,
   formatPercentage,
   formatTokenCount,
@@ -70,16 +70,18 @@ function compareRows(sortKey: SortKey, left: EnrichedProjectRow, right: Enriched
 }
 
 export function ProjectsView() {
-  const { requestRefresh } = useDashboardContext()
+  const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [, setSearchParams] = useSearchParams()
   const [sortState, setSortState] = useState<SortState<string> | null>(null)
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const [selectedProject, setSelectedProject] = useState<{ sourceId: string; projectId: string } | null>(null)
 
   const periodState = usePeriodState()
   const cacheKey = periodState.mode === 'custom' && periodState.customRange
     ? serializeCustomPeriod(periodState.customRange.from, periodState.customRange.to)
     : periodState.preset
   const { data, loading, error } = usePeriodResource(getProjects, cacheKey)
+  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
+  const selectedProjectId = selectedProject?.sourceId === selectedSourceId ? selectedProject.projectId : null
 
   const handleSortChange = (key: string) => {
     setSortState((current) => {
@@ -153,7 +155,7 @@ export function ProjectsView() {
 
   const handleProjectSelect = (project: EnrichedProjectRow) => {
     if (!project.project_id) return
-    setSelectedProjectId(project.project_id)
+    setSelectedProject({ sourceId: selectedSourceId, projectId: project.project_id })
   }
 
   // DataTable columns
@@ -168,7 +170,7 @@ export function ProjectsView() {
           <div className="truncate font-medium text-foreground">{getProjectLabel(row)}</div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Badge className="px-2 py-0.5 text-[10px] tracking-[0.16em]">id {getProjectIdentifier(row)}</Badge>
-            <span>{formatCurrency(row.avgCostPerSession)} / session</span>
+            <span>{formatCurrencyWithProvenance(row.avgCostPerSession, row.cost_status, row.cost_provenance)} / session</span>
           </div>
         </div>
       ),
@@ -212,7 +214,7 @@ export function ProjectsView() {
       label: 'Cost',
       width: 'w-[7rem]',
       sortable: true,
-      render: (row) => <span className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</span>,
+      render: (row) => <span className="font-mono text-sm text-foreground">{formatCompactCurrencyWithProvenance(row.cost, row.cost_status, row.cost_provenance)}</span>,
     },
     {
       key: 'share',
@@ -259,7 +261,7 @@ export function ProjectsView() {
 
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
           <div className="text-sm text-muted-foreground">
-            Endpoint: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/projects?period={cacheKey}</code>
+            Endpoint: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/projects?period={cacheKey}{selectedSourceId !== 'opencode' ? `&source=${selectedSourceId}` : ''}</code>
           </div>
           <PeriodToggle
               mode={periodState.mode}
@@ -289,11 +291,11 @@ export function ProjectsView() {
             <MetricCard
               label="Tracked projects"
               value={formatInteger(summary.rows.length)}
-              hint={summary.rows.length === 1 ? 'One project is visible' : 'Distinct projects aggregated from the OpenCode project table'}
+              hint={summary.rows.length === 1 ? 'One project is visible' : `Distinct projects aggregated from ${sourceLabel}`}
             />
             <MetricCard
               label="Total project cost"
-              value={formatCurrency(summary.totalCost)}
+              value={formatCurrencyWithProvenance(summary.totalCost, data?.cost_status, data?.cost_provenance)}
               hint={`${formatCompactInteger(summary.totalMessages)} assistant messages attributed`}
             />
             <MetricCard
@@ -358,7 +360,7 @@ export function ProjectsView() {
                                 <span>{formatPercentage(row.costShare)} share</span>
                               </div>
                             </div>
-                            <div className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</div>
+                              <div className="font-mono text-sm text-foreground">{formatCompactCurrencyWithProvenance(row.cost, row.cost_status, row.cost_provenance)}</div>
                           </div>
                           <Progress className="mt-3" value={Math.max(row.costShare, row.cost > 0 ? 4 : 0)} />
                           <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
@@ -387,7 +389,7 @@ export function ProjectsView() {
                             </div>
                             <div className="rounded-lg bg-background/40 px-2.5 py-2">
                               <div className="uppercase tracking-[0.14em]">$/session</div>
-                              <div className="mt-1 font-mono text-sm text-foreground">{formatCurrency(row.avgCostPerSession)}</div>
+                              <div className="mt-1 font-mono text-sm text-foreground">{formatCurrencyWithProvenance(row.avgCostPerSession, row.cost_status, row.cost_provenance)}</div>
                             </div>
                           </div>
                           <div className="mt-3 text-sm font-medium text-accent">Open project drilldown</div>
@@ -395,7 +397,9 @@ export function ProjectsView() {
                       )}
                       emptyState={
                         <div className="text-sm text-muted-foreground">
-                          No project activity recorded yet.
+                          {selectedSourceId === 'claude_code'
+                            ? 'No Claude Code project activity was found in readable local transcripts for this window.'
+                            : `No ${sourceLabel} project activity recorded yet.`}
                         </div>
                       }
                     />
@@ -416,7 +420,7 @@ export function ProjectsView() {
                     {summary.costLeader ? getProjectLabel(summary.costLeader) : 'No data'}
                   </div>
                   <div className="mt-1 text-sm">
-                    {summary.costLeader ? `${formatCurrency(summary.costLeader.cost)} across ${formatCompactInteger(summary.costLeader.sessions)} sessions` : 'Awaiting activity'}
+                    {summary.costLeader ? `${formatCurrencyWithProvenance(summary.costLeader.cost, summary.costLeader.cost_status, summary.costLeader.cost_provenance)} across ${formatCompactInteger(summary.costLeader.sessions)} sessions` : 'Awaiting activity'}
                   </div>
                 </div>
                 <div className="rounded-xl border border-border/70 bg-background/40 px-3 py-3">
@@ -437,7 +441,7 @@ export function ProjectsView() {
                   </div>
                   <div className="mt-1 text-sm">
                     {summary.efficiencyLeader
-                      ? `${formatCurrency(summary.efficiencyLeader.avgCostPerSession)} per session in the current aggregate`
+                      ? `${formatCurrencyWithProvenance(summary.efficiencyLeader.avgCostPerSession, summary.efficiencyLeader.cost_status, summary.efficiencyLeader.cost_provenance)} per session in the current aggregate`
                       : 'Need at least one project with sessions'}
                   </div>
                 </div>
@@ -451,7 +455,7 @@ export function ProjectsView() {
       <ProjectDrilldownDrawer
         projectId={selectedProjectId}
         period={cacheKey}
-        onClose={() => setSelectedProjectId(null)}
+        onClose={() => setSelectedProject(null)}
       />
     </section>
   )

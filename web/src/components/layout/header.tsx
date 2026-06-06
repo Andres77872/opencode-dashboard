@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Menu, RefreshCw } from 'lucide-react'
 import { Button } from '../ui/button'
+import { SourcePicker } from '../source/source-picker'
 import { cn } from '../../lib/utils'
 import { formatRelativeTime } from '../../lib/format'
 import { useDashboardContext } from './dashboard-context'
@@ -51,8 +52,9 @@ export function Header() {
           </Button>
         </div>
 
-        {/* Right: sync status + refresh */}
-        <div className="flex items-center gap-4">
+        {/* Right: source + sync status + refresh */}
+        <div className="flex items-center gap-3 sm:gap-4">
+          <SourcePicker />
           <span className="text-sm text-muted-foreground">
             <span className="hidden sm:inline">Last sync </span>
             {isRefreshing ? 'Refreshing…' : formatRelativeTime(lastUpdatedAt)}

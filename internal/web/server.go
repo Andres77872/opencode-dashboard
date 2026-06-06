@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"time"
 
-	"opencode-dashboard/internal/store"
+	"opencode-dashboard/internal/source"
 )
 
 const (
@@ -24,23 +24,26 @@ const (
 
 type Server struct {
 	Addr     string
-	Store    *store.Store
+	Registry *source.Registry
 	handlers *Handlers
 	mux      *http.ServeMux
 }
 
-func NewServer(addr string, s *store.Store, logger *slog.Logger) *http.Server {
+func NewServer(addr string, registry *source.Registry, logger *slog.Logger) *http.Server {
 	if addr == "" {
 		addr = defaultAddr
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if registry == nil {
+		registry = source.NewRegistry(source.SourceOpenCode)
+	}
 
 	srv := &Server{
 		Addr:     addr,
-		Store:    s,
-		handlers: NewHandlers(s),
+		Registry: registry,
+		handlers: NewHandlers(registry),
 		mux:      http.NewServeMux(),
 	}
 
@@ -63,6 +66,7 @@ func NewServer(addr string, s *store.Store, logger *slog.Logger) *http.Server {
 }
 
 func (s *Server) registerRoutes() {
+	s.mux.HandleFunc("GET "+apiV1Prefix+"/sources", s.handlers.Sources)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/overview", s.handlers.Overview)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/daily", s.handlers.Daily)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/models", s.handlers.Models)

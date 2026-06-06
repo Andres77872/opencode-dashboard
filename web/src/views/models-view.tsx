@@ -31,21 +31,25 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 import { getModels } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
-import { formatCompactInteger, formatCurrency, formatInteger, formatPercentage, formatTokenCount, safeDivide } from '../lib/format'
+import { formatCompactInteger, formatCurrencyWithProvenance, formatInteger, formatPercentage, formatTokenCount, safeDivide } from '../lib/format'
 import { getNextSortState, type SortState } from '../lib/table-sort'
 import { getAvgTokenTotal, getTokenTotal } from '../lib/token-breakdown'
 import { usePeriodState, serializeCustomPeriod, applyPeriodToUrl } from '../lib/use-period-state'
 import type { CustomPeriod, DailyPeriod } from '../types/api'
 
-function getEmptyWindowCopy(period: string): string {
-  if (period === 'all') {
-    return 'All historic stretches from the first recorded activity day through today when data exists.'
+function getEmptyWindowCopy(period: string, sourceLabel: string, sourceId: string): string {
+  if (sourceId === 'claude_code') {
+    return 'No Claude Code assistant model usage was found in readable local transcripts for this window.'
   }
-  return 'No model usage recorded in the selected period. Models appear when assistant messages with modelID metadata exist.'
+
+  if (period === 'all') {
+    return `All historic ${sourceLabel} stretches from the first recorded activity day through today when data exists.`
+  }
+  return `No ${sourceLabel} model usage recorded in the selected period. Models appear when assistant messages with model metadata exist.`
 }
 
 export function ModelsView() {
-  const { requestRefresh } = useDashboardContext()
+  const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [, setSearchParams] = useSearchParams()
   const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
   const [metric, setMetric] = useState<ModelsMetric>('cost')
@@ -55,6 +59,7 @@ export function ModelsView() {
     ? serializeCustomPeriod(periodState.customRange.from, periodState.customRange.to)
     : periodState.preset
   const { data, loading, error } = usePeriodResource(getModels, cacheKey)
+  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
 
   const summary = useMemo(() => {
     if (!data) {
@@ -244,7 +249,7 @@ export function ModelsView() {
               />
               <MetricCard
                 label="Total cost"
-                value={formatCurrency(summary.totalCost)}
+                value={formatCurrencyWithProvenance(summary.totalCost, data?.cost_status, data?.cost_provenance)}
                 tooltipValue={`${formatInteger(summary.totalMessages)} assistant messages`}
                 hint={`${formatCompactInteger(summary.totalMessages)} messages in window`}
               />
@@ -255,7 +260,7 @@ export function ModelsView() {
               />
               <MetricCard
                 label="Spend / message"
-                value={formatCurrency(safeDivide(summary.totalCost, summary.totalMessages))}
+                value={formatCurrencyWithProvenance(safeDivide(summary.totalCost, summary.totalMessages), data?.cost_status, data?.cost_provenance)}
                 hint={summary.efficiencyLeader ? `${getModelLabel(summary.efficiencyLeader)} is cheapest per message` : 'Not enough data yet'}
               />
             </div>
@@ -268,7 +273,7 @@ export function ModelsView() {
                 <CardTitle>No model usage in this window</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 text-sm text-muted-foreground">
-                <p>{getEmptyWindowCopy(cacheKey)}</p>
+                <p>{getEmptyWindowCopy(cacheKey, sourceLabel, selectedSourceId)}</p>
                 <p>
                   Once data exists, this route will rank models by cost and expose message volume, token load, and per-message spend.
                 </p>
@@ -293,7 +298,7 @@ export function ModelsView() {
                     </div>
                     <div className="flex items-center justify-between gap-3 rounded-xl bg-panel/75 px-3 py-3">
                       <span>Total cost</span>
-                      <span className="font-mono text-foreground">{summary.costLeader ? formatCurrency(summary.costLeader.cost) : '$0.00'}</span>
+                      <span className="font-mono text-foreground">{summary.costLeader ? formatCurrencyWithProvenance(summary.costLeader.cost, summary.costLeader.cost_status, summary.costLeader.cost_provenance) : 'Unknown'}</span>
                     </div>
                   </CardContent>
                 </Card>
@@ -350,7 +355,7 @@ export function ModelsView() {
                     <div className="rounded-xl border border-border/70 bg-panel/75 px-3 py-3">
                       <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Cost per message</div>
                       <div className="mt-2 font-mono text-lg text-foreground">
-                        {summary.efficiencyLeader ? formatCurrency(summary.efficiencyLeader.avgCostPerMessage) : '$0.00'}
+                        {summary.efficiencyLeader ? formatCurrencyWithProvenance(summary.efficiencyLeader.avgCostPerMessage, summary.efficiencyLeader.cost_status, summary.efficiencyLeader.cost_provenance) : 'Unknown'}
                       </div>
                       <div className="text-sm text-muted-foreground">
                         {summary.efficiencyLeader

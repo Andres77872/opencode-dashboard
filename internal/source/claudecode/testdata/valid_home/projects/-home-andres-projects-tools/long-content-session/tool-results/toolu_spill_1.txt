@@ -1,0 +1,2 @@
+THIS SPILL FILE IS A FIXTURE AND SHOULD NOT BE READ IN V1.
+secret-from-spill-file-must-not-leak

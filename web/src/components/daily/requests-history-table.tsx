@@ -6,7 +6,9 @@ import { Skeleton } from '../ui/skeleton'
 import { SortButton } from '../ui/sort-button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
-import { formatCompactCurrency, formatDateTime, formatInteger, formatTokenCount } from '../../lib/format'
+import { useDashboardContext } from '../layout/dashboard-context'
+import { formatCompactCurrencyWithProvenance, formatDateTime, formatInteger, formatTokenCount } from '../../lib/format'
+import { getEmptyHistoryCopy, getFoldedProvenanceText, getHistoryTitle, getSessionColumnLabel, getTotalRowLabel } from '../../lib/message-display'
 import { getTokenTotal } from '../../lib/token-breakdown'
 import { getAriaSort } from '../../lib/table-sort'
 import type { SortDirection, SortState } from '../../lib/table-sort'
@@ -16,6 +18,7 @@ const FALLBACK_PAGE_SIZE = 12
 
 export type RequestsSortKey = 'role' | 'time' | 'model' | 'cost' | 'tokens'
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const REQUESTS_SORT_DEFAULTS: Record<RequestsSortKey, SortDirection> = {
   cost: 'desc',
   model: 'asc',
@@ -100,7 +103,6 @@ export function RequestsHistoryTable({
   error,
   loading,
   page,
-  period: _period,
   sortState,
   onOpenMessage,
   onPageChange,
@@ -118,6 +120,12 @@ export function RequestsHistoryTable({
   onSortChange: (key: RequestsSortKey) => void
   onRetry: () => void
 }) {
+  const { selectedSourceId, selectedSourceInfo } = useDashboardContext()
+  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
+  const historyTitle = getHistoryTitle(selectedSourceId)
+  const sessionColumnLabel = getSessionColumnLabel(selectedSourceId)
+  const totalLabel = getTotalRowLabel(selectedSourceId)
+  const emptyCopy = getEmptyHistoryCopy(selectedSourceId, sourceLabel)
   const currentPage = data?.page ?? page
   const total = data?.total ?? 0
   const pageSize = data?.page_size ?? FALLBACK_PAGE_SIZE
@@ -132,7 +140,7 @@ export function RequestsHistoryTable({
     <Card>
       <CardHeader>
         <CardDescription>Always-on drill-down</CardDescription>
-        <CardTitle>Messages history</CardTitle>
+        <CardTitle>{historyTitle}</CardTitle>
       </CardHeader>
 
       <CardContent className="space-y-4">
@@ -160,7 +168,7 @@ export function RequestsHistoryTable({
                   <TableHead className="w-[9rem]" aria-sort={getAriaSort(sortState, 'time')}>
                     <SortButton active={isSortedBy('time')} direction={getSortDirection('time')} label="Time" onClick={() => onSortChange('time')} />
                   </TableHead>
-                  <TableHead className="min-w-[12rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Session</TableHead>
+                  <TableHead className="min-w-[12rem] px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">{sessionColumnLabel}</TableHead>
                   <TableHead className="w-[10rem]" aria-sort={getAriaSort(sortState, 'model')}>
                     <SortButton active={isSortedBy('model')} direction={getSortDirection('model')} label="Model" onClick={() => onSortChange('model')} />
                   </TableHead>
@@ -177,11 +185,12 @@ export function RequestsHistoryTable({
                 {loading && !data ? <LoadingRows /> : null}
 
                 {!loading && (data?.messages.length ?? 0) === 0 ? (
-                  <EmptyRow colSpan={7} copy="No messages recorded for this Daily window yet." />
+                  <EmptyRow colSpan={7} copy={emptyCopy} />
                 ) : null}
 
                 {data?.messages.map((message) => {
                   const tokenTotal = message.tokens ? getTokenTotal(message.tokens) : 0
+                  const foldedProvenance = getFoldedProvenanceText(message, selectedSourceId)
 
                   return (
                     <TableRow
@@ -210,6 +219,9 @@ export function RequestsHistoryTable({
 
                       <TableCell className="min-w-[12rem] px-4 py-3">
                         <div className="truncate font-medium text-foreground">{getMessageSessionLabel(message)}</div>
+                        {foldedProvenance ? (
+                          <div className="mt-1 text-xs leading-5 text-muted-foreground">{foldedProvenance}</div>
+                        ) : null}
                       </TableCell>
 
                       <TableCell className="w-[10rem] px-4 py-3">
@@ -221,7 +233,7 @@ export function RequestsHistoryTable({
                       </TableCell>
 
                       <TableCell className="w-[6rem] px-4 py-3 text-right">
-                        <span className="font-mono text-sm text-foreground">{message.cost && Number.isFinite(message.cost) ? formatCompactCurrency(message.cost) : '$0'}</span>
+                        <span className="font-mono text-sm text-foreground">{formatCompactCurrencyWithProvenance(message.cost ?? 0, message.cost_status, message.cost_provenance)}</span>
                       </TableCell>
 
                       <TableCell className="w-[7rem] px-4 py-3 text-right">
@@ -277,12 +289,13 @@ export function RequestsHistoryTable({
 
             {!loading && (data?.messages.length ?? 0) === 0 ? (
               <div className="rounded-2xl border border-border/70 bg-panel/65 px-4 py-5 text-sm text-muted-foreground">
-                No messages recorded for this Daily window yet.
+                {emptyCopy}
               </div>
             ) : null}
 
             {data?.messages.map((message) => {
               const tokenTotal = message.tokens ? getTokenTotal(message.tokens) : 0
+              const foldedProvenance = getFoldedProvenanceText(message, selectedSourceId)
 
               return (
                 <button
@@ -300,9 +313,9 @@ export function RequestsHistoryTable({
                       <span className="truncate font-medium text-foreground">{getMessageSessionLabel(message)}</span>
                     </div>
 
-<div className="text-right">
-                       <div className="font-mono text-sm text-foreground">{message.cost && Number.isFinite(message.cost) ? formatCompactCurrency(message.cost) : '$0'}</div>
-                       {tokenTotal > 0 ? (
+                      <div className="text-right">
+                        <div className="font-mono text-sm text-foreground">{formatCompactCurrencyWithProvenance(message.cost ?? 0, message.cost_status, message.cost_provenance)}</div>
+                        {tokenTotal > 0 ? (
                          <TooltipProvider>
                            <Tooltip>
                              <TooltipTrigger asChild>
@@ -315,8 +328,8 @@ export function RequestsHistoryTable({
                              </TooltipContent>
                            </Tooltip>
                          </TooltipProvider>
-                       ) : null}
-                     </div>
+                        ) : null}
+                      </div>
                   </div>
 
                   <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
@@ -325,6 +338,12 @@ export function RequestsHistoryTable({
                       <>
                         <span aria-hidden="true">·</span>
                         <span className="font-mono text-foreground">{message.model_id}</span>
+                      </>
+                    ) : null}
+                    {foldedProvenance ? (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span>{foldedProvenance}</span>
                       </>
                     ) : null}
                   </div>
@@ -337,7 +356,7 @@ export function RequestsHistoryTable({
           <div className="flex flex-col gap-3 rounded-2xl border border-border/70 bg-panel/50 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
               <span className="font-medium text-foreground">
-                Showing {firstVisible}–{lastVisible} of {formatInteger(total)} messages
+                Showing {firstVisible}–{lastVisible} of {formatInteger(total)} {totalLabel}
               </span>
             </div>
 

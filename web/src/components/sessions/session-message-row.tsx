@@ -1,4 +1,4 @@
-import { formatCurrency, formatDateTime, formatInteger, formatTokenCount } from '../../lib/format'
+import { formatCurrencyWithProvenance, formatDateTime, formatInteger, formatTokenCount } from '../../lib/format'
 import { getTokenTotal } from '../../lib/token-breakdown'
 import { cn } from '../../lib/utils'
 import type { SessionMessage } from '../../types/api'
@@ -84,7 +84,7 @@ export function SessionMessageRow({
           <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 pl-1 font-mono text-[11px]">
             <span>
               <span className="text-muted-foreground/50">cost </span>
-              <span className="text-foreground/80">{formatCurrency(cost)}</span>
+              <span className="text-foreground/80">{formatCurrencyWithProvenance(cost, message.cost_status, message.cost_provenance)}</span>
             </span>
             <span>
               <span className="text-muted-foreground/50">input </span>

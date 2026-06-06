@@ -4,11 +4,14 @@ import { PanelLeftClose, PanelLeftOpen, X, Hexagon } from 'lucide-react'
 import { navItems } from './nav-items'
 import { Button } from '../ui/button'
 import { cn } from '../../lib/utils'
+import { useDashboardContext } from './dashboard-context'
 import { useSidebar } from './sidebar-context'
 
 export function PrimaryNav() {
   const { mobileOpen, collapsed, closeMobile, toggleCollapsed } = useSidebar()
+  const { selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const drawerRef = useRef<HTMLDivElement>(null)
+  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
 
   // Close mobile drawer on Escape
   useEffect(() => {
@@ -53,7 +56,7 @@ export function PrimaryNav() {
         <div className="flex h-14 items-center justify-between border-b border-sidebar-border px-4">
           <div className="flex items-center gap-2.5">
             <Hexagon className="size-5 text-accent" />
-            <span className="text-sm font-semibold text-sidebar-foreground">OpenCode</span>
+            <span className="text-sm font-semibold text-sidebar-foreground">{sourceLabel}</span>
           </div>
           <Button variant="ghost" size="icon-sm" onClick={closeMobile} aria-label="Close navigation">
             <X className="size-4" />
@@ -104,7 +107,7 @@ export function PrimaryNav() {
         >
           <Hexagon className="size-5 shrink-0 text-accent" />
           {!collapsed && (
-            <span className="text-sm font-semibold text-sidebar-foreground">OpenCode</span>
+            <span className="text-sm font-semibold text-sidebar-foreground">{sourceLabel}</span>
           )}
         </div>
 

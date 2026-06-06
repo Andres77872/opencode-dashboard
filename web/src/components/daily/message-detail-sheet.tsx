@@ -12,8 +12,10 @@ import {
   SheetTitle,
 } from '../ui/sheet'
 import { Skeleton } from '../ui/skeleton'
+import { useDashboardContext } from '../layout/dashboard-context'
 import { getMessageDetail } from '../../lib/api'
-import { formatCurrency, formatDateTime, formatInteger, formatTokenCount } from '../../lib/format'
+import { formatCostProvenance, formatCurrencyWithProvenance, formatDateTime, formatInteger, formatTokenCount } from '../../lib/format'
+import { getDetailLoadingCopy, getDetailTitle, getFoldedProvenanceText, hasFoldedProvenanceCounts } from '../../lib/message-display'
 import { getTokenTotal } from '../../lib/token-breakdown'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
 import type { MessageDetail, MessagePart, ToolPart, ToolState } from '../../types/api'
@@ -112,6 +114,23 @@ function getToolPrimarySummary(state: ToolState) {
   return null
 }
 
+function TruncationBadges({ redacted, truncation }: { redacted?: boolean; truncation?: { truncated?: boolean; original_bytes?: number; display_bytes?: number } }) {
+  if (!redacted && !truncation?.truncated) {
+    return null
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      {redacted ? <Badge tone="warning">redacted</Badge> : null}
+      {truncation?.truncated ? (
+        <Badge tone="warning">
+          truncated{truncation.display_bytes ? ` · ${formatInteger(truncation.display_bytes)} bytes shown` : ''}
+        </Badge>
+      ) : null}
+    </div>
+  )
+}
+
 function ToolSection({ parts }: { parts: ToolPart[] }) {
   return (
     <Card className="border-warning/30 bg-warning/[0.04]">
@@ -141,6 +160,7 @@ function ToolSection({ parts }: { parts: ToolPart[] }) {
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-mono text-sm text-foreground">{part.tool || 'unknown-tool'}</span>
                         <Badge tone={getToolStatusTone(part.state.status)}>{part.state.status || 'unknown'}</Badge>
+                        {part.source_id ? <Badge>{part.source_id}</Badge> : null}
                         {part.state.title ? <span className="text-sm text-muted-foreground">{part.state.title}</span> : null}
                       </div>
 
@@ -162,6 +182,8 @@ function ToolSection({ parts }: { parts: ToolPart[] }) {
                         <span className={part.state.status === 'error' ? 'text-danger' : 'text-foreground'}>{primarySummary}</span>
                       </div>
                     ) : null}
+
+                    <TruncationBadges redacted={part.state.redacted} truncation={part.state.truncation} />
                   </div>
                 </div>
               )
@@ -248,6 +270,7 @@ function ContentSection({
                 className="rounded-2xl border border-border/60 bg-background/55 px-4 py-4 text-sm leading-6 whitespace-pre-wrap break-words text-foreground"
               >
                 {part.text}
+                <TruncationBadges redacted={part.redacted} truncation={part.truncation} />
               </div>
             ))}
           </div>
@@ -287,6 +310,7 @@ export function MessageDetailSheet({
   onOpenChange: (open: boolean) => void
   triggerRef: MutableRefObject<HTMLElement | null>
 }) {
+  const { selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [detail, setDetail] = useState<MessageDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
@@ -309,7 +333,7 @@ export function MessageDetailSheet({
       setDetailLoading(true)
 
       try {
-        const next = await getMessageDetail(activeMessageId, controller.signal)
+        const next = await getMessageDetail(activeMessageId, controller.signal, selectedSourceId)
         setDetail(next)
       } catch (caught) {
         if (controller.signal.aborted) {
@@ -327,22 +351,28 @@ export function MessageDetailSheet({
     void loadDetail()
 
     return () => controller.abort()
-  }, [detailRequestNonce, messageId])
+  }, [detailRequestNonce, messageId, selectedSourceId])
 
   const detailStats = useMemo(() => {
     const textCount = detail?.content.text_parts.length ?? 0
     const reasoningCount = detail?.content.reasoning_parts.length ?? 0
     const toolCount = detail?.content.tool_parts?.length ?? 0
     const tokenTotal = detail?.tokens ? getTokenTotal(detail.tokens) : 0
+    const foldedProvenance = detail ? getFoldedProvenanceText(detail, selectedSourceId) : null
+    const hasExactFoldedCounts = detail ? hasFoldedProvenanceCounts(detail) : false
+    const costProvenance = detail ? formatCostProvenance(detail.cost_status, detail.cost_provenance) : null
 
     return {
       textCount,
       reasoningCount,
       toolCount,
       tokenTotal,
+      foldedProvenance,
+      hasExactFoldedCounts,
+      costProvenance,
       hasContent: textCount + reasoningCount + toolCount > 0,
     }
-  }, [detail])
+  }, [detail, selectedSourceId])
 
   return (
     <Sheet open={messageId !== null} onOpenChange={onOpenChange}>
@@ -360,13 +390,14 @@ export function MessageDetailSheet({
               {detail ? <Badge tone={getRoleTone(detail.role)}>{detail.role || 'unknown'}</Badge> : <Badge tone="accent">Loading</Badge>}
               {detail ? <Badge>{getMessageSessionLabel(detail)}</Badge> : null}
               {detail ? <span className="font-mono text-xs text-muted-foreground">id {detail.id.slice(0, 12)}</span> : null}
+              {detail ? <Badge>{selectedSourceInfo?.label ?? selectedSourceId}</Badge> : null}
             </div>
 
             <div className="space-y-2">
               <div>
                 <SheetTitle className="sr-only">Message detail</SheetTitle>
                 <h3 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
-                  {detail ? 'Request detail' : 'Loading request detail'}
+                  {getDetailTitle(selectedSourceId, !detail)}
                 </h3>
                 <SheetDescription className="sr-only">Detailed message drawer with separated text, reasoning, and tool activity preview.</SheetDescription>
               </div>
@@ -378,12 +409,18 @@ export function MessageDetailSheet({
                      <span aria-hidden="true">•</span>
                      <span>{getModelLabel(detail)}</span>
                      <span aria-hidden="true">•</span>
-                     <span>{detailStats.textCount} text · {detailStats.reasoningCount} reasoning · {detailStats.toolCount} tools</span>
-                   </>
-                 ) : (
-                   <span>Fetching verbose request content…</span>
-                 )}
-               </div>
+                      <span>{detailStats.textCount} text · {detailStats.reasoningCount} reasoning · {detailStats.toolCount} tools</span>
+                      {detailStats.foldedProvenance ? (
+                        <>
+                          <span aria-hidden="true">•</span>
+                          <span>{detailStats.foldedProvenance}</span>
+                        </>
+                      ) : null}
+                    </>
+                  ) : (
+                   <span>{getDetailLoadingCopy(selectedSourceId)}</span>
+                  )}
+                </div>
 
                <div className="rounded-xl border border-border/70 bg-panel/40 px-3 py-2 text-sm text-muted-foreground">
                  Text, reasoning, and tool activity stay deliberately separated here so the table can remain dense instead of turning into a messy transcript dump.
@@ -410,8 +447,8 @@ export function MessageDetailSheet({
               <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
                 <DetailMetric
                   label="Request spend"
-value={detail.cost && Number.isFinite(detail.cost) ? formatCurrency(detail.cost) : '$0'}
-                   hint={`${detail.role || 'unknown'} role · ${detail.model_id || 'model unavailable'}`}
+                  value={formatCurrencyWithProvenance(detail.cost ?? 0, detail.cost_status, detail.cost_provenance)}
+                  hint={formatCostProvenance(detail.cost_status, detail.cost_provenance) ?? `${detail.role || 'unknown'} role · ${detail.model_id || 'model unavailable'}`}
                 />
                 <DetailMetric
                   label="Token load"
@@ -422,7 +459,7 @@ value={detail.cost && Number.isFinite(detail.cost) ? formatCurrency(detail.cost)
                 <DetailMetric
                   label="Content blocks"
                   value={formatInteger(detailStats.textCount + detailStats.reasoningCount + detailStats.toolCount)}
-                  hint={`${formatInteger(detailStats.textCount)} text parts · ${formatInteger(detailStats.reasoningCount)} reasoning parts · ${formatInteger(detailStats.toolCount)} tool parts`}
+                  hint={detailStats.foldedProvenance ?? `${formatInteger(detailStats.textCount)} text parts · ${formatInteger(detailStats.reasoningCount)} reasoning parts · ${formatInteger(detailStats.toolCount)} tool parts`}
                 />
                 <DetailMetric
                   label="Recorded at"
@@ -474,9 +511,15 @@ value={detail.cost && Number.isFinite(detail.cost) ? formatCurrency(detail.cost)
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
-                        <span>token load</span>
-                        <span className="text-border">·</span>
-                        <span>{detail.cost && Number.isFinite(detail.cost) ? formatCurrency(detail.cost) : '$0'} spend</span>
+                          <span>token load</span>
+                          <span className="text-border">·</span>
+                          <span>{formatCurrencyWithProvenance(detail.cost ?? 0, detail.cost_status, detail.cost_provenance)} spend</span>
+                          {detailStats.costProvenance ? (
+                            <>
+                              <span className="text-border">·</span>
+                              <span>{detailStats.costProvenance}</span>
+                            </>
+                          ) : null}
                       </div>
 
                       {detail.tokens ? (
@@ -487,8 +530,13 @@ value={detail.cost && Number.isFinite(detail.cost) ? formatCurrency(detail.cost)
                       ) : null}
 
                       <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
-                        <DetailFact label="Session" value={getMessageSessionLabel(detail)} />
-                        <DetailFact label="Session ID" value={detail.session_id} subtle={false} />
+                          <DetailFact label="Session" value={getMessageSessionLabel(detail)} />
+                          <DetailFact label="Source" value={selectedSourceInfo?.label ?? selectedSourceId} />
+                          {detailStats.foldedProvenance ? (
+                            <DetailFact label="Folded activity" value={detailStats.foldedProvenance} subtle={!detailStats.hasExactFoldedCounts} />
+                          ) : null}
+                          <DetailFact label="Cost provenance" value={detailStats.costProvenance ?? 'No cost provenance returned'} subtle={!detailStats.costProvenance} />
+                          <DetailFact label="Session ID" value={detail.session_id} subtle={false} />
                         <DetailFact label="Model / provider" value={getModelLabel(detail)} subtle={!detail.model_id && !detail.provider_id} />
                         <DetailFact label="Message ID" value={detail.id} subtle={false} />
                       </div>

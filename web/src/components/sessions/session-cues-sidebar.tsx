@@ -1,5 +1,5 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card'
-import { formatCompactInteger, formatCurrency } from '../../lib/format'
+import { formatCompactInteger, formatCurrencyWithProvenance } from '../../lib/format'
 import type { SessionsSummary } from './sessions-kpi-grid'
 
 interface SessionCuesSidebarProps {
@@ -21,7 +21,7 @@ export function SessionCuesSidebar({ summary }: SessionCuesSidebarProps) {
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
             {summary.hottestSession
-              ? `${formatCurrency(summary.hottestSession.cost)} · ${formatCompactInteger(summary.hottestSession.message_count)} messages`
+              ? `${formatCurrencyWithProvenance(summary.hottestSession.cost, summary.hottestSession.cost_status, summary.hottestSession.cost_provenance)} · ${formatCompactInteger(summary.hottestSession.message_count)} messages`
               : 'Awaiting activity'}
           </div>
         </div>

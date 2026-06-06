@@ -21,6 +21,10 @@ import (
 	"syscall"
 
 	"opencode-dashboard/internal/config"
+	"opencode-dashboard/internal/source"
+	"opencode-dashboard/internal/source/claudecode"
+	opencodesource "opencode-dashboard/internal/source/opencode"
+	"opencode-dashboard/internal/stats"
 	"opencode-dashboard/internal/store"
 	"opencode-dashboard/internal/tui"
 	"opencode-dashboard/internal/uninstall"
@@ -80,6 +84,7 @@ Examples:
   opencode-dashboard web
   opencode-dashboard web --port 9090 --channel latest
   opencode-dashboard web --db ~/.local/share/opencode/opencode-beta.db --no-open
+  opencode-dashboard web --source opencode
   opencode-dashboard tui --channel stable
   opencode-dashboard version
   opencode-dashboard uninstall --dry-run
@@ -88,6 +93,8 @@ Web flags:
   --port <n>     Bind localhost port (default: 7450)
   --db <path>    Use an explicit OpenCode SQLite database path
   --channel <c>  Resolve a channel-specific OpenCode DB (stable/latest/beta/custom)
+  --source <id>  Initial data source (opencode or claude_code; default: opencode)
+  --claude-home <dir>  Claude Code config directory for future claude_code registration
   --no-open      Do not launch the browser automatically
 
 TUI flags:
@@ -107,8 +114,10 @@ func cmdWeb(args []string) error {
 	dbPath := fs.String("db", "", "explicit OpenCode SQLite database path")
 	noOpen := fs.Bool("no-open", false, "do not open a browser")
 	channel := fs.String("channel", "", "channel-specific OpenCode database to use")
+	sourceFlag := fs.String("source", string(source.SourceOpenCode), "initial data source: opencode or claude_code")
+	claudeHome := fs.String("claude-home", "", "explicit Claude Code config directory")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard web [--port <n>] [--db <path>] [--channel <name>] [--no-open]\n\n")
+		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard web [--port <n>] [--db <path>] [--channel <name>] [--source <id>] [--claude-home <dir>] [--no-open]\n\n")
 		fmt.Fprintf(fs.Output(), "Starts the local web dashboard and serves the API on http://%s:<port>.\n", web.DefaultHost)
 	}
 
@@ -125,6 +134,11 @@ func cmdWeb(args []string) error {
 	if *port < 1 || *port > 65535 {
 		return fmt.Errorf("--port must be between 1 and 65535")
 	}
+	selectedSource, err := parseSourceSelection(*sourceFlag)
+	if err != nil {
+		return err
+	}
+	claudeSelection := config.ResolveClaudeHome(*claudeHome)
 
 	selection, err := resolveDBSelection(*dbPath, *channel)
 	if err != nil {
@@ -132,15 +146,25 @@ func cmdWeb(args []string) error {
 	}
 
 	ctx := context.Background()
-	st, err := openValidatedStore(ctx, selection.Path)
+	st, openErr := openValidatedStore(ctx, selection.Path)
+	if openErr != nil && selectedSource != source.SourceClaudeCode {
+		return openErr
+	}
+	if openErr != nil {
+		st = nil
+	}
+	registry, err := buildWebRegistry(st, selection, selectedSource, claudeSelection, *claudeHome)
 	if err != nil {
+		if st != nil {
+			_ = st.Close()
+		}
 		return err
 	}
-	defer st.Close()
+	defer registry.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	addr := web.DefaultHost + ":" + strconv.Itoa(*port)
-	server := web.NewServer(addr, st, logger)
+	server := web.NewServer(addr, registry, logger)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)
@@ -159,7 +183,11 @@ func cmdWeb(args []string) error {
 	fmt.Printf("web server: %s\n", serverURL)
 	fmt.Printf("api base:   %s/api/v1\n", serverURL)
 	fmt.Printf("database:   %s\n", selection.Path)
-	fmt.Printf("source:     %s\n", selection.Source)
+	fmt.Printf("db source:  %s\n", selection.Source)
+	fmt.Printf("source:     %s\n", selectedSource)
+	if selectedSource == source.SourceClaudeCode || *claudeHome != "" || os.Getenv(config.EnvClaudeConfigDir) != "" {
+		fmt.Printf("claude:    %s (%s)\n", claudeSelection.Path, claudeSelection.Source)
+	}
 	if web.HasAssets() {
 		fmt.Println("frontend:   embedded assets")
 	} else {
@@ -322,24 +350,70 @@ type dbSelection struct {
 }
 
 func resolveDBSelection(flagDB string, channel string) (dbSelection, error) {
-	if flagDB != "" && channel != "" {
-		return dbSelection{}, fmt.Errorf("use either --db or --channel, not both")
+	selection, err := config.ResolveOpenCodeDB(flagDB, channel)
+	if err != nil {
+		return dbSelection{}, err
+	}
+	return dbSelection{Path: selection.Path, Source: selection.Source}, nil
+}
+
+func parseSourceSelection(value string) (source.SourceID, error) {
+	selected := strings.TrimSpace(value)
+	if selected == "" {
+		return source.SourceOpenCode, nil
+	}
+	switch source.SourceID(selected) {
+	case source.SourceOpenCode, source.SourceClaudeCode:
+		return source.SourceID(selected), nil
+	case source.SourceID("both"):
+		return "", fmt.Errorf("--source=both is unsupported in v1; select one source at a time")
+	default:
+		return "", fmt.Errorf("invalid --source %q (supported: opencode, claude_code)", selected)
+	}
+}
+
+func buildWebRegistry(st *store.Store, selection dbSelection, startup source.SourceID, claudeSelection config.PathSelection, explicitClaudeHome string) (*source.Registry, error) {
+	registry := source.NewRegistry(source.SourceOpenCode)
+	registry.SetStartupID(startup)
+	if st != nil {
+		if err := registry.Register(opencodesource.New(st, opencodesource.WithPath(selection.Path, selection.Source))); err != nil {
+			return nil, err
+		}
+	} else if err := registry.RegisterUnavailable(source.SourceInfo{
+		ID:         source.SourceOpenCode,
+		Label:      "OpenCode",
+		Kind:       "sqlite",
+		Path:       selection.Path,
+		PathSource: selection.Source,
+		ReadOnly:   true,
+		LocalOnly:  true,
+		Capabilities: []string{
+			"overview", "daily", "models", "tools", "projects", "sessions", "messages", "config",
+		},
+		Diagnostics: source.SourceDiagnostics{
+			Status: "unavailable",
+			Reason: "OpenCode database is not available or schema is invalid",
+		},
+		CostPolicy: source.CostPolicy{Status: string(stats.CostMissing), Currency: "USD", Note: "OpenCode database is unavailable"},
+		Privacy:    source.PrivacyInfo{ReadOnly: true, LocalOnly: true, Redaction: true},
+	}); err != nil {
+		return nil, err
 	}
 
-	if flagDB != "" {
-		return dbSelection{Path: flagDB, Source: "--db flag"}, nil
+	claude := claudecode.New(claudecode.Options{ClaudeHome: claudeSelection.Path, PathSource: claudeSelection.Source})
+	claudeInfo := claude.Info(context.Background())
+	claudeConfigured := startup == source.SourceClaudeCode || explicitClaudeHome != "" || os.Getenv(config.EnvClaudeConfigDir) != ""
+	if claudeInfo.Available {
+		if err := registry.Register(claude); err != nil {
+			return nil, err
+		}
+	} else if claudeConfigured {
+		if err := registry.RegisterUnavailable(claudeInfo); err != nil {
+			return nil, err
+		}
 	}
 
-	if channel != "" {
-		return dbSelection{Path: config.ChannelDBPath(channel), Source: "channel " + channel}, nil
-	}
-
-	if envPath, ok := os.LookupEnv(config.EnvDBPath); ok && envPath != "" {
-		return dbSelection{Path: envPath, Source: config.EnvDBPath + " environment override"}, nil
-	}
-
-	path := config.DetectChannelDB("")
-	return dbSelection{Path: path, Source: "auto-detected local OpenCode database"}, nil
+	return registry, nil
 }
 
 func openValidatedStore(ctx context.Context, dbPath string) (*store.Store, error) {

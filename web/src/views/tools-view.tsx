@@ -59,7 +59,7 @@ function getFailureTone(failures: number) {
 }
 
 export function ToolsView() {
-  const { requestRefresh } = useDashboardContext()
+  const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [, setSearchParams] = useSearchParams()
   const [sortState, setSortState] = useState<SortState<string> | null>(null)
 
@@ -68,6 +68,7 @@ export function ToolsView() {
     ? serializeCustomPeriod(periodState.customRange.from, periodState.customRange.to)
     : periodState.preset
   const { data, loading, error } = usePeriodResource(getTools, cacheKey)
+  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
 
   const handleSortChange = (key: string) => {
     setSortState((current) => {
@@ -233,7 +234,7 @@ export function ToolsView() {
 
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
           <div className="text-sm text-muted-foreground">
-            Endpoint: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/tools?period={cacheKey}</code>
+            Endpoint: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/tools?period={cacheKey}{selectedSourceId !== 'opencode' ? `&source=${selectedSourceId}` : ''}</code>
           </div>
           <PeriodToggle
               mode={periodState.mode}
@@ -279,7 +280,11 @@ export function ToolsView() {
                     <CardTitle>No tool usage recorded yet</CardTitle>
                   </CardHeader>
                   <CardContent className="text-sm text-muted-foreground">
-                    <p>This endpoint stays empty until the backend finds tool event data.</p>
+                    <p>
+                      {selectedSourceId === 'claude_code'
+                        ? 'No Claude Code tool-use/tool-result data was found in readable local transcripts for this window.'
+                        : `This endpoint stays empty until ${sourceLabel} provides tool event data.`}
+                    </p>
                   </CardContent>
                 </Card>
               ) : (

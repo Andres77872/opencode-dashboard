@@ -25,7 +25,7 @@ import { getSessionDetail, getSessionsWithFilter } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
 import { formatDateTime, formatInteger } from '../lib/format'
 import { usePeriodState, serializeCustomPeriod, applyPeriodToUrl } from '../lib/use-period-state'
-import type { CustomPeriod, DailyPeriod, SessionDetail, SessionEntry, SessionList } from '../types/api'
+import type { CustomPeriod, DailyPeriod, SessionDetail, SessionEntry, SessionList, SourceID } from '../types/api'
 
 const PAGE_SIZE = 12
 const SEARCH_DEBOUNCE_MS = 300
@@ -49,7 +49,7 @@ function formatSessionWindow(createdAt: string, updatedAt: string) {
 }
 
 export function SessionsView() {
-  const { requestRefresh } = useDashboardContext()
+  const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [searchParams, setSearchParams] = useSearchParams()
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [detail, setDetail] = useState<SessionDetail | null>(null)
@@ -65,6 +65,23 @@ export function SessionsView() {
     : periodState.preset
   const rawFilter = searchParams.get('filter') ?? ''
   const projectId = searchParams.get('project_id') ?? undefined
+  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
+  const previousSourceRef = useRef(selectedSourceId)
+
+  useEffect(() => {
+    if (previousSourceRef.current === selectedSourceId) {
+      return
+    }
+    previousSourceRef.current = selectedSourceId
+    setSelectedSessionId(null)
+    setDetail(null)
+    setDetailError(null)
+    setSearchParams((prev) => {
+      const n = new URLSearchParams(prev)
+      n.set('page', '1')
+      return n
+    }, { replace: true })
+  }, [selectedSourceId, setSearchParams])
 
   const pageFromUrl = parseInt(searchParams.get('page') ?? '1', 10)
   const page = isNaN(pageFromUrl) || pageFromUrl < 1 ? 1 : pageFromUrl
@@ -98,9 +115,9 @@ export function SessionsView() {
   const sessionQueryRef = useRef({ page, filter: rawFilter, projectId })
   sessionQueryRef.current = { page, filter: rawFilter, projectId }
 
-  const fetcher = useCallback((p: string, signal?: AbortSignal) => {
+  const fetcher = useCallback((p: string, signal?: AbortSignal, sourceId?: SourceID) => {
     const q = sessionQueryRef.current
-    return getSessionsWithFilter(q.page, PAGE_SIZE, p, q.filter || undefined, q.projectId, signal)
+    return getSessionsWithFilter(q.page, PAGE_SIZE, p, q.filter || undefined, q.projectId, signal, sourceId)
   }, [])
 
   const { data, loading, error } = usePeriodResource<SessionList>(fetcher, cacheKey, { cachePeriods: false })
@@ -126,7 +143,7 @@ export function SessionsView() {
     async function load() {
       setDetail(null); setDetailError(null); setDetailLoading(true)
       try {
-        setDetail(await getSessionDetail(sid, ctrl.signal))
+        setDetail(await getSessionDetail(sid, ctrl.signal, selectedSourceId))
       } catch (caught) {
         if (ctrl.signal.aborted) return
         setDetailError(caught instanceof Error ? caught.message : 'Failed to load session detail')
@@ -136,7 +153,7 @@ export function SessionsView() {
     }
     void load()
     return () => ctrl.abort()
-  }, [detailRequestNonce, selectedSessionId])
+  }, [detailRequestNonce, selectedSessionId, selectedSourceId])
 
   // Summary
   const summary = useMemo((): SessionsSummary | null => {
@@ -151,9 +168,11 @@ export function SessionsView() {
     return {
       totalPages: tp, firstVisible: fv, lastVisible: lv,
       visibleCost: vc, visibleMessages: vm, visibleProjects: vp,
-      hottestSession: h ? { label: h.title || 'Untitled session', cost: h.cost, message_count: h.message_count } : null,
+      hottestSession: h ? { label: h.title || 'Untitled session', cost: h.cost, message_count: h.message_count, cost_status: h.cost_status, cost_provenance: h.cost_provenance } : null,
       total: data.total, pageSize: data.page_size, page: data.page,
       empty: data.sessions.length === 0,
+      costStatus: data.cost_status,
+      costProvenance: data.cost_provenance,
     }
   }, [data])
 
@@ -260,7 +279,7 @@ export function SessionsView() {
           </div>
           <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
             <div className="text-sm text-muted-foreground">
-              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions?period={cacheKey}</code>
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions?period={cacheKey}{selectedSourceId !== 'opencode' ? `&source=${selectedSourceId}` : ''}</code>
               {' '}+ <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions/:id</code>
             </div>
             <PeriodToggle
@@ -304,7 +323,11 @@ export function SessionsView() {
                       <CardTitle>No sessions recorded yet</CardTitle>
                     </CardHeader>
                     <CardContent className="text-sm text-muted-foreground">
-                      <p>This route stays empty until the database contains session rows.</p>
+                      <p>
+                        {selectedSourceId === 'claude_code'
+                          ? 'No persisted Claude Code sessions were found in readable local transcripts for this selected window.'
+                          : `This route stays empty until ${sourceLabel} contains session rows.`}
+                      </p>
                     </CardContent>
                   </Card>
                 ) : (
@@ -375,6 +398,7 @@ export function SessionsView() {
               <div className="flex flex-wrap items-center gap-2">
                 <Badge tone="accent">Telemetry inspector</Badge>
                 {detail && <Badge>{getSessionProjectLabel(detail)}</Badge>}
+                <Badge>{sourceLabel}</Badge>
                 {detail && <span className="font-mono text-xs text-muted-foreground">id {detail.id.slice(0, 12)}</span>}
               </div>
               <div className="space-y-2">

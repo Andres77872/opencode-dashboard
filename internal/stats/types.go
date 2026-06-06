@@ -10,6 +10,33 @@ type CacheStats struct {
 	Write int64 `json:"write"`
 }
 
+type CostStatus string
+
+const (
+	CostReported    CostStatus = "reported"
+	CostComputed    CostStatus = "computed"
+	CostApproximate CostStatus = "approximate"
+	CostMixed       CostStatus = "mixed"
+	CostMissing     CostStatus = "missing"
+)
+
+type CostProvenance struct {
+	Status            CostStatus `json:"status"`
+	Currency          string     `json:"currency,omitempty"`
+	PricingSnapshotID string     `json:"pricing_snapshot_id,omitempty"`
+	PricingSource     string     `json:"pricing_source,omitempty"`
+	MissingCount      int64      `json:"missing_count,omitempty"`
+	ComputedCount     int64      `json:"computed_count,omitempty"`
+	ReportedCount     int64      `json:"reported_count,omitempty"`
+	Note              string     `json:"note,omitempty"`
+}
+
+type TruncationInfo struct {
+	Truncated     bool  `json:"truncated,omitempty"`
+	OriginalBytes int64 `json:"original_bytes,omitempty"`
+	DisplayBytes  int64 `json:"display_bytes,omitempty"`
+}
+
 // NOTE: TokenStats uses nested cache: {read, write} for daily/model aggregate tokens.
 type TokenStats struct {
 	Input     int64      `json:"input"`
@@ -19,20 +46,26 @@ type TokenStats struct {
 }
 
 type OverviewStats struct {
-	Sessions   int64      `json:"sessions"`
-	Messages   int64      `json:"messages"`
-	Cost       float64    `json:"cost"`
-	Tokens     TokenStats `json:"tokens"`
-	CostPerDay float64    `json:"cost_per_day"`
-	Days       int        `json:"days"`
+	SourceID       string          `json:"source_id,omitempty"`
+	Sessions       int64           `json:"sessions"`
+	Messages       int64           `json:"messages"`
+	Cost           float64         `json:"cost"`
+	Tokens         TokenStats      `json:"tokens"`
+	CostPerDay     float64         `json:"cost_per_day"`
+	Days           int             `json:"days"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 }
 
 type DayStats struct {
-	Date     string     `json:"date"`
-	Sessions int64      `json:"sessions"`
-	Messages int64      `json:"messages"`
-	Cost     float64    `json:"cost"`
-	Tokens   TokenStats `json:"tokens"`
+	SourceID       string          `json:"source_id,omitempty"`
+	Date           string          `json:"date"`
+	Sessions       int64           `json:"sessions"`
+	Messages       int64           `json:"messages"`
+	Cost           float64         `json:"cost"`
+	Tokens         TokenStats      `json:"tokens"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 }
 
 type Granularity string
@@ -43,25 +76,34 @@ const (
 )
 
 type DailyStats struct {
-	Days        []DayStats  `json:"days"`
-	Granularity Granularity `json:"granularity"`
+	SourceID       string          `json:"source_id,omitempty"`
+	Days           []DayStats      `json:"days"`
+	Granularity    Granularity     `json:"granularity"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 }
 
 // DimensionDayStats represents a single day's data for a specific dimension value.
 type DimensionDayStats struct {
-	Date      string     `json:"date"`
-	Dimension string     `json:"dimension_key"`
-	Sessions  int64      `json:"sessions"`
-	Messages  int64      `json:"messages"`
-	Cost      float64    `json:"cost"`
-	Tokens    TokenStats `json:"tokens"`
+	SourceID       string          `json:"source_id,omitempty"`
+	Date           string          `json:"date"`
+	Dimension      string          `json:"dimension_key"`
+	Sessions       int64           `json:"sessions"`
+	Messages       int64           `json:"messages"`
+	Cost           float64         `json:"cost"`
+	Tokens         TokenStats      `json:"tokens"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 }
 
 // DailyDimensionStats is the response type for the dimension-grouped daily endpoint.
 type DailyDimensionStats struct {
-	Days      []DimensionDayStats `json:"days"`
-	Dimension string              `json:"dimension"`
-	Period    string              `json:"period"`
+	SourceID       string              `json:"source_id,omitempty"`
+	Days           []DimensionDayStats `json:"days"`
+	Dimension      string              `json:"dimension"`
+	Period         string              `json:"period"`
+	CostStatus     CostStatus          `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance     `json:"cost_provenance,omitempty"`
 }
 
 // NOTE: AvgTokenStats uses flat cache_read, cache_write for per-unit averages.
@@ -74,12 +116,15 @@ type AvgTokenStats struct {
 }
 
 type ModelEntry struct {
-	ModelID    string     `json:"model_id"`
-	ProviderID string     `json:"provider_id"`
-	Sessions   int64      `json:"sessions"`
-	Messages   int64      `json:"messages"`
-	Cost       float64    `json:"cost"`
-	Tokens     TokenStats `json:"tokens"`
+	SourceID       string          `json:"source_id,omitempty"`
+	ModelID        string          `json:"model_id"`
+	ProviderID     string          `json:"provider_id"`
+	Sessions       int64           `json:"sessions"`
+	Messages       int64           `json:"messages"`
+	Cost           float64         `json:"cost"`
+	Tokens         TokenStats      `json:"tokens"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 
 	// Added: nullable pointers with omitempty for backward-compatible API expansion
 	AvgTokensPerMessage *AvgTokenStats `json:"avg_tokens_per_message,omitempty"`
@@ -87,10 +132,14 @@ type ModelEntry struct {
 }
 
 type ModelStats struct {
-	Models []ModelEntry `json:"models"`
+	SourceID       string          `json:"source_id,omitempty"`
+	Models         []ModelEntry    `json:"models"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 }
 
 type ToolEntry struct {
+	SourceID    string `json:"source_id,omitempty"`
 	Name        string `json:"name"`
 	Invocations int64  `json:"invocations"`
 	Successes   int64  `json:"successes"`
@@ -99,51 +148,67 @@ type ToolEntry struct {
 }
 
 type ToolStats struct {
-	Tools []ToolEntry `json:"tools"`
+	SourceID string      `json:"source_id,omitempty"`
+	Tools    []ToolEntry `json:"tools"`
 }
 
 type ProjectEntry struct {
-	ProjectID   string     `json:"project_id"`
-	ProjectName string     `json:"project_name"`
-	Sessions    int64      `json:"sessions"`
-	Messages    int64      `json:"messages"`
-	Cost        float64    `json:"cost"`
-	Tokens      TokenStats `json:"tokens"`
+	SourceID       string          `json:"source_id,omitempty"`
+	ProjectID      string          `json:"project_id"`
+	ProjectName    string          `json:"project_name"`
+	Sessions       int64           `json:"sessions"`
+	Messages       int64           `json:"messages"`
+	Cost           float64         `json:"cost"`
+	Tokens         TokenStats      `json:"tokens"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 }
 
 type ProjectStats struct {
-	Projects []ProjectEntry `json:"projects"`
+	SourceID       string          `json:"source_id,omitempty"`
+	Projects       []ProjectEntry  `json:"projects"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 }
 
 // ProjectDetail is the response type for the project drilldown endpoint.
 type ProjectDetail struct {
-	ProjectID      string         `json:"project_id"`
-	ProjectName    string         `json:"project_name"`
-	Worktree       string         `json:"worktree,omitempty"`
-	Sessions       int64          `json:"sessions"`
-	Messages       int64          `json:"messages"`
-	Cost           float64        `json:"cost"`
-	Tokens         TokenStats     `json:"tokens"`
-	RecentSessions []SessionEntry `json:"recent_sessions,omitempty"`
-	TotalSessions  int64          `json:"total_sessions"`
+	SourceID       string          `json:"source_id,omitempty"`
+	ProjectID      string          `json:"project_id"`
+	ProjectName    string          `json:"project_name"`
+	Worktree       string          `json:"worktree,omitempty"`
+	Sessions       int64           `json:"sessions"`
+	Messages       int64           `json:"messages"`
+	Cost           float64         `json:"cost"`
+	Tokens         TokenStats      `json:"tokens"`
+	RecentSessions []SessionEntry  `json:"recent_sessions,omitempty"`
+	TotalSessions  int64           `json:"total_sessions"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 }
 
 type SessionEntry struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	ProjectID    string    `json:"project_id"`
-	ProjectName  string    `json:"project_name"`
-	TimeCreated  time.Time `json:"time_created"`
-	TimeUpdated  time.Time `json:"time_updated"`
-	MessageCount int64     `json:"message_count"`
-	Cost         float64   `json:"cost"`
+	SourceID       string          `json:"source_id,omitempty"`
+	ID             string          `json:"id"`
+	Title          string          `json:"title"`
+	ProjectID      string          `json:"project_id"`
+	ProjectName    string          `json:"project_name"`
+	TimeCreated    time.Time       `json:"time_created"`
+	TimeUpdated    time.Time       `json:"time_updated"`
+	MessageCount   int64           `json:"message_count"`
+	Cost           float64         `json:"cost"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 }
 
 type SessionList struct {
-	Sessions []SessionEntry `json:"sessions"`
-	Total    int64          `json:"total"`
-	Page     int            `json:"page"`
-	PageSize int            `json:"page_size"`
+	SourceID       string          `json:"source_id,omitempty"`
+	Sessions       []SessionEntry  `json:"sessions"`
+	Total          int64           `json:"total"`
+	Page           int             `json:"page"`
+	PageSize       int             `json:"page_size"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 }
 
 type SessionSortMode string
@@ -269,34 +334,42 @@ func parseMessageSortField(s string) MessageSortField {
 }
 
 type SessionMessage struct {
-	ID          string      `json:"id"`
-	Role        string      `json:"role"`
-	TimeCreated time.Time   `json:"time_created"`
-	Cost        float64     `json:"cost,omitempty"`
-	Tokens      *TokenStats `json:"tokens,omitempty"`
-	ModelID     string      `json:"model_id,omitempty"`
-	ProviderID  string      `json:"provider_id,omitempty"`
-	Agent       string      `json:"agent,omitempty"`
+	SourceID       string          `json:"source_id,omitempty"`
+	ID             string          `json:"id"`
+	Role           string          `json:"role"`
+	TimeCreated    time.Time       `json:"time_created"`
+	Cost           float64         `json:"cost,omitempty"`
+	Tokens         *TokenStats     `json:"tokens,omitempty"`
+	ModelID        string          `json:"model_id,omitempty"`
+	ProviderID     string          `json:"provider_id,omitempty"`
+	Agent          string          `json:"agent,omitempty"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 }
 
 type SessionDetail struct {
-	ID           string           `json:"id"`
-	Title        string           `json:"title"`
-	ProjectID    string           `json:"project_id"`
-	ProjectName  string           `json:"project_name"`
-	Directory    string           `json:"directory"`
-	TimeCreated  time.Time        `json:"time_created"`
-	TimeUpdated  time.Time        `json:"time_updated"`
-	Messages     []SessionMessage `json:"messages"`
-	TotalCost    float64          `json:"total_cost"`
-	TotalTokens  TokenStats       `json:"total_tokens"`
-	MessageCount int64            `json:"message_count"`
+	SourceID       string           `json:"source_id,omitempty"`
+	ID             string           `json:"id"`
+	Title          string           `json:"title"`
+	ProjectID      string           `json:"project_id"`
+	ProjectName    string           `json:"project_name"`
+	Directory      string           `json:"directory"`
+	TimeCreated    time.Time        `json:"time_created"`
+	TimeUpdated    time.Time        `json:"time_updated"`
+	Messages       []SessionMessage `json:"messages"`
+	TotalCost      float64          `json:"total_cost"`
+	TotalTokens    TokenStats       `json:"total_tokens"`
+	MessageCount   int64            `json:"message_count"`
+	CostStatus     CostStatus       `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance  `json:"cost_provenance,omitempty"`
 }
 
 type ConfigView struct {
-	Path    string         `json:"path"`
-	Exists  bool           `json:"exists"`
-	Content map[string]any `json:"content,omitempty"`
+	SourceID string         `json:"source_id,omitempty"`
+	Path     string         `json:"path"`
+	Exists   bool           `json:"exists"`
+	Content  map[string]any `json:"content,omitempty"`
+	Redacted bool           `json:"redacted,omitempty"`
 }
 
 type DateRange struct {
@@ -325,29 +398,43 @@ func (p Pagination) Offset() int {
 
 // MessageEntry represents a single message row in the requests history list.
 type MessageEntry struct {
-	ID           string      `json:"id"`
-	SessionID    string      `json:"session_id"`
-	SessionTitle string      `json:"session_title"`
-	Role         string      `json:"role"`
-	TimeCreated  time.Time   `json:"time_created"`
-	Cost         float64     `json:"cost,omitempty"`
-	Tokens       *TokenStats `json:"tokens,omitempty"`
-	ModelID      string      `json:"model_id,omitempty"`
-	ProviderID   string      `json:"provider_id,omitempty"`
+	SourceID       string          `json:"source_id,omitempty"`
+	ID             string          `json:"id"`
+	SessionID      string          `json:"session_id"`
+	SessionTitle   string          `json:"session_title"`
+	Role           string          `json:"role"`
+	TimeCreated    time.Time       `json:"time_created"`
+	Cost           float64         `json:"cost,omitempty"`
+	Tokens         *TokenStats     `json:"tokens,omitempty"`
+	ModelID        string          `json:"model_id,omitempty"`
+	ProviderID     string          `json:"provider_id,omitempty"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
+
+	// Claude Code interactions may fold multiple raw assistant/tool events into
+	// one user-facing row. These additive counts make that folding discoverable
+	// without exposing raw transcript events as separate dashboard messages.
+	FoldedAssistantCalls int64 `json:"folded_assistant_calls,omitempty"`
+	FoldedToolCalls      int64 `json:"folded_tool_calls,omitempty"`
 }
 
 // MessageList is a paginated list of messages for a date range.
 type MessageList struct {
-	Messages []MessageEntry `json:"messages"`
-	Total    int64          `json:"total"`
-	Page     int            `json:"page"`
-	PageSize int            `json:"page_size"`
+	SourceID       string          `json:"source_id,omitempty"`
+	Messages       []MessageEntry  `json:"messages"`
+	Total          int64           `json:"total"`
+	Page           int             `json:"page"`
+	PageSize       int             `json:"page_size"`
+	CostStatus     CostStatus      `json:"cost_status,omitempty"`
+	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 }
 
 // MessagePart represents a single text or reasoning part from the part table.
 type MessagePart struct {
-	Type string `json:"type"` // "text" or "reasoning"
-	Text string `json:"text"` // Actual content
+	Type       string          `json:"type"` // "text" or "reasoning"
+	Text       string          `json:"text"` // Actual content
+	Truncation *TruncationInfo `json:"truncation,omitempty"`
+	Redacted   bool            `json:"redacted,omitempty"`
 }
 
 type ToolTime struct {
@@ -357,20 +444,23 @@ type ToolTime struct {
 }
 
 type ToolState struct {
-	Status   string                 `json:"status"` // pending, running, completed, error
-	Input    map[string]interface{} `json:"input,omitempty"`
-	Output   string                 `json:"output,omitempty"`
-	Title    string                 `json:"title,omitempty"`
-	Error    string                 `json:"error,omitempty"`
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
-	Time     *ToolTime              `json:"time,omitempty"`
+	Status     string                 `json:"status"` // pending, running, completed, error
+	Input      map[string]interface{} `json:"input,omitempty"`
+	Output     string                 `json:"output,omitempty"`
+	Title      string                 `json:"title,omitempty"`
+	Error      string                 `json:"error,omitempty"`
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`
+	Time       *ToolTime              `json:"time,omitempty"`
+	Truncation *TruncationInfo        `json:"truncation,omitempty"`
+	Redacted   bool                   `json:"redacted,omitempty"`
 }
 
 type ToolPart struct {
-	Type   string    `json:"type"` // always "tool"
-	CallID string    `json:"call_id"`
-	Tool   string    `json:"tool"`
-	State  ToolState `json:"state"`
+	SourceID string    `json:"source_id,omitempty"`
+	Type     string    `json:"type"` // always "tool"
+	CallID   string    `json:"call_id"`
+	Tool     string    `json:"tool"`
+	State    ToolState `json:"state"`
 }
 
 type MessageContent struct {

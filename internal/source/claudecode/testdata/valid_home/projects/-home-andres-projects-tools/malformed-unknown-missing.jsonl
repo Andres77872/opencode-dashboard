@@ -1,0 +1,4 @@
+{"type":"user","uuid":"malformed-user-before","session_id":"malformed-session","timestamp":"2026-01-07T08:00:00Z","cwd":"/home/andres/projects/tools","message":{"role":"user","content":"This valid line appears before malformed JSON."}}
+{this is not valid json and must never be exposed in diagnostics}
+{"type":"telemetry_v999","session_id":"malformed-session","timestamp":"2026-01-07T08:00:01Z","payload":{"shape":"unknown","raw_secret":"unknown-event-secret-must-not-leak"}}
+{"type":"assistant","uuid":"missing-fields-assistant","session_id":"malformed-session","timestamp":"2026-01-07T08:00:02Z","cwd":"/home/andres/projects/tools","message":{"role":"assistant","content":[{"type":"text","text":"Optional fields are missing but the source still keeps this message."}]}}

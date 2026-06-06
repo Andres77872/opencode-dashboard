@@ -8,9 +8,13 @@ import (
 )
 
 const (
-	EnvDBPath = "OPENCODE_DASHBOARD_DB"
+	EnvDBPath          = "OPENCODE_DASHBOARD_DB"
+	EnvClaudeConfigDir = "CLAUDE_CONFIG_DIR"
 
 	AppName = "opencode"
+
+	SourceOpenCode   = "opencode"
+	SourceClaudeCode = "claude_code"
 
 	DefaultDBName       = "opencode.db"
 	LatestChannelDBName = "opencode-latest.db"
@@ -19,7 +23,15 @@ const (
 )
 
 type Config struct {
-	dbPath string
+	dbPath     string
+	channel    string
+	source     string
+	claudeHome string
+}
+
+type PathSelection struct {
+	Path   string
+	Source string
 }
 
 type Option func(*Config)
@@ -28,6 +40,30 @@ func WithDBPath(path string) Option {
 	return func(c *Config) {
 		if path != "" {
 			c.dbPath = path
+		}
+	}
+}
+
+func WithChannel(channel string) Option {
+	return func(c *Config) {
+		if channel != "" {
+			c.channel = channel
+		}
+	}
+}
+
+func WithSource(source string) Option {
+	return func(c *Config) {
+		if source != "" {
+			c.source = strings.TrimSpace(source)
+		}
+	}
+}
+
+func WithClaudeHome(path string) Option {
+	return func(c *Config) {
+		if path != "" {
+			c.claudeHome = path
 		}
 	}
 }
@@ -41,15 +77,28 @@ func New(opts ...Option) *Config {
 }
 
 func (c *Config) DBPath() string {
-	if c.dbPath != "" {
-		return c.dbPath
-	}
+	selection, _ := ResolveOpenCodeDB(c.dbPath, c.channel)
+	return selection.Path
+}
 
-	if path, ok := os.LookupEnv(EnvDBPath); ok {
-		return path
-	}
+func (c *Config) DBPathSource() string {
+	selection, _ := ResolveOpenCodeDB(c.dbPath, c.channel)
+	return selection.Source
+}
 
-	return DefaultDBPath()
+func (c *Config) Source() string {
+	if c.source != "" {
+		return c.source
+	}
+	return SourceOpenCode
+}
+
+func (c *Config) ClaudeHome() string {
+	return ResolveClaudeHome(c.claudeHome).Path
+}
+
+func (c *Config) ClaudeHomeSource() string {
+	return ResolveClaudeHome(c.claudeHome).Source
 }
 
 func (c *Config) ConfigPath() string {
@@ -66,6 +115,46 @@ func (c *Config) StateDir() string {
 
 func DefaultDBPath() string {
 	return filepath.Join(XDGDataHome(), AppName, DefaultDBName)
+}
+
+func DefaultClaudeHomePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	return filepath.Join(home, ".claude")
+}
+
+func ResolveOpenCodeDB(flagDB string, channel string) (PathSelection, error) {
+	if flagDB != "" && channel != "" {
+		return PathSelection{}, fmt.Errorf("use either --db or --channel, not both")
+	}
+
+	if flagDB != "" {
+		return PathSelection{Path: flagDB, Source: "--db flag"}, nil
+	}
+
+	if channel != "" {
+		return PathSelection{Path: ChannelDBPath(channel), Source: "channel " + channel}, nil
+	}
+
+	if envPath := os.Getenv(EnvDBPath); envPath != "" {
+		return PathSelection{Path: envPath, Source: EnvDBPath + " environment override"}, nil
+	}
+
+	return PathSelection{Path: DetectChannelDB(""), Source: "auto-detected local OpenCode database"}, nil
+}
+
+func ResolveClaudeHome(flagHome string) PathSelection {
+	if flagHome != "" {
+		return PathSelection{Path: flagHome, Source: "--claude-home"}
+	}
+
+	if envHome := os.Getenv(EnvClaudeConfigDir); envHome != "" {
+		return PathSelection{Path: envHome, Source: EnvClaudeConfigDir}
+	}
+
+	return PathSelection{Path: DefaultClaudeHomePath(), Source: "$HOME/.claude"}
 }
 
 func ChannelDBPath(channel string) string {

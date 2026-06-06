@@ -1,0 +1,22 @@
+{
+  "id": "anthropic-test-2026-01-02",
+  "retrieved_at": "2026-01-02T00:00:00Z",
+  "source": "test fixture pricing table",
+  "currency": "USD",
+  "models": {
+    "claude-test-computed": {
+      "input_per_million": 3.0,
+      "output_per_million": 15.0,
+      "cache_read_input_per_million": 0.3,
+      "cache_creation_input_per_million": 3.75
+    },
+    "claude-test-approx": {
+      "input_per_million": 2.0,
+      "output_per_million": 10.0,
+      "cache_read_input_per_million": 0.2,
+      "cache_creation_input_per_million": 2.5,
+      "approximate": true,
+      "note": "family-level deterministic fixture rate"
+    }
+  }
+}

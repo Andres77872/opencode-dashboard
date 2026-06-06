@@ -18,7 +18,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../com
 import { DataPageSkeleton } from '../components/common/data-page-skeleton'
 import { getDaily, getMessages } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
-import { formatCompactInteger, formatCurrency, formatInteger, formatShortDate, formatTokenCount, safeDivide } from '../lib/format'
+import { formatCompactInteger, formatCurrencyWithProvenance, formatInteger, formatShortDate, formatTokenCount, safeDivide } from '../lib/format'
 import { getNextSortState } from '../lib/table-sort'
 import type { SortState } from '../lib/table-sort'
 import { getTokenTotal } from '../lib/token-breakdown'
@@ -119,16 +119,28 @@ function getPeriodWindowHint(period: string, dayCount: number, granularity?: str
   }
 }
 
-function getEmptyWindowCopy(period: string) {
-  if (period === 'all') {
-    return 'All recorded activity since the first data point. Falls back to today when no data exists.'
+function getEmptyWindowCopy(period: string, sourceLabel: string, sourceId: string) {
+  if (sourceId === 'claude_code') {
+    return 'No persisted Claude Code transcript activity was found in this selected window.'
   }
 
-  return 'Zero-filled window until OpenCode records sessions and messages in this period.'
+  if (period === 'all') {
+    return `All recorded ${sourceLabel} activity since the first data point. Falls back to today when no data exists.`
+  }
+
+  return `Zero-filled window until ${sourceLabel} records sessions and messages in this period.`
 }
 
 export function DailyView() {
-  const { requestRefresh, refreshNonce } = useDashboardContext()
+  const {
+    requestRefresh,
+    refreshNonce,
+    selectedSourceId,
+    selectedSourceInfo,
+    sourceAvailable,
+    sourceMetadataLoading,
+    sourceStateError,
+  } = useDashboardContext()
   const [, setSearchParams] = useSearchParams()
   const [messages, setMessages] = useState<MessageList | null>(null)
   const [messagesLoading, setMessagesLoading] = useState(true)
@@ -145,9 +157,31 @@ export function DailyView() {
     : periodState.preset
   const period: string = cacheKey
   const { data: dataForPeriod, loading, error } = usePeriodResource(getDaily, cacheKey)
+  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
+
+  useEffect(() => {
+    setMessagesPage(1)
+    setMessagesSort(null)
+    setSelectedMessageId(null)
+    setMessages(null)
+  }, [selectedSourceId])
 
   // Messages pagination stays inline — different state shape from daily stats
   useEffect(() => {
+    if (sourceMetadataLoading) {
+      setMessages(null)
+      setMessagesError(null)
+      setMessagesLoading(true)
+      return
+    }
+
+    if (!sourceAvailable) {
+      setMessages(null)
+      setMessagesError(sourceStateError?.message ?? 'Selected source is unavailable')
+      setMessagesLoading(false)
+      return
+    }
+
     const controller = new AbortController()
 
     async function loadMessages() {
@@ -156,7 +190,7 @@ export function DailyView() {
 
       try {
         const sortParam = messagesSort ? `${messagesSort.key}:${messagesSort.direction}` : undefined
-        const next = await getMessages(period, messagesPage, REQUESTS_PAGE_SIZE, sortParam, controller.signal)
+        const next = await getMessages(period, messagesPage, REQUESTS_PAGE_SIZE, sortParam, controller.signal, selectedSourceId)
         setMessages(next)
       } catch (caught) {
         if (controller.signal.aborted) {
@@ -174,7 +208,7 @@ export function DailyView() {
     void loadMessages()
 
     return () => controller.abort()
-  }, [messagesPage, messagesSort, period, refreshNonce]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [messagesPage, messagesSort, period, refreshNonce, selectedSourceId, sourceAvailable, sourceMetadataLoading, sourceStateError?.message])
 
   const summary = useMemo(() => {
     if (!dataForPeriod) {
@@ -308,7 +342,9 @@ export function DailyView() {
           <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
             <div className="text-sm text-muted-foreground">
               Endpoint:{' '}
-              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/daily?period={period}</code>
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                /api/v1/daily?period={period}{selectedSourceId !== 'opencode' ? `&source=${selectedSourceId}` : ''}
+              </code>
             </div>
             <PeriodToggle
               mode={periodState.mode}
@@ -336,11 +372,11 @@ export function DailyView() {
 
         <TooltipProvider>
           <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
-            <MetricCard
-              label="Total spend"
-              value={summary ? formatCurrency(summary.cost) : ''}
-              hint={summary ? getPeriodWindowHint(period, dataForPeriod?.days.length ?? 0, dataForPeriod?.granularity) : 'Loading...'}
-              loading={loading && !summary}
+              <MetricCard
+                label="Total spend"
+                value={summary ? formatCurrencyWithProvenance(summary.cost, dataForPeriod?.cost_status, dataForPeriod?.cost_provenance) : ''}
+                hint={summary ? getPeriodWindowHint(period, dataForPeriod?.days.length ?? 0, dataForPeriod?.granularity) : 'Loading...'}
+                loading={loading && !summary}
             />
             <MetricCard
               label="Sessions"
@@ -386,7 +422,7 @@ export function DailyView() {
               </CardHeader>
               <CardContent className="space-y-3 text-sm text-muted-foreground">
                 <p>
-                  {getEmptyWindowCopy(period)}
+                  {getEmptyWindowCopy(period, sourceLabel, selectedSourceId)}
                 </p>
                 <p>
                   Once data exists, charts, token breakdowns, and the message ledger will appear automatically.
@@ -477,7 +513,7 @@ export function DailyView() {
                             </div>
                             <span className="font-mono text-sm font-medium text-foreground whitespace-nowrap">
                               {metric === 'cost'
-                                ? formatCurrency(day.cost)
+                                ? formatCurrencyWithProvenance(day.cost, day.cost_status, day.cost_provenance)
                                 : metric === 'requests'
                                   ? formatInteger(day.messages)
                                   : (

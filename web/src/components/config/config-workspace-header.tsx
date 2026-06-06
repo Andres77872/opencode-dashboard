@@ -1,5 +1,6 @@
 import { Search, X } from 'lucide-react'
 import type { ConfigStats } from '../../types/api'
+import { Badge } from '../ui/badge'
 import { Input } from '../ui/input'
 import { CopyButton } from './copy-button'
 
@@ -75,6 +76,8 @@ export function ConfigWorkspaceHeader({
 
       {/* Context line */}
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        {data?.source_id ? <Badge className="px-2 py-0.5 text-[9px]">{data.source_id}</Badge> : null}
+        {data?.redacted ? <Badge tone="warning" className="px-2 py-0.5 text-[9px]">redacted</Badge> : null}
         {data?.path ? (
           <span className="font-mono truncate" title={data.path}>
             {data.path}

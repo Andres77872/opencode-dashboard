@@ -15,7 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { buildConfigSummary, buildSectionProjections, normalizeSearchQuery, serializeConfigValue, titleizeKey } from '../lib/config-utils'
 import { getConfig } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
-import type { ConfigStats } from '../types/api'
+import type { ConfigStats, SourceID } from '../types/api'
 import type { DailyPeriod } from '../types/api'
 
 /**
@@ -35,20 +35,21 @@ function resolveContent(raw: ConfigStats): ConfigStats {
 }
 
 export function ConfigView() {
-  const { requestRefresh } = useDashboardContext()
+  const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [searchValue, setSearchValue] = useState('')
   const [activeTab, setActiveTab] = useState('overview')
+  const [hasChosenTab, setHasChosenTab] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
-  const hasChosenInitialTabRef = useRef(false)
   const copyResetRef = useRef<number | null>(null)
 
   // Config is periodless — use a fixed '7d' as period arg (fetcher ignores it).
   // cachePeriods: false ensures always re-fetch on refreshNonce.
   const { data: rawData, loading, error } = usePeriodResource(
-    (_p: string, signal?: AbortSignal) => getConfig(signal),
+    (_p: string, signal?: AbortSignal, sourceId?: SourceID) => getConfig(signal, sourceId),
     '7d' as DailyPeriod,
     { cachePeriods: false },
   )
+  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
 
   // Apply backward-compat shim for config content
   const data = useMemo(() => (rawData ? resolveContent(rawData) : null), [rawData])
@@ -65,23 +66,28 @@ export function ConfigView() {
   const summary = useMemo(() => buildConfigSummary(data), [data])
   const sectionProjections = useMemo(() => buildSectionProjections(summary, searchQuery), [searchQuery, summary])
 
-  useEffect(() => {
+  const effectiveActiveTab = useMemo(() => {
     if (!summary) {
-      return
+      return activeTab
     }
 
     const availableTabs = new Set(['overview', 'raw', ...summary.sections.map((section) => section.key)])
 
-    if (!hasChosenInitialTabRef.current && summary.sections.length > 0) {
-      setActiveTab(summary.sections[0].key)
-      hasChosenInitialTabRef.current = true
-      return
+    if (!hasChosenTab && summary.sections.length > 0) {
+      return summary.sections[0].key
     }
 
     if (!availableTabs.has(activeTab)) {
-      setActiveTab(summary.sections[0]?.key ?? 'overview')
+      return summary.sections[0]?.key ?? 'overview'
     }
-  }, [activeTab, summary])
+
+    return activeTab
+  }, [activeTab, hasChosenTab, summary])
+
+  const handleActiveTabChange = (value: string) => {
+    setHasChosenTab(true)
+    setActiveTab(value)
+  }
 
   const visibleSectionCount = sectionProjections.filter((projection) => projection.filteredValue !== null).length
   const totalSectionCount = summary?.sections.length ?? 0
@@ -115,7 +121,7 @@ export function ConfigView() {
             <Badge tone="accent">Live route</Badge>
             <h2 className="text-2xl font-semibold tracking-tight text-foreground">Config</h2>
             <p className="max-w-3xl text-sm text-muted-foreground">
-              Redacted OpenCode config snapshot from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>.
+              Redacted {sourceLabel} config/source snapshot from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>.
             </p>
           </div>
         </div>
@@ -133,12 +139,12 @@ export function ConfigView() {
           <Badge tone="accent">Live route</Badge>
           <h2 className="text-2xl font-semibold tracking-tight text-foreground">Config</h2>
           <p className="max-w-3xl text-sm text-muted-foreground">
-            Redacted OpenCode config snapshot from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>.
+            Redacted {sourceLabel} config/source snapshot from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>.
           </p>
         </div>
 
         <div className="text-sm text-muted-foreground">
-          Endpoint: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>
+          Endpoint: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config{selectedSourceId !== 'opencode' ? `?source=${selectedSourceId}` : ''}</code>
         </div>
       </div>
 
@@ -158,6 +164,12 @@ export function ConfigView() {
         <>
           <ConfigSummaryMetrics data={data} summary={summary} />
 
+          {data?.redacted ? (
+            <Alert tone="warning">
+              Sensitive values in this {sourceLabel} snapshot were redacted before display.
+            </Alert>
+          ) : null}
+
           <ConfigWorkspaceHeader
             data={data}
             searchValue={searchValue}
@@ -173,10 +185,12 @@ export function ConfigView() {
           {!data?.exists ? (
             <ConfigStateCard description="Empty state" title="No config file found">
               <p>
-                The route checked the resolved XDG config path and found no file to inspect.
+                The route checked the resolved {sourceLabel} source/config path and found no file to inspect.
               </p>
               <p>
-                Once <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">opencode.json</code> exists, the payload will be organized into focused section tabs automatically.
+                {selectedSourceId === 'claude_code'
+                  ? 'Once Claude Code config or transcript-derived source metadata is available, the payload will be organized into focused section tabs automatically.'
+                  : <>Once <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">opencode.json</code> exists, the payload will be organized into focused section tabs automatically.</>}
               </p>
             </ConfigStateCard>
           ) : summary.parseError ? (
@@ -204,7 +218,7 @@ export function ConfigView() {
               </p>
             </ConfigStateCard>
           ) : (
-            <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+            <Tabs value={effectiveActiveTab} onValueChange={handleActiveTabChange} className="space-y-4">
               <div className="overflow-x-auto">
                 <TabsList aria-label="Configuration sections" className="min-w-max">
                   <TabsTrigger value="overview">Overview</TabsTrigger>
@@ -221,7 +235,7 @@ export function ConfigView() {
                 <ConfigOverviewTab
                   sectionProjections={sectionProjections}
                   searchQuery={searchQuery}
-                  onOpenSection={setActiveTab}
+                  onOpenSection={handleActiveTabChange}
                 />
               </TabsContent>
 

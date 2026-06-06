@@ -3,9 +3,10 @@ import { Button } from '../ui/button'
 import { Progress } from '../ui/progress'
 import { DataTable, type DataTableColumn } from '../common/data-table'
 import type { SortState } from '../../lib/table-sort'
-import { formatCompactCurrency, formatCompactInteger, formatDateTime, safeDivide } from '../../lib/format'
+import { formatCompactCurrencyWithProvenance, formatCompactInteger, formatDateTime, safeDivide } from '../../lib/format'
 import type { SessionEntry } from '../../types/api'
 import type { SessionsSummary } from './sessions-kpi-grid'
+import { useDashboardContext } from '../layout/dashboard-context'
 
 // ── Props ──────────────────────────────────────────────────────
 
@@ -38,6 +39,9 @@ export function SessionsTable({
   onRowClick,
   onTriggerClick,
 }: SessionsTableProps) {
+  const { selectedSourceId, selectedSourceInfo } = useDashboardContext()
+  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
+
   const columns: DataTableColumn<SessionEntry>[] = [
     {
       key: 'session',
@@ -92,7 +96,7 @@ export function SessionsTable({
           </div>
           <div>
             <div className="uppercase tracking-[0.14em]">Cost</div>
-            <div className="mt-1 font-mono text-sm text-foreground">{formatCompactCurrency(session.cost)}</div>
+            <div className="mt-1 font-mono text-sm text-foreground">{formatCompactCurrencyWithProvenance(session.cost, session.cost_status, session.cost_provenance)}</div>
           </div>
         </div>
       ),
@@ -140,7 +144,7 @@ export function SessionsTable({
                 <span className="font-mono">id {session.id.slice(0, 10)}</span>
               </div>
             </div>
-            <div className="font-mono text-sm text-foreground">{formatCompactCurrency(session.cost)}</div>
+            <div className="font-mono text-sm text-foreground">{formatCompactCurrencyWithProvenance(session.cost, session.cost_status, session.cost_provenance)}</div>
           </div>
 
           <div className="mt-3 rounded-xl border border-border/60 bg-background/35 px-3 py-2.5 text-xs text-muted-foreground">
@@ -166,7 +170,9 @@ export function SessionsTable({
       emptyState={
         <div className="space-y-3 text-sm text-muted-foreground">
           <p>
-            This route stays empty until the database contains session rows. Once activity exists, you get paginated browsing, per-session spend, message counts, and metadata detail.
+             {selectedSourceId === 'claude_code'
+               ? 'This route stays empty until readable Claude Code transcript sessions exist. OpenCode sessions are intentionally not mixed into this selected source.'
+               : `This route stays empty until ${sourceLabel} contains session rows. Once activity exists, you get paginated browsing, per-session spend, message counts, and metadata detail.`}
           </p>
           <p>
             The detail drawer intentionally stays metadata-only because the backend does not expose transcript text in the current session detail payload.

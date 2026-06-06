@@ -5,9 +5,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
 import { SessionMessageRow } from './session-message-row'
 import { TokenBreakdownList } from '../overview/token-breakdown-card'
+import { useDashboardContext } from '../layout/dashboard-context'
 import { getTokenTotal } from '../../lib/token-breakdown'
 import {
-  formatCurrency,
+  formatCurrencyWithProvenance,
   formatDateTime,
   formatInteger,
   formatTokenCount,
@@ -112,6 +113,9 @@ function formatSessionWindow(createdAt: string, updatedAt: string) {
 // ── Component ──────────────────────────────────────────────────
 
 export function SessionDetailCard({ detail, loading, error, onRetry }: SessionDetailCardProps) {
+  const { selectedSourceId, selectedSourceInfo } = useDashboardContext()
+  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
+
   // Memoized computations extracted from sessions-view
   const detailMessageMix = useMemo(() => {
     if (!detail) {
@@ -218,8 +222,8 @@ export function SessionDetailCard({ detail, loading, error, onRetry }: SessionDe
         />
         <DetailMetric
           label="Session spend"
-          value={formatCurrency(detail.total_cost)}
-          hint={detail.messages.length > 0 ? `Peak row ${formatCurrency(detailMessageStats.hottestMessageCost)} · ${formatCurrency(safeDivide(detail.total_cost, detail.messages.length))} average per recorded row` : 'No message rows'}
+          value={formatCurrencyWithProvenance(detail.total_cost, detail.cost_status, detail.cost_provenance)}
+          hint={detail.messages.length > 0 ? `Peak row ${formatCurrencyWithProvenance(detailMessageStats.hottestMessageCost, detail.cost_status, detail.cost_provenance)} · ${formatCurrencyWithProvenance(safeDivide(detail.total_cost, detail.messages.length), detail.cost_status, detail.cost_provenance)} average per recorded row` : 'No message rows'}
         />
         <DetailMetric
           label="Token load"
@@ -261,7 +265,7 @@ export function SessionDetailCard({ detail, loading, error, onRetry }: SessionDe
                 {detailMessageStats.hottestMessageCost > 0 ? (
                   <>
                     <span className="text-border">·</span>
-                    <span>peak row {formatCurrency(detailMessageStats.hottestMessageCost)}</span>
+                    <span>peak row {formatCurrencyWithProvenance(detailMessageStats.hottestMessageCost, detail.cost_status, detail.cost_provenance)}</span>
                   </>
                 ) : null}
               </div>
@@ -309,7 +313,7 @@ export function SessionDetailCard({ detail, loading, error, onRetry }: SessionDe
                 </TooltipProvider>
                 <span>window token load</span>
                 <span className="text-border">·</span>
-                <span>{formatCurrency(detail.total_cost)} spend</span>
+                <span>{formatCurrencyWithProvenance(detail.total_cost, detail.cost_status, detail.cost_provenance)} spend</span>
               </div>
 
               <div className="rounded-xl border border-border/60 bg-background/35 px-3 py-3">
@@ -324,11 +328,12 @@ export function SessionDetailCard({ detail, loading, error, onRetry }: SessionDe
 
               <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
                 <DetailFact label="Project" value={getSessionProjectLabel(detail)} />
+                <DetailFact label="Source" value={sourceLabel} />
                 <DetailFact label="Directory" value={detail.directory || 'No directory recorded'} subtle={!detail.directory} />
                 <DetailFact label="Last update" value={formatDateTime(detail.time_updated)} />
                 <DetailFact
                   label="Peak row"
-                  value={detailMessageStats.hottestMessageCost > 0 ? formatCurrency(detailMessageStats.hottestMessageCost) : 'No spend signal'}
+                  value={detailMessageStats.hottestMessageCost > 0 ? formatCurrencyWithProvenance(detailMessageStats.hottestMessageCost, detail.cost_status, detail.cost_provenance) : 'No spend signal'}
                   subtle={detailMessageStats.hottestMessageCost <= 0}
                 />
               </div>

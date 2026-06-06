@@ -1,0 +1,20 @@
+{
+  "cleanupPeriodDays": 30,
+  "apiKey": "sk-ant-test-settings-secret",
+  "permissions": {
+    "allow": ["Bash(ls *)", "Read(/tmp/safe.txt)"],
+    "deny": ["Read(.env)"]
+  },
+  "env": {
+    "ANTHROPIC_API_KEY": "sk-ant-test-env-secret",
+    "SAFE_FLAG": "visible-but-env-prefixed"
+  },
+  "headers": {
+    "Authorization": "Bearer header-secret-value",
+    "X-Trace-ID": "trace-fixture-001"
+  },
+  "nested": {
+    "password": "nested-password-secret",
+    "project": "alpha"
+  }
+}

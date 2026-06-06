@@ -1,0 +1,1 @@
+{"type":"user","uuid":"safe-debug-user-1","sessionId":"safe-debug-session","timestamp":"2026-04-01T13:00:00Z","cwd":"/redacted/safe-project","message":{"role":"user","content":"Nested debug prompt must be skipped by main discovery."}}

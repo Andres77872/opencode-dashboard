@@ -2,7 +2,10 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+
+	"opencode-dashboard/internal/source"
 )
 
 type APIError struct {
@@ -41,6 +44,16 @@ func ServiceUnavailable(message string) APIError {
 		Message: message,
 		Code:    http.StatusServiceUnavailable,
 	}
+}
+
+func SourceError(err error) APIError {
+	if errors.Is(err, source.ErrInvalidSource) || errors.Is(err, source.ErrUnsupportedSource) {
+		return BadRequest(err.Error())
+	}
+	if errors.Is(err, source.ErrUnavailableSource) {
+		return ServiceUnavailable(err.Error())
+	}
+	return InternalError("failed to resolve source")
 }
 
 func (e APIError) Write(w http.ResponseWriter) {

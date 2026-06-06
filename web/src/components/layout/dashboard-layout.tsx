@@ -2,6 +2,7 @@ import { Outlet } from 'react-router-dom'
 import { Header } from './header'
 import { PrimaryNav } from './primary-nav'
 import { SidebarProvider } from './sidebar-context'
+import { SourceNotice } from '../source/source-notice'
 
 export function DashboardLayout() {
   return (
@@ -12,6 +13,7 @@ export function DashboardLayout() {
           <Header />
           <main className="flex-1 px-6 pb-8 pt-6 xl:px-8">
             <div className="mx-auto w-full max-w-7xl">
+              <SourceNotice />
               <Outlet />
             </div>
           </main>

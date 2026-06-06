@@ -10,7 +10,7 @@ import {
   type ModelsMetric,
 } from './models-metrics'
 import { getModelLabel, getProviderLabel } from './models-table'
-import { formatCompactCurrency, formatCompactInteger, formatCurrency, formatInteger, formatTokenCount } from '../../lib/format'
+import { formatCompactCurrencyWithProvenance, formatCompactInteger, formatCurrencyWithProvenance, formatInteger, formatTokenCount } from '../../lib/format'
 
 export interface ModelsRowCardProps {
   row: EnrichedModelRow
@@ -31,7 +31,7 @@ export function ModelsRowCard({ row, metric, totalMetricValue }: ModelsRowCardPr
           <div className="truncate font-medium text-foreground">{getModelLabel(row)}</div>
           <div className="mt-1 text-xs uppercase tracking-[0.14em] text-muted-foreground">{getProviderLabel(row)}</div>
         </div>
-        <div className="font-mono text-sm text-foreground">{formatCompactCurrency(row.cost)}</div>
+        <div className="font-mono text-sm text-foreground">{formatCompactCurrencyWithProvenance(row.cost, row.cost_status, row.cost_provenance)}</div>
       </div>
 
       <div className="mt-3 flex items-center gap-3">
@@ -136,7 +136,7 @@ export function ModelsRowCard({ row, metric, totalMetricValue }: ModelsRowCardPr
         </div>
         <div className="rounded-lg bg-background/40 px-2.5 py-2">
           <div className="uppercase tracking-[0.14em]">Avg / msg</div>
-          <div className="mt-1 font-mono text-sm text-foreground">{formatCurrency(row.avgCostPerMessage)}</div>
+          <div className="mt-1 font-mono text-sm text-foreground">{formatCurrencyWithProvenance(row.avgCostPerMessage, row.cost_status, row.cost_provenance)}</div>
         </div>
         <div className="rounded-lg bg-background/40 px-2.5 py-2">
           <div className="uppercase tracking-[0.14em]">{metricMeta.progressLabel}</div>

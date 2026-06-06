@@ -1,3 +1,5 @@
+import type { CostProvenance, CostStatus } from '../types/api'
+
 const integerFormatter = new Intl.NumberFormat('en-US')
 const compactIntegerFormatter = new Intl.NumberFormat('en-US', {
   notation: 'compact',
@@ -76,6 +78,67 @@ export function formatCompactCurrency(value: number) {
   }
 
   return compactCurrencyFormatter.format(value)
+}
+
+export function getCostStatus(status?: CostStatus, provenance?: CostProvenance): CostStatus | undefined {
+  return status ?? provenance?.status
+}
+
+export function isMissingCost(status?: CostStatus, provenance?: CostProvenance): boolean {
+  return getCostStatus(status, provenance) === 'missing'
+}
+
+export function formatCurrencyWithProvenance(value: number, status?: CostStatus, provenance?: CostProvenance) {
+  const effectiveStatus = getCostStatus(status, provenance)
+
+  if (effectiveStatus === 'missing') {
+    return 'Unknown'
+  }
+
+  const formatted = formatCurrency(value)
+
+  if (effectiveStatus === 'approximate') {
+    return `≈ ${formatted}`
+  }
+
+  return formatted
+}
+
+export function formatCompactCurrencyWithProvenance(value: number, status?: CostStatus, provenance?: CostProvenance) {
+  const effectiveStatus = getCostStatus(status, provenance)
+
+  if (effectiveStatus === 'missing') {
+    return 'Unknown'
+  }
+
+  const formatted = formatCompactCurrency(value)
+
+  if (effectiveStatus === 'approximate') {
+    return `≈ ${formatted}`
+  }
+
+  return formatted
+}
+
+export function formatCostProvenance(status?: CostStatus, provenance?: CostProvenance) {
+  const effectiveStatus = getCostStatus(status, provenance)
+
+  switch (effectiveStatus) {
+    case 'reported':
+      return 'reported cost'
+    case 'computed':
+      return provenance?.pricing_snapshot_id
+        ? `computed from pricing snapshot ${provenance.pricing_snapshot_id}`
+        : 'computed cost'
+    case 'approximate':
+      return provenance?.note ?? 'approximate cost'
+    case 'mixed':
+      return provenance?.note ?? 'mixed cost provenance'
+    case 'missing':
+      return provenance?.note ?? 'cost unavailable'
+    default:
+      return null
+  }
 }
 
 export function formatShortDate(value: string) {
