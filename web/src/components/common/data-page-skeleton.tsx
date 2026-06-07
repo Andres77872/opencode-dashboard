@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader } from '../ui/card'
 import { Skeleton } from '../ui/skeleton'
+import { KPI_GRID_CLASS } from './kpi-grid'
 
 export type SkeletonSection = 'kpi-grid' | 'chart' | 'table' | 'chips'
 
@@ -24,15 +25,15 @@ export function DataPageSkeleton({ sections, kpiCount = 4, tableRows = 6 }: Data
         switch (section) {
           case 'kpi-grid':
             return (
-              <div key="kpi-grid" className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
+              <div key="kpi-grid" className={KPI_GRID_CLASS}>
                 {Array.from({ length: kpiCount }).map((_, index) => (
-                  <Card key={index}>
-                    <CardHeader>
-                      <Skeleton className="h-3 w-24" />
-                      <Skeleton className="mt-3 h-9 w-28" />
+                  <Card key={index} className="gap-3 py-4">
+                    <CardHeader className="pb-2">
+                      <Skeleton className="h-3.5 w-24" />
+                      <Skeleton className="mt-2 h-7 w-24" />
                     </CardHeader>
-                    <CardContent>
-                      <Skeleton className="h-4 w-36" />
+                    <CardContent className="pt-0">
+                      <Skeleton className="h-3.5 w-36" />
                     </CardContent>
                   </Card>
                 ))}

@@ -62,7 +62,8 @@
 }
 
 :root {
-  --header-height: 116px;
+  /* Combined sticky header + filter bar height; corrected at runtime by ResizeObserver. */
+  --header-height: 104px;
   color-scheme: dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -95,10 +96,10 @@ body::before {
   inset: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(to right, color-mix(in oklab, var(--color-border) 22%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in oklab, var(--color-border) 18%, transparent) 1px, transparent 1px);
-  background-size: 32px 32px;
-  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.35), transparent 70%);
+    linear-gradient(to right, color-mix(in oklab, var(--color-border) 14%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--color-border) 10%, transparent) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.3), transparent 72%);
 }
 
 a {

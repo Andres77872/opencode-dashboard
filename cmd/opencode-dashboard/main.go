@@ -23,6 +23,7 @@ import (
 	"opencode-dashboard/internal/config"
 	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/source/claudecode"
+	"opencode-dashboard/internal/source/codex"
 	opencodesource "opencode-dashboard/internal/source/opencode"
 	"opencode-dashboard/internal/stats"
 	"opencode-dashboard/internal/store"
@@ -93,8 +94,9 @@ Web flags:
   --port <n>     Bind localhost port (default: 7450)
   --db <path>    Use an explicit OpenCode SQLite database path
   --channel <c>  Resolve a channel-specific OpenCode DB (stable/latest/beta/custom)
-  --source <id>  Initial data source (opencode or claude_code; default: opencode)
+  --source <id>  Initial data source (opencode, claude_code, or codex; default: opencode)
   --claude-home <dir>  Claude Code config directory for future claude_code registration
+  --codex-home <dir>   Codex config directory for codex registration
   --no-open      Do not launch the browser automatically
 
 TUI flags:
@@ -114,10 +116,11 @@ func cmdWeb(args []string) error {
 	dbPath := fs.String("db", "", "explicit OpenCode SQLite database path")
 	noOpen := fs.Bool("no-open", false, "do not open a browser")
 	channel := fs.String("channel", "", "channel-specific OpenCode database to use")
-	sourceFlag := fs.String("source", string(source.SourceOpenCode), "initial data source: opencode or claude_code")
+	sourceFlag := fs.String("source", string(source.SourceOpenCode), "initial data source: opencode, claude_code, or codex")
 	claudeHome := fs.String("claude-home", "", "explicit Claude Code config directory")
+	codexHome := fs.String("codex-home", "", "explicit Codex config directory")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard web [--port <n>] [--db <path>] [--channel <name>] [--source <id>] [--claude-home <dir>] [--no-open]\n\n")
+		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard web [--port <n>] [--db <path>] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>] [--no-open]\n\n")
 		fmt.Fprintf(fs.Output(), "Starts the local web dashboard and serves the API on http://%s:<port>.\n", web.DefaultHost)
 	}
 
@@ -139,6 +142,7 @@ func cmdWeb(args []string) error {
 		return err
 	}
 	claudeSelection := config.ResolveClaudeHome(*claudeHome)
+	codexSelection := config.ResolveCodexHome(*codexHome)
 
 	selection, err := resolveDBSelection(*dbPath, *channel)
 	if err != nil {
@@ -147,13 +151,13 @@ func cmdWeb(args []string) error {
 
 	ctx := context.Background()
 	st, openErr := openValidatedStore(ctx, selection.Path)
-	if openErr != nil && selectedSource != source.SourceClaudeCode {
+	if openErr != nil && selectedSource == source.SourceOpenCode {
 		return openErr
 	}
 	if openErr != nil {
 		st = nil
 	}
-	registry, err := buildWebRegistry(st, selection, selectedSource, claudeSelection, *claudeHome)
+	registry, err := buildWebRegistry(st, selection, selectedSource, claudeSelection, *claudeHome, codexSelection, *codexHome)
 	if err != nil {
 		if st != nil {
 			_ = st.Close()
@@ -187,6 +191,9 @@ func cmdWeb(args []string) error {
 	fmt.Printf("source:     %s\n", selectedSource)
 	if selectedSource == source.SourceClaudeCode || *claudeHome != "" || os.Getenv(config.EnvClaudeConfigDir) != "" {
 		fmt.Printf("claude:    %s (%s)\n", claudeSelection.Path, claudeSelection.Source)
+	}
+	if selectedSource == source.SourceCodex || *codexHome != "" || os.Getenv(config.EnvCodexHome) != "" {
+		fmt.Printf("codex:     %s (%s)\n", codexSelection.Path, codexSelection.Source)
 	}
 	if web.HasAssets() {
 		fmt.Println("frontend:   embedded assets")
@@ -363,16 +370,16 @@ func parseSourceSelection(value string) (source.SourceID, error) {
 		return source.SourceOpenCode, nil
 	}
 	switch source.SourceID(selected) {
-	case source.SourceOpenCode, source.SourceClaudeCode:
+	case source.SourceOpenCode, source.SourceClaudeCode, source.SourceCodex:
 		return source.SourceID(selected), nil
 	case source.SourceID("both"):
 		return "", fmt.Errorf("--source=both is unsupported in v1; select one source at a time")
 	default:
-		return "", fmt.Errorf("invalid --source %q (supported: opencode, claude_code)", selected)
+		return "", fmt.Errorf("invalid --source %q (supported: opencode, claude_code, codex)", selected)
 	}
 }
 
-func buildWebRegistry(st *store.Store, selection dbSelection, startup source.SourceID, claudeSelection config.PathSelection, explicitClaudeHome string) (*source.Registry, error) {
+func buildWebRegistry(st *store.Store, selection dbSelection, startup source.SourceID, claudeSelection config.PathSelection, explicitClaudeHome string, codexSelection config.PathSelection, explicitCodexHome string) (*source.Registry, error) {
 	registry := source.NewRegistry(source.SourceOpenCode)
 	registry.SetStartupID(startup)
 	if st != nil {
@@ -409,6 +416,19 @@ func buildWebRegistry(st *store.Store, selection dbSelection, startup source.Sou
 		}
 	} else if claudeConfigured {
 		if err := registry.RegisterUnavailable(claudeInfo); err != nil {
+			return nil, err
+		}
+	}
+
+	codexSrc := codex.New(codex.Options{CodexHome: codexSelection.Path, PathSource: codexSelection.Source})
+	codexInfo := codexSrc.Info(context.Background())
+	codexConfigured := startup == source.SourceCodex || explicitCodexHome != "" || os.Getenv(config.EnvCodexHome) != ""
+	if codexInfo.Available {
+		if err := registry.Register(codexSrc); err != nil {
+			return nil, err
+		}
+	} else if codexConfigured {
+		if err := registry.RegisterUnavailable(codexInfo); err != nil {
 			return nil, err
 		}
 	}

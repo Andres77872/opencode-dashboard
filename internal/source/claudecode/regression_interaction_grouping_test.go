@@ -167,6 +167,92 @@ func TestClaudeInteractionGroupingCostAndTokenSemantics(t *testing.T) {
 	}
 }
 
+func TestClaudeInteractionGroupingBillsRepeatedAssistantFragmentsOnce(t *testing.T) {
+	src := newTempRegressionSource(t, map[string][]string{
+		"-home-andres-projects-grouping/repeated-fragment-session.jsonl": repeatedAssistantBillingFragmentLines(),
+	})
+	ctx := testContext(t)
+	period := stats.PeriodQuery{Period: "all"}
+	wantCost := 6.2175
+
+	overview, err := src.Overview(ctx, period)
+	if err != nil {
+		t.Fatalf("Overview(all) failed: %v", err)
+	}
+	if overview.Messages != 1 {
+		t.Errorf("Overview().Messages = %d, want 1 grouped interaction", overview.Messages)
+	}
+	if !approxEqual(overview.Cost, wantCost) {
+		t.Errorf("Overview().Cost = %.6f, want %.6f from one billed request, not repeated content fragments", overview.Cost, wantCost)
+	}
+	if overview.Tokens.Input != 1_000_000 || overview.Tokens.Output != 200_000 || overview.Tokens.Cache.Read != 100_000 || overview.Tokens.Cache.Write != 50_000 {
+		t.Errorf("Overview().Tokens = %#v, want one usage contribution despite three assistant fragments", overview.Tokens)
+	}
+	if overview.CostProvenance == nil {
+		t.Fatalf("Overview().CostProvenance = nil, want aggregate provenance")
+	}
+	if overview.CostProvenance.ComputedCount != 1 {
+		t.Errorf("Overview().CostProvenance.ComputedCount = %d, want 1 billed request", overview.CostProvenance.ComputedCount)
+	}
+
+	messages, err := src.Messages(ctx, period, 1, 100, chronologicalMessageSort())
+	if err != nil {
+		t.Fatalf("Messages(all) failed: %v", err)
+	}
+	if messages.Total != 1 || len(messages.Messages) != 1 {
+		t.Fatalf("Messages total/len = %d/%d, want 1/1", messages.Total, len(messages.Messages))
+	}
+	entry := messages.Messages[0]
+	if entry.FoldedAssistantCalls != 3 {
+		t.Errorf("Messages()[0].FoldedAssistantCalls = %d, want 3 raw assistant fragments preserved in the grouped interaction", entry.FoldedAssistantCalls)
+	}
+	if !approxEqual(entry.Cost, wantCost) {
+		t.Errorf("Messages()[0].Cost = %.6f, want %.6f from one billed request", entry.Cost, wantCost)
+	}
+	if entry.Tokens == nil {
+		t.Fatalf("Messages()[0].Tokens = nil, want one usage contribution")
+	}
+	if entry.Tokens.Input != 1_000_000 || entry.Tokens.Output != 200_000 || entry.Tokens.Cache.Read != 100_000 || entry.Tokens.Cache.Write != 50_000 {
+		t.Errorf("Messages()[0].Tokens = %#v, want one usage contribution despite repeated assistant fragments", *entry.Tokens)
+	}
+	if entry.CostProvenance == nil || entry.CostProvenance.ComputedCount != 1 {
+		t.Errorf("Messages()[0].CostProvenance = %#v, want one computed billed request", entry.CostProvenance)
+	}
+
+	detail := mustMessageDetail(t, src, entry.ID)
+	if len(detail.Content.ReasoningParts) != 1 {
+		t.Errorf("MessageDetail().ReasoningParts len = %d, want the thinking fragment preserved", len(detail.Content.ReasoningParts))
+	}
+	assertDetailTextContains(t, detail, "Visible answer block from the same response.")
+	assertDetailToolCompleted(t, detail, "toolu_repeated_fragment", "fragment tool completed")
+
+	session, err := src.SessionByID(ctx, "repeated-fragment-session")
+	if err != nil {
+		t.Fatalf("SessionByID(repeated-fragment-session) failed: %v", err)
+	}
+	if session == nil {
+		t.Fatalf("SessionByID(repeated-fragment-session) = nil, want session detail")
+	}
+	if !approxEqual(session.TotalCost, wantCost) {
+		t.Errorf("SessionByID().TotalCost = %.6f, want %.6f from one billed request", session.TotalCost, wantCost)
+	}
+	if session.TotalTokens.Input != 1_000_000 || session.TotalTokens.Output != 200_000 || session.TotalTokens.Cache.Read != 100_000 || session.TotalTokens.Cache.Write != 50_000 {
+		t.Errorf("SessionByID().TotalTokens = %#v, want one usage contribution despite repeated assistant fragments", session.TotalTokens)
+	}
+
+	models, err := src.Models(ctx, period)
+	if err != nil {
+		t.Fatalf("Models(all) failed: %v", err)
+	}
+	model := findModelEntryByID(t, models, "claude-test-computed")
+	if !approxEqual(model.Cost, wantCost) {
+		t.Errorf("Models()[claude-test-computed].Cost = %.6f, want %.6f from one billed request", model.Cost, wantCost)
+	}
+	if model.Tokens.Input != 1_000_000 || model.Tokens.Output != 200_000 || model.Tokens.Cache.Read != 100_000 || model.Tokens.Cache.Write != 50_000 {
+		t.Errorf("Models()[claude-test-computed].Tokens = %#v, want one usage contribution despite repeated assistant fragments", model.Tokens)
+	}
+}
+
 func TestClaudeInteractionGroupingFiltersInternalMetadataRows(t *testing.T) {
 	src := newTempRegressionSource(t, map[string][]string{
 		"-home-andres-projects-grouping/metadata-session.jsonl": metadataNoiseLines(),
@@ -378,6 +464,19 @@ func cumulativeToolLoopLines() []string {
 		`{"type":"assistant","uuid":"cumulative-assistant-tool-2","session_id":"cumulative-tool-loop-session","timestamp":"2026-03-02T10:00:03Z","cwd":"/home/andres/projects/grouping","total_cost_usd":3.00,"message":{"role":"assistant","model":"claude-test-computed","content":[{"type":"tool_use","id":"toolu_cumulative_grep","name":"Grep","input":{"pattern":"usage"}}],"usage":{"input_tokens":300,"output_tokens":30}}}`,
 		`{"type":"user","uuid":"cumulative-tool-result-2","session_id":"cumulative-tool-loop-session","timestamp":"2026-03-02T10:00:04Z","cwd":"/home/andres/projects/grouping","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_cumulative_grep","content":"grep completed","is_error":false}]}}`,
 		`{"type":"assistant","uuid":"cumulative-assistant-final","session_id":"cumulative-tool-loop-session","timestamp":"2026-03-02T10:00:05Z","cwd":"/home/andres/projects/grouping","total_cost_usd":6.00,"message":{"role":"assistant","model":"claude-test-computed","content":[{"type":"text","text":"Final answer with cumulative counters."}],"usage":{"input_tokens":600,"output_tokens":60}}}`,
+	}
+}
+
+func repeatedAssistantBillingFragmentLines() []string {
+	usage := `"usage":{"input_tokens":1000000,"output_tokens":200000,"cache_read_input_tokens":100000,"cache_creation_input_tokens":50000}`
+	prefix := `{"type":"assistant","session_id":"repeated-fragment-session","requestId":"req_repeated_fragment","timestamp":"2026-03-02T11:00:01Z","cwd":"/home/andres/projects/grouping","message":{"id":"msg_repeated_fragment","role":"assistant","model":"claude-test-computed",`
+	suffix := `,` + usage + `}}`
+	return []string{
+		`{"type":"user","uuid":"repeated-fragment-user","session_id":"repeated-fragment-session","timestamp":"2026-03-02T11:00:00Z","cwd":"/home/andres/projects/grouping","message":{"role":"user","content":"Group repeated assistant fragments but bill the API response once."}}`,
+		prefix + `"content":[{"type":"thinking","thinking":"Investigating billing fragments."}]` + suffix,
+		prefix + `"content":[{"type":"text","text":"Visible answer block from the same response."}]` + suffix,
+		prefix + `"content":[{"type":"tool_use","id":"toolu_repeated_fragment","name":"Read","input":{"file_path":"fixture.txt"}}]` + suffix,
+		`{"type":"user","uuid":"repeated-fragment-tool-result","session_id":"repeated-fragment-session","timestamp":"2026-03-02T11:00:02Z","cwd":"/home/andres/projects/grouping","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_repeated_fragment","content":"fragment tool completed","is_error":false}]}}`,
 	}
 }
 

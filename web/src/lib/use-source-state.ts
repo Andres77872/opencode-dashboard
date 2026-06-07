@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { isSourceID, type SourceID, type SourceInfo, type SourceListResponse } from '../types/api'
-import { resolveRequestedSourceId, shouldOmitSourceParam } from './source-selection'
+import { isSourceID, type SourceID, type SourceInfo, type SourceListResponse } from '../types/api.ts'
+import { resolveRequestedSourceId, shouldOmitSourceParam } from './source-selection.ts'
 
 export interface SourceStateError {
   kind: 'invalid' | 'unsupported' | 'unavailable' | 'metadata'
@@ -16,31 +16,63 @@ export interface SourceState {
   setSelectedSourceId: (sourceId: SourceID) => void
 }
 
-const CLAUDE_CODE_PENDING_INFO: SourceInfo = {
-  id: 'claude_code',
-  label: 'Claude Code',
-  kind: 'jsonl',
-  available: false,
-  default: false,
-  read_only: true,
-  local_only: true,
-  capabilities: [],
-  warnings: ['Claude Code transcripts are plaintext local files and may contain sensitive content.'],
-  diagnostics: {
-    status: 'unavailable',
-    reason: 'Claude Code source is not registered by this backend yet.',
-  },
-  cost_policy: {
-    status: 'missing',
-    currency: 'USD',
-    note: 'Claude Code pricing support is pending adapter registration.',
-  },
-  privacy: {
-    plaintext_transcripts: true,
+const PENDING_SOURCE_INFO: Partial<Record<SourceID, SourceInfo>> = {
+  claude_code: {
+    id: 'claude_code',
+    label: 'Claude Code',
+    kind: 'jsonl',
+    available: false,
+    default: false,
     read_only: true,
     local_only: true,
-    redaction: true,
+    capabilities: [],
+    warnings: ['Claude Code transcripts are plaintext local files and may contain sensitive content.'],
+    diagnostics: {
+      status: 'unavailable',
+      reason: 'Claude Code source is not registered by this backend yet.',
+    },
+    cost_policy: {
+      status: 'missing',
+      currency: 'USD',
+      note: 'Claude Code pricing support is pending adapter registration.',
+    },
+    privacy: {
+      plaintext_transcripts: true,
+      read_only: true,
+      local_only: true,
+      redaction: true,
+    },
   },
+  codex: {
+    id: 'codex',
+    label: 'Codex',
+    kind: 'jsonl',
+    available: false,
+    default: false,
+    read_only: true,
+    local_only: true,
+    capabilities: [],
+    warnings: ['Codex transcripts are plaintext local files and may contain sensitive prompt, path, and tool-output content.'],
+    diagnostics: {
+      status: 'unavailable',
+      reason: 'Codex source is not registered by this backend yet.',
+    },
+    cost_policy: {
+      status: 'estimated_api_equivalent',
+      currency: 'USD',
+      note: 'Codex costs are estimated API-equivalent values, not actual subscription spend.',
+    },
+    privacy: {
+      plaintext_transcripts: true,
+      read_only: true,
+      local_only: true,
+      redaction: true,
+    },
+  },
+}
+
+export function getPendingSourceInfo(sourceId: SourceID): SourceInfo | null {
+  return PENDING_SOURCE_INFO[sourceId] ?? null
 }
 
 function findSource(sourceList: SourceListResponse | null, sourceId: SourceID): SourceInfo | null {
@@ -63,10 +95,11 @@ function getSourceStateError(rawSourceParam: string | null, requestedSourceId: S
   }
 
   if (!sourceInfo) {
-    if (requestedSourceId === 'claude_code') {
+    if (requestedSourceId === 'claude_code' || requestedSourceId === 'codex') {
+      const label = requestedSourceId === 'codex' ? 'Codex' : 'Claude Code'
       return {
         kind: 'unavailable',
-        message: 'Claude Code is not registered by the backend yet. OpenCode remains available, but this selected Claude view has no data source to query.',
+        message: `${label} is not registered by the backend yet. OpenCode remains available, but this selected ${label} view has no data source to query.`,
       }
     }
 
@@ -99,10 +132,7 @@ export function useSourceState(sourceList: SourceListResponse | null): SourceSta
     if (sourceInfo) {
       return sourceInfo
     }
-    if (requestedSourceId === 'claude_code') {
-      return CLAUDE_CODE_PENDING_INFO
-    }
-    return null
+    return getPendingSourceInfo(requestedSourceId)
   }, [requestedSourceId, sourceList])
 
   const sourceStateError = useMemo(

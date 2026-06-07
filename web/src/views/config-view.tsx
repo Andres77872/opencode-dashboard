@@ -8,15 +8,15 @@ import { ConfigSummaryMetrics } from '../components/config/config-summary-metric
 import { ConfigWorkspaceHeader } from '../components/config/config-workspace-header'
 import { CopyButton } from '../components/config/copy-button'
 import { useDashboardContext } from '../components/layout/dashboard-context'
+import { ErrorState } from '../components/common/error-state'
+import { PageHeader } from '../components/layout/page-header'
 import { Alert } from '../components/ui/alert'
-import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { buildConfigSummary, buildSectionProjections, normalizeSearchQuery, serializeConfigValue, titleizeKey } from '../lib/config-utils'
 import { getConfig } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
 import type { ConfigStats, SourceID } from '../types/api'
-import type { DailyPeriod } from '../types/api'
 
 /**
  * Backward-compat shim for config content.
@@ -46,7 +46,7 @@ export function ConfigView() {
   // cachePeriods: false ensures always re-fetch on refreshNonce.
   const { data: rawData, loading, error } = usePeriodResource(
     (_p: string, signal?: AbortSignal, sourceId?: SourceID) => getConfig(signal, sourceId),
-    '7d' as DailyPeriod,
+    '7d',
     { cachePeriods: false },
   )
   const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
@@ -116,15 +116,7 @@ export function ConfigView() {
   if (loading && !data) {
     return (
       <section className="space-y-6">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div className="space-y-2">
-            <Badge tone="accent">Live route</Badge>
-            <h2 className="text-2xl font-semibold tracking-tight text-foreground">Config</h2>
-            <p className="max-w-3xl text-sm text-muted-foreground">
-              Redacted {sourceLabel} config/source snapshot from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>.
-            </p>
-          </div>
-        </div>
+        <PageHeader title="Config" description={`Redacted ${sourceLabel} config / source snapshot.`} />
         <ConfigSkeleton />
       </section>
     )
@@ -134,31 +126,9 @@ export function ConfigView() {
 
   return (
     <section className="space-y-6">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div className="space-y-2">
-          <Badge tone="accent">Live route</Badge>
-          <h2 className="text-2xl font-semibold tracking-tight text-foreground">Config</h2>
-          <p className="max-w-3xl text-sm text-muted-foreground">
-            Redacted {sourceLabel} config/source snapshot from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config</code>.
-          </p>
-        </div>
+      <PageHeader title="Config" description={`Redacted ${sourceLabel} config / source snapshot.`} />
 
-        <div className="text-sm text-muted-foreground">
-          Endpoint: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/config{selectedSourceId !== 'opencode' ? `?source=${selectedSourceId}` : ''}</code>
-        </div>
-      </div>
-
-      {error ? (
-        <Alert tone="danger" className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="font-medium text-foreground">Config failed to load</div>
-            <div className="text-sm opacity-90">{error}</div>
-          </div>
-          <Button variant="ghost" onClick={handleRetry}>
-            Retry
-          </Button>
-        </Alert>
-      ) : null}
+      {error ? <ErrorState title="Config failed to load" message={error} onRetry={handleRetry} /> : null}
 
       {summary ? (
         <>

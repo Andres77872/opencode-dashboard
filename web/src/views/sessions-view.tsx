@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { PeriodToggle } from '../components/daily/period-toggle'
-import type { PeriodMode } from '../components/daily/period-toggle'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { DataPageSkeleton } from '../components/common/data-page-skeleton'
+import { EmptyStateCard } from '../components/common/empty-state-card'
+import { ErrorState } from '../components/common/error-state'
+import { PageHeader } from '../components/layout/page-header'
 import { SessionsKpiGrid, type SessionsSummary } from '../components/sessions/sessions-kpi-grid'
 import { SessionsTable } from '../components/sessions/sessions-table'
 import { SessionDetailCard } from '../components/sessions/session-detail-card'
 import { SessionCuesSidebar } from '../components/sessions/session-cues-sidebar'
 import { SessionPagination } from '../components/sessions/session-pagination'
 import { Input } from '../components/ui/input'
-import { Alert } from '../components/ui/alert'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
@@ -24,8 +24,8 @@ import {
 import { getSessionDetail, getSessionsWithFilter } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
 import { formatDateTime, formatInteger } from '../lib/format'
-import { usePeriodState, serializeCustomPeriod, applyPeriodToUrl } from '../lib/use-period-state'
-import type { CustomPeriod, DailyPeriod, SessionDetail, SessionEntry, SessionList, SourceID } from '../types/api'
+import { usePeriodControls } from '../lib/use-period-controls'
+import type { SessionDetail, SessionEntry, SessionList, SourceID } from '../types/api'
 
 const PAGE_SIZE = 12
 const SEARCH_DEBOUNCE_MS = 300
@@ -59,10 +59,7 @@ export function SessionsView() {
   const triggerButtonRef = useRef<HTMLButtonElement | null>(null)
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const periodState = usePeriodState()
-  const cacheKey = periodState.mode === 'custom' && periodState.customRange
-    ? serializeCustomPeriod(periodState.customRange.from, periodState.customRange.to)
-    : periodState.preset
+  const { cacheKey } = usePeriodControls()
   const rawFilter = searchParams.get('filter') ?? ''
   const projectId = searchParams.get('project_id') ?? undefined
   const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
@@ -178,40 +175,6 @@ export function SessionsView() {
 
   // Handlers
   const handleRetry = () => requestRefresh()
-  const handlePresetChange = (np: DailyPeriod) => {
-    setSearchParams((prev) => {
-      const n = applyPeriodToUrl(prev, { mode: 'preset', preset: np })
-      n.set('page', '1')
-      return n
-    })
-  }
-
-  const handleCustomRangeChange = (range: CustomPeriod) => {
-    setSearchParams((prev) => {
-      const n = applyPeriodToUrl(prev, { mode: 'custom', customRange: range })
-      n.set('page', '1')
-      return n
-    })
-  }
-
-  const handleModeChange = (mode: PeriodMode) => {
-    if (mode === 'preset') {
-      setSearchParams((prev) => {
-        const n = applyPeriodToUrl(prev, { mode: 'preset', preset: periodState.preset })
-        n.set('page', '1')
-        return n
-      })
-    } else {
-      setSearchParams((prev) => {
-        const n = applyPeriodToUrl(prev, {
-          mode: 'custom',
-          customRange: periodState.customRange ?? { from: '' },
-        })
-        n.set('page', '1')
-        return n
-      })
-    }
-  }
   const handleDetailRetry = () => { if (selectedSessionId) setDetailRequestNonce((c) => c + 1) }
   const handleSelectSession = (s: SessionEntry) => setSelectedSessionId(s.id)
   const handleTriggerClick = (s: SessionEntry, e: React.MouseEvent) => {
@@ -242,25 +205,7 @@ export function SessionsView() {
   if (loading && !data) {
     return (
       <section className="space-y-6">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div className="space-y-2">
-            <Badge tone="accent">Live route</Badge>
-            <h2 className="text-2xl font-semibold tracking-tight text-foreground">Sessions</h2>
-            <p className="max-w-3xl text-sm text-muted-foreground">
-              Dense session browsing from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions</code>
-              {' '}+ <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions/:id</code>.
-            </p>
-          </div>
-            <PeriodToggle
-              mode={periodState.mode}
-              preset={periodState.preset}
-              customRange={periodState.customRange}
-              onPresetChange={handlePresetChange}
-              onCustomRangeChange={handleCustomRangeChange}
-              onModeChange={handleModeChange}
-              disabled={loading}
-            />
-        </div>
+        <PageHeader title="Sessions" description="Session triage with dense scan lines and a live metadata drawer." />
         <DataPageSkeleton sections={['kpi-grid', 'table']} tableRows={8} />
       </section>
     )
@@ -269,40 +214,9 @@ export function SessionsView() {
   return (
     <>
       <section className="space-y-6">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div className="space-y-2">
-            <Badge tone="accent">Live route</Badge>
-            <h2 className="text-2xl font-semibold tracking-tight text-foreground">Sessions</h2>
-            <p className="max-w-3xl text-sm text-muted-foreground">
-              Modern dark session triage with dense scan lines, honest pagination, and a real metadata drawer instead of fake transcript theater.
-            </p>
-          </div>
-          <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-            <div className="text-sm text-muted-foreground">
-              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions?period={cacheKey}{selectedSourceId !== 'opencode' ? `&source=${selectedSourceId}` : ''}</code>
-              {' '}+ <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/sessions/:id</code>
-            </div>
-            <PeriodToggle
-              mode={periodState.mode}
-              preset={periodState.preset}
-              customRange={periodState.customRange}
-              onPresetChange={handlePresetChange}
-              onCustomRangeChange={handleCustomRangeChange}
-              onModeChange={handleModeChange}
-              disabled={loading}
-            />
-          </div>
-        </div>
+        <PageHeader title="Sessions" description="Session triage with dense scan lines and a live metadata drawer." />
 
-        {error && (
-          <Alert tone="danger" className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="font-medium text-foreground">Sessions failed to load</div>
-              <div className="text-sm opacity-90">{error}</div>
-            </div>
-            <Button variant="ghost" onClick={handleRetry}>Retry</Button>
-          </Alert>
-        )}
+        {error && <ErrorState title="Sessions failed to load" message={error} onRetry={handleRetry} />}
 
         {summary && (
           <>
@@ -317,19 +231,13 @@ export function SessionsView() {
             <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_18rem]">
               <div className="min-w-0 space-y-3">
                 {summary.empty ? (
-                  <Card>
-                    <CardHeader>
-                      <CardDescription>Empty state</CardDescription>
-                      <CardTitle>No sessions recorded yet</CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-sm text-muted-foreground">
-                      <p>
-                        {selectedSourceId === 'claude_code'
-                          ? 'No persisted Claude Code sessions were found in readable local transcripts for this selected window.'
-                          : `This route stays empty until ${sourceLabel} contains session rows.`}
-                      </p>
-                    </CardContent>
-                  </Card>
+                  <EmptyStateCard title="No sessions recorded yet">
+                    <p>
+                      {selectedSourceId === 'claude_code'
+                        ? 'No persisted Claude Code sessions were found in readable local transcripts for this selected window.'
+                        : `This route stays empty until ${sourceLabel} contains session rows.`}
+                    </p>
+                  </EmptyStateCard>
                 ) : (
                   <Card>
                     <CardHeader className="gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -338,7 +246,6 @@ export function SessionsView() {
                         <CardTitle>Session index</CardTitle>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <Badge tone="success">Dense table</Badge>
                         <Badge>Page {data?.page ?? 1}</Badge>
                         {summary.hottestSession && <Badge tone="accent">Top spend · {summary.hottestSession.label}</Badge>}
                       </div>

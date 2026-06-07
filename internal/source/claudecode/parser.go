@@ -40,18 +40,20 @@ type parsedToolResult struct {
 }
 
 type parsedRecord struct {
-	File        transcriptFile
-	Line        int
-	UUID        string
-	SessionID   string
-	CWD         string
-	Role        string
-	IsMeta      bool
-	Timestamp   time.Time
-	Model       string
-	Usage       tokenUsage
-	HasUsage    bool
-	ReportedUSD *float64
+	File         transcriptFile
+	Line         int
+	UUID         string
+	RequestID    string
+	APIMessageID string
+	SessionID    string
+	CWD          string
+	Role         string
+	IsMeta       bool
+	Timestamp    time.Time
+	Model        string
+	Usage        tokenUsage
+	HasUsage     bool
+	ReportedUSD  *float64
 	// ReportedUSDCumulative is true when the transcript field name explicitly
 	// indicates a cumulative total rather than a per-call delta. Claude JSONL
 	// field semantics are not fully public, so normalization uses this only as a
@@ -131,6 +133,14 @@ func normalizeRawRecord(file transcriptFile, lineNo int, raw map[string]any) (pa
 	record.UUID = firstString(raw, "uuid", "id", "message_id", "messageID")
 	if record.UUID == "" {
 		record.UUID = firstString(message, "uuid", "id", "message_id", "messageID")
+	}
+	record.RequestID = firstString(raw, "requestId", "request_id", "requestID")
+	if record.RequestID == "" {
+		record.RequestID = firstString(message, "requestId", "request_id", "requestID")
+	}
+	record.APIMessageID = firstString(message, "id", "message_id", "messageID")
+	if record.APIMessageID == "" {
+		record.APIMessageID = firstString(raw, "api_message_id", "apiMessageID")
 	}
 	record.CWD = firstString(raw, "cwd", "project_cwd", "projectPath")
 	if record.CWD == "" {

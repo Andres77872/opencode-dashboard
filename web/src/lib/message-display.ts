@@ -1,29 +1,36 @@
 import type { MessageEntry, SourceID } from '../types/api.ts'
 
-type SourceLike = Pick<MessageEntry, 'source_id' | 'folded_assistant_calls' | 'folded_tool_calls'>
+type SourceLike = Pick<MessageEntry, 'source_id' | 'folded_assistant_calls' | 'folded_tool_calls' | 'folded_token_updates'>
+
+function isGroupedInteractionSource(sourceId: SourceID | undefined): sourceId is 'claude_code' | 'codex' {
+  return sourceId === 'claude_code' || sourceId === 'codex'
+}
 
 export function getHistoryTitle(sourceId: SourceID): string {
-  return sourceId === 'claude_code' ? 'Interactions history' : 'Messages history'
+  return isGroupedInteractionSource(sourceId) ? 'Interactions history' : 'Messages history'
 }
 
 export function getSessionColumnLabel(sourceId: SourceID): string {
-  return sourceId === 'claude_code' ? 'Prompt / session' : 'Session'
+  return isGroupedInteractionSource(sourceId) ? 'Prompt / session' : 'Session'
 }
 
 export function getTotalRowLabel(sourceId: SourceID): string {
-  return sourceId === 'claude_code' ? 'interactions' : 'messages'
+  return isGroupedInteractionSource(sourceId) ? 'interactions' : 'messages'
 }
 
 export function getEmptyHistoryCopy(sourceId: SourceID, sourceLabel: string): string {
   if (sourceId === 'claude_code') {
     return 'No Claude Code interactions were found in readable local transcripts for this Daily window.'
   }
+  if (sourceId === 'codex') {
+    return 'No Codex interactions were found in readable local transcripts for this Daily window.'
+  }
 
   return `No ${sourceLabel} messages recorded for this Daily window yet.`
 }
 
 export function getDetailTitle(sourceId: SourceID, loading: boolean): string {
-  if (sourceId === 'claude_code') {
+  if (isGroupedInteractionSource(sourceId)) {
     return loading ? 'Loading interaction detail' : 'Interaction detail'
   }
 
@@ -31,36 +38,42 @@ export function getDetailTitle(sourceId: SourceID, loading: boolean): string {
 }
 
 export function getDetailLoadingCopy(sourceId: SourceID): string {
-  return sourceId === 'claude_code'
+  return isGroupedInteractionSource(sourceId)
     ? 'Fetching grouped interaction content…'
     : 'Fetching verbose request content…'
 }
 
 export function hasFoldedProvenanceCounts(message: SourceLike): boolean {
-  return positiveCount(message.folded_assistant_calls) > 0 || positiveCount(message.folded_tool_calls) > 0
+  return positiveCount(message.folded_token_updates) > 0 || positiveCount(message.folded_assistant_calls) > 0 || positiveCount(message.folded_tool_calls) > 0
 }
 
 export function getFoldedProvenanceText(message: SourceLike, selectedSourceId?: SourceID): string | null {
   const sourceId = message.source_id ?? selectedSourceId
-  if (sourceId !== 'claude_code') {
+  if (!isGroupedInteractionSource(sourceId)) {
     return null
   }
 
+  const tokenUpdates = positiveCount(message.folded_token_updates)
   const assistantCalls = positiveCount(message.folded_assistant_calls)
   const toolCalls = positiveCount(message.folded_tool_calls)
-  if (assistantCalls === 0 && toolCalls === 0) {
-    return 'Grouped Claude Code interaction; folded call counts unavailable.'
+  if (tokenUpdates === 0 && assistantCalls === 0 && toolCalls === 0) {
+    return sourceId === 'codex'
+      ? 'Grouped Codex interaction; folded activity counts unavailable.'
+      : 'Grouped Claude Code interaction; folded call counts unavailable.'
   }
 
   const parts: string[] = []
+  if (sourceId === 'codex' && tokenUpdates > 0) {
+    parts.push(`${tokenUpdates} token ${tokenUpdates === 1 ? 'update' : 'updates'}`)
+  }
   if (assistantCalls > 0) {
-    parts.push(`${assistantCalls} assistant ${assistantCalls === 1 ? 'call' : 'calls'}`)
+    parts.push(`${assistantCalls} assistant ${sourceId === 'codex' ? (assistantCalls === 1 ? 'message' : 'messages') : (assistantCalls === 1 ? 'call' : 'calls')}`)
   }
   if (toolCalls > 0) {
     parts.push(`${toolCalls} tool ${toolCalls === 1 ? 'call' : 'calls'}`)
   }
 
-  return `Grouped Claude Code interaction with ${joinParts(parts)} folded into one row.`
+  return `Grouped ${sourceId === 'codex' ? 'Codex' : 'Claude Code'} interaction with ${joinParts(parts)} folded into one row.`
 }
 
 function positiveCount(value: number | undefined): number {

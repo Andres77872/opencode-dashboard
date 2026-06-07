@@ -35,16 +35,21 @@ export type CalendarProps = React.ComponentProps<typeof DayPicker>
  * applied to the <td> (day) element via getClassNamesForModifiers.
  * The day_button (button) only gets its base class — no aria modifiers.
  */
-export function Calendar({ className, classNames, showOutsideDays = true, ...props }: CalendarProps) {
+export function Calendar({ className, classNames, showOutsideDays = true, navLayout = 'around', ...props }: CalendarProps) {
   return (
     <DayPicker
       data-slot="calendar"
       showOutsideDays={showOutsideDays}
+      // navLayout="around" renders the prev button on the first month and the next
+      // button on the last month (as the absolutely-positioned button_previous /
+      // button_next below), instead of a single Nav toolbar. This is what makes
+      // month navigation visible — the default Nav toolbar would be hidden by `nav`.
+      navLayout={navLayout}
       className={cn('p-3', className)}
-      classNames={
-        {
+      classNames={{
+        ...({
           // ── Layout containers ──────────────────────────
-          months: 'flex flex-col sm:flex-row gap-2',
+          months: 'flex flex-col sm:flex-row gap-4',
           month: 'flex flex-wrap items-center justify-center relative',
 
           // ── Month caption ───────────────────────────────
@@ -129,8 +134,10 @@ export function Calendar({ className, classNames, showOutsideDays = true, ...pro
 
           // ── Chevron (used by nav/dropdown buttons) ─────
           chevron: 'h-4 w-4',
-        } satisfies Partial<ClassNames>
-      }
+        } satisfies Partial<ClassNames>),
+        // Allow callers to extend/override specific slot classes.
+        ...classNames,
+      }}
       {...props}
     />
   )

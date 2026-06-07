@@ -13,11 +13,12 @@ type CacheStats struct {
 type CostStatus string
 
 const (
-	CostReported    CostStatus = "reported"
-	CostComputed    CostStatus = "computed"
-	CostApproximate CostStatus = "approximate"
-	CostMixed       CostStatus = "mixed"
-	CostMissing     CostStatus = "missing"
+	CostReported               CostStatus = "reported"
+	CostComputed               CostStatus = "computed"
+	CostApproximate            CostStatus = "approximate"
+	CostEstimatedAPIEquivalent CostStatus = "estimated_api_equivalent"
+	CostMixed                  CostStatus = "mixed"
+	CostMissing                CostStatus = "missing"
 )
 
 type CostProvenance struct {
@@ -416,6 +417,7 @@ type MessageEntry struct {
 	// without exposing raw transcript events as separate dashboard messages.
 	FoldedAssistantCalls int64 `json:"folded_assistant_calls,omitempty"`
 	FoldedToolCalls      int64 `json:"folded_tool_calls,omitempty"`
+	FoldedTokenUpdates   int64 `json:"folded_token_updates,omitempty"`
 }
 
 // MessageList is a paginated list of messages for a date range.

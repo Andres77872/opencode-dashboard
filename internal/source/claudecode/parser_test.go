@@ -188,6 +188,12 @@ func TestParserToleratesSafeShapeIdentityAndExtraUsageKeys(t *testing.T) {
 	if record.UUID != "safe-assistant-tool-1" {
 		t.Errorf("UUID = %q, want top-level uuid parsed", record.UUID)
 	}
+	if record.RequestID != "req_safe_tool_1" {
+		t.Errorf("RequestID = %q, want top-level requestId parsed", record.RequestID)
+	}
+	if record.APIMessageID != "msg_safe_tool_1" {
+		t.Errorf("APIMessageID = %q, want nested message.id parsed", record.APIMessageID)
+	}
 	if record.Role != "assistant" {
 		t.Errorf("Role = %q, want assistant", record.Role)
 	}

@@ -1,29 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { DailyChart } from '../components/daily/daily-chart'
 import { MessageDetailSheet } from '../components/daily/message-detail-sheet'
 import { getDailyMetricMeta, getDailyMetricValue, type DailyMetric } from '../components/daily/daily-metrics'
-import { PeriodToggle } from '../components/daily/period-toggle'
-import type { PeriodMode } from '../components/daily/period-toggle'
 import { RequestsHistoryTable, REQUESTS_SORT_DEFAULTS } from '../components/daily/requests-history-table'
 import type { RequestsSortKey } from '../components/daily/requests-history-table'
 import { MetricCard } from '../components/overview/metric-card'
 import { TokenBreakdownList } from '../components/overview/token-breakdown-card'
-import { Alert } from '../components/ui/alert'
-import { Badge } from '../components/ui/badge'
-import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 import { DataPageSkeleton } from '../components/common/data-page-skeleton'
+import { EmptyStateCard } from '../components/common/empty-state-card'
+import { ErrorState } from '../components/common/error-state'
+import { KpiGrid } from '../components/common/kpi-grid'
+import { PageHeader } from '../components/layout/page-header'
 import { getDaily, getMessages } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
 import { formatCompactInteger, formatCurrencyWithProvenance, formatInteger, formatShortDate, formatTokenCount, safeDivide } from '../lib/format'
 import { getNextSortState } from '../lib/table-sort'
 import type { SortState } from '../lib/table-sort'
 import { getTokenTotal } from '../lib/token-breakdown'
-import { usePeriodState, serializeCustomPeriod, applyPeriodToUrl } from '../lib/use-period-state'
-import type { CustomPeriod, DailyPeriod, DailyStats, DayStats, MessageList } from '../types/api'
+import { usePeriodControls } from '../lib/use-period-controls'
+import type { DailyStats, DayStats, MessageList } from '../types/api'
 
 const REQUESTS_PAGE_SIZE = 12
 
@@ -141,7 +139,6 @@ export function DailyView() {
     sourceMetadataLoading,
     sourceStateError,
   } = useDashboardContext()
-  const [, setSearchParams] = useSearchParams()
   const [messages, setMessages] = useState<MessageList | null>(null)
   const [messagesLoading, setMessagesLoading] = useState(true)
   const [messagesError, setMessagesError] = useState<string | null>(null)
@@ -151,10 +148,7 @@ export function DailyView() {
   const [metric, setMetric] = useState<DailyMetric>('cost')
   const messageTriggerRef = useRef<HTMLElement | null>(null)
 
-  const periodState = usePeriodState()
-  const cacheKey = periodState.mode === 'custom' && periodState.customRange
-    ? serializeCustomPeriod(periodState.customRange.from, periodState.customRange.to)
-    : periodState.preset
+  const { cacheKey } = usePeriodControls()
   const period: string = cacheKey
   const { data: dataForPeriod, loading, error } = usePeriodResource(getDaily, cacheKey)
   const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
@@ -165,6 +159,14 @@ export function DailyView() {
     setSelectedMessageId(null)
     setMessages(null)
   }, [selectedSourceId])
+
+  // The period picker is global now, so reset local message pagination/selection
+  // when the selected range (cacheKey) changes.
+  useEffect(() => {
+    setMessagesPage(1)
+    setMessagesSort(null)
+    setSelectedMessageId(null)
+  }, [cacheKey])
 
   // Messages pagination stays inline — different state shape from daily stats
   useEffect(() => {
@@ -274,54 +276,10 @@ export function DailyView() {
     setSelectedMessageId(messageId)
   }
 
-  const handlePresetChange = (nextPeriod: DailyPeriod) => {
-    setMessagesPage(1)
-    setMessagesSort(null)
-    setSelectedMessageId(null)
-    setSearchParams((previous) => {
-      return applyPeriodToUrl(previous, { mode: 'preset', preset: nextPeriod })
-    })
-  }
-
-  const handleCustomRangeChange = (range: CustomPeriod) => {
-    setMessagesPage(1)
-    setMessagesSort(null)
-    setSelectedMessageId(null)
-    setSearchParams((previous) => {
-      return applyPeriodToUrl(previous, { mode: 'custom', customRange: range })
-    })
-  }
-
-  const handleModeChange = (mode: PeriodMode) => {
-    setMessagesPage(1)
-    setMessagesSort(null)
-    setSelectedMessageId(null)
-    if (mode === 'preset') {
-      setSearchParams((previous) => {
-        return applyPeriodToUrl(previous, { mode: 'preset', preset: periodState.preset })
-      })
-    } else {
-      setSearchParams((previous) => {
-        return applyPeriodToUrl(previous, {
-          mode: 'custom',
-          customRange: periodState.customRange ?? { from: '' },
-        })
-      })
-    }
-  }
-
   if (loading && !dataForPeriod) {
     return (
       <section className="space-y-6">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div className="space-y-2">
-            <Badge tone="accent">Live route</Badge>
-            <h2 className="text-2xl font-semibold tracking-tight text-foreground">Daily</h2>
-            <p className="max-w-3xl text-sm text-muted-foreground">
-              Daily spend, message volume, and token-mix trends across the selected period. The URL stays shareable.
-            </p>
-          </div>
-        </div>
+        <PageHeader title="Daily" description="Daily spend, message volume, and token-mix trends across the selected range." />
         <DataPageSkeleton sections={['kpi-grid', 'chart', 'table']} tableRows={6} />
       </section>
     )
@@ -330,48 +288,12 @@ export function DailyView() {
   return (
     <>
       <section className="space-y-6">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div className="space-y-2">
-            <Badge tone="accent">Live route</Badge>
-            <h2 className="text-2xl font-semibold tracking-tight text-foreground">Daily</h2>
-            <p className="max-w-3xl text-sm text-muted-foreground">
-              Daily spend, message volume, and token-mix trends across the selected period. The URL stays shareable.
-            </p>
-          </div>
+        <PageHeader title="Daily" description="Daily spend, message volume, and token-mix trends across the selected range." />
 
-          <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-            <div className="text-sm text-muted-foreground">
-              Endpoint:{' '}
-              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                /api/v1/daily?period={period}{selectedSourceId !== 'opencode' ? `&source=${selectedSourceId}` : ''}
-              </code>
-            </div>
-            <PeriodToggle
-              mode={periodState.mode}
-              preset={periodState.preset}
-              customRange={periodState.customRange}
-              onPresetChange={handlePresetChange}
-              onCustomRangeChange={handleCustomRangeChange}
-              onModeChange={handleModeChange}
-              disabled={loading}
-            />
-          </div>
-        </div>
-
-        {error ? (
-          <Alert tone="danger" className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="font-medium text-foreground">Daily trends failed to load</div>
-              <div className="text-sm opacity-90">{error}</div>
-            </div>
-            <Button variant="ghost" onClick={handleRetry}>
-              Retry
-            </Button>
-          </Alert>
-        ) : null}
+        {error ? <ErrorState title="Daily trends failed to load" message={error} onRetry={handleRetry} /> : null}
 
         <TooltipProvider>
-          <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
+          <KpiGrid>
               <MetricCard
                 label="Total spend"
                 value={summary ? formatCurrencyWithProvenance(summary.cost, dataForPeriod?.cost_status, dataForPeriod?.cost_provenance) : ''}
@@ -397,7 +319,7 @@ export function DailyView() {
               hint={summary ? `${formatTokenCount(Math.round(summary.averageTokensPerDay))} avg per calendar day` : 'Loading...'}
               loading={loading && !summary}
             />
-          </div>
+          </KpiGrid>
         </TooltipProvider>
 
         <RequestsHistoryTable
@@ -415,20 +337,10 @@ export function DailyView() {
 
         {summary ? (
           summary.empty ? (
-            <Card>
-              <CardHeader>
-                <CardDescription>Empty state</CardDescription>
-                <CardTitle>No daily activity yet</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm text-muted-foreground">
-                <p>
-                  {getEmptyWindowCopy(period, sourceLabel, selectedSourceId)}
-                </p>
-                <p>
-                  Once data exists, charts, token breakdowns, and the message ledger will appear automatically.
-                </p>
-              </CardContent>
-            </Card>
+            <EmptyStateCard title="No daily activity yet">
+              <p>{getEmptyWindowCopy(period, sourceLabel, selectedSourceId)}</p>
+              <p>Once data exists, charts, token breakdowns, and the message ledger will appear automatically.</p>
+            </EmptyStateCard>
           ) : (
             <div className="grid items-start gap-4 2xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,1fr)]">
               <div className="min-w-0 space-y-4">

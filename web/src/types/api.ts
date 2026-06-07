@@ -3,7 +3,7 @@ export interface CacheStats {
   write: number
 }
 
-export const SOURCE_ID_VALUES = ['opencode', 'claude_code'] as const
+export const SOURCE_ID_VALUES = ['opencode', 'claude_code', 'codex'] as const
 
 export type SourceID = (typeof SOURCE_ID_VALUES)[number]
 
@@ -60,7 +60,7 @@ export interface SourceListResponse {
   sources: SourceInfo[]
 }
 
-export type CostStatus = 'reported' | 'computed' | 'approximate' | 'mixed' | 'missing'
+export type CostStatus = 'reported' | 'computed' | 'approximate' | 'estimated_api_equivalent' | 'mixed' | 'missing'
 
 export interface CostProvenance {
   status: CostStatus
@@ -286,6 +286,7 @@ export interface MessageEntry extends SourceTagged {
   provider_id?: string
   folded_assistant_calls?: number
   folded_tool_calls?: number
+  folded_token_updates?: number
 }
 
 export interface MessageList extends SourceTagged {

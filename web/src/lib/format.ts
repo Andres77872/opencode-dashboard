@@ -97,7 +97,7 @@ export function formatCurrencyWithProvenance(value: number, status?: CostStatus,
 
   const formatted = formatCurrency(value)
 
-  if (effectiveStatus === 'approximate') {
+  if (effectiveStatus === 'approximate' || effectiveStatus === 'estimated_api_equivalent') {
     return `≈ ${formatted}`
   }
 
@@ -113,7 +113,7 @@ export function formatCompactCurrencyWithProvenance(value: number, status?: Cost
 
   const formatted = formatCompactCurrency(value)
 
-  if (effectiveStatus === 'approximate') {
+  if (effectiveStatus === 'approximate' || effectiveStatus === 'estimated_api_equivalent') {
     return `≈ ${formatted}`
   }
 
@@ -132,6 +132,8 @@ export function formatCostProvenance(status?: CostStatus, provenance?: CostProve
         : 'computed cost'
     case 'approximate':
       return provenance?.note ?? 'approximate cost'
+    case 'estimated_api_equivalent':
+      return provenance?.note ?? 'estimated API-equivalent cost; not actual subscription spend'
     case 'mixed':
       return provenance?.note ?? 'mixed cost provenance'
     case 'missing':

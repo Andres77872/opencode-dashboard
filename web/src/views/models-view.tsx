@@ -1,9 +1,6 @@
 import { ChevronRightIcon } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
 import { SegmentedControl } from '../components/daily/segmented-control'
-import { PeriodToggle } from '../components/daily/period-toggle'
-import type { PeriodMode } from '../components/daily/period-toggle'
 import {
   getModelsMetricMeta,
   getModelsMetricValue,
@@ -22,11 +19,13 @@ import {
   type SortKey,
 } from '../components/models/models-table'
 import { DataPageSkeleton } from '../components/common/data-page-skeleton'
+import { EmptyStateCard } from '../components/common/empty-state-card'
+import { ErrorState } from '../components/common/error-state'
+import { KpiGrid } from '../components/common/kpi-grid'
+import { PageHeader } from '../components/layout/page-header'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { MetricCard } from '../components/overview/metric-card'
-import { Alert } from '../components/ui/alert'
 import { Badge } from '../components/ui/badge'
-import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 import { getModels } from '../lib/api'
@@ -34,8 +33,7 @@ import { usePeriodResource } from '../lib/use-period-resource'
 import { formatCompactInteger, formatCurrencyWithProvenance, formatInteger, formatPercentage, formatTokenCount, safeDivide } from '../lib/format'
 import { getNextSortState, type SortState } from '../lib/table-sort'
 import { getAvgTokenTotal, getTokenTotal } from '../lib/token-breakdown'
-import { usePeriodState, serializeCustomPeriod, applyPeriodToUrl } from '../lib/use-period-state'
-import type { CustomPeriod, DailyPeriod } from '../types/api'
+import { usePeriodControls } from '../lib/use-period-controls'
 
 function getEmptyWindowCopy(period: string, sourceLabel: string, sourceId: string): string {
   if (sourceId === 'claude_code') {
@@ -50,14 +48,10 @@ function getEmptyWindowCopy(period: string, sourceLabel: string, sourceId: strin
 
 export function ModelsView() {
   const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
-  const [, setSearchParams] = useSearchParams()
   const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
   const [metric, setMetric] = useState<ModelsMetric>('cost')
 
-  const periodState = usePeriodState()
-  const cacheKey = periodState.mode === 'custom' && periodState.customRange
-    ? serializeCustomPeriod(periodState.customRange.from, periodState.customRange.to)
-    : periodState.preset
+  const { cacheKey } = usePeriodControls()
   const { data, loading, error } = usePeriodResource(getModels, cacheKey)
   const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
 
@@ -140,36 +134,6 @@ export function ModelsView() {
     setSortState((current) => getNextSortState(current, key, DEFAULT_SORT_DIRECTIONS[key]))
   }
 
-  const handlePresetChange = (nextPeriod: DailyPeriod) => {
-    setSortState(null)
-    setSearchParams((previous) => {
-      return applyPeriodToUrl(previous, { mode: 'preset', preset: nextPeriod })
-    })
-  }
-
-  const handleCustomRangeChange = (range: CustomPeriod) => {
-    setSortState(null)
-    setSearchParams((previous) => {
-      return applyPeriodToUrl(previous, { mode: 'custom', customRange: range })
-    })
-  }
-
-  const handleModeChange = (mode: PeriodMode) => {
-    setSortState(null)
-    if (mode === 'preset') {
-      setSearchParams((previous) => {
-        return applyPeriodToUrl(previous, { mode: 'preset', preset: periodState.preset })
-      })
-    } else {
-      setSearchParams((previous) => {
-        return applyPeriodToUrl(previous, {
-          mode: 'custom',
-          customRange: periodState.customRange ?? { from: '' },
-        })
-      })
-    }
-  }
-
   const handleMetricChange = (nextMetric: ModelsMetric) => {
     setMetric(nextMetric)
     setSortState(null) // reset sort to default on metric change
@@ -184,15 +148,7 @@ export function ModelsView() {
   if (loading && !data) {
     return (
       <section className="space-y-6">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div className="space-y-2">
-            <Badge tone="accent">Live route</Badge>
-            <h2 className="text-2xl font-semibold tracking-tight text-foreground">Models</h2>
-            <p className="max-w-3xl text-sm text-muted-foreground">
-              Ranked model usage from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/models</code>.
-            </p>
-          </div>
-        </div>
+        <PageHeader title="Models" description="Dense model comparison for spend, usage, and token posture." />
         <DataPageSkeleton sections={['kpi-grid', 'table']} tableRows={7} />
       </section>
     )
@@ -200,48 +156,14 @@ export function ModelsView() {
 
   return (
     <section className="space-y-6">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div className="space-y-2">
-          <Badge tone="accent">Live route</Badge>
-          <h2 className="text-2xl font-semibold tracking-tight text-foreground">Models</h2>
-          <p className="max-w-3xl text-sm text-muted-foreground">
-            Dense model comparison for spend, usage, and token posture. Switch between metrics and time windows without leaving the view.
-          </p>
-        </div>
+      <PageHeader title="Models" description="Dense model comparison for spend, usage, and token posture." />
 
-        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-          <div className="text-sm text-muted-foreground">
-            Endpoint:{' '}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/models?period={cacheKey}</code>
-          </div>
-          <PeriodToggle
-              mode={periodState.mode}
-              preset={periodState.preset}
-              customRange={periodState.customRange}
-              onPresetChange={handlePresetChange}
-              onCustomRangeChange={handleCustomRangeChange}
-              onModeChange={handleModeChange}
-              disabled={loading}
-            />
-        </div>
-      </div>
-
-      {error ? (
-        <Alert tone="danger" className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="font-medium text-foreground">Models failed to load</div>
-            <div className="text-sm opacity-90">{error}</div>
-          </div>
-          <Button variant="ghost" onClick={handleRetry}>
-            Retry
-          </Button>
-        </Alert>
-      ) : null}
+      {error ? <ErrorState title="Models failed to load" message={error} onRetry={handleRetry} /> : null}
 
       {summary ? (
         <>
           <TooltipProvider>
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <KpiGrid>
               <MetricCard
                 label="Tracked models"
                 value={formatInteger(summary.rows.length)}
@@ -263,22 +185,14 @@ export function ModelsView() {
                 value={formatCurrencyWithProvenance(safeDivide(summary.totalCost, summary.totalMessages), data?.cost_status, data?.cost_provenance)}
                 hint={summary.efficiencyLeader ? `${getModelLabel(summary.efficiencyLeader)} is cheapest per message` : 'Not enough data yet'}
               />
-            </div>
+            </KpiGrid>
           </TooltipProvider>
 
           {summary.empty ? (
-            <Card>
-              <CardHeader>
-                <CardDescription>Empty state</CardDescription>
-                <CardTitle>No model usage in this window</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm text-muted-foreground">
-                <p>{getEmptyWindowCopy(cacheKey, sourceLabel, selectedSourceId)}</p>
-                <p>
-                  Once data exists, this route will rank models by cost and expose message volume, token load, and per-message spend.
-                </p>
-              </CardContent>
-            </Card>
+            <EmptyStateCard title="No model usage in this window">
+              <p>{getEmptyWindowCopy(cacheKey, sourceLabel, selectedSourceId)}</p>
+              <p>Once data exists, this route will rank models by cost and expose message volume, token load, and per-message spend.</p>
+            </EmptyStateCard>
           ) : (
             <>
               <div className="grid gap-4 xl:grid-cols-[1fr_1fr_1fr]">
@@ -374,7 +288,6 @@ export function ModelsView() {
                     <CardTitle>Model usage ranking</CardTitle>
                   </div>
                   <div className="flex flex-wrap items-center gap-3">
-                    <Badge tone="success">Dense table</Badge>
                     <Badge>{metricMeta.progressLabel}</Badge>
                     <SegmentedControl
                       ariaLabel="Metric selection"

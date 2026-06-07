@@ -211,6 +211,155 @@ func TestRegistryListIncludesSourceMetadata(t *testing.T) {
 	}
 }
 
+func TestRegistryCodexSourceSelectionSemantics(t *testing.T) {
+	tests := []struct {
+		name       string
+		selectedID string
+		wantID     SourceID
+		wantErr    error
+	}{
+		{
+			name:       "omitted source remains OpenCode even when Codex is available",
+			selectedID: "",
+			wantID:     SourceOpenCode,
+		},
+		{
+			name:       "explicit codex resolves only Codex source",
+			selectedID: string(SourceCodex),
+			wantID:     SourceCodex,
+		},
+		{
+			name:       "invalid source is rejected without Codex or OpenCode fallback",
+			selectedID: "codex_typo",
+			wantErr:    ErrInvalidSource,
+		},
+		{
+			name:       "unsupported both still rejected",
+			selectedID: "both",
+			wantErr:    ErrUnsupportedSource,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry := NewRegistry(SourceOpenCode)
+			opencodeSource := newRegistryFakeSource(SourceOpenCode, true)
+			claudeSource := newRegistryFakeSource(SourceClaudeCode, true)
+			codexSource := newRegistryFakeSource(SourceCodex, true)
+
+			for _, src := range []*registryFakeSource{opencodeSource, claudeSource, codexSource} {
+				if err := registry.Register(src); err != nil {
+					t.Fatalf("Register(%s) failed: %v", src.info.ID, err)
+				}
+			}
+
+			got, err := registry.Resolve(tt.selectedID)
+			if tt.wantErr != nil {
+				if err == nil {
+					t.Fatalf("Resolve(%q) error = nil, want %v", tt.selectedID, tt.wantErr)
+				}
+				if !errors.Is(err, tt.wantErr) {
+					t.Errorf("Resolve(%q) error = %v, want errors.Is(..., %v)", tt.selectedID, err, tt.wantErr)
+				}
+				if got != nil {
+					t.Errorf("Resolve(%q) source = %#v, want nil on error", tt.selectedID, got)
+				}
+				if opencodeSource.overviewCalls != 0 || codexSource.overviewCalls != 0 {
+					t.Errorf("invalid selection touched fallback sources: opencode=%d codex=%d", opencodeSource.overviewCalls, codexSource.overviewCalls)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Resolve(%q) unexpected error: %v", tt.selectedID, err)
+			}
+			if got.Info(context.Background()).ID != tt.wantID {
+				t.Errorf("Resolve(%q).Info().ID = %q, want %q", tt.selectedID, got.Info(context.Background()).ID, tt.wantID)
+			}
+			if tt.wantID == SourceCodex && opencodeSource.overviewCalls != 0 {
+				t.Errorf("explicit Codex selection touched OpenCode fallback %d times", opencodeSource.overviewCalls)
+			}
+		})
+	}
+}
+
+func TestRegistryListIncludesCodexMetadataAndStartupSelection(t *testing.T) {
+	registry := NewRegistry(SourceOpenCode)
+	registry.SetStartupID(SourceCodex)
+
+	opencodeSource := newRegistryFakeSource(SourceOpenCode, true)
+	codexSource := newRegistryFakeSource(SourceCodex, true)
+	codexSource.info.Label = "Codex"
+	codexSource.info.Kind = "jsonl"
+	codexSource.info.Path = "/synthetic/codex"
+	codexSource.info.PathSource = "--codex-home"
+	codexSource.info.ReadOnly = true
+	codexSource.info.LocalOnly = true
+	codexSource.info.Capabilities = []string{"overview", "daily", "models", "tools", "projects", "sessions", "messages", "config"}
+	codexSource.info.CostPolicy = CostPolicy{Status: "estimated_api_equivalent", Currency: "USD", PricingSnapshotID: "openai-codex-gpt-5.5-2026-04-23"}
+	codexSource.info.Privacy = PrivacyInfo{PlaintextTranscripts: true, ReadOnly: true, LocalOnly: true, Redaction: true}
+
+	if err := registry.Register(opencodeSource); err != nil {
+		t.Fatalf("Register(opencode) failed: %v", err)
+	}
+	if err := registry.Register(codexSource); err != nil {
+		t.Fatalf("Register(codex) failed: %v", err)
+	}
+
+	infos := registry.List(context.Background())
+	byID := make(map[SourceID]SourceInfo, len(infos))
+	for _, info := range infos {
+		byID[info.ID] = info
+	}
+	codexInfo, ok := byID[SourceCodex]
+	if !ok {
+		t.Fatalf("List() missing Codex source: %#v", infos)
+	}
+	if !codexInfo.Available || codexInfo.Default || !codexInfo.Selected {
+		t.Errorf("Codex available/default/selected = %v/%v/%v, want true/false/true", codexInfo.Available, codexInfo.Default, codexInfo.Selected)
+	}
+	if codexInfo.Kind != "jsonl" || !codexInfo.ReadOnly || !codexInfo.LocalOnly {
+		t.Errorf("Codex kind/read/local = %q/%v/%v, want jsonl/true/true", codexInfo.Kind, codexInfo.ReadOnly, codexInfo.LocalOnly)
+	}
+	if codexInfo.CostPolicy.Status != "estimated_api_equivalent" {
+		t.Errorf("Codex CostPolicy.Status = %q, want estimated_api_equivalent", codexInfo.CostPolicy.Status)
+	}
+	if !codexInfo.Privacy.PlaintextTranscripts || !codexInfo.Privacy.Redaction {
+		t.Errorf("Codex privacy = %#v, want plaintext/redaction metadata", codexInfo.Privacy)
+	}
+}
+
+func TestRegistryUnavailableCodexPlaceholderDoesNotFallback(t *testing.T) {
+	registry := NewRegistry(SourceOpenCode)
+	opencodeSource := newRegistryFakeSource(SourceOpenCode, true)
+	if err := registry.Register(opencodeSource); err != nil {
+		t.Fatalf("Register(opencode) failed: %v", err)
+	}
+	if err := registry.RegisterUnavailable(SourceInfo{
+		ID:    SourceCodex,
+		Label: "Codex",
+		Kind:  "jsonl",
+		Path:  "/synthetic/missing-codex",
+		Diagnostics: SourceDiagnostics{
+			Status: "empty",
+			Reason: "Codex home contains no rollout transcripts",
+		},
+	}); err != nil {
+		t.Fatalf("RegisterUnavailable(codex) failed: %v", err)
+	}
+
+	got, err := registry.Resolve(string(SourceCodex))
+	if err == nil || !errors.Is(err, ErrUnavailableSource) {
+		t.Fatalf("Resolve(codex unavailable) error = %v, want unavailable", err)
+	}
+	if got != nil {
+		t.Errorf("Resolve(codex unavailable) source = %#v, want nil", got)
+	}
+	if opencodeSource.overviewCalls != 0 {
+		t.Errorf("unavailable Codex selection touched OpenCode fallback %d times", opencodeSource.overviewCalls)
+	}
+}
+
 func TestRegistryClose(t *testing.T) {
 	tests := []struct {
 		name         string

@@ -54,10 +54,12 @@ type pendingToolRef struct {
 }
 
 type interactionState struct {
-	msg            *messageRecord
-	session        *sessionRecord
-	startedByUser  bool
-	assistantCalls []assistantContribution
+	msg                        *messageRecord
+	session                    *sessionRecord
+	startedByUser              bool
+	rawAssistantRecords        int64
+	assistantCalls             []assistantContribution
+	billingContributionIndexes map[string]int
 }
 
 type assistantContribution struct {
@@ -234,14 +236,57 @@ func (i *interactionState) addAssistantRecord(sessionID string, record parsedRec
 	i.addToolUses(sessionID, record, timestamp, pendingTools)
 
 	cost := computeCost(record.Model, record.Usage, record.HasUsage, record.ReportedUSD, pricing)
-	i.assistantCalls = append(i.assistantCalls, assistantContribution{
+	contribution := assistantContribution{
 		usage:      record.Usage,
 		hasUsage:   record.HasUsage,
 		cost:       cost,
 		cumulative: record.ReportedUSDCumulative,
-	})
-	i.msg.Entry.FoldedAssistantCalls = int64(len(i.assistantCalls))
+	}
+	i.rawAssistantRecords++
+	i.upsertAssistantContribution(sessionID, record, contribution)
+	i.msg.Entry.FoldedAssistantCalls = i.rawAssistantRecords
 	i.recomputeCostAndTokens()
+}
+
+func (i *interactionState) upsertAssistantContribution(sessionID string, record parsedRecord, contribution assistantContribution) {
+	key := assistantBillingKey(sessionID, record)
+	if key == "" {
+		i.assistantCalls = append(i.assistantCalls, contribution)
+		return
+	}
+	if i.billingContributionIndexes == nil {
+		i.billingContributionIndexes = make(map[string]int)
+	}
+	if index, ok := i.billingContributionIndexes[key]; ok {
+		i.assistantCalls[index] = mergeRepeatedBillingContribution(i.assistantCalls[index], contribution)
+		return
+	}
+	i.billingContributionIndexes[key] = len(i.assistantCalls)
+	i.assistantCalls = append(i.assistantCalls, contribution)
+}
+
+func assistantBillingKey(sessionID string, record parsedRecord) string {
+	if record.RequestID != "" {
+		return "request\x00" + sessionID + "\x00" + record.RequestID
+	}
+	if record.APIMessageID != "" {
+		return "message\x00" + sessionID + "\x00" + record.APIMessageID
+	}
+	return ""
+}
+
+func mergeRepeatedBillingContribution(previous, current assistantContribution) assistantContribution {
+	if !current.hasUsage && current.cost.Status == stats.CostMissing && current.cost.Cost == 0 {
+		return previous
+	}
+	if current.cost.Status == stats.CostMissing && previous.cost.Status != stats.CostMissing {
+		if current.hasUsage {
+			previous.usage = current.usage
+			previous.hasUsage = true
+		}
+		return previous
+	}
+	return current
 }
 
 func (i *interactionState) addToolUses(sessionID string, record parsedRecord, timestamp time.Time, pendingTools map[string]pendingToolRef) {
@@ -465,6 +510,8 @@ func recordSemanticFingerprint(sessionID string, record parsedRecord) string {
 		SessionID      string
 		Role           string
 		IsMeta         bool
+		RequestID      string
+		APIMessageID   string
 		Timestamp      string
 		CWD            string
 		Model          string
@@ -480,6 +527,8 @@ func recordSemanticFingerprint(sessionID string, record parsedRecord) string {
 		SessionID:      sessionID,
 		Role:           record.Role,
 		IsMeta:         record.IsMeta,
+		RequestID:      record.RequestID,
+		APIMessageID:   record.APIMessageID,
 		Timestamp:      timestamp,
 		CWD:            record.CWD,
 		Model:          record.Model,

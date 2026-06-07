@@ -29,17 +29,30 @@ function sourceList(startupSourceId: SourceListResponse['startup_source_id']): S
         local_only: true,
         capabilities: [],
       },
+      {
+        id: 'codex',
+        label: 'Codex',
+        kind: 'jsonl',
+        available: true,
+        default: false,
+        read_only: true,
+        local_only: true,
+        capabilities: [],
+      },
     ],
   }
 }
 
 test('uses backend startup source when URL source is absent', () => {
   assert.equal(resolveRequestedSourceId(null, sourceList('claude_code')), 'claude_code')
+  assert.equal(resolveRequestedSourceId(null, sourceList('codex')), 'codex')
 })
 
 test('preserves URL source precedence over backend startup source', () => {
   assert.equal(resolveRequestedSourceId('opencode', sourceList('claude_code')), 'opencode')
   assert.equal(resolveRequestedSourceId('claude_code', sourceList('opencode')), 'claude_code')
+  assert.equal(resolveRequestedSourceId('codex', sourceList('opencode')), 'codex')
+  assert.equal(resolveRequestedSourceId('claude_code', sourceList('codex')), 'claude_code')
 })
 
 test('preserves OpenCode default behavior without URL or startup source', () => {
@@ -56,10 +69,14 @@ test('omits source param only when default and startup fallback are the same sou
   assert.equal(shouldOmitSourceParam('opencode', sourceList('opencode')), true)
   assert.equal(shouldOmitSourceParam('opencode', sourceList('claude_code')), false)
   assert.equal(shouldOmitSourceParam('claude_code', sourceList('claude_code')), false)
+  assert.equal(shouldOmitSourceParam('codex', sourceList('codex')), false)
 })
 
-test('source-scoped period cache keys isolate OpenCode and Claude payloads', () => {
+test('source-scoped period cache keys isolate OpenCode Claude and Codex payloads', () => {
   assert.equal(getSourceScopedCacheKey('opencode', '7d'), 'opencode::7d')
   assert.equal(getSourceScopedCacheKey('claude_code', '7d'), 'claude_code::7d')
+  assert.equal(getSourceScopedCacheKey('codex', '7d'), 'codex::7d')
   assert.notEqual(getSourceScopedCacheKey('opencode', '7d'), getSourceScopedCacheKey('claude_code', '7d'))
+  assert.notEqual(getSourceScopedCacheKey('opencode', '7d'), getSourceScopedCacheKey('codex', '7d'))
+  assert.notEqual(getSourceScopedCacheKey('claude_code', '7d'), getSourceScopedCacheKey('codex', '7d'))
 })

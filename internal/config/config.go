@@ -10,11 +10,13 @@ import (
 const (
 	EnvDBPath          = "OPENCODE_DASHBOARD_DB"
 	EnvClaudeConfigDir = "CLAUDE_CONFIG_DIR"
+	EnvCodexHome       = "OPENCODE_DASHBOARD_CODEX_HOME"
 
 	AppName = "opencode"
 
 	SourceOpenCode   = "opencode"
 	SourceClaudeCode = "claude_code"
+	SourceCodex      = "codex"
 
 	DefaultDBName       = "opencode.db"
 	LatestChannelDBName = "opencode-latest.db"
@@ -27,6 +29,7 @@ type Config struct {
 	channel    string
 	source     string
 	claudeHome string
+	codexHome  string
 }
 
 type PathSelection struct {
@@ -68,6 +71,14 @@ func WithClaudeHome(path string) Option {
 	}
 }
 
+func WithCodexHome(path string) Option {
+	return func(c *Config) {
+		if path != "" {
+			c.codexHome = path
+		}
+	}
+}
+
 func New(opts ...Option) *Config {
 	c := &Config{}
 	for _, opt := range opts {
@@ -101,6 +112,14 @@ func (c *Config) ClaudeHomeSource() string {
 	return ResolveClaudeHome(c.claudeHome).Source
 }
 
+func (c *Config) CodexHome() string {
+	return ResolveCodexHome(c.codexHome).Path
+}
+
+func (c *Config) CodexHomeSource() string {
+	return ResolveCodexHome(c.codexHome).Source
+}
+
 func (c *Config) ConfigPath() string {
 	return filepath.Join(XDGConfigHome(), AppName, AppName+".json")
 }
@@ -123,6 +142,14 @@ func DefaultClaudeHomePath() string {
 		home = "."
 	}
 	return filepath.Join(home, ".claude")
+}
+
+func DefaultCodexHomePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	return filepath.Join(home, ".codex")
 }
 
 func ResolveOpenCodeDB(flagDB string, channel string) (PathSelection, error) {
@@ -155,6 +182,18 @@ func ResolveClaudeHome(flagHome string) PathSelection {
 	}
 
 	return PathSelection{Path: DefaultClaudeHomePath(), Source: "$HOME/.claude"}
+}
+
+func ResolveCodexHome(flagHome string) PathSelection {
+	if flagHome != "" {
+		return PathSelection{Path: flagHome, Source: "--codex-home"}
+	}
+
+	if envHome := os.Getenv(EnvCodexHome); envHome != "" {
+		return PathSelection{Path: envHome, Source: EnvCodexHome}
+	}
+
+	return PathSelection{Path: DefaultCodexHomePath(), Source: "$HOME/.codex"}
 }
 
 func ChannelDBPath(channel string) string {

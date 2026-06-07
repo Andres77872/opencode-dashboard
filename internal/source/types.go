@@ -11,6 +11,7 @@ type SourceID string
 const (
 	SourceOpenCode   SourceID = "opencode"
 	SourceClaudeCode SourceID = "claude_code"
+	SourceCodex      SourceID = "codex"
 )
 
 type Source interface {

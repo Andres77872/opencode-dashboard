@@ -1,15 +1,14 @@
 import { useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { PeriodToggle } from '../components/daily/period-toggle'
-import type { PeriodMode } from '../components/daily/period-toggle'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { MetricCard } from '../components/overview/metric-card'
 import { DataPageSkeleton } from '../components/common/data-page-skeleton'
 import { DataTable, type DataTableColumn } from '../components/common/data-table'
+import { EmptyStateCard } from '../components/common/empty-state-card'
+import { ErrorState } from '../components/common/error-state'
+import { KpiGrid } from '../components/common/kpi-grid'
+import { PageHeader } from '../components/layout/page-header'
 import { ProjectDrilldownDrawer } from '../components/projects/project-drilldown-drawer'
-import { Alert } from '../components/ui/alert'
 import { Badge } from '../components/ui/badge'
-import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Progress } from '../components/ui/progress'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
@@ -26,8 +25,8 @@ import {
   safeDivide,
 } from '../lib/format'
 import { type SortDirection, type SortState } from '../lib/table-sort'
-import { usePeriodState, serializeCustomPeriod, applyPeriodToUrl } from '../lib/use-period-state'
-import type { CustomPeriod, DailyPeriod, ProjectEntry } from '../types/api'
+import { usePeriodControls } from '../lib/use-period-controls'
+import type { ProjectEntry } from '../types/api'
 
 type SortKey = 'cost' | 'messages' | 'sessions' | 'project' | 'tokens'
 
@@ -71,14 +70,10 @@ function compareRows(sortKey: SortKey, left: EnrichedProjectRow, right: Enriched
 
 export function ProjectsView() {
   const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
-  const [, setSearchParams] = useSearchParams()
   const [sortState, setSortState] = useState<SortState<string> | null>(null)
   const [selectedProject, setSelectedProject] = useState<{ sourceId: string; projectId: string } | null>(null)
 
-  const periodState = usePeriodState()
-  const cacheKey = periodState.mode === 'custom' && periodState.customRange
-    ? serializeCustomPeriod(periodState.customRange.from, periodState.customRange.to)
-    : periodState.preset
+  const { cacheKey } = usePeriodControls()
   const { data, loading, error } = usePeriodResource(getProjects, cacheKey)
   const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
   const selectedProjectId = selectedProject?.sourceId === selectedSourceId ? selectedProject.projectId : null
@@ -91,28 +86,6 @@ export function ProjectsView() {
       const dir = current.direction === 'asc' ? 'desc' : 'asc'
       return { key: key as SortKey, direction: dir }
     })
-  }
-
-  const handlePresetChange = (nextPeriod: DailyPeriod) => {
-    setSortState(null)
-    setSearchParams((prev) => applyPeriodToUrl(prev, { mode: 'preset', preset: nextPeriod }))
-  }
-
-  const handleCustomRangeChange = (range: CustomPeriod) => {
-    setSortState(null)
-    setSearchParams((prev) => applyPeriodToUrl(prev, { mode: 'custom', customRange: range }))
-  }
-
-  const handleModeChange = (mode: PeriodMode) => {
-    setSortState(null)
-    if (mode === 'preset') {
-      setSearchParams((prev) => applyPeriodToUrl(prev, { mode: 'preset', preset: periodState.preset }))
-    } else {
-      setSearchParams((prev) => applyPeriodToUrl(prev, {
-        mode: 'custom',
-        customRange: periodState.customRange ?? { from: '' },
-      }))
-    }
   }
 
   const summary = useMemo(() => {
@@ -234,15 +207,7 @@ export function ProjectsView() {
   if (loading && !data) {
     return (
       <section className="space-y-6">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div className="space-y-2">
-            <Badge tone="accent">Live route</Badge>
-            <h2 className="text-2xl font-semibold tracking-tight text-foreground">Projects</h2>
-            <p className="max-w-3xl text-sm text-muted-foreground">
-              Project attention ranking from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/projects</code>.
-            </p>
-          </div>
-        </div>
+        <PageHeader title="Projects" description="Which repos are soaking up cost, sessions, and message volume." />
         <DataPageSkeleton sections={['kpi-grid', 'table']} tableRows={6} />
       </section>
     )
@@ -250,44 +215,13 @@ export function ProjectsView() {
 
   return (
     <section className="space-y-6">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div className="space-y-2">
-          <Badge tone="accent">Live route</Badge>
-          <h2 className="text-2xl font-semibold tracking-tight text-foreground">Projects</h2>
-          <p className="max-w-3xl text-sm text-muted-foreground">
-            A table-first project view for spotting which repos are soaking up cost, sessions, and message volume.
-          </p>
-        </div>
+      <PageHeader title="Projects" description="Which repos are soaking up cost, sessions, and message volume." />
 
-        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-          <div className="text-sm text-muted-foreground">
-            Endpoint: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">/api/v1/projects?period={cacheKey}{selectedSourceId !== 'opencode' ? `&source=${selectedSourceId}` : ''}</code>
-          </div>
-          <PeriodToggle
-              mode={periodState.mode}
-              preset={periodState.preset}
-              customRange={periodState.customRange}
-              onPresetChange={handlePresetChange}
-              onCustomRangeChange={handleCustomRangeChange}
-              onModeChange={handleModeChange}
-              disabled={loading}
-            />
-        </div>
-      </div>
-
-      {error ? (
-        <Alert tone="danger" className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="font-medium text-foreground">Projects failed to load</div>
-            <div className="text-sm opacity-90">{error}</div>
-          </div>
-          <Button variant="ghost" onClick={handleRetry}>Retry</Button>
-        </Alert>
-      ) : null}
+      {error ? <ErrorState title="Projects failed to load" message={error} onRetry={handleRetry} /> : null}
 
       {summary ? (
         <>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <KpiGrid>
             <MetricCard
               label="Tracked projects"
               value={formatInteger(summary.rows.length)}
@@ -308,20 +242,14 @@ export function ProjectsView() {
               value={formatTokenCount(summary.totalTokens)}
               hint={summary.costLeader ? `${getProjectLabel(summary.costLeader)} owns ${formatPercentage(summary.costLeader.costShare)} of spend` : 'No spend recorded yet'}
             />
-          </div>
+          </KpiGrid>
 
           <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_18rem] 2xl:items-start">
             <div className="min-w-0 space-y-4">
               {summary.empty ? (
-                <Card>
-                  <CardHeader>
-                    <CardDescription>Empty state</CardDescription>
-                    <CardTitle>No project activity recorded yet</CardTitle>
-                  </CardHeader>
-                  <CardContent className="text-sm text-muted-foreground">
-                    <p>Once activity lands, this slice ranks projects by cost and shows message and token load.</p>
-                  </CardContent>
-                </Card>
+                <EmptyStateCard title="No project activity recorded yet">
+                  <p>Once activity lands, this slice ranks projects by cost and shows message and token load.</p>
+                </EmptyStateCard>
               ) : (
                 <Card>
                   <CardHeader className="gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -330,7 +258,6 @@ export function ProjectsView() {
                       <CardTitle>Project usage ranking</CardTitle>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Badge tone="success">Dense table</Badge>
                       {summary.costLeader && <Badge tone="accent">Top spend · {getProjectLabel(summary.costLeader)}</Badge>}
                       {summary.activityLeader && <Badge>Top traffic · {getProjectLabel(summary.activityLeader)}</Badge>}
                     </div>

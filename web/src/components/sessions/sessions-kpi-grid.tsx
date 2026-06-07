@@ -1,4 +1,5 @@
 import { MetricCard } from '../overview/metric-card'
+import { KpiGrid } from '../common/kpi-grid'
 import { formatCompactInteger, formatCurrencyWithProvenance, formatInteger } from '../../lib/format'
 import type { CostProvenance, CostStatus } from '../../types/api'
 
@@ -34,7 +35,7 @@ export function SessionsKpiGrid({ summary }: SessionsKpiGridProps) {
   }
 
   return (
-    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+    <KpiGrid>
       <MetricCard
         label="Total sessions"
         value={formatInteger(summary.total)}
@@ -67,6 +68,6 @@ export function SessionsKpiGrid({ summary }: SessionsKpiGridProps) {
             : 'Awaiting session activity'
         }
       />
-    </div>
+    </KpiGrid>
   )
 }
