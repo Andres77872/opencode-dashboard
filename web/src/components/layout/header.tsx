@@ -1,5 +1,7 @@
 import { Menu, RefreshCw } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
 import { Button } from '../ui/button'
+import { Badge } from '../ui/badge'
 import { SourcePicker } from '../source/source-picker'
 import { cn } from '../../lib/utils'
 import { formatRelativeTime } from '../../lib/format'
@@ -15,6 +17,9 @@ import { useSidebar } from './sidebar-context'
 export function Header() {
   const { lastUpdatedAt, isRefreshing, requestRefresh } = useDashboardContext()
   const { toggleMobile } = useSidebar()
+  // The Overview aggregates every source, so the per-source picker does not apply
+  // there — show an "All sources" badge instead to make that explicit.
+  const isOverview = useLocation().pathname.startsWith('/overview')
 
   return (
     <header className="border-b border-border/50 bg-background/85 backdrop-blur-xl">
@@ -34,7 +39,7 @@ export function Header() {
 
         {/* Right: source + sync status + refresh */}
         <div className="flex items-center gap-3 sm:gap-4">
-          <SourcePicker />
+          {isOverview ? <Badge tone="accent">All sources</Badge> : <SourcePicker />}
           <span className="text-sm text-muted-foreground">
             <span className="hidden sm:inline">Last sync </span>
             {isRefreshing ? 'Refreshing…' : formatRelativeTime(lastUpdatedAt)}

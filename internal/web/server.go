@@ -68,6 +68,7 @@ func NewServer(addr string, registry *source.Registry, logger *slog.Logger) *htt
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/sources", s.handlers.Sources)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/overview", s.handlers.Overview)
+	s.mux.HandleFunc("GET "+apiV1Prefix+"/overview/all", s.handlers.OverviewAll)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/daily", s.handlers.Daily)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/models", s.handlers.Models)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/tools", s.handlers.Tools)

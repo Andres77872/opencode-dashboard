@@ -64,6 +64,10 @@ type dashboardData struct {
 	Projects stats.ProjectStats
 	Sessions stats.SessionList
 	Config   stats.ConfigView
+	// AllOverview is the cross-source aggregate that powers the Overview tab. It
+	// is loaded independently of the per-source snapshot (it spans every source)
+	// and survives source switches.
+	AllOverview source.AllSourcesOverview
 }
 
 type filterState struct {
@@ -95,6 +99,12 @@ type projectTableState struct {
 
 type snapshotLoadedMsg struct {
 	data     dashboardData
+	loadedAt time.Time
+	err      error
+}
+
+type aggregateLoadedMsg struct {
+	all      source.AllSourcesOverview
 	loadedAt time.Time
 	err      error
 }
@@ -131,6 +141,7 @@ type model struct {
 	loading       bool
 	loaded        bool
 	loadErr       error
+	aggErr        error // last cross-source aggregate load error (Overview tab)
 	lastLoaded    time.Time
 	data          dashboardData
 	models        modelTableState
@@ -204,8 +215,15 @@ func (m *model) loadAllForCurrent() tea.Cmd {
 	return loadSnapshotCmd(m.src, m.period, m.currentSessionQuery())
 }
 
+// reloadAll refetches the per-source snapshot AND the cross-source aggregate for
+// the current global period. The aggregate (Overview tab) is registry-wide and
+// source-independent, so it runs concurrently with the per-source snapshot.
+func (m *model) reloadAll() tea.Cmd {
+	return tea.Batch(m.loadAllForCurrent(), loadAggregateCmd(m.registry, m.period))
+}
+
 func (m *model) Init() tea.Cmd {
-	return m.loadAllForCurrent()
+	return m.reloadAll()
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -224,11 +242,25 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadErr = nil
 		m.loaded = true
 		m.lastLoaded = msg.loadedAt
+		// Preserve the source-independent aggregate across per-source snapshots.
+		agg := m.data.AllOverview
 		m.data = msg.data
+		m.data.AllOverview = agg
 		m.reconcileTableCursors()
 		m.applyLoadedSessions(msg.data.Sessions)
 		m.reconcileSessionOverlay()
 		m.reconcileProjectOverlay()
+		return m, nil
+
+	case aggregateLoadedMsg:
+		// The Overview tab's aggregate loads independently of the per-source
+		// snapshot, so it does not flip m.loading/m.loaded.
+		if msg.err != nil {
+			m.aggErr = msg.err
+			return m, nil
+		}
+		m.aggErr = nil
+		m.data.AllOverview = msg.all
 		return m, nil
 
 	case sessionsLoadedMsg:
@@ -343,7 +375,7 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.sessionDetail.err = nil
 		m.dayMessages.err = nil
 		m.messageDetail.err = nil
-		return m, m.loadAllForCurrent()
+		return m, m.reloadAll()
 	}
 
 	if matches(key, m.keys.Period...) {
@@ -660,6 +692,13 @@ func (m *model) renderStatusBar() string {
 		schemaLabel = "unavailable"
 	}
 
+	// The Overview tab aggregates every source, so the per-source selection does
+	// not apply there — show "All sources" and drop the picker affordance.
+	srcSegment := sourceLabelOrID(m.srcInfo, m.selectedSource) + pickerCaret(m.width)
+	if m.activeTab == tabOverview {
+		srcSegment = "All sources"
+	}
+
 	base := lipgloss.JoinHorizontal(
 		lipgloss.Left,
 		m.styles.StatusTitle.Render("opencode-dashboard"),
@@ -667,7 +706,7 @@ func (m *model) renderStatusBar() string {
 		m.styles.StatusMeta.Render(m.opts.Version),
 		sep,
 		m.styles.StatusMeta.Render("src: "),
-		m.styles.StatusAccent.Render(sourceLabelOrID(m.srcInfo, m.selectedSource)+pickerCaret(m.width)),
+		m.styles.StatusAccent.Render(srcSegment),
 		sep,
 		m.styles.StatusMeta.Render("range: "),
 		m.styles.StatusAccent.Render(periodLabel(m.period)+pickerCaret(m.width)),
@@ -682,7 +721,7 @@ func (m *model) renderStatusBar() string {
 	// Append the db path only when it (and the right segment) still fit — otherwise
 	// drop it. This prevents the right segment from wrapping on wide terminals.
 	left := base
-	if m.srcInfo.Path != "" {
+	if m.srcInfo.Path != "" && m.activeTab != tabOverview {
 		withDB := lipgloss.JoinHorizontal(lipgloss.Left, base, sep,
 			m.styles.StatusMeta.Render("db: "+truncateWithEllipsis(m.srcInfo.Path, max(m.width/4, 18))))
 		if lipgloss.Width(withDB)+1+lipgloss.Width(right) <= inner {
@@ -968,6 +1007,27 @@ func (m *model) sessionEntryByID(id string) (stats.SessionEntry, bool) {
 		}
 	}
 	return stats.SessionEntry{}, false
+}
+
+// loadAggregateCmd computes the cross-source Overview aggregate for the period.
+// The outer timeout is a coarse safety bound; per-source fan-out and timeouts are
+// handled inside source.AggregateOverview so partial results still come back.
+func loadAggregateCmd(reg *source.Registry, pq stats.PeriodQuery) tea.Cmd {
+	return func() tea.Msg {
+		if reg == nil {
+			return aggregateLoadedMsg{err: errors.New("source registry is not configured")}
+		}
+		// Outer bound > (per-call timeout × calls-per-source) so a heavy source's
+		// sequential calls all fit; per-source fan-out runs concurrently.
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		all, err := source.AggregateOverview(ctx, reg, pq, source.AggregateOptions{
+			IncludeTrend:     true,
+			TopN:             5,
+			PerSourceTimeout: 10 * time.Second,
+		})
+		return aggregateLoadedMsg{all: all, loadedAt: time.Now(), err: err}
+	}
 }
 
 func loadSnapshotCmd(src source.Source, pq stats.PeriodQuery, query stats.SessionQuery) tea.Cmd {

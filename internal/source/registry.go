@@ -123,6 +123,27 @@ func (r *Registry) List(ctx context.Context) []SourceInfo {
 	return infos
 }
 
+// Available returns the live, available Source instances in registration order.
+// Entries that are placeholders (nil source) or report Available == false are skipped.
+// It is used by the cross-source aggregator (see AggregateOverview).
+func (r *Registry) Available(ctx context.Context) []Source {
+	if r == nil {
+		return nil
+	}
+	out := make([]Source, 0, len(r.order))
+	for _, id := range r.order {
+		entry := r.entries[id]
+		if entry.source == nil {
+			continue
+		}
+		if !entry.source.Info(ctx).Available {
+			continue
+		}
+		out = append(out, entry.source)
+	}
+	return out
+}
+
 func (r *Registry) Close() error {
 	if r == nil {
 		return nil

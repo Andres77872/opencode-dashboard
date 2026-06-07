@@ -85,6 +85,37 @@ func TestStatusBarSingleLine(t *testing.T) {
 	}
 }
 
+func TestStatusBarAllSourcesOnOverview(t *testing.T) {
+	newM := func(tab tabID) *model {
+		return &model{
+			width:          120,
+			height:         40,
+			styles:         newStyles(),
+			keys:           defaultKeyMap(),
+			opts:           Options{Version: "dev"},
+			selectedSource: source.SourceOpenCode,
+			srcInfo:        source.SourceInfo{ID: source.SourceOpenCode, Label: "OpenCode", Available: true},
+			period:         stats.PeriodQuery{Period: "7d"},
+			activeTab:      tab,
+			loaded:         true,
+			lastLoaded:     time.Now(),
+		}
+	}
+
+	overview := newM(tabOverview).renderStatusBar()
+	if !strings.Contains(overview, "All sources") {
+		t.Errorf("overview status bar should show 'All sources':\n%s", overview)
+	}
+
+	models := newM(tabModels).renderStatusBar()
+	if strings.Contains(models, "All sources") {
+		t.Errorf("non-overview tab must not show 'All sources':\n%s", models)
+	}
+	if !strings.Contains(models, "OpenCode") {
+		t.Errorf("non-overview tab should show the selected source label:\n%s", models)
+	}
+}
+
 func TestIndexOfPreset(t *testing.T) {
 	if indexOfPreset("7d") != 6 {
 		t.Errorf("indexOfPreset(7d) = %d, want 6", indexOfPreset("7d"))
@@ -601,14 +632,8 @@ func TestToolsStatusBadgeNoData(t *testing.T) {
 
 func TestOverviewZeroDataState(t *testing.T) {
 	s := newStyles()
-	// Empty data should render zero metrics with empty bars, not generic empty state
-	data := dashboardData{
-		Overview: stats.OverviewStats{Sessions: 0, Messages: 0, Cost: 0},
-		Models:   stats.ModelStats{Models: []stats.ModelEntry{}},
-		Projects: stats.ProjectStats{Projects: []stats.ProjectEntry{}},
-		Tools:    stats.ToolStats{Tools: []stats.ToolEntry{}},
-		Sessions: stats.SessionList{Sessions: []stats.SessionEntry{}, Total: 0},
-	}
+	// Empty aggregate should render zero metrics with empty bars, not generic empty state
+	data := dashboardData{AllOverview: source.AllSourcesOverview{}}
 
 	result := renderOverview(s, 100, 30, data)
 
@@ -1166,49 +1191,41 @@ func TestSessionsViewWidthThreshold(t *testing.T) {
 
 func TestOverviewEfficiencyMetrics(t *testing.T) {
 	s := newStyles()
-	data := dashboardData{
-		Overview: stats.OverviewStats{
+	data := dashboardData{AllOverview: source.AllSourcesOverview{
+		Total: stats.OverviewStats{
 			Sessions: 10,
 			Messages: 100,
-			Cost:     10.0,
 			Tokens:   stats.TokenStats{Input: 1000, Output: 500},
 		},
-		Models:   stats.ModelStats{Models: []stats.ModelEntry{{ModelID: "claude-3", Cost: 5.0}}},
-		Projects: stats.ProjectStats{Projects: []stats.ProjectEntry{{ProjectName: "test", Cost: 5.0}}},
-		Tools:    stats.ToolStats{Tools: []stats.ToolEntry{{Name: "bash", Invocations: 50}}},
-		Sessions: stats.SessionList{},
-	}
+		MessagesPerSession: 10,
+		TokensPerMessage:   stats.AvgTokenStats{Input: 10, Output: 5},
+	}}
 
 	result := renderOverview(s, 100, 30, data)
 
-	// Must show tokens per session (1500 tokens / 10 sessions = 150)
-	if !strings.Contains(result, "tok/sess") {
-		t.Error("Overview should show tokens per session")
+	// Must show the cost-neutral efficiency ratios.
+	if !strings.Contains(result, "Efficiency") {
+		t.Errorf("Overview should show an Efficiency section:\n%s", result)
 	}
-
-	// Must show cost per message ($10 / 100 messages = $0.10)
-	if !strings.Contains(result, "$0.10/msg") {
-		t.Errorf("Overview should show cost per message $0.10/msg:\n%s", result)
+	if !strings.Contains(result, "Msgs / session") || !strings.Contains(result, "10.0") {
+		t.Errorf("Overview should show messages per session (10.0):\n%s", result)
+	}
+	if !strings.Contains(result, "Tokens / message") {
+		t.Errorf("Overview should show tokens per message:\n%s", result)
 	}
 }
 
 func TestOverviewTokenBreakdownWithCache(t *testing.T) {
 	s := newStyles()
-	data := dashboardData{
-		Overview: stats.OverviewStats{
-			Sessions: 1,
-			Tokens: stats.TokenStats{
-				Input:     1000,
-				Output:    500,
-				Reasoning: 200,
-				Cache:     stats.CacheStats{Read: 300, Write: 100},
-			},
+	data := dashboardData{AllOverview: source.AllSourcesOverview{
+		Total: stats.OverviewStats{Sessions: 1},
+		TokenDistribution: stats.TokenStats{
+			Input:     1000,
+			Output:    500,
+			Reasoning: 200,
+			Cache:     stats.CacheStats{Read: 300, Write: 100},
 		},
-		Models:   stats.ModelStats{},
-		Projects: stats.ProjectStats{},
-		Tools:    stats.ToolStats{},
-		Sessions: stats.SessionList{},
-	}
+	}}
 
 	result := renderOverview(s, 100, 30, data)
 
@@ -1242,13 +1259,7 @@ func TestOverviewTokenBreakdownWithCache(t *testing.T) {
 
 func TestOverviewZeroData(t *testing.T) {
 	s := newStyles()
-	data := dashboardData{
-		Overview: stats.OverviewStats{},
-		Models:   stats.ModelStats{},
-		Projects: stats.ProjectStats{},
-		Tools:    stats.ToolStats{},
-		Sessions: stats.SessionList{},
-	}
+	data := dashboardData{AllOverview: source.AllSourcesOverview{}}
 
 	result := renderOverview(s, 100, 30, data)
 
@@ -1265,6 +1276,55 @@ func TestOverviewZeroData(t *testing.T) {
 	// Should show empty progress bars (░░░░░░░░)
 	if !strings.Contains(result, "░") {
 		t.Error("Overview should show empty progress bars for zero data")
+	}
+}
+
+func TestOverviewPerSourceRows(t *testing.T) {
+	s := newStyles()
+	data := dashboardData{AllOverview: source.AllSourcesOverview{
+		Total: stats.OverviewStats{Sessions: 12, Messages: 240, Days: 3,
+			Tokens: stats.TokenStats{Input: 1000, Output: 500}},
+		MessagesPerSession: 20,
+		TokensPerMessage:   stats.AvgTokenStats{Input: 50, Output: 25},
+		TokenDistribution:  stats.TokenStats{Input: 1000, Output: 500, Cache: stats.CacheStats{Read: 100, Write: 50}},
+		Sources: []source.SourceOverview{
+			{SourceID: "opencode", Label: "OpenCode", Overview: stats.OverviewStats{Sessions: 8, Messages: 160, Cost: 6}, MessageShare: 0.66, TokenShare: 0.66},
+			{SourceID: "codex", Label: "Codex", Overview: stats.OverviewStats{Sessions: 4, Messages: 80, Cost: 3}, MessageShare: 0.34, TokenShare: 0.34},
+		},
+		TopModels: []stats.ModelEntry{{SourceID: "opencode", ModelID: "claude-x", Cost: 6}},
+	}}
+
+	result := renderOverview(s, 120, 30, data)
+	for _, want := range []string{"Usage by source", "OpenCode", "Codex", "claude-x", "█"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("overview missing %q:\n%s", want, result)
+		}
+	}
+}
+
+func TestOverviewPerSourceErrorsNoticed(t *testing.T) {
+	s := newStyles()
+	data := dashboardData{AllOverview: source.AllSourcesOverview{
+		Sources: []source.SourceOverview{
+			{SourceID: "opencode", Label: "OpenCode", Overview: stats.OverviewStats{Sessions: 1, Messages: 2}},
+		},
+		Errors: []source.SourceLoadError{{SourceID: "codex", Message: "boom"}},
+	}}
+
+	result := renderOverview(s, 120, 30, data)
+	if !strings.Contains(result, "unavailable") || !strings.Contains(result, "codex") {
+		t.Errorf("overview should surface failed sources:\n%s", result)
+	}
+}
+
+func TestLoadAggregateCmdNilRegistry(t *testing.T) {
+	msg := loadAggregateCmd(nil, stats.PeriodQuery{Period: "7d"})()
+	agg, ok := msg.(aggregateLoadedMsg)
+	if !ok {
+		t.Fatalf("expected aggregateLoadedMsg, got %T", msg)
+	}
+	if agg.err == nil {
+		t.Error("nil registry should produce an error")
 	}
 }
 

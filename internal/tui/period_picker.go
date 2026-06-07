@@ -96,7 +96,7 @@ func (m *model) applyPeriodPreset(preset string) (tea.Model, tea.Cmd) {
 	m.period = stats.PeriodQuery{Period: preset}
 	m.periodPicker = periodPickerOverlayState{}
 	m.resetForPeriodChange()
-	return m, m.loadAllForCurrent()
+	return m, m.reloadAll()
 }
 
 // validateCustomDates mirrors the web handler's range validation so the TUI gives
@@ -139,7 +139,7 @@ func (m *model) applyPeriodCustom() (tea.Model, tea.Cmd) {
 	m.period = pq
 	m.periodPicker = periodPickerOverlayState{}
 	m.resetForPeriodChange()
-	return m, m.loadAllForCurrent()
+	return m, m.reloadAll()
 }
 
 func (m *model) updatePeriodPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {

@@ -348,6 +348,38 @@ export interface OverviewStats extends SourceTagged {
   days: number
 }
 
+// ── All-sources Overview (cross-source aggregate) ──────────────────
+// Returned by GET /api/v1/overview/all. The Overview view merges every source;
+// cost is shown only per source (sources[].overview.cost), never combined.
+
+export interface SourceOverview {
+  source_id: SourceID
+  label?: string
+  overview: OverviewStats
+  message_share: number // 0..1
+  token_share: number // 0..1
+  messages_per_session: number
+  tokens_per_message: AvgTokenStats
+  trend?: DayStats[]
+}
+
+export interface SourceLoadError {
+  source_id: SourceID
+  message: string
+}
+
+export interface AllSourcesOverview {
+  total: OverviewStats
+  sources: SourceOverview[]
+  messages_per_session: number
+  tokens_per_message: AvgTokenStats
+  token_distribution: TokenStats
+  top_models: ModelEntry[]
+  top_projects: ProjectEntry[]
+  top_tools: ToolEntry[]
+  errors?: SourceLoadError[]
+}
+
 export interface ApiErrorResponse {
   error: string
   message: string

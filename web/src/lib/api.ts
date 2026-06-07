@@ -1,4 +1,5 @@
 import type {
+  AllSourcesOverview,
   ApiErrorResponse,
   ConfigStats,
   DailyDimensionStats,
@@ -133,6 +134,15 @@ export function getSources(signal?: AbortSignal) {
 
 export function getOverview(period: string, signal?: AbortSignal, sourceId?: SourceID) {
   return request<OverviewStats>(buildUrl('/api/v1/overview', period, undefined, sourceId), { signal })
+}
+
+// getOverviewAll fetches the cross-source aggregate. It deliberately takes no
+// sourceId — the Overview view spans every source.
+export function getOverviewAll(period: string, signal?: AbortSignal) {
+  return request<AllSourcesOverview>(
+    buildUrl('/api/v1/overview/all', period, { trend: 'true', top: '10' }),
+    { signal },
+  )
 }
 
 export function getDaily(period: string, signal?: AbortSignal, sourceId?: SourceID) {

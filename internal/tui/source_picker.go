@@ -41,7 +41,9 @@ func (m *model) switchSource(id source.SourceID) (tea.Model, tea.Cmd) {
 	m.selectedSource = id
 	m.resolveSource()
 
-	m.data = dashboardData{}
+	// Preserve the source-independent Overview aggregate so it doesn't flash empty
+	// while the per-source tabs reload for the newly selected source.
+	m.data = dashboardData{AllOverview: m.data.AllOverview}
 	m.dailyCursor = 0
 	m.models = modelTableState{sort: m.models.sort}
 	m.tools = toolTableState{sort: m.tools.sort}

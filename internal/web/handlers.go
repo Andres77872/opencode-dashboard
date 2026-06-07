@@ -60,6 +60,31 @@ func (h *Handlers) Overview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// OverviewAll returns the cross-source aggregated dashboard. Unlike Overview,
+// it has no `source` param — it merges data across every available source.
+func (h *Handlers) OverviewAll(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pq, apierr := parsePeriodQuery(r)
+	if apierr != nil {
+		apierr.Write(w)
+		return
+	}
+	opts := source.AggregateOptions{
+		IncludeTrend: r.URL.Query().Get("trend") == "true",
+		TopN:         parseIntQuery(r, "top", 10),
+	}
+	result, err := source.AggregateOverview(ctx, h.registry, pq, opts)
+	if err != nil {
+		if strings.Contains(err.Error(), "invalid period") {
+			BadRequest(err.Error()).Write(w)
+			return
+		}
+		InternalError("failed to compute aggregated overview").Write(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (h *Handlers) Daily(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	selected, ok := h.sourceForRequest(w, r)
