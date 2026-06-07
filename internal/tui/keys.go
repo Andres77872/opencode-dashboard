@@ -16,6 +16,8 @@ type keyMap struct {
 	Toggle   []string
 	Filter   []string
 	Sort     []string
+	Period   []string // open the global time-range picker
+	Source   []string // open the source picker
 	Close    []string
 }
 
@@ -36,6 +38,8 @@ func defaultKeyMap() keyMap {
 		Toggle:   []string{"enter", " "},
 		Filter:   []string{"/"},
 		Sort:     []string{"s"},
+		Period:   []string{"T"},
+		Source:   []string{"S"},
 		Close:    []string{"esc"},
 	}
 }

@@ -10,38 +10,87 @@ import (
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
+	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/stats"
-	"opencode-dashboard/internal/store"
 )
 
-func TestNextDailyPeriod(t *testing.T) {
+func TestPeriodLabel(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    string
+		input    stats.PeriodQuery
 		expected string
 	}{
-		{name: "1h cycles to 6h", input: "1h", expected: "6h"},
-		{name: "6h cycles to 12h", input: "6h", expected: "12h"},
-		{name: "12h cycles to 24h", input: "12h", expected: "24h"},
-		{name: "24h cycles to 72h", input: "24h", expected: "72h"},
-		{name: "72h cycles to 1d", input: "72h", expected: "1d"},
-		{name: "1d cycles to 7d", input: "1d", expected: "7d"},
-		{name: "7d cycles to 14d", input: "7d", expected: "14d"},
-		{name: "14d cycles to 30d", input: "14d", expected: "30d"},
-		{name: "30d cycles to 1y", input: "30d", expected: "1y"},
-		{name: "1y cycles to all", input: "1y", expected: "all"},
-		{name: "all cycles to 1h", input: "all", expected: "1h"},
-		{name: "unknown defaults to 1h", input: "invalid", expected: "1h"},
-		{name: "empty defaults to 1h", input: "", expected: "1h"},
+		{name: "preset", input: stats.PeriodQuery{Period: "7d"}, expected: "7d"},
+		{name: "empty defaults to 7d", input: stats.PeriodQuery{}, expected: "7d"},
+		{name: "custom open end", input: stats.PeriodQuery{From: "2026-04-01"}, expected: "2026-04-01 → now"},
+		{name: "custom range", input: stats.PeriodQuery{From: "2026-04-01", To: "2026-04-15"}, expected: "2026-04-01 → 2026-04-15"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := nextDailyPeriod(tt.input)
-			if result != tt.expected {
-				t.Errorf("nextDailyPeriod(%q) = %q, want %q", tt.input, result, tt.expected)
+			if got := periodLabel(tt.input); got != tt.expected {
+				t.Errorf("periodLabel(%+v) = %q, want %q", tt.input, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestValidateCustomDates(t *testing.T) {
+	if _, errMsg := validateCustomDates("", ""); errMsg == "" {
+		t.Error("empty from should be rejected")
+	}
+	if _, errMsg := validateCustomDates("2026-13-40", ""); errMsg == "" {
+		t.Error("invalid from should be rejected")
+	}
+	if _, errMsg := validateCustomDates("2999-01-01", ""); errMsg == "" {
+		t.Error("future from should be rejected")
+	}
+	if _, errMsg := validateCustomDates("2026-04-15", "2026-04-01"); errMsg == "" {
+		t.Error("from after to should be rejected")
+	}
+	pq, errMsg := validateCustomDates("2026-04-01", "2026-04-15")
+	if errMsg != "" {
+		t.Errorf("valid range rejected: %s", errMsg)
+	}
+	if pq.From != "2026-04-01" || pq.To != "2026-04-15" {
+		t.Errorf("unexpected pq: %+v", pq)
+	}
+}
+
+func TestStatusBarSingleLine(t *testing.T) {
+	// A wide terminal with a long db path must not wrap the right-aligned
+	// "loaded …" segment onto a second line (regression for the "ago" wrap).
+	m := &model{
+		width:          190,
+		height:         40,
+		styles:         newStyles(),
+		keys:           defaultKeyMap(),
+		opts:           Options{Version: "dev (test)"},
+		selectedSource: source.SourceOpenCode,
+		srcInfo: source.SourceInfo{
+			ID:        source.SourceOpenCode,
+			Label:     "OpenCode",
+			Available: true,
+			Path:      "/home/andres/.local/share/opencode/opencode.db",
+		},
+		period:     stats.PeriodQuery{Period: "7d"},
+		loaded:     true,
+		lastLoaded: time.Now().Add(-14 * time.Second),
+	}
+	out := m.renderStatusBar()
+	if h := lipgloss.Height(out); h != 1 {
+		t.Errorf("status bar should render on a single line, got %d lines", h)
+	}
+	if w := lipgloss.Width(out); w > m.width {
+		t.Errorf("status bar width %d exceeds terminal width %d", w, m.width)
+	}
+}
+
+func TestIndexOfPreset(t *testing.T) {
+	if indexOfPreset("7d") != 6 {
+		t.Errorf("indexOfPreset(7d) = %d, want 6", indexOfPreset("7d"))
+	}
+	if indexOfPreset("nope") != -1 {
+		t.Errorf("indexOfPreset(nope) = %d, want -1", indexOfPreset("nope"))
 	}
 }
 
@@ -1993,7 +2042,7 @@ func TestProjectDetailOverlayTransitions(t *testing.T) {
 		id:      "test-project",
 		loading: true,
 		page:    1,
-		period:  "all",
+		pq:      stats.PeriodQuery{Period: "all"},
 	}
 
 	if !state.visible {
@@ -2174,7 +2223,7 @@ func TestConfigSectionCursorNavigation(t *testing.T) {
 	}
 
 	// Verify config section list render output contains sections
-	result := renderConfig(m.styles, 100, 30, m.data.Config, Options{}, store.SchemaInfo{}, &m.config)
+	result := renderConfig(m.styles, 100, 30, m.data.Config, source.SourceInfo{}, &m.config)
 	if !strings.Contains(result, "models") {
 		t.Error("config render should contain 'models' section")
 	}
@@ -2208,7 +2257,7 @@ func TestProjectDetailOverlayKeyRouting(t *testing.T) {
 			filterState: filterState{cursor: 0},
 			sort:        projectSortCost,
 		},
-		projectsPeriod: "all",
+		period: stats.PeriodQuery{Period: "all"},
 	}
 
 	// Enter on first project should set overlay visible+loading
@@ -2228,8 +2277,8 @@ func TestProjectDetailOverlayKeyRouting(t *testing.T) {
 	if m.projectDetail.page != 1 {
 		t.Errorf("after Enter on project, page should be 1, got %d", m.projectDetail.page)
 	}
-	if m.projectDetail.period != "all" {
-		t.Errorf("after Enter on project, period should be 'all', got %q", m.projectDetail.period)
+	if m.projectDetail.pq.Period != "all" {
+		t.Errorf("after Enter on project, period should be 'all', got %q", m.projectDetail.pq.Period)
 	}
 
 	// Simulate load completion via Update
@@ -2298,7 +2347,7 @@ func TestProjectDetailOverlayPagination(t *testing.T) {
 			id:      "proj-1",
 			loading: false,
 			page:    1,
-			period:  "all",
+			pq:      stats.PeriodQuery{Period: "all"},
 			detail: &stats.ProjectDetail{
 				ProjectName:    "Alpha",
 				RecentSessions: sessions[:defaultSessionsPageSize],
@@ -2478,13 +2527,13 @@ func TestConfigNoFileMessage(t *testing.T) {
 	cs := configState{section: -1, cursor: 0, expanded: make(map[string]bool)}
 
 	// Config does not exist
-	result := renderConfig(s, 100, 30, stats.ConfigView{Exists: false}, Options{}, store.SchemaInfo{}, &cs)
+	result := renderConfig(s, 100, 30, stats.ConfigView{Exists: false}, source.SourceInfo{}, &cs)
 	if !strings.Contains(result, "No config file found") {
 		t.Errorf("render should show 'No config file found' message:\n%s", result)
 	}
 
 	// Config exists but no content
-	result = renderConfig(s, 100, 30, stats.ConfigView{Exists: true, Content: nil}, Options{}, store.SchemaInfo{}, &cs)
+	result = renderConfig(s, 100, 30, stats.ConfigView{Exists: true, Content: nil}, source.SourceInfo{}, &cs)
 	if !strings.Contains(result, "no content") {
 		t.Errorf("render should show 'no content' message:\n%s", result)
 	}
@@ -2531,7 +2580,7 @@ func TestProjectDetailOverlayEnterToSession(t *testing.T) {
 			id:      "proj-1",
 			loading: false,
 			page:    1,
-			period:  "all",
+			pq:      stats.PeriodQuery{Period: "all"},
 			detail: &stats.ProjectDetail{
 				ProjectName: "Alpha",
 				RecentSessions: []stats.SessionEntry{
@@ -2588,7 +2637,7 @@ func TestConfigSectionDetailRender(t *testing.T) {
 			},
 		},
 	}
-	result := renderConfig(s, 100, 30, cfg, Options{}, store.SchemaInfo{}, &cs)
+	result := renderConfig(s, 100, 30, cfg, source.SourceInfo{}, &cs)
 
 	if !strings.Contains(result, "api") {
 		t.Error("section detail should show section name")

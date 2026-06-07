@@ -43,7 +43,7 @@ func renderProjectDetailOverlay(s styles, width, height int, state projectDetail
 	lines = append(lines,
 		s.Accent.Render(truncateWithEllipsis(detail.ProjectName, max(width-8, 24))),
 		s.Muted.Render(fmt.Sprintf("sessions %s • messages %s • cost %s",
-			formatInt(detail.Sessions), formatInt(detail.Messages), formatMoney(detail.Cost))),
+			formatInt(detail.Sessions), formatInt(detail.Messages), plainCostProv(detail.Cost, detail.CostStatus, detail.CostProvenance))),
 	)
 
 	// Worktree path
@@ -57,8 +57,8 @@ func renderProjectDetailOverlay(s styles, width, height int, state projectDetail
 	projectKPI := lipgloss.JoinHorizontal(lipgloss.Top,
 		compactMetricCard(s, "Sessions", formatInt(detail.Sessions), "", cardWidth),
 		compactMetricCard(s, "Messages", formatInt(detail.Messages), "", cardWidth),
-		compactMetricCard(s, "Cost", formatMoney(detail.Cost), "", cardWidth),
-		compactMetricCard(s, "Avg $/sess", formatMoney(detail.Cost/float64(max(detail.Sessions, 1))), "", cardWidth),
+		compactMetricCard(s, "Cost", formatMoneyProv(s, detail.Cost, detail.CostStatus, detail.CostProvenance, false), "", cardWidth),
+		compactMetricCard(s, "Avg $/sess", formatMoneyProv(s, detail.Cost/float64(max(detail.Sessions, 1)), detail.CostStatus, detail.CostProvenance, false), "", cardWidth),
 	)
 	lines = append(lines, projectKPI)
 
@@ -90,7 +90,7 @@ func renderProjectDetailOverlay(s styles, width, height int, state projectDetail
 				padRight(truncateWithEllipsis(session.Title, titleW), titleW),
 				padRight(session.TimeUpdated.Format("2006-01-02"), 12),
 				padLeft(formatInt(session.MessageCount), 5),
-				padLeft(formatMoney(session.Cost), 10),
+				padLeft(formatMoneyProv(s, session.Cost, session.CostStatus, session.CostProvenance, true), 10),
 			}
 			line := strings.Join(lineParts, " ")
 			if i == state.cursor {

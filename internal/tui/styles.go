@@ -29,27 +29,37 @@ type styles struct {
 	TableRow       lipgloss.Style
 	TableRowActive lipgloss.Style
 	OverlayPanel   lipgloss.Style
+	OverlayTitle   lipgloss.Style
 	FilterPrompt   lipgloss.Style
 	Footer         lipgloss.Style
+	FooterKey      lipgloss.Style
 	HelpPanel      lipgloss.Style
 	EmptyState     lipgloss.Style
+	// Cost-provenance semantics (mirrors the web markers).
+	CostApprox  lipgloss.Style
+	CostMixed   lipgloss.Style
+	CostUnknown lipgloss.Style
 }
 
-func newStyles() styles {
-	const (
-		bg0       = "#111315"
-		bg1       = "#171A1F"
-		bg2       = "#20252B"
-		line      = "#313842"
-		text      = "#E7EAF0"
-		muted     = "#98A2B3"
-		accent    = "#F59E0B"
-		accentDim = "#B7791F"
-		green     = "#6EE7B7"
-		red       = "#F87171"
-		blue      = "#7DD3FC"
-	)
+// Palette — deeper charcoal base with a warm amber accent. Every separation also
+// carries a foreground/bold/border cue so the UI stays legible when a terminal
+// downsamples the near-luminance bg0/bg1/bg2 trio to 16 colors.
+const (
+	bg0          = "#0E1013" // app base (deepest)
+	bg1          = "#15181D" // content / panels
+	bg2          = "#23262C" // chrome bands, active rows, header strip (neutral, no blue cast)
+	line         = "#363A41" // borders / dividers (neutral gray — amber is reserved for accents)
+	text         = "#E7EAF0"
+	muted        = "#98A2B3"
+	accent       = "#F59E0B" // amber — used sparingly for focus/accent only
+	accentBright = "#FBBF24" // brighter amber for focal markers
+	accentDim    = "#B7791F"
+	green        = "#6EE7B7"
+	red          = "#F87171"
+	blue         = "#7DD3FC"
+)
 
+func newStyles() styles {
 	return styles{
 		App: lipgloss.NewStyle().
 			Background(lipgloss.Color(bg0)).
@@ -57,28 +67,28 @@ func newStyles() styles {
 			Padding(0, 1),
 
 		StatusBar: lipgloss.NewStyle().
-			Background(lipgloss.Color(bg1)).
+			Background(lipgloss.Color(bg2)).
 			Foreground(lipgloss.Color(text)).
 			Padding(0, 1),
 
 		StatusTitle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(accent)).
+			Foreground(lipgloss.Color(accentBright)).
 			Bold(true),
 
-		StatusMeta: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(muted)),
+		StatusMeta: lipgloss.NewStyle().Foreground(lipgloss.Color(muted)),
 
-		StatusAccent: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(blue)),
+		StatusAccent: lipgloss.NewStyle().Foreground(lipgloss.Color(blue)),
 
 		BannerWarn: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(accent)).
-			Background(lipgloss.Color(bg1)).
+			Foreground(lipgloss.Color(bg0)).
+			Background(lipgloss.Color(accent)).
+			Bold(true).
 			Padding(0, 1),
 
 		BannerError: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(red)).
-			Background(lipgloss.Color(bg1)).
+			Foreground(lipgloss.Color(bg0)).
+			Background(lipgloss.Color(red)).
+			Bold(true).
 			Padding(0, 1),
 
 		TabRow: lipgloss.NewStyle().
@@ -89,9 +99,9 @@ func newStyles() styles {
 			Foreground(lipgloss.Color(bg0)).
 			Background(lipgloss.Color(accent)).
 			Bold(true).
-			Border(lipgloss.Border{ // full border for width parity with TabInactive, but THICKER bottom for clear affordance
+			Border(lipgloss.Border{
 				Top:    "─",
-				Bottom: "━", // double-thick bottom for stronger active affordance
+				Bottom: "━", // thicker bottom = clear active affordance
 				Left:   "│",
 				Right:  "│",
 			}).
@@ -133,15 +143,17 @@ func newStyles() styles {
 		MetricCard: lipgloss.NewStyle().
 			Background(lipgloss.Color(bg1)).
 			Border(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color(accentDim)).
+			BorderForeground(lipgloss.Color(line)).
 			BorderBackground(lipgloss.Color(bg1)).
 			Padding(0, 1),
 
 		MetricLabel: lipgloss.NewStyle().Foreground(lipgloss.Color(muted)),
 		MetricValue: lipgloss.NewStyle().Foreground(lipgloss.Color(text)).Bold(true),
 
+		// Header strip: filled band + bold amber for strong column separation.
 		TableHeader: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(accent)).
+			Background(lipgloss.Color(bg2)).
 			Bold(true),
 
 		TableRow: lipgloss.NewStyle().Foreground(lipgloss.Color(text)),
@@ -158,6 +170,12 @@ func newStyles() styles {
 			BorderBackground(lipgloss.Color(bg1)).
 			Padding(0, 1),
 
+		OverlayTitle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color(bg0)).
+			Background(lipgloss.Color(accent)).
+			Bold(true).
+			Padding(0, 1),
+
 		FilterPrompt: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(text)).
 			Background(lipgloss.Color(bg2)).
@@ -165,8 +183,13 @@ func newStyles() styles {
 
 		Footer: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(muted)).
-			Background(lipgloss.Color(bg1)).
+			Background(lipgloss.Color(bg2)).
 			Padding(0, 1),
+
+		FooterKey: lipgloss.NewStyle().
+			Foreground(lipgloss.Color(accent)).
+			Background(lipgloss.Color(bg2)).
+			Bold(true),
 
 		HelpPanel: lipgloss.NewStyle().
 			Background(lipgloss.Color(bg1)).
@@ -182,5 +205,9 @@ func newStyles() styles {
 			BorderBackground(lipgloss.Color(bg1)).
 			Foreground(lipgloss.Color(muted)).
 			Padding(1, 2),
+
+		CostApprox:  lipgloss.NewStyle().Foreground(lipgloss.Color(accent)),
+		CostMixed:   lipgloss.NewStyle().Foreground(lipgloss.Color(blue)),
+		CostUnknown: lipgloss.NewStyle().Foreground(lipgloss.Color(muted)),
 	}
 }

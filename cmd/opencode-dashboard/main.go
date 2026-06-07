@@ -233,9 +233,12 @@ func cmdTUI(args []string) error {
 
 	dbPath := fs.String("db", "", "explicit OpenCode SQLite database path")
 	channel := fs.String("channel", "", "channel-specific OpenCode database to use")
+	sourceFlag := fs.String("source", string(source.SourceOpenCode), "initial data source: opencode, claude_code, or codex")
+	claudeHome := fs.String("claude-home", "", "explicit Claude Code config directory")
+	codexHome := fs.String("codex-home", "", "explicit Codex config directory")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard tui [--db <path>] [--channel <name>]\n\n")
-		fmt.Fprintln(fs.Output(), "Starts the local terminal dashboard against a validated OpenCode database.")
+		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard tui [--db <path>] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>]\n\n")
+		fmt.Fprintln(fs.Output(), "Starts the local terminal dashboard. Switch source (S) and time range (T) live.")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -249,22 +252,37 @@ func cmdTUI(args []string) error {
 		return fmt.Errorf("tui does not accept positional arguments")
 	}
 
+	selectedSource, err := parseSourceSelection(*sourceFlag)
+	if err != nil {
+		return err
+	}
+	claudeSelection := config.ResolveClaudeHome(*claudeHome)
+	codexSelection := config.ResolveCodexHome(*codexHome)
+
 	selection, err := resolveDBSelection(*dbPath, *channel)
 	if err != nil {
 		return err
 	}
 
-	st, err := openValidatedStore(context.Background(), selection.Path)
+	ctx := context.Background()
+	st, openErr := openValidatedStore(ctx, selection.Path)
+	if openErr != nil && selectedSource == source.SourceOpenCode {
+		return openErr
+	}
+	if openErr != nil {
+		st = nil
+	}
+
+	registry, err := buildWebRegistry(st, selection, selectedSource, claudeSelection, *claudeHome, codexSelection, *codexHome)
 	if err != nil {
+		if st != nil {
+			_ = st.Close()
+		}
 		return err
 	}
-	defer st.Close()
+	defer registry.Close()
 
-	return tui.Run(st, tui.Options{
-		DBPath:   selection.Path,
-		DBSource: selection.Source,
-		Version:  version.BuildInfo(),
-	})
+	return tui.Run(registry, tui.Options{Version: version.BuildInfo()})
 }
 
 func cmdVersion(args []string) error {

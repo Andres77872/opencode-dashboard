@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,8 +11,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
+	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/stats"
-	"opencode-dashboard/internal/store"
 )
 
 const defaultSessionsPageSize = 12
@@ -53,18 +54,16 @@ const (
 	dailyMetricTokens   dailyMetric = "tokens"
 )
 
+// dashboardData holds the loaded data for the single global period. Switching
+// source or period resets this wholesale and refetches (no per-period caching).
 type dashboardData struct {
-	Overview         stats.OverviewStats
-	DailyByPeriod    map[string]stats.DailyStats
-	OverviewByPeriod map[string]stats.OverviewStats
-	ToolsByPeriod    map[string]stats.ToolStats
-	ProjectsByPeriod map[string]stats.ProjectStats
-	Models           stats.ModelStats
-	ModelsByPeriod   map[string]stats.ModelStats
-	Tools            stats.ToolStats
-	Projects         stats.ProjectStats
-	Sessions         stats.SessionList
-	Config           stats.ConfigView
+	Overview stats.OverviewStats
+	Daily    stats.DailyStats
+	Models   stats.ModelStats
+	Tools    stats.ToolStats
+	Projects stats.ProjectStats
+	Sessions stats.SessionList
+	Config   stats.ConfigView
 }
 
 type filterState struct {
@@ -105,39 +104,13 @@ type sessionsLoadedMsg struct {
 	err  error
 }
 
-type dailyPeriodLoadedMsg struct {
-	period string
-	data   stats.DailyStats
-	err    error
-}
-
-type overviewPeriodLoadedMsg struct {
-	period string
-	data   stats.OverviewStats
-	err    error
-}
-
-type toolsPeriodLoadedMsg struct {
-	period string
-	data   stats.ToolStats
-	err    error
-}
-
-type projectsPeriodLoadedMsg struct {
-	period string
-	data   stats.ProjectStats
-	err    error
-}
-
-type modelsPeriodLoadedMsg struct {
-	period string
-	data   stats.ModelStats
-	err    error
-}
-
 type model struct {
-	store *store.Store
-	opts  Options
+	registry       *source.Registry
+	selectedSource source.SourceID
+	src            source.Source     // resolved active source (nil if unavailable)
+	srcInfo        source.SourceInfo // cached Info() for status bar / config panel
+	srcErr         error
+	opts           Options
 
 	styles styles
 	keys   keyMap
@@ -145,51 +118,43 @@ type model struct {
 	width  int
 	height int
 
-	activeTab      tabID
-	helpVisible    bool
-	dailyPeriod    string
-	dailyLoading   bool
-	dailyMetric    dailyMetric
-	dailyCursor    int
-	overviewPeriod string
-	toolsPeriod    string
-	projectsPeriod string
-	sessionsPeriod string
-	modelsPeriod   string
-	dayMessages    dayMessagesOverlayState
-	messageDetail  messageDetailOverlayState
-	filterMode     bool
-	loading        bool
-	loaded         bool
-	loadErr        error
-	lastLoaded     time.Time
-	data           dashboardData
-	models         modelTableState
-	tools          toolTableState
-	projects       projectTableState
-	sessions       sessionTableState
-	sessionDetail  sessionOverlayState
-	projectDetail  projectDetailOverlayState
-	config         configState
+	activeTab     tabID
+	helpVisible   bool
+	period        stats.PeriodQuery // GLOBAL time range applied to every tab
+	dailyMetric   dailyMetric
+	dailyCursor   int
+	dayMessages   dayMessagesOverlayState
+	messageDetail messageDetailOverlayState
+	periodPicker  periodPickerOverlayState
+	sourcePicker  sourcePickerOverlayState
+	filterMode    bool
+	loading       bool
+	loaded        bool
+	loadErr       error
+	lastLoaded    time.Time
+	data          dashboardData
+	models        modelTableState
+	tools         toolTableState
+	projects      projectTableState
+	sessions      sessionTableState
+	sessionDetail sessionOverlayState
+	projectDetail projectDetailOverlayState
+	config        configState
 }
 
-func newModel(st *store.Store, opts Options) *model {
-	return &model{
-		store:          st,
+func newModel(reg *source.Registry, startup source.SourceID, opts Options) *model {
+	m := &model{
+		registry:       reg,
+		selectedSource: startup,
 		opts:           opts,
 		styles:         newStyles(),
 		keys:           defaultKeyMap(),
 		width:          120,
 		height:         36,
 		activeTab:      tabOverview,
-		dailyPeriod:    "7d",
+		period:         stats.PeriodQuery{Period: "7d"},
 		dailyMetric:    dailyMetricCost,
 		loading:        true,
-		overviewPeriod: "all",
-		toolsPeriod:    "all",
-		projectsPeriod: "all",
-		sessionsPeriod: "all",
-		modelsPeriod:   "all",
 		models:         modelTableState{sort: modelSortCost},
 		tools:          toolTableState{sort: toolSortRuns},
 		projects: projectTableState{
@@ -205,10 +170,42 @@ func newModel(st *store.Store, opts Options) *model {
 			expanded: make(map[string]bool),
 		},
 	}
+	m.resolveSource()
+	return m
+}
+
+// resolveSource resolves the selected source from the registry and caches its Info.
+func (m *model) resolveSource() {
+	src, err := m.registry.Resolve(string(m.selectedSource))
+	m.src, m.srcErr = src, err
+	if src != nil {
+		m.srcInfo = src.Info(context.Background())
+		return
+	}
+	// Source unavailable — keep its last-known Info for the status bar/picker.
+	for _, info := range m.registry.List(context.Background()) {
+		if info.ID == m.selectedSource {
+			m.srcInfo = info
+			return
+		}
+	}
+}
+
+// loadAllForCurrent refetches every tab for the active source + global period.
+func (m *model) loadAllForCurrent() tea.Cmd {
+	m.loading = true
+	if m.src == nil {
+		err := m.srcErr
+		if err == nil {
+			err = errors.New("selected source is unavailable")
+		}
+		return func() tea.Msg { return snapshotLoadedMsg{err: err} }
+	}
+	return loadSnapshotCmd(m.src, m.period, m.currentSessionQuery())
 }
 
 func (m *model) Init() tea.Cmd {
-	return loadSnapshotCmd(m.store, m.currentSessionQuery())
+	return m.loadAllForCurrent()
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -266,70 +263,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.projectDetail.detail = msg.detail
 		return m, nil
 
-	case dailyPeriodLoadedMsg:
-		m.dailyLoading = false
-		if msg.err != nil {
-			m.loadErr = msg.err
-			return m, nil
-		}
-		if m.data.DailyByPeriod == nil {
-			m.data.DailyByPeriod = make(map[string]stats.DailyStats)
-		}
-		m.data.DailyByPeriod[msg.period] = msg.data
-		return m, nil
-
-	case overviewPeriodLoadedMsg:
-		m.loading = false
-		if msg.err != nil {
-			m.loadErr = msg.err
-			return m, nil
-		}
-		if m.data.OverviewByPeriod == nil {
-			m.data.OverviewByPeriod = make(map[string]stats.OverviewStats)
-		}
-		m.data.OverviewByPeriod[msg.period] = msg.data
-		m.data.Overview = msg.data
-		return m, nil
-
-	case toolsPeriodLoadedMsg:
-		m.loading = false
-		if msg.err != nil {
-			m.loadErr = msg.err
-			return m, nil
-		}
-		if m.data.ToolsByPeriod == nil {
-			m.data.ToolsByPeriod = make(map[string]stats.ToolStats)
-		}
-		m.data.ToolsByPeriod[msg.period] = msg.data
-		m.data.Tools = msg.data
-		return m, nil
-
-	case projectsPeriodLoadedMsg:
-		m.loading = false
-		if msg.err != nil {
-			m.loadErr = msg.err
-			return m, nil
-		}
-		if m.data.ProjectsByPeriod == nil {
-			m.data.ProjectsByPeriod = make(map[string]stats.ProjectStats)
-		}
-		m.data.ProjectsByPeriod[msg.period] = msg.data
-		m.data.Projects = msg.data
-		return m, nil
-
-	case modelsPeriodLoadedMsg:
-		m.loading = false
-		if msg.err != nil {
-			m.loadErr = msg.err
-			return m, nil
-		}
-		if m.data.ModelsByPeriod == nil {
-			m.data.ModelsByPeriod = make(map[string]stats.ModelStats)
-		}
-		m.data.ModelsByPeriod[msg.period] = msg.data
-		m.data.Models = msg.data
-		return m, nil
-
 	case dayMessagesLoadedMsg:
 		if msg.date != m.dayMessages.date {
 			return m, nil
@@ -366,6 +299,14 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
+	if m.periodPicker.visible {
+		return m.updatePeriodPickerKey(msg)
+	}
+
+	if m.sourcePicker.visible {
+		return m.updateSourcePickerKey(msg)
+	}
+
 	if m.messageDetail.visible {
 		return m.updateMessageDetailOverlayKey(msg)
 	}
@@ -399,11 +340,20 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if matches(key, m.keys.Refresh...) {
-		m.loading = true
 		m.sessionDetail.err = nil
 		m.dayMessages.err = nil
 		m.messageDetail.err = nil
-		return m, loadSnapshotCmd(m.store, m.currentSessionQuery())
+		return m, m.loadAllForCurrent()
+	}
+
+	if matches(key, m.keys.Period...) {
+		m.openPeriodPicker()
+		return m, nil
+	}
+
+	if matches(key, m.keys.Source...) {
+		m.openSourcePicker()
+		return m, nil
 	}
 
 	if tab, ok := tabFromKey(key); ok {
@@ -450,19 +400,6 @@ func (m *model) updateModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	count := len(m.visibleModelEntries())
 
-	if matches(key, m.keys.PrevPage...) {
-		nextPeriod := nextDailyPeriod(m.modelsPeriod)
-		m.modelsPeriod = nextPeriod
-		if _, ok := m.data.ModelsByPeriod[nextPeriod]; !ok {
-			m.loading = true
-			m.models.cursor = 0
-			return m, loadModelsPeriodCmd(m.store, nextPeriod)
-		}
-		m.data.Models = m.data.ModelsByPeriod[nextPeriod]
-		m.models.cursor = 0
-		return m, nil
-	}
-
 	if matches(key, m.keys.Filter...) {
 		m.filterMode = true
 		m.models.filterDraft = m.models.filter
@@ -479,40 +416,14 @@ func (m *model) updateModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) updateOverviewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	key := msg.String()
-
-	if matches(key, m.keys.PrevPage...) {
-		nextPeriod := nextDailyPeriod(m.overviewPeriod)
-		m.overviewPeriod = nextPeriod
-		if _, ok := m.data.OverviewByPeriod[nextPeriod]; !ok {
-			// Cache miss — load data for new period
-			m.loading = true
-			return m, loadOverviewPeriodCmd(m.store, nextPeriod)
-		}
-		// Cache hit — switch to cached data
-		m.data.Overview = m.data.OverviewByPeriod[nextPeriod]
-		return m, nil
-	}
-
+	// Overview has no tab-local keys; the global time-range/source pickers and tab
+	// navigation are handled upstream in updateKey.
 	return m, nil
 }
 
 func (m *model) updateToolsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	count := len(m.visibleToolEntries())
-
-	if matches(key, m.keys.PrevPage...) {
-		nextPeriod := nextDailyPeriod(m.toolsPeriod)
-		m.toolsPeriod = nextPeriod
-		if _, ok := m.data.ToolsByPeriod[nextPeriod]; !ok {
-			m.loading = true
-			m.tools.cursor = 0
-			return m, loadToolsPeriodCmd(m.store, nextPeriod)
-		}
-		m.data.Tools = m.data.ToolsByPeriod[nextPeriod]
-		m.tools.cursor = 0
-		return m, nil
-	}
 
 	if matches(key, m.keys.Filter...) {
 		m.filterMode = true
@@ -532,19 +443,6 @@ func (m *model) updateToolsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *model) updateProjectsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	count := len(m.visibleProjectEntries())
-
-	if matches(key, m.keys.PrevPage...) {
-		nextPeriod := nextDailyPeriod(m.projectsPeriod)
-		m.projectsPeriod = nextPeriod
-		if _, ok := m.data.ProjectsByPeriod[nextPeriod]; !ok {
-			m.loading = true
-			m.projects.cursor = 0
-			return m, loadProjectsPeriodCmd(m.store, nextPeriod)
-		}
-		m.data.Projects = m.data.ProjectsByPeriod[nextPeriod]
-		m.projects.cursor = 0
-		return m, nil
-	}
 
 	if matches(key, m.keys.Filter...) {
 		m.filterMode = true
@@ -568,9 +466,9 @@ func (m *model) updateProjectsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			id:      entry.ProjectID,
 			loading: true,
 			page:    1,
-			period:  m.projectsPeriod,
+			pq:      m.period,
 		}
-		return m, loadProjectDetailCmd(m.store, entry.ProjectID, m.projectsPeriod, 1)
+		return m, loadProjectDetailCmd(m.src, entry.ProjectID, m.period, 1)
 	}
 
 	return m.updateStaticTableCursorKey(key, count, &m.projects.cursor)
@@ -611,16 +509,7 @@ func (m *model) updateSessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.sessions.page = 1
 		m.sessions.cursor = 0
 		m.loading = true
-		return m, loadSessionsCmd(m.store, m.currentSessionQuery())
-	}
-
-	// Uppercase P for period cycling (lowercase p is prev page for pagination)
-	if key == "P" {
-		m.sessionsPeriod = nextDailyPeriod(m.sessionsPeriod)
-		m.sessions.page = 1
-		m.sessions.cursor = 0
-		m.loading = true
-		return m, loadSessionsCmd(m.store, m.currentSessionQuery())
+		return m, loadSessionsCmd(m.src, m.currentSessionQuery())
 	}
 
 	if matches(key, m.keys.Down...) {
@@ -643,13 +532,13 @@ func (m *model) updateSessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.sessions.page++
 		m.sessions.cursor = 0
 		m.loading = true
-		return m, loadSessionsCmd(m.store, m.currentSessionQuery())
+		return m, loadSessionsCmd(m.src, m.currentSessionQuery())
 	}
 	if matches(key, m.keys.PrevPage...) && m.sessions.page > 1 {
 		m.sessions.page--
 		m.sessions.cursor = 0
 		m.loading = true
-		return m, loadSessionsCmd(m.store, m.currentSessionQuery())
+		return m, loadSessionsCmd(m.src, m.currentSessionQuery())
 	}
 	if matches(key, m.keys.Toggle...) {
 		entry, ok := m.currentSessionEntry()
@@ -657,7 +546,7 @@ func (m *model) updateSessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sessionDetail = sessionOverlayState{visible: true, id: entry.ID, loading: true}
-		return m, loadSessionDetailCmd(m.store, entry.ID)
+		return m, loadSessionDetailCmd(m.src, entry.ID)
 	}
 
 	return m, nil
@@ -688,17 +577,6 @@ func (m *model) updateDailyKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	daily := m.currentDaily()
 	dayCount := len(daily.Days)
 
-	if matches(key, m.keys.PrevPage...) {
-		nextPeriod := nextDailyPeriod(m.dailyPeriod)
-		m.dailyPeriod = nextPeriod
-		if m.data.DailyByPeriod == nil || m.data.DailyByPeriod[nextPeriod].Days == nil {
-			m.dailyLoading = true
-			m.dailyCursor = 0
-			return m, loadDailyPeriodCmd(m.store, nextPeriod)
-		}
-		m.dailyCursor = 0
-		return m, nil
-	}
 	if matches(key, m.keys.Metric...) {
 		m.dailyMetric = nextDailyMetric(m.dailyMetric)
 		return m, nil
@@ -729,7 +607,7 @@ func (m *model) updateDailyKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				cursor:  0,
 				loading: true,
 			}
-			return m, loadDayMessagesCmd(m.store, selectedDay.Date, 1)
+			return m, loadDayMessagesCmd(m.src, selectedDay.Date, 1)
 		}
 	}
 	return m, nil
@@ -753,6 +631,12 @@ func (m *model) View() tea.View {
 	if m.projectDetail.visible {
 		content = m.renderProjectOverlay(content, bodyHeight)
 	}
+	if m.periodPicker.visible {
+		content = m.renderPeriodPicker(content, bodyHeight)
+	}
+	if m.sourcePicker.visible {
+		content = m.renderSourcePicker(content, bodyHeight)
+	}
 
 	parts := []string{m.renderStatusBar(), m.renderTabs(), content, m.renderFooter()}
 	if m.loading && m.loaded {
@@ -770,25 +654,64 @@ func (m *model) View() tea.View {
 }
 
 func (m *model) renderStatusBar() string {
-	schemaLabel := "schema OK"
-	if !m.store.IsValidSchema() {
-		schemaLabel = "schema WARN"
+	sep := m.styles.StatusMeta.Render(" │ ")
+	schemaLabel := "ready"
+	if !m.srcInfo.Available {
+		schemaLabel = "unavailable"
 	}
-	status := lipgloss.JoinHorizontal(
+
+	base := lipgloss.JoinHorizontal(
 		lipgloss.Left,
 		m.styles.StatusTitle.Render("opencode-dashboard"),
-		"  ",
+		" ",
 		m.styles.StatusMeta.Render(m.opts.Version),
-		"  ",
+		sep,
+		m.styles.StatusMeta.Render("src: "),
+		m.styles.StatusAccent.Render(sourceLabelOrID(m.srcInfo, m.selectedSource)+pickerCaret(m.width)),
+		sep,
+		m.styles.StatusMeta.Render("range: "),
+		m.styles.StatusAccent.Render(periodLabel(m.period)+pickerCaret(m.width)),
+		sep,
 		m.styles.StatusAccent.Render(schemaLabel),
-		"  ",
-		m.styles.StatusMeta.Render("db: "+truncateWithEllipsis(m.opts.DBPath, max(m.width/3, 24))),
-		"  ",
-		m.styles.StatusMeta.Render("source: "+truncateWithEllipsis(m.opts.DBSource, max(m.width/5, 16))),
-		"  ",
-		m.styles.StatusMeta.Render("loaded: "+loadedLabel(m.lastLoaded, m.loaded)),
 	)
-	return m.styles.StatusBar.Width(m.width).Render(status)
+	right := m.styles.StatusMeta.Render("loaded " + loadedLabel(m.lastLoaded, m.loaded))
+
+	// Usable text width = terminal minus App padding (2) and StatusBar padding (2).
+	inner := max(m.width-4, 10)
+
+	// Append the db path only when it (and the right segment) still fit — otherwise
+	// drop it. This prevents the right segment from wrapping on wide terminals.
+	left := base
+	if m.srcInfo.Path != "" {
+		withDB := lipgloss.JoinHorizontal(lipgloss.Left, base, sep,
+			m.styles.StatusMeta.Render("db: "+truncateWithEllipsis(m.srcInfo.Path, max(m.width/4, 18))))
+		if lipgloss.Width(withDB)+1+lipgloss.Width(right) <= inner {
+			left = withDB
+		}
+	}
+
+	gap := inner - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		// Too tight for the right segment — show the (untruncated) left only.
+		return m.styles.StatusBar.Width(m.width - 2).MaxHeight(1).Render(base)
+	}
+	status := lipgloss.JoinHorizontal(lipgloss.Left, left, strings.Repeat(" ", gap), right)
+	return m.styles.StatusBar.Width(m.width - 2).MaxHeight(1).Render(status)
+}
+
+// pickerCaret returns a width-gated affordance hinting the value opens a picker.
+func pickerCaret(width int) string {
+	if width >= 90 {
+		return " ▾"
+	}
+	return ""
+}
+
+func sourceLabelOrID(info source.SourceInfo, id source.SourceID) string {
+	if info.Label != "" {
+		return info.Label
+	}
+	return string(id)
 }
 
 func (m *model) renderTabs() string {
@@ -801,7 +724,7 @@ func (m *model) renderTabs() string {
 		}
 		items = append(items, m.styles.TabInactive.Render(label))
 	}
-	return m.styles.TabRow.Width(m.width).Render(lipgloss.JoinHorizontal(lipgloss.Left, items...))
+	return m.styles.TabRow.Width(m.width - 2).Render(lipgloss.JoinHorizontal(lipgloss.Left, items...))
 }
 
 func (m *model) renderContent(bodyHeight int) string {
@@ -815,7 +738,7 @@ func (m *model) renderContent(bodyHeight int) string {
 	panelWidth := max(m.width-4, 40)
 	content := m.renderActiveTab(panelWidth-4, bodyHeight-2)
 	panel := m.styles.Panel.Width(panelWidth).Height(bodyHeight).Render(content)
-	return m.styles.ContentArea.Width(m.width).Height(bodyHeight).Render(panel)
+	return m.styles.ContentArea.Width(m.width - 2).Height(bodyHeight).Render(panel)
 }
 
 func (m *model) renderActiveTab(width, height int) string {
@@ -823,7 +746,7 @@ func (m *model) renderActiveTab(width, height int) string {
 	case tabOverview:
 		return renderOverview(m.styles, width, height, m.data)
 	case tabDaily:
-		return renderDaily(m.styles, width, height, m.currentDaily(), m.dailyPeriod, m.dailyMetric, m.dailyLoading, m.dailyCursor)
+		return renderDaily(m.styles, width, height, m.currentDaily(), periodLabel(m.period), m.dailyMetric, m.loading, m.dailyCursor)
 	case tabModels:
 		return renderModels(m.styles, width, height, m.visibleModelEntries(), len(m.data.Models.Models), tableViewState{
 			cursor:      m.models.cursor,
@@ -861,7 +784,7 @@ func (m *model) renderActiveTab(width, height int) string {
 			sort:        m.sessions.sort,
 		})
 	case tabConfig:
-		return renderConfig(m.styles, width, height, m.data.Config, m.opts, m.store.Schema(), &m.config)
+		return renderConfig(m.styles, width, height, m.data.Config, m.srcInfo, &m.config)
 	default:
 		return "unknown tab"
 	}
@@ -875,6 +798,8 @@ func (m *model) renderHelp(bodyHeight int) string {
 		"  1-7       jump to tab",
 		"  h / ←     previous tab",
 		"  l / →     next tab",
+		"  S         switch data source (opencode/claude_code/codex)",
+		"  T         time-range picker (presets + custom from/to)",
 		"  r         refresh data",
 		"  ? / Esc   toggle help",
 		"  q / Ctrl+C quit",
@@ -893,21 +818,13 @@ func (m *model) renderHelp(bodyHeight int) string {
 		"  g/G       jump top/bottom",
 		"  /         filter current table",
 		"  s         cycle table sort",
-		m.styles.Text.Render("Projects"),
-		"  Enter     opens detail overlay",
-		"",
-		m.styles.Text.Render("Overview / Models / Tools / Projects"),
-		"  p         cycles 1d/7d/30d/1y/all",
+		"  Enter     (Projects) open detail overlay",
 		"",
 		m.styles.Text.Render("Daily"),
 		"  j/k       move cursor on bars",
 		"  g/G       jump top/bottom",
-		"  p         cycles 1d/7d/30d/1y/all",
 		"  t         cycles cost/sessions/messages/tokens",
 		"  Enter     open day messages overlay",
-		"",
-		m.styles.Text.Render("Sessions"),
-		"  P         cycles period 1d/7d/30d/1y/all",
 		"",
 		m.styles.Text.Render("Config"),
 		"  j/k       move cursor",
@@ -937,37 +854,30 @@ func (m *model) renderHelp(bodyHeight int) string {
 }
 
 func (m *model) renderFooter() string {
-	contextKeys := "1-7 tabs • h/l switch • r refresh • ? help • q quit"
+	contextKeys := "1-7 tabs • h/l switch • S source • T range • r refresh • ? help • q quit"
 	if m.activeTab == tabDaily {
-		periodLabel := m.dailyPeriod
-		if m.dailyLoading {
-			periodLabel += " (loading)"
-		}
-		contextKeys += fmt.Sprintf(" • p period:%s • t metric:%s", periodLabel, renderDailyMetricLabel(m.dailyMetric))
-	}
-	if m.activeTab == tabOverview {
-		contextKeys += fmt.Sprintf(" • p period:%s", m.overviewPeriod)
+		contextKeys += fmt.Sprintf(" • j/k move • t metric:%s • Enter day", renderDailyMetricLabel(m.dailyMetric))
 	}
 	if m.activeTab == tabModels {
-		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s • p period:%s", renderModelSortLabel(m.models.sort), m.modelsPeriod)
+		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s", renderModelSortLabel(m.models.sort))
 		if m.models.filter != "" {
 			contextKeys += " • filter:" + truncateWithEllipsis(m.models.filter, 18)
 		}
 	}
 	if m.activeTab == tabTools {
-		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s • p period:%s", renderToolSortLabel(m.tools.sort), m.toolsPeriod)
+		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s", renderToolSortLabel(m.tools.sort))
 		if m.tools.filter != "" {
 			contextKeys += " • filter:" + truncateWithEllipsis(m.tools.filter, 18)
 		}
 	}
 	if m.activeTab == tabProjects {
-		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s • p period:%s", renderProjectSortLabel(m.projects.sort), m.projectsPeriod)
+		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s • Enter detail", renderProjectSortLabel(m.projects.sort))
 		if m.projects.filter != "" {
 			contextKeys += " • filter:" + truncateWithEllipsis(m.projects.filter, 18)
 		}
 	}
 	if m.activeTab == tabSessions {
-		contextKeys += fmt.Sprintf(" • j/k move • n/p pages • / filter • s sort:%s • P period:%s", renderSessionSortLabel(m.sessions.sort), m.sessionsPeriod)
+		contextKeys += fmt.Sprintf(" • j/k move • n/p pages • / filter • s sort:%s • Enter detail", renderSessionSortLabel(m.sessions.sort))
 		if m.sessions.filter != "" {
 			contextKeys += " • filter:" + truncateWithEllipsis(m.sessions.filter, 18)
 		}
@@ -999,17 +909,12 @@ func (m *model) renderFooter() string {
 		}
 		contextKeys = fmt.Sprintf("PROJECT DETAIL • %s • j/k move • n/p pages • Enter session • Esc close", pageInfo)
 	}
-	return m.styles.Footer.Width(m.width).Render(contextKeys)
+	contextKeys = truncateWithEllipsis(contextKeys, max(m.width-4, 10))
+	return m.styles.Footer.Width(m.width - 2).MaxHeight(1).Render(contextKeys)
 }
 
 func (m *model) currentDaily() stats.DailyStats {
-	if m.data.DailyByPeriod == nil {
-		return stats.DailyStats{}
-	}
-	if daily, ok := m.data.DailyByPeriod[m.dailyPeriod]; ok {
-		return daily
-	}
-	return stats.DailyStats{}
+	return m.data.Daily
 }
 
 func (m *model) currentSessionQuery() stats.SessionQuery {
@@ -1018,7 +923,9 @@ func (m *model) currentSessionQuery() stats.SessionQuery {
 		PageSize: defaultSessionsPageSize,
 		Filter:   m.sessions.filter,
 		Sort:     m.sessions.sort,
-		Period:   m.sessionsPeriod,
+		Period:   m.period.Period,
+		From:     m.period.From,
+		To:       m.period.To,
 	}
 }
 
@@ -1063,84 +970,40 @@ func (m *model) sessionEntryByID(id string) (stats.SessionEntry, bool) {
 	return stats.SessionEntry{}, false
 }
 
-func loadSnapshotCmd(st *store.Store, query stats.SessionQuery) tea.Cmd {
+func loadSnapshotCmd(src source.Source, pq stats.PeriodQuery, query stats.SessionQuery) tea.Cmd {
 	return func() tea.Msg {
+		if src == nil {
+			return snapshotLoadedMsg{err: errors.New("selected source is unavailable")}
+		}
+
 		var data dashboardData
 		var err error
-
-		func() {
+		load := func(fn func(ctx context.Context) error) bool {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			data.Overview, err = stats.OverviewString(ctx, st, "all")
-		}()
-		if err != nil {
-			return snapshotLoadedMsg{err: err}
-		}
-		data.OverviewByPeriod = make(map[string]stats.OverviewStats)
-		data.OverviewByPeriod["all"] = data.Overview
-
-		data.DailyByPeriod = make(map[string]stats.DailyStats)
-		func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			var daily7 stats.DailyStats
-			daily7, err = stats.DailyString(ctx, st, "7d")
-			if err == nil {
-				data.DailyByPeriod["7d"] = daily7
-			}
-		}()
-		if err != nil {
-			return snapshotLoadedMsg{err: err}
+			err = fn(ctx)
+			return err == nil
 		}
 
-		func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			data.Models, err = stats.ModelsString(ctx, st, "all")
-		}()
-		if err != nil {
+		if !load(func(ctx context.Context) error { var e error; data.Overview, e = src.Overview(ctx, pq); return e }) {
 			return snapshotLoadedMsg{err: err}
 		}
-		data.ModelsByPeriod = make(map[string]stats.ModelStats)
-		data.ModelsByPeriod["all"] = data.Models
-
-		func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			data.Tools, err = stats.ToolsString(ctx, st, "all")
-		}()
-		if err != nil {
+		if !load(func(ctx context.Context) error { var e error; data.Daily, e = src.Daily(ctx, pq); return e }) {
 			return snapshotLoadedMsg{err: err}
 		}
-		data.ToolsByPeriod = make(map[string]stats.ToolStats)
-		data.ToolsByPeriod["all"] = data.Tools
-
-		func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			data.Projects, err = stats.ProjectsString(ctx, st, "all")
-		}()
-		if err != nil {
+		if !load(func(ctx context.Context) error { var e error; data.Models, e = src.Models(ctx, pq); return e }) {
 			return snapshotLoadedMsg{err: err}
 		}
-		data.ProjectsByPeriod = make(map[string]stats.ProjectStats)
-		data.ProjectsByPeriod["all"] = data.Projects
-
-		func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			data.Sessions, err = stats.SessionsWithQuery(ctx, st, query)
-		}()
-		if err != nil {
+		if !load(func(ctx context.Context) error { var e error; data.Tools, e = src.Tools(ctx, pq); return e }) {
 			return snapshotLoadedMsg{err: err}
 		}
-
-		func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			data.Config, err = stats.Config(ctx, st)
-		}()
-		if err != nil {
+		if !load(func(ctx context.Context) error { var e error; data.Projects, e = src.Projects(ctx, pq); return e }) {
+			return snapshotLoadedMsg{err: err}
+		}
+		if !load(func(ctx context.Context) error { var e error; data.Sessions, e = src.Sessions(ctx, query); return e }) {
+			return snapshotLoadedMsg{err: err}
+		}
+		if !load(func(ctx context.Context) error { var e error; data.Config, e = src.Config(ctx); return e }) {
 			return snapshotLoadedMsg{err: err}
 		}
 
@@ -1148,75 +1011,17 @@ func loadSnapshotCmd(st *store.Store, query stats.SessionQuery) tea.Cmd {
 	}
 }
 
-func loadSessionsCmd(st *store.Store, query stats.SessionQuery) tea.Cmd {
+func loadSessionsCmd(src source.Source, query stats.SessionQuery) tea.Cmd {
 	return func() tea.Msg {
+		if src == nil {
+			return sessionsLoadedMsg{err: errors.New("selected source is unavailable")}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		list, err := stats.SessionsWithQuery(ctx, st, query)
+		list, err := src.Sessions(ctx, query)
 		return sessionsLoadedMsg{list: list, err: err}
 	}
-}
-
-func loadDailyPeriodCmd(st *store.Store, period string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		data, err := stats.DailyString(ctx, st, period)
-		return dailyPeriodLoadedMsg{period: period, data: data, err: err}
-	}
-}
-
-func loadOverviewPeriodCmd(st *store.Store, period string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		data, err := stats.OverviewString(ctx, st, period)
-		return overviewPeriodLoadedMsg{period: period, data: data, err: err}
-	}
-}
-
-func loadToolsPeriodCmd(st *store.Store, period string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		data, err := stats.ToolsString(ctx, st, period)
-		return toolsPeriodLoadedMsg{period: period, data: data, err: err}
-	}
-}
-
-func loadProjectsPeriodCmd(st *store.Store, period string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		data, err := stats.ProjectsString(ctx, st, period)
-		return projectsPeriodLoadedMsg{period: period, data: data, err: err}
-	}
-}
-
-func loadModelsPeriodCmd(st *store.Store, period string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		data, err := stats.ModelsString(ctx, st, period)
-		return modelsPeriodLoadedMsg{period: period, data: data, err: err}
-	}
-}
-
-func nextDailyPeriod(current string) string {
-	periods := []string{"1h", "6h", "12h", "24h", "72h", "1d", "7d", "14d", "30d", "1y", "all"}
-	for i, p := range periods {
-		if p == current {
-			nextIdx := (i + 1) % len(periods)
-			return periods[nextIdx]
-		}
-	}
-	return "1h"
 }
 
 func nextDailyMetric(current dailyMetric) dailyMetric {
@@ -1318,7 +1123,7 @@ func (m *model) applyActiveFilter() (tea.Model, tea.Cmd) {
 			m.sessions.page = 1
 			m.sessions.cursor = 0
 			m.loading = true
-			return m, loadSessionsCmd(m.store, m.currentSessionQuery())
+			return m, loadSessionsCmd(m.src, m.currentSessionQuery())
 		}
 		return m, nil
 	default:

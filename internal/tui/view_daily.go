@@ -78,7 +78,11 @@ func renderDaily(s styles, width, height int, daily stats.DailyStats, period str
 		}
 
 		trend := renderDailyTrendGlyph(s, visible, i, metric)
-		primary := padLeft(renderDailyMetricValue(metric, value, true), 8)
+		primaryStr := renderDailyMetricValue(metric, value, true)
+		if metric == dailyMetricCost {
+			primaryStr = formatMoneyProv(s, value, day.CostStatus, day.CostProvenance, true)
+		}
+		primary := padLeft(primaryStr, 8)
 		dateLabel := renderDateLabel(day.Date, isHourly)
 
 		actualIndex := start + i

@@ -3,14 +3,17 @@ package tui
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
+	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/stats"
-	"opencode-dashboard/internal/store"
 )
+
+var errSourceUnavailable = errors.New("selected source is unavailable")
 
 // sessionOverlayState tracks the session detail overlay lifecycle.
 type sessionOverlayState struct {
@@ -29,7 +32,7 @@ type projectDetailOverlayState struct {
 	loading bool
 	err     error
 	page    int
-	period  string
+	pq      stats.PeriodQuery
 	cursor  int
 }
 
@@ -88,36 +91,45 @@ type messageDetailLoadedMsg struct {
 
 // Load commands for overlay data.
 
-func loadSessionDetailCmd(st *store.Store, id string) tea.Cmd {
+func loadSessionDetailCmd(src source.Source, id string) tea.Cmd {
 	return func() tea.Msg {
+		if src == nil {
+			return sessionDetailLoadedMsg{id: id, err: errSourceUnavailable}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		detail, err := stats.SessionByID(ctx, st, id)
+		detail, err := src.SessionByID(ctx, id)
 		return sessionDetailLoadedMsg{id: id, detail: detail, err: err}
 	}
 }
 
-func loadProjectDetailCmd(st *store.Store, id string, period string, page int) tea.Cmd {
+func loadProjectDetailCmd(src source.Source, id string, pq stats.PeriodQuery, page int) tea.Cmd {
 	return func() tea.Msg {
+		if src == nil {
+			return projectDetailLoadedMsg{id: id, err: errSourceUnavailable}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		detail, err := stats.ProjectByIDString(ctx, st, id, period, page, defaultSessionsPageSize)
+		detail, err := src.ProjectByID(ctx, id, pq, page, defaultSessionsPageSize)
 		return projectDetailLoadedMsg{id: id, detail: detail, err: err}
 	}
 }
 
-func loadDayMessagesCmd(st *store.Store, date string, page int) tea.Cmd {
+func loadDayMessagesCmd(src source.Source, date string, page int) tea.Cmd {
 	return func() tea.Msg {
+		if src == nil {
+			return dayMessagesLoadedMsg{date: date, err: errSourceUnavailable}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		period := date
+		pq := stats.PeriodQuery{Period: date}
 		if len(date) == 10 {
-			period = "1d"
+			pq = stats.PeriodQuery{Period: "1d"}
 		}
-		list, err := stats.MessagesByPeriodString(ctx, st, period, page, 20, stats.DefaultMessageSort())
+		list, err := src.Messages(ctx, pq, page, 20, stats.DefaultMessageSort())
 		if err == nil && len(date) == 10 {
 			var filtered []stats.MessageEntry
 			for _, msg := range list.Messages {
@@ -134,12 +146,15 @@ func loadDayMessagesCmd(st *store.Store, date string, page int) tea.Cmd {
 	}
 }
 
-func loadMessageDetailCmd(st *store.Store, id string) tea.Cmd {
+func loadMessageDetailCmd(src source.Source, id string) tea.Cmd {
 	return func() tea.Msg {
+		if src == nil {
+			return messageDetailLoadedMsg{id: id, err: errSourceUnavailable}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		detail, err := stats.MessageByID(ctx, st, id)
+		detail, err := src.MessageByID(ctx, id)
 		return messageDetailLoadedMsg{id: id, detail: detail, err: err}
 	}
 }
@@ -246,11 +261,10 @@ func (m *model) updateSessionOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 		return m, nil
 	}
 	if matches(key, m.keys.Refresh...) {
-		m.loading = true
 		m.sessionDetail.loading = true
 		return m, tea.Batch(
-			loadSnapshotCmd(m.store, m.currentSessionQuery()),
-			loadSessionDetailCmd(m.store, m.sessionDetail.id),
+			m.loadAllForCurrent(),
+			loadSessionDetailCmd(m.src, m.sessionDetail.id),
 		)
 	}
 	return m, nil
@@ -273,7 +287,7 @@ func (m *model) updateDayMessagesOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea
 	if matches(key, m.keys.Refresh...) {
 		m.dayMessages.loading = true
 		m.dayMessages.err = nil
-		return m, loadDayMessagesCmd(m.store, m.dayMessages.date, m.dayMessages.page)
+		return m, loadDayMessagesCmd(m.src, m.dayMessages.date, m.dayMessages.page)
 	}
 	if count > 0 {
 		if matches(key, m.keys.Down...) {
@@ -296,13 +310,13 @@ func (m *model) updateDayMessagesOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea
 			m.dayMessages.page++
 			m.dayMessages.cursor = 0
 			m.dayMessages.loading = true
-			return m, loadDayMessagesCmd(m.store, m.dayMessages.date, m.dayMessages.page)
+			return m, loadDayMessagesCmd(m.src, m.dayMessages.date, m.dayMessages.page)
 		}
 		if matches(key, m.keys.PrevPage...) && m.dayMessages.page > 1 {
 			m.dayMessages.page--
 			m.dayMessages.cursor = 0
 			m.dayMessages.loading = true
-			return m, loadDayMessagesCmd(m.store, m.dayMessages.date, m.dayMessages.page)
+			return m, loadDayMessagesCmd(m.src, m.dayMessages.date, m.dayMessages.page)
 		}
 		if matches(key, m.keys.Toggle...) {
 			if m.dayMessages.cursor >= 0 && m.dayMessages.cursor < count {
@@ -312,7 +326,7 @@ func (m *model) updateDayMessagesOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea
 					id:      entry.ID,
 					loading: true,
 				}
-				return m, loadMessageDetailCmd(m.store, entry.ID)
+				return m, loadMessageDetailCmd(m.src, entry.ID)
 			}
 		}
 	}
@@ -333,7 +347,7 @@ func (m *model) updateMessageDetailOverlayKey(msg tea.KeyPressMsg) (tea.Model, t
 	if matches(key, m.keys.Refresh...) {
 		m.messageDetail.loading = true
 		m.messageDetail.err = nil
-		return m, loadMessageDetailCmd(m.store, m.messageDetail.id)
+		return m, loadMessageDetailCmd(m.src, m.messageDetail.id)
 	}
 	return m, nil
 }
@@ -349,8 +363,8 @@ func (m *model) updateProjectDetailOverlayKey(msg tea.KeyPressMsg) (tea.Model, t
 	if matches(key, m.keys.Refresh...) && m.projectDetail.id != "" {
 		m.projectDetail.loading = true
 		return m, tea.Batch(
-			loadSnapshotCmd(m.store, m.currentSessionQuery()),
-			loadProjectDetailCmd(m.store, m.projectDetail.id, m.projectDetail.period, m.projectDetail.page),
+			m.loadAllForCurrent(),
+			loadProjectDetailCmd(m.src, m.projectDetail.id, m.projectDetail.pq, m.projectDetail.page),
 		)
 	}
 
@@ -382,7 +396,7 @@ func (m *model) updateProjectDetailOverlayKey(msg tea.KeyPressMsg) (tea.Model, t
 			m.projectDetail.page++
 			m.projectDetail.cursor = 0
 			m.projectDetail.loading = true
-			return m, loadProjectDetailCmd(m.store, m.projectDetail.id, m.projectDetail.period, m.projectDetail.page)
+			return m, loadProjectDetailCmd(m.src, m.projectDetail.id, m.projectDetail.pq, m.projectDetail.page)
 		}
 	}
 
@@ -390,14 +404,14 @@ func (m *model) updateProjectDetailOverlayKey(msg tea.KeyPressMsg) (tea.Model, t
 		m.projectDetail.page--
 		m.projectDetail.cursor = 0
 		m.projectDetail.loading = true
-		return m, loadProjectDetailCmd(m.store, m.projectDetail.id, m.projectDetail.period, m.projectDetail.page)
+		return m, loadProjectDetailCmd(m.src, m.projectDetail.id, m.projectDetail.pq, m.projectDetail.page)
 	}
 
 	if matches(key, m.keys.Toggle...) && count > 0 && m.projectDetail.cursor >= 0 && m.projectDetail.cursor < count {
 		entry := m.projectDetail.detail.RecentSessions[m.projectDetail.cursor]
 		m.projectDetail = projectDetailOverlayState{}
 		m.sessionDetail = sessionOverlayState{visible: true, id: entry.ID, loading: true}
-		return m, loadSessionDetailCmd(m.store, entry.ID)
+		return m, loadSessionDetailCmd(m.src, entry.ID)
 	}
 
 	return m, nil

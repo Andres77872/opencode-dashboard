@@ -1,0 +1,7 @@
+[model]
+default = "gpt-5.5"
+
+[profile.synthetic]
+api_key = "SYNTHETIC_CONFIG_SECRET_MUST_NOT_LEAK"
+project_root = "[REDACTED_PATH]/privacy-project"
+custom_header = "SYNTHETIC_HEADER_SECRET_MUST_NOT_LEAK"

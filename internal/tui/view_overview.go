@@ -20,12 +20,14 @@ func renderOverview(s styles, width, _ int, data dashboardData) string {
 		costPerMessage = data.Overview.Cost / float64(data.Overview.Messages)
 	}
 
+	ov := data.Overview
+	costStatus := resolveCostStatus(ov.CostStatus, ov.CostProvenance)
 	cardWidth := max((width-6)/4, 18)
 	cards := []string{
-		metricCard(s, "Sessions", formatInt(data.Overview.Sessions), fmt.Sprintf("%d active days", data.Overview.Days), cardWidth),
-		metricCard(s, "Messages", formatInt(data.Overview.Messages), fmt.Sprintf("%s / sess • $%.2f/msg", formatInt(avgPerSession(data.Overview.Messages, data.Overview.Sessions)), costPerMessage), cardWidth),
-		metricCard(s, "Cost", formatMoney(data.Overview.Cost), fmt.Sprintf("%s / day • %s tok/sess", formatMoney(data.Overview.CostPerDay), formatCompactInt(tokensPerSession)), cardWidth),
-		metricCard(s, "Tokens", formatInt(totalTokens(data.Overview)), formatTokens(data.Overview.Tokens), cardWidth),
+		metricCard(s, "Sessions", formatInt(ov.Sessions), fmt.Sprintf("%d active days", ov.Days), cardWidth),
+		metricCard(s, "Messages", formatInt(ov.Messages), fmt.Sprintf("%s / sess • %s/msg", formatInt(avgPerSession(ov.Messages, ov.Sessions)), formatMoneyProv(s, costPerMessage, ov.CostStatus, ov.CostProvenance, true)), cardWidth),
+		metricCard(s, "Cost", formatMoneyProv(s, ov.Cost, ov.CostStatus, ov.CostProvenance, false), fmt.Sprintf("%s / day • %s tok/sess", formatMoneyProv(s, ov.CostPerDay, ov.CostStatus, ov.CostProvenance, true), formatCompactInt(tokensPerSession)), cardWidth),
+		metricCard(s, "Tokens", formatInt(totalTokens(ov)), formatTokens(ov.Tokens), cardWidth),
 	}
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, cards...)
@@ -35,11 +37,13 @@ func renderOverview(s styles, width, _ int, data dashboardData) string {
 
 	topModel := "No assistant model data"
 	if len(data.Models.Models) > 0 {
-		topModel = fmt.Sprintf("%s (%s)", data.Models.Models[0].ModelID, formatMoney(data.Models.Models[0].Cost))
+		mdl := data.Models.Models[0]
+		topModel = fmt.Sprintf("%s (%s)", mdl.ModelID, formatMoneyProv(s, mdl.Cost, mdl.CostStatus, mdl.CostProvenance, false))
 	}
 	topProject := "No project data"
 	if len(data.Projects.Projects) > 0 {
-		topProject = fmt.Sprintf("%s (%s)", data.Projects.Projects[0].ProjectName, formatMoney(data.Projects.Projects[0].Cost))
+		prj := data.Projects.Projects[0]
+		topProject = fmt.Sprintf("%s (%s)", prj.ProjectName, formatMoneyProv(s, prj.Cost, prj.CostStatus, prj.CostProvenance, false))
 	}
 	topTool := "No tool data"
 	if len(data.Tools.Tools) > 0 {
@@ -50,9 +54,9 @@ func renderOverview(s styles, width, _ int, data dashboardData) string {
 	totalTok := totalTokens(data.Overview)
 	secondary := []string{
 		s.PanelTitle.Render("Top signals"),
-		fmt.Sprintf("Top model   %s", topModel),
-		fmt.Sprintf("Top project %s", topProject),
-		fmt.Sprintf("Top tool    %s", topTool),
+		fmt.Sprintf("%s %s", padRight("Top model", 12), topModel),
+		fmt.Sprintf("%s %s", padRight("Top project", 12), topProject),
+		fmt.Sprintf("%s %s", padRight("Top tool", 12), topTool),
 		"",
 		s.PanelTitle.Render("Token breakdown"),
 	}
@@ -65,14 +69,18 @@ func renderOverview(s styles, width, _ int, data dashboardData) string {
 		fmt.Sprintf("Reasoning  %s %s", progressBarWithPercent(s, float64(data.Overview.Tokens.Reasoning), float64(max(totalTok, 1)), barWidth), formatInt(data.Overview.Tokens.Reasoning)),
 		fmt.Sprintf("Cache Read %s %s", progressBarWithPercent(s, float64(data.Overview.Tokens.Cache.Read), float64(max(totalTok, 1)), barWidth), formatInt(data.Overview.Tokens.Cache.Read)),
 		fmt.Sprintf("Cache Write %s %s", progressBarWithPercent(s, float64(data.Overview.Tokens.Cache.Write), float64(max(totalTok, 1)), barWidth), formatInt(data.Overview.Tokens.Cache.Write)),
+		s.Muted.Render(fmt.Sprintf("Total       %s", formatInt(totalTok))),
 	)
+	if legend := renderProvenanceLegend(s, width, costStatus); legend != "" {
+		secondary = append(secondary, "", legend)
+	}
 
 	recent := []string{s.PanelTitle.Render("Recent sessions")}
 	for i, session := range data.Sessions.Sessions {
 		if i >= 5 {
 			break
 		}
-		recent = append(recent, fmt.Sprintf("%s  %s  %s", session.TimeCreated.Format("Jan 02 15:04"), truncateWithEllipsis(session.Title, max(width-34, 18)), formatMoney(session.Cost)))
+		recent = append(recent, fmt.Sprintf("%s  %s  %s", session.TimeCreated.Format("Jan 02 15:04"), truncateWithEllipsis(session.Title, max(width-34, 18)), formatMoneyProv(s, session.Cost, session.CostStatus, session.CostProvenance, true)))
 	}
 	if len(data.Sessions.Sessions) == 0 {
 		recent = append(recent, s.Muted.Render("No sessions on current page"))

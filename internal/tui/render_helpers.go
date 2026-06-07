@@ -67,6 +67,128 @@ func formatMoney(v float64) string {
 	return fmt.Sprintf("$%.2f", v)
 }
 
+// resolveCostStatus mirrors the web's getCostStatus: the flat status wins,
+// falling back to the provenance status.
+func resolveCostStatus(flat stats.CostStatus, prov *stats.CostProvenance) stats.CostStatus {
+	if flat != "" {
+		return flat
+	}
+	if prov != nil {
+		return prov.Status
+	}
+	return ""
+}
+
+// formatMoneyProv renders a cost with a compact provenance marker, mirroring the
+// web conventions:
+//   - approximate / estimated_api_equivalent → "~$x" (amber)
+//   - missing                                → "Unknown" (dim), or "?" when dense
+//   - mixed                                  → "$x" (blue)
+//   - reported / computed / unset            → "$x" (plain)
+func formatMoneyProv(s styles, v float64, flat stats.CostStatus, prov *stats.CostProvenance, dense bool) string {
+	switch resolveCostStatus(flat, prov) {
+	case stats.CostMissing:
+		if dense {
+			return s.CostUnknown.Render("?")
+		}
+		return s.CostUnknown.Render("Unknown")
+	case stats.CostApproximate, stats.CostEstimatedAPIEquivalent:
+		return s.CostApprox.Render("~" + formatMoney(v))
+	case stats.CostMixed:
+		return s.CostMixed.Render(formatMoney(v))
+	default:
+		return formatMoney(v)
+	}
+}
+
+// plainCostProv renders a cost with a plain-text provenance marker (no ANSI),
+// safe to embed in strings that are later truncated rune-by-rune.
+func plainCostProv(v float64, flat stats.CostStatus, prov *stats.CostProvenance) string {
+	switch resolveCostStatus(flat, prov) {
+	case stats.CostMissing:
+		return "Unknown"
+	case stats.CostApproximate, stats.CostEstimatedAPIEquivalent:
+		return "~" + formatMoney(v)
+	default:
+		return formatMoney(v)
+	}
+}
+
+// avgTokenTotal sums the five per-unit averages, matching the web's getAvgTokenTotal.
+func avgTokenTotal(a *stats.AvgTokenStats) float64 {
+	if a == nil {
+		return 0
+	}
+	return a.Input + a.Output + a.Reasoning + a.CacheRead + a.CacheWrite
+}
+
+// provenanceNote returns a human sentence describing the cost provenance, mirroring
+// the web's formatCostProvenance (used in detail overlays where there is room).
+func provenanceNote(flat stats.CostStatus, prov *stats.CostProvenance) string {
+	switch resolveCostStatus(flat, prov) {
+	case stats.CostReported:
+		return "reported cost"
+	case stats.CostComputed:
+		if prov != nil && prov.PricingSnapshotID != "" {
+			return "computed from pricing snapshot " + prov.PricingSnapshotID
+		}
+		return "computed cost"
+	case stats.CostApproximate:
+		return "approximate cost"
+	case stats.CostEstimatedAPIEquivalent:
+		return "estimated API-equivalent cost; not actual subscription spend"
+	case stats.CostMixed:
+		return "mixed cost provenance"
+	case stats.CostMissing:
+		return "cost unavailable"
+	default:
+		return ""
+	}
+}
+
+// isPlainCost reports whether a status needs no marker/legend (reported/computed/unset).
+func isPlainCost(status stats.CostStatus) bool {
+	switch status {
+	case stats.CostApproximate, stats.CostEstimatedAPIEquivalent, stats.CostMixed, stats.CostMissing:
+		return false
+	default:
+		return true
+	}
+}
+
+// renderProvenanceLegend renders a one-line legend describing any non-plain cost
+// markers visible in the view. Suppressed on narrow terminals.
+func renderProvenanceLegend(s styles, width int, statuses ...stats.CostStatus) string {
+	if width < 70 {
+		return ""
+	}
+	var approx, mixed, missing bool
+	for _, st := range statuses {
+		switch st {
+		case stats.CostApproximate, stats.CostEstimatedAPIEquivalent:
+			approx = true
+		case stats.CostMixed:
+			mixed = true
+		case stats.CostMissing:
+			missing = true
+		}
+	}
+	parts := make([]string, 0, 3)
+	if approx {
+		parts = append(parts, s.CostApprox.Render("~")+s.Muted.Render(" approx/est"))
+	}
+	if mixed {
+		parts = append(parts, s.CostMixed.Render("●")+s.Muted.Render(" mixed"))
+	}
+	if missing {
+		parts = append(parts, s.CostUnknown.Render("?")+s.Muted.Render(" unknown"))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return s.Muted.Render("cost ") + strings.Join(parts, s.Muted.Render(" · "))
+}
+
 func formatTokens(tokens stats.TokenStats) string {
 	return fmt.Sprintf("%s in • %s out • %s reason", formatInt(tokens.Input), formatInt(tokens.Output), formatInt(tokens.Reasoning))
 }

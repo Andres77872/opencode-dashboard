@@ -1,0 +1,20 @@
+{
+  "id": "openai-codex-gpt-5.5-2026-04-23",
+  "retrieved_at": "2026-06-06T00:00:00Z",
+  "source": "https://openai.com/api/pricing/ and https://developers.openai.com/api/docs/models/gpt-5.5",
+  "currency": "USD",
+  "models": {
+    "gpt-5.5": {
+      "input_per_million": 5.0,
+      "cached_input_per_million": 0.5,
+      "output_per_million": 30.0,
+      "cache_write_input_per_million": 0.0,
+      "reasoning_output_billed_as": "output",
+      "long_context_threshold_input_tokens": 272000,
+      "long_context_input_multiplier": 2.0,
+      "long_context_output_multiplier": 1.5,
+      "fast_mode_multiplier": 2.5,
+      "cache_write_note": "OpenAI prompt caching has no cache write charge"
+    }
+  }
+}

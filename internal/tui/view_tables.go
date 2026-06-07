@@ -138,6 +138,7 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 	showCostShare := width >= 110
 	showTokenBar := width >= 130
 	showTokenCols := width >= 160
+	showAvgTokens := width >= 175 // avg tokens/msg — richest column, drops first
 
 	// Calculate dynamic widths
 	nameWidth := max(width-42, 16)
@@ -149,6 +150,8 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 		nameWidth = max(width-62, 16)
 	} else if showTokenBar && !showTokenCols {
 		nameWidth = max(width-86, 16) // +TOKENS(12) on top of avg+share combo
+	} else if showTokenCols && showAvgTokens {
+		nameWidth = max(width-115, 16) // +AT/MSG(9) on top of token cols
 	} else if showTokenCols {
 		nameWidth = max(width-106, 16) // +IN(6)+OUT(6)+REAS(8)+CR(6)+CW(6) on top of avg+share
 	}
@@ -167,8 +170,12 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 	} else if showTokenBar {
 		headerParts = append(headerParts, padLeft("TOKENS", 12))
 	}
+	if showAvgTokens {
+		headerParts = append(headerParts, padLeft("AT/MSG", 8))
+	}
 	rows = append(rows, s.TableHeader.Render(strings.Join(headerParts, " ")))
 
+	costSeen := map[stats.CostStatus]bool{}
 	limit := min(len(items), max(height-len(rows)-4, 5))
 	if len(items) == 0 {
 		message := "No assistant model usage found."
@@ -202,9 +209,10 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 				padLeft(formatInt(item.Messages), 6),
 			}
 			if showAvgPerMsg {
-				lineParts = append(lineParts, padLeft(formatMoney(avgPerMsg), 8))
+				lineParts = append(lineParts, padLeft(formatMoneyProv(s, avgPerMsg, item.CostStatus, item.CostProvenance, true), 8))
 			}
-			lineParts = append(lineParts, padLeft(formatMoney(item.Cost), 10))
+			lineParts = append(lineParts, padLeft(formatMoneyProv(s, item.Cost, item.CostStatus, item.CostProvenance, true), 10))
+			costSeen[resolveCostStatus(item.CostStatus, item.CostProvenance)] = true
 			if showCostShare {
 				shareBar := progressBarWithPercent(s, item.Cost, totalCost, 12)
 				lineParts = append(lineParts, padLeft(shareBar, 12))
@@ -222,6 +230,13 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 				tokenBar := progressBarWithPercent(s, float64(totalTokens), float64(maxTotalTokens), 12)
 				lineParts = append(lineParts, padLeft(tokenBar, 12))
 			}
+			if showAvgTokens {
+				at := "-"
+				if item.AvgTokensPerMessage != nil {
+					at = formatCompactInt(int64(avgTokenTotal(item.AvgTokensPerMessage)))
+				}
+				lineParts = append(lineParts, padLeft(at, 8))
+			}
 
 			line := strings.Join(lineParts, " ")
 			if i == state.cursor {
@@ -231,8 +246,25 @@ func renderModels(s styles, width, height int, items []stats.ModelEntry, total i
 			rows = append(rows, s.TableRow.Render("  "+line))
 		}
 	}
+	if legend := provenanceLegendFor(s, width, costSeen); legend != "" {
+		rows = append(rows, legend)
+	}
 	rows = appendTableStatus(rows, s, state, len(items), total, "models")
 	return strings.TrimRight(joinLines(rows...), "\n")
+}
+
+// provenanceLegendFor renders the legend from a set of seen cost statuses.
+func provenanceLegendFor(s styles, width int, seen map[stats.CostStatus]bool) string {
+	statuses := make([]stats.CostStatus, 0, len(seen))
+	for st := range seen {
+		if !isPlainCost(st) {
+			statuses = append(statuses, st)
+		}
+	}
+	if len(statuses) == 0 {
+		return ""
+	}
+	return renderProvenanceLegend(s, width, statuses...)
 }
 
 func renderTools(s styles, width, height int, items []stats.ToolEntry, total int, state tableViewState) string {
@@ -498,6 +530,7 @@ func renderProjects(s styles, width, height int, items []stats.ProjectEntry, tot
 	}
 	rows = append(rows, s.TableHeader.Render(strings.Join(headerParts, " ")))
 
+	costSeen := map[stats.CostStatus]bool{}
 	limit := min(len(items), max(height-len(rows)-4, 5))
 	if len(items) == 0 {
 		message := "No project activity found."
@@ -528,13 +561,14 @@ func renderProjects(s styles, width, height int, items []stats.ProjectEntry, tot
 			if showTokens {
 				lineParts = append(lineParts, padLeft(formatCompactInt(totalTokens), 7))
 			}
-			lineParts = append(lineParts, padLeft(formatMoney(item.Cost), 10))
+			lineParts = append(lineParts, padLeft(formatMoneyProv(s, item.Cost, item.CostStatus, item.CostProvenance, true), 10))
+			costSeen[resolveCostStatus(item.CostStatus, item.CostProvenance)] = true
 			if showShare {
 				shareBar := progressBarWithPercent(s, item.Cost, totalCost, 12)
 				lineParts = append(lineParts, padLeft(shareBar, 12))
 			}
 			if showAvgSession {
-				lineParts = append(lineParts, padLeft(formatMoney(avgPerSession), 8))
+				lineParts = append(lineParts, padLeft(formatMoneyProv(s, avgPerSession, item.CostStatus, item.CostProvenance, true), 8))
 			}
 
 			line := strings.Join(lineParts, " ")
@@ -544,6 +578,9 @@ func renderProjects(s styles, width, height int, items []stats.ProjectEntry, tot
 			}
 			rows = append(rows, s.TableRow.Render("  "+line))
 		}
+	}
+	if legend := provenanceLegendFor(s, width, costSeen); legend != "" {
+		rows = append(rows, legend)
 	}
 	rows = appendTableStatus(rows, s, state, len(items), total, "projects")
 	return strings.TrimRight(joinLines(rows...), "\n")
@@ -609,6 +646,7 @@ func renderSessions(s styles, width, height int, list stats.SessionList, state s
 	}
 	rows = append(rows, s.TableHeader.Render(strings.Join(headerParts, " ")))
 
+	sessionCostSeen := map[stats.CostStatus]bool{}
 	if len(list.Sessions) == 0 {
 		message := "No sessions match the current view."
 		if state.filter == "" {
@@ -630,8 +668,9 @@ func renderSessions(s styles, width, height int, list stats.SessionList, state s
 				padRight(truncateWithEllipsis(item.ProjectName, 12), 12),
 				padRight(item.TimeUpdated.Format("2006-01-02"), 12),
 				padLeft(formatInt(item.MessageCount), 5),
-				padLeft(formatMoney(item.Cost), 10),
+				padLeft(formatMoneyProv(s, item.Cost, item.CostStatus, item.CostProvenance, true), 10),
 			}
+			sessionCostSeen[resolveCostStatus(item.CostStatus, item.CostProvenance)] = true
 			if showCostShare {
 				shareBar := progressBarWithPercent(s, item.Cost, pageTotalCost, 12)
 				lineParts = append(lineParts, padLeft(shareBar, 12))
@@ -644,6 +683,10 @@ func renderSessions(s styles, width, height int, list stats.SessionList, state s
 			}
 			rows = append(rows, s.TableRow.Render("  "+line))
 		}
+	}
+
+	if legend := provenanceLegendFor(s, width, sessionCostSeen); legend != "" {
+		rows = append(rows, legend)
 	}
 
 	status := fmt.Sprintf("Page %d/%d • showing %d of %d sessions • sort:%s", max(list.Page, 1), totalSessionPages(list), len(list.Sessions), list.Total, renderSessionSortLabel(state.sort))

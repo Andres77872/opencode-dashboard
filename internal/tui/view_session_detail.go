@@ -82,8 +82,12 @@ func renderSessionDetailOverlay(s styles, width, height int, state sessionOverla
 	lines = append(lines,
 		"",
 		s.Text.Render("Totals"),
+		s.Muted.Render(fmt.Sprintf("cost     %s", plainCostProv(detail.TotalCost, detail.CostStatus, detail.CostProvenance))),
 		s.Muted.Render(fmt.Sprintf("tokens   %s", formatTokens(detail.TotalTokens))),
 	)
+	if note := provenanceNote(detail.CostStatus, detail.CostProvenance); note != "" && !isPlainCost(resolveCostStatus(detail.CostStatus, detail.CostProvenance)) {
+		lines = append(lines, s.Muted.Render("         "+note))
+	}
 
 	// Cache tokens with percentages (per spec: show both count and percentage)
 	totalTok := detail.TotalTokens.Input + detail.TotalTokens.Output + detail.TotalTokens.Reasoning + detail.TotalTokens.Cache.Read + detail.TotalTokens.Cache.Write
@@ -135,10 +139,12 @@ func renderSessionDetailOverlay(s styles, width, height int, state sessionOverla
 			if peakIdx < len(detail.Messages) {
 				peakCost = detail.Messages[peakIdx].Cost
 			}
+			peakStatus := detail.Messages[peakIdx].CostStatus
+			peakProv := detail.Messages[peakIdx].CostProvenance
 			lines = append(lines,
 				"",
 				s.Text.Render("Peak message"),
-				s.Muted.Render(fmt.Sprintf("Row %d • %s tokens • %s", peakIdx+1, formatCompactInt(peakTokens), formatMoney(peakCost))),
+				s.Muted.Render(fmt.Sprintf("Row %d • %s tokens • %s", peakIdx+1, formatCompactInt(peakTokens), plainCostProv(peakCost, peakStatus, peakProv))),
 			)
 		}
 	}
@@ -186,7 +192,7 @@ func renderSessionMessageRows(s styles, messages []stats.SessionMessage, width, 
 		if msg.Agent != "" {
 			meta = append(meta, truncateWithEllipsis(msg.Agent, 12))
 		}
-		meta = append(meta, formatMoney(msg.Cost))
+		meta = append(meta, plainCostProv(msg.Cost, msg.CostStatus, msg.CostProvenance))
 		if msg.Tokens != nil {
 			meta = append(meta, fmt.Sprintf("%s tok", formatInt(msg.Tokens.Input+msg.Tokens.Output+msg.Tokens.Reasoning+msg.Tokens.Cache.Read+msg.Tokens.Cache.Write)))
 		}

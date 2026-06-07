@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/stats"
-	"opencode-dashboard/internal/store"
 )
 
 // configSections returns the sorted top-level keys from the config content.
@@ -94,12 +94,17 @@ func formatConfigValue(val any) (display string, isNested bool) {
 	}
 }
 
-func renderConfig(s styles, width, height int, cfg stats.ConfigView, opts Options, schema store.SchemaInfo, cs *configState) string {
+func renderConfig(s styles, width, height int, cfg stats.ConfigView, info source.SourceInfo, cs *configState) string {
+	kind := info.Kind
+	if kind == "" {
+		kind = "—"
+	}
 	lines := []string{
 		s.PanelTitle.Render("Runtime and config"),
-		fmt.Sprintf("Database path   %s", opts.DBPath),
-		fmt.Sprintf("Database source %s", opts.DBSource),
-		fmt.Sprintf("Schema valid    %t", schema.IsValid),
+		fmt.Sprintf("Source          %s", sourceLabelOrID(info, info.ID)),
+		fmt.Sprintf("Kind            %s", kind),
+		fmt.Sprintf("Path            %s", info.Path),
+		fmt.Sprintf("Available       %t", info.Available),
 		fmt.Sprintf("Config path     %s", cfg.Path),
 		fmt.Sprintf("Config exists   %t", cfg.Exists),
 	}
