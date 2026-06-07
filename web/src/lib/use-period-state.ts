@@ -1,5 +1,6 @@
 import { useSearchParams } from 'react-router-dom'
 import { isDailyPeriod, isValidCustomRange, type CustomPeriod, type DailyPeriod, type PeriodMode } from '../types/api'
+import { getStoredPeriod } from './persisted-prefs.ts'
 
 export interface PeriodState {
   mode: PeriodMode
@@ -32,6 +33,19 @@ export function usePeriodState(): PeriodState {
   const to = searchParams.get('to') ?? undefined
   const period = searchParams.get('period')
   const modeParam = searchParams.get('mode')
+
+  // When the URL carries no time-range params, restore the last persisted range so
+  // the selection survives navigation between views and full reloads. Any explicit
+  // URL param (shared link, back/forward) still takes precedence below.
+  if (!from && !period && !modeParam) {
+    const stored = getStoredPeriod()
+    if (stored?.from && isValidCustomRange(stored.from, stored.to)) {
+      return { mode: 'custom', preset: '7d', customRange: { from: stored.from, to: stored.to } }
+    }
+    if (stored?.period && isDailyPeriod(stored.period)) {
+      return { mode: 'preset', preset: stored.period }
+    }
+  }
 
   if (from) {
     // Validate — if invalid, fall back to preset

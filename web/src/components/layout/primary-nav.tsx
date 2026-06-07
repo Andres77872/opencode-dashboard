@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useLocation } from 'react-router-dom'
 import { PanelLeftClose, PanelLeftOpen, X, Hexagon } from 'lucide-react'
 import { navItems } from './nav-items'
 import { Button } from '../ui/button'
@@ -7,10 +7,28 @@ import { cn } from '../../lib/utils'
 import { useDashboardContext } from './dashboard-context'
 import { useSidebar } from './sidebar-context'
 
+// Global filters that should follow the user between views. View-specific params
+// (page, filter, project_id, sort, dimension) are intentionally dropped on nav.
+const GLOBAL_PARAM_KEYS = ['source', 'period', 'from', 'to', 'mode'] as const
+
+function globalSearch(search: string): string {
+  const current = new URLSearchParams(search)
+  const next = new URLSearchParams()
+  for (const key of GLOBAL_PARAM_KEYS) {
+    const value = current.get(key)
+    if (value !== null) {
+      next.set(key, value)
+    }
+  }
+  const serialized = next.toString()
+  return serialized ? `?${serialized}` : ''
+}
+
 export function PrimaryNav() {
   const { mobileOpen, collapsed, closeMobile, toggleCollapsed } = useSidebar()
   const { selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const drawerRef = useRef<HTMLDivElement>(null)
+  const search = globalSearch(useLocation().search)
   const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
 
   // Close mobile drawer on Escape
@@ -69,7 +87,7 @@ export function PrimaryNav() {
               return (
                 <NavLink
                   key={item.href}
-                  to={item.href}
+                  to={{ pathname: item.href, search }}
                   onClick={closeMobile}
                   className={({ isActive }) =>
                     cn(
@@ -119,7 +137,7 @@ export function PrimaryNav() {
               return (
                 <NavLink
                   key={item.href}
-                  to={item.href}
+                  to={{ pathname: item.href, search }}
                   className={({ isActive }) =>
                     cn(
                       'flex items-center gap-3 rounded-lg text-sm font-medium transition-colors',

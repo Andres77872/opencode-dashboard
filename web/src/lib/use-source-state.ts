@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { isSourceID, type SourceID, type SourceInfo, type SourceListResponse } from '../types/api.ts'
 import { resolveRequestedSourceId, shouldOmitSourceParam } from './source-selection.ts'
+import { getStoredSourceId, setStoredSourceId } from './persisted-prefs.ts'
 
 export interface SourceStateError {
   kind: 'invalid' | 'unsupported' | 'unavailable' | 'metadata'
@@ -125,7 +126,8 @@ export function useSourceState(sourceList: SourceListResponse | null): SourceSta
   const [searchParams, setSearchParams] = useSearchParams()
 
   const rawSourceParam = searchParams.get('source')?.trim() || null
-  const requestedSourceId = resolveRequestedSourceId(rawSourceParam, sourceList)
+  const storedSourceId = getStoredSourceId()
+  const requestedSourceId = resolveRequestedSourceId(rawSourceParam, sourceList, storedSourceId)
 
   const selectedSourceInfo = useMemo(() => {
     const sourceInfo = findSource(sourceList, requestedSourceId)
@@ -141,6 +143,7 @@ export function useSourceState(sourceList: SourceListResponse | null): SourceSta
   )
 
   const setSelectedSourceId = (sourceId: SourceID) => {
+    setStoredSourceId(sourceId)
     setSearchParams((previous) => {
       const next = new URLSearchParams(previous)
       if (shouldOmitSourceParam(sourceId, sourceList)) {

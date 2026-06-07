@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { applyPeriodToUrl, serializeCustomPeriod, usePeriodState, type PeriodState } from './use-period-state'
+import { setStoredPeriod } from './persisted-prefs.ts'
 import type { CustomPeriod, DailyPeriod, PeriodMode } from '../types/api'
 
 export interface UsePeriodControlsOptions {
@@ -45,6 +46,7 @@ export function usePeriodControls(options: UsePeriodControlsOptions = {}): Perio
   const onPresetChange = useCallback(
     (preset: DailyPeriod) => {
       onChange?.()
+      setStoredPeriod({ period: preset })
       setSearchParams((previous) => {
         const next = applyPeriodToUrl(previous, { mode: 'preset', preset })
         mutateUrl?.(next)
@@ -57,6 +59,7 @@ export function usePeriodControls(options: UsePeriodControlsOptions = {}): Perio
   const onCustomRangeChange = useCallback(
     (range: CustomPeriod) => {
       onChange?.()
+      setStoredPeriod({ from: range.from, to: range.to })
       setSearchParams((previous) => {
         const next = applyPeriodToUrl(previous, { mode: 'custom', customRange: range })
         mutateUrl?.(next)

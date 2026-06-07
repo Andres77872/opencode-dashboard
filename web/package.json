@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "test:source-state": "node --test src/lib/source-selection.test.ts src/lib/use-source-state.test.ts src/lib/message-display.test.ts src/lib/period-label.test.ts src/lib/overview-all.test.ts",
+    "test:source-state": "node --test src/lib/source-selection.test.ts src/lib/use-source-state.test.ts src/lib/persisted-prefs.test.ts src/lib/message-display.test.ts src/lib/period-label.test.ts src/lib/overview-all.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

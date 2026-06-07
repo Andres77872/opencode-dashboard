@@ -21,10 +21,20 @@ export function shouldOmitSourceParam(sourceId: SourceID, sourceList: SourceList
   return sourceId === defaultSourceId && sourceId === startupSourceId
 }
 
-export function resolveRequestedSourceId(rawSourceParam: string | null, sourceList: SourceListResponse | null): SourceID {
+export function resolveRequestedSourceId(
+  rawSourceParam: string | null,
+  sourceList: SourceListResponse | null,
+  storedSourceId: SourceID | null = null,
+): SourceID {
   const urlSourceId = rawSourceParam?.trim() || null
   if (urlSourceId && isSourceID(urlSourceId)) {
     return urlSourceId
+  }
+
+  // Persisted preference wins over the backend startup hint so the user's last
+  // explicit choice survives reloads and bare-URL navigation between views.
+  if (storedSourceId && isSourceID(storedSourceId)) {
+    return storedSourceId
   }
 
   return getStartupFallbackSourceId(sourceList)
