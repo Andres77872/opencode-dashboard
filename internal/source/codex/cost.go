@@ -160,6 +160,11 @@ func aggregateCostProvenance(messages []*messageRecord) (float64, stats.TokenSta
 	prov := &stats.CostProvenance{Currency: "USD"}
 	statuses := make(map[stats.CostStatus]bool)
 	for _, msg := range messages {
+		// User-prompt rows carry no cost/tokens; only assistant API-request rows
+		// contribute to cost status and token totals.
+		if msg.Entry.Role != "assistant" {
+			continue
+		}
 		if msg.Entry.Tokens != nil {
 			tokens.Input += msg.Entry.Tokens.Input
 			tokens.Output += msg.Entry.Tokens.Output

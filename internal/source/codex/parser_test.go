@@ -87,8 +87,26 @@ func TestParserRecognizesCodexTopLevelRecordFamilies(t *testing.T) {
 				if record.Event.LastUsage.Input != 999 {
 					t.Errorf("LastUsage.Input = %d, want last_token_usage preserved but not aggregated", record.Event.LastUsage.Input)
 				}
+				if !record.Event.HasTotalUsage || !record.Event.HasLastUsage {
+					t.Errorf("HasTotalUsage/HasLastUsage = %v/%v, want both true when both snapshots present", record.Event.HasTotalUsage, record.Event.HasLastUsage)
+				}
 				if record.Event.PlanType != "plus" {
 					t.Errorf("PlanType = %q, want plus", record.Event.PlanType)
+				}
+			},
+		},
+		{
+			name: "event message token count with only last usage marks total absent",
+			line: `{"timestamp":"2026-01-02T03:04:19Z","type":"event_msg","payload":{"type":"token_count","turn_id":"turn-1","info":{"last_token_usage":{"input_tokens":200,"cached_input_tokens":10,"output_tokens":40,"reasoning_output_tokens":5,"total_tokens":255}}}}`,
+			assert: func(t *testing.T, record codexRecord) {
+				if record.Event == nil || record.Event.PayloadType != "token_count" {
+					t.Fatalf("Event = %#v, want token_count", record.Event)
+				}
+				if record.Event.HasTotalUsage {
+					t.Errorf("HasTotalUsage = true, want false when total_token_usage is absent")
+				}
+				if !record.Event.HasLastUsage || record.Event.LastUsage.Input != 200 {
+					t.Errorf("LastUsage = %#v / HasLastUsage = %v, want last_token_usage fallback present", record.Event.LastUsage, record.Event.HasLastUsage)
 				}
 			},
 		},

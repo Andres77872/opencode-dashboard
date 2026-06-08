@@ -72,7 +72,10 @@ func discoverTranscripts(ctx context.Context, claudeHome string) discoveryResult
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case "subagents", "tool-results", "debug":
+			case "tool-results", "debug":
+				// Deferred tool-result payloads and debug logs are not API
+				// interactions, so they stay excluded. Subagent transcripts ARE
+				// real API requests and are included below.
 				return filepath.SkipDir
 			}
 			return nil
@@ -105,7 +108,7 @@ func discoverTranscripts(ctx context.Context, claudeHome string) discoveryResult
 			Path:        path,
 			ProjectID:   projectID,
 			ProjectPath: decodeProjectPath(projectID),
-			SessionID:   strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
+			SessionID:   sessionIDFromParts(parts),
 			ModTime:     fileInfo.ModTime().UTC(),
 			Size:        fileInfo.Size(),
 		})
@@ -124,6 +127,23 @@ func discoverTranscripts(ctx context.Context, claudeHome string) discoveryResult
 		diag.Reason = "no persisted Claude Code JSONL transcripts found"
 	}
 	return discoveryResult{files: files, diagnostics: diag, available: true}
+}
+
+// sessionIDFromParts derives a fallback session id from a transcript's path
+// components (relative to the projects root). Main transcripts live at
+// <project>/<session>.jsonl, so the session is the file name. Subagent
+// transcripts live at <project>/<session>/subagents/agent-<id>.jsonl, where the
+// file name is the agent id rather than the session; for those the session is the
+// directory above "subagents". This only seeds the fallback used when a record
+// omits its own sessionId — subagent records carry the parent sessionId directly.
+func sessionIDFromParts(parts []string) string {
+	for i, part := range parts {
+		if part == "subagents" && i > 0 {
+			return parts[i-1]
+		}
+	}
+	last := parts[len(parts)-1]
+	return strings.TrimSuffix(last, filepath.Ext(last))
 }
 
 func decodeProjectPath(projectID string) string {

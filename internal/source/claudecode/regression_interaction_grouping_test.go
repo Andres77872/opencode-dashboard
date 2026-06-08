@@ -4,10 +4,11 @@ import (
 	"strings"
 	"testing"
 
+	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/stats"
 )
 
-func TestClaudeInteractionGroupingMultiToolLoopPromptFoldsRawAssistantRecordsIntoOneDetail(t *testing.T) {
+func TestClaudeInteractionGroupingMultiToolLoopEmitsOneRowPerAPIRequest(t *testing.T) {
 	src := newTempRegressionSource(t, map[string][]string{
 		"-home-andres-projects-grouping/multi-tool-loop-session.jsonl": multiToolLoopDeltaLines(),
 	})
@@ -18,8 +19,9 @@ func TestClaudeInteractionGroupingMultiToolLoopPromptFoldsRawAssistantRecordsInt
 	if err != nil {
 		t.Fatalf("Overview(all) failed: %v", err)
 	}
-	if overview.Messages != 1 {
-		t.Errorf("Overview().Messages = %d, want 1 user-facing interaction for one prompt with a multi-tool loop", overview.Messages)
+	// One user prompt row + three assistant API-request rows (Read, Grep, final text).
+	if overview.Messages != 4 {
+		t.Errorf("Overview().Messages = %d, want 4 (1 user prompt + 3 assistant API requests)", overview.Messages)
 	}
 	if overview.Sessions != 1 {
 		t.Errorf("Overview().Sessions = %d, want 1", overview.Sessions)
@@ -29,20 +31,27 @@ func TestClaudeInteractionGroupingMultiToolLoopPromptFoldsRawAssistantRecordsInt
 	if err != nil {
 		t.Fatalf("Messages(all) failed: %v", err)
 	}
-	if messages.Total != 1 {
-		t.Errorf("Messages().Total = %d, want 1 dashboard row representing the user prompt, not raw assistant/tool-loop lines", messages.Total)
+	if messages.Total != 4 {
+		t.Errorf("Messages().Total = %d, want 4 rows: 1 user prompt + 3 assistant API requests", messages.Total)
 	}
-	if len(messages.Messages) != 1 {
-		t.Fatalf("Messages().Messages len = %d, want 1 interaction row to inspect detail", len(messages.Messages))
+	if len(messages.Messages) != 4 {
+		t.Fatalf("Messages().Messages len = %d, want 4 interaction rows to inspect detail", len(messages.Messages))
+	}
+	// Chronological layout: [0]=user prompt, [1]=assistant Read, [2]=assistant Grep, [3]=assistant final text.
+	if messages.Messages[0].Role != "user" {
+		t.Errorf("Messages()[0].Role = %q, want user prompt row", messages.Messages[0].Role)
 	}
 
-	detail := mustMessageDetail(t, src, messages.Messages[0].ID)
-	assertDetailToolCompleted(t, detail, "toolu_read_grouping", "read completed")
-	assertDetailToolCompleted(t, detail, "toolu_grep_grouping", "grep completed")
-	if len(detail.Content.ToolParts) != 2 {
-		t.Errorf("MessageDetail().Content.ToolParts len = %d, want 2 folded tool calls", len(detail.Content.ToolParts))
+	details := messageDetails(t, src, messages.Messages)
+	if !detailsContainCompletedTool(t, details, "toolu_read_grouping", "read completed") {
+		t.Errorf("message details do not contain completed Read tool toolu_read_grouping")
 	}
-	assertDetailTextContains(t, detail, "Both tool calls completed and the answer is ready.")
+	if !detailsContainCompletedTool(t, details, "toolu_grep_grouping", "grep completed") {
+		t.Errorf("message details do not contain completed Grep tool toolu_grep_grouping")
+	}
+	if !detailsContainText(details, "Both tool calls completed and the answer is ready.") {
+		t.Errorf("message details do not contain the final assistant text")
+	}
 
 	session, err := src.SessionByID(ctx, "multi-tool-loop-session")
 	if err != nil {
@@ -51,11 +60,11 @@ func TestClaudeInteractionGroupingMultiToolLoopPromptFoldsRawAssistantRecordsInt
 	if session == nil {
 		t.Fatalf("SessionByID(multi-tool-loop-session) = nil, want session detail")
 	}
-	if session.MessageCount != 1 {
-		t.Errorf("SessionByID().MessageCount = %d, want 1 user-facing interaction", session.MessageCount)
+	if session.MessageCount != 4 {
+		t.Errorf("SessionByID().MessageCount = %d, want 4 (1 user prompt + 3 assistant API requests)", session.MessageCount)
 	}
-	if len(session.Messages) != 1 {
-		t.Errorf("SessionByID().Messages len = %d, want 1 user-facing interaction", len(session.Messages))
+	if len(session.Messages) != 4 {
+		t.Errorf("SessionByID().Messages len = %d, want 4", len(session.Messages))
 	}
 }
 
@@ -70,22 +79,22 @@ func TestClaudeInteractionGroupingCostAndTokenSemantics(t *testing.T) {
 		wantMessage string
 	}{
 		{
-			name:        "per-call delta assistant records sum unique API-call deltas once",
+			name:        "per-call delta assistant records emit one row each and sum cost/tokens",
 			sessionID:   "multi-tool-loop-session",
 			lines:       multiToolLoopDeltaLines(),
 			wantCost:    7.50,
 			wantInput:   600,
 			wantOutput:  90,
-			wantMessage: "delta assistant API-call records should fold into one interaction while preserving summed cost/tokens",
+			wantMessage: "each delta assistant API-call record is its own row while cost/tokens sum across requests",
 		},
 		{
-			name:        "cumulative-looking assistant records use final max cumulative values",
+			name:        "cumulative total_cost_usd is ignored in favor of per-request token cost; per-request usage sums",
 			sessionID:   "cumulative-tool-loop-session",
 			lines:       cumulativeToolLoopLines(),
-			wantCost:    6.00,
-			wantInput:   600,
-			wantOutput:  60,
-			wantMessage: "cumulative totals must not be linearly overcounted across raw assistant records",
+			wantCost:    0.0045,
+			wantInput:   1000,
+			wantOutput:  100,
+			wantMessage: "cumulative total_cost_usd is ignored when usage is present; per-request token cost is used and usage sums normally",
 		},
 	}
 
@@ -101,8 +110,9 @@ func TestClaudeInteractionGroupingCostAndTokenSemantics(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Overview(all) failed: %v", err)
 			}
-			if overview.Messages != 1 {
-				t.Errorf("Overview().Messages = %d, want 1 grouped interaction; %s", overview.Messages, tt.wantMessage)
+			// 1 user prompt row + 3 assistant API-request rows.
+			if overview.Messages != 4 {
+				t.Errorf("Overview().Messages = %d, want 4 (1 user + 3 assistant API requests); %s", overview.Messages, tt.wantMessage)
 			}
 			if !approxEqual(overview.Cost, tt.wantCost) {
 				t.Errorf("Overview().Cost = %.6f, want %.6f; %s", overview.Cost, tt.wantCost, tt.wantMessage)
@@ -115,21 +125,18 @@ func TestClaudeInteractionGroupingCostAndTokenSemantics(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Messages(all) failed: %v", err)
 			}
-			if messages.Total != 1 {
-				t.Errorf("Messages().Total = %d, want 1 grouped interaction; %s", messages.Total, tt.wantMessage)
+			if messages.Total != 4 {
+				t.Errorf("Messages().Total = %d, want 4 rows; %s", messages.Total, tt.wantMessage)
 			}
-			if len(messages.Messages) != 1 {
-				t.Fatalf("Messages().Messages len = %d, want 1 interaction row to verify aggregate fields", len(messages.Messages))
+			if len(messages.Messages) != 4 {
+				t.Fatalf("Messages().Messages len = %d, want 4 rows", len(messages.Messages))
 			}
-			entry := messages.Messages[0]
-			if !approxEqual(entry.Cost, tt.wantCost) {
-				t.Errorf("Messages()[0].Cost = %.6f, want %.6f; %s", entry.Cost, tt.wantCost, tt.wantMessage)
+			// Chronological [0] is the user prompt row, which carries no cost/tokens.
+			if messages.Messages[0].Role != "user" {
+				t.Errorf("Messages()[0].Role = %q, want user prompt row", messages.Messages[0].Role)
 			}
-			if entry.Tokens == nil {
-				t.Fatalf("Messages()[0].Tokens = nil, want grouped token totals")
-			}
-			if entry.Tokens.Input != tt.wantInput || entry.Tokens.Output != tt.wantOutput {
-				t.Errorf("Messages()[0].Tokens input/output = %d/%d, want %d/%d; %s", entry.Tokens.Input, entry.Tokens.Output, tt.wantInput, tt.wantOutput, tt.wantMessage)
+			if messages.Messages[0].Tokens != nil {
+				t.Errorf("Messages()[0].Tokens = %#v, want nil for user prompt row", messages.Messages[0].Tokens)
 			}
 
 			session, err := src.SessionByID(ctx, tt.sessionID)
@@ -139,8 +146,8 @@ func TestClaudeInteractionGroupingCostAndTokenSemantics(t *testing.T) {
 			if session == nil {
 				t.Fatalf("SessionByID(%q) = nil, want session detail", tt.sessionID)
 			}
-			if session.MessageCount != 1 {
-				t.Errorf("SessionByID().MessageCount = %d, want 1 grouped interaction; %s", session.MessageCount, tt.wantMessage)
+			if session.MessageCount != 4 {
+				t.Errorf("SessionByID().MessageCount = %d, want 4; %s", session.MessageCount, tt.wantMessage)
 			}
 			if !approxEqual(session.TotalCost, tt.wantCost) {
 				t.Errorf("SessionByID().TotalCost = %.6f, want %.6f; %s", session.TotalCost, tt.wantCost, tt.wantMessage)
@@ -154,8 +161,8 @@ func TestClaudeInteractionGroupingCostAndTokenSemantics(t *testing.T) {
 				t.Fatalf("Models(all) failed: %v", err)
 			}
 			model := findModelEntryByID(t, models, "claude-test-computed")
-			if model.Messages != 1 {
-				t.Errorf("Models()[claude-test-computed].Messages = %d, want 1 grouped interaction; %s", model.Messages, tt.wantMessage)
+			if model.Messages != 3 {
+				t.Errorf("Models()[claude-test-computed].Messages = %d, want 3 assistant API requests; %s", model.Messages, tt.wantMessage)
 			}
 			if !approxEqual(model.Cost, tt.wantCost) {
 				t.Errorf("Models()[claude-test-computed].Cost = %.6f, want %.6f; %s", model.Cost, tt.wantCost, tt.wantMessage)
@@ -179,8 +186,10 @@ func TestClaudeInteractionGroupingBillsRepeatedAssistantFragmentsOnce(t *testing
 	if err != nil {
 		t.Fatalf("Overview(all) failed: %v", err)
 	}
-	if overview.Messages != 1 {
-		t.Errorf("Overview().Messages = %d, want 1 grouped interaction", overview.Messages)
+	// Three streamed assistant fragments share one requestId and merge into a single
+	// assistant API-request row, joined by the user prompt row.
+	if overview.Messages != 2 {
+		t.Errorf("Overview().Messages = %d, want 2 (1 user + 1 merged assistant API request)", overview.Messages)
 	}
 	if !approxEqual(overview.Cost, wantCost) {
 		t.Errorf("Overview().Cost = %.6f, want %.6f from one billed request, not repeated content fragments", overview.Cost, wantCost)
@@ -199,13 +208,10 @@ func TestClaudeInteractionGroupingBillsRepeatedAssistantFragmentsOnce(t *testing
 	if err != nil {
 		t.Fatalf("Messages(all) failed: %v", err)
 	}
-	if messages.Total != 1 || len(messages.Messages) != 1 {
-		t.Fatalf("Messages total/len = %d/%d, want 1/1", messages.Total, len(messages.Messages))
+	if messages.Total != 2 || len(messages.Messages) != 2 {
+		t.Fatalf("Messages total/len = %d/%d, want 2/2", messages.Total, len(messages.Messages))
 	}
-	entry := messages.Messages[0]
-	if entry.FoldedAssistantCalls != 3 {
-		t.Errorf("Messages()[0].FoldedAssistantCalls = %d, want 3 raw assistant fragments preserved in the grouped interaction", entry.FoldedAssistantCalls)
-	}
+	entry := findMessage(t, messages, func(m stats.MessageEntry) bool { return m.Role == "assistant" })
 	if !approxEqual(entry.Cost, wantCost) {
 		t.Errorf("Messages()[0].Cost = %.6f, want %.6f from one billed request", entry.Cost, wantCost)
 	}
@@ -264,8 +270,8 @@ func TestClaudeInteractionGroupingFiltersInternalMetadataRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Overview(all) failed: %v", err)
 	}
-	if overview.Messages != 1 {
-		t.Errorf("Overview().Messages = %d, want 1 user-facing interaction; summary/progress/isMeta records must not become UNKNOWN $0.00 rows", overview.Messages)
+	if overview.Messages != 2 {
+		t.Errorf("Overview().Messages = %d, want 2 (1 user prompt + 1 assistant); summary/progress/isMeta records must not become UNKNOWN $0.00 rows", overview.Messages)
 	}
 	if !approxEqual(overview.Cost, 0.42) {
 		t.Errorf("Overview().Cost = %.6f, want 0.420000 from the assistant interaction only", overview.Cost)
@@ -278,8 +284,8 @@ func TestClaudeInteractionGroupingFiltersInternalMetadataRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Messages(all) failed: %v", err)
 	}
-	if messages.Total != 1 {
-		t.Errorf("Messages().Total = %d, want 1 user-facing interaction with internal metadata filtered", messages.Total)
+	if messages.Total != 2 {
+		t.Errorf("Messages().Total = %d, want 2 user-facing rows with internal metadata filtered", messages.Total)
 	}
 	for _, msg := range messages.Messages {
 		if msg.Role == "unknown" {
@@ -294,8 +300,8 @@ func TestClaudeInteractionGroupingFiltersInternalMetadataRows(t *testing.T) {
 	if session == nil {
 		t.Fatalf("SessionByID(metadata-session) = nil, want session detail")
 	}
-	if session.MessageCount != 1 {
-		t.Errorf("SessionByID().MessageCount = %d, want 1 user-facing interaction with internal metadata filtered", session.MessageCount)
+	if session.MessageCount != 2 {
+		t.Errorf("SessionByID().MessageCount = %d, want 2 user-facing rows with internal metadata filtered", session.MessageCount)
 	}
 	for _, msg := range session.Messages {
 		if msg.Role == "unknown" {
@@ -315,25 +321,28 @@ func TestClaudeInteractionGroupingSkipsIsMetaUserRowsAfterToolResultPairing(t *t
 	if err != nil {
 		t.Fatalf("Overview(all) failed: %v", err)
 	}
-	if overview.Messages != 1 {
-		t.Errorf("Overview().Messages = %d, want 1 legitimate interaction; isMeta:true user-shaped rows must not create or steal interactions", overview.Messages)
+	// The isMeta:true user-shaped row is filtered (no row, no leaked prompt text) but
+	// its tool_result still pairs onto the assistant tool message. Remaining rows: the
+	// real user prompt + two assistant API requests.
+	if overview.Messages != 3 {
+		t.Errorf("Overview().Messages = %d, want 3 (1 real user + 2 assistant); isMeta:true user-shaped rows must not create or steal rows", overview.Messages)
 	}
 	if overview.Sessions != 1 {
 		t.Errorf("Overview().Sessions = %d, want 1", overview.Sessions)
 	}
 	if !approxEqual(overview.Cost, 5) {
-		t.Errorf("Overview().Cost = %.6f, want 5.000000 folded onto the real prompt", overview.Cost)
+		t.Errorf("Overview().Cost = %.6f, want 5.000000 across the two assistant calls", overview.Cost)
 	}
 	if overview.Tokens.Input != 50 || overview.Tokens.Output != 15 {
-		t.Errorf("Overview().Tokens input/output = %d/%d, want 50/15 from both assistant calls folded into the real prompt", overview.Tokens.Input, overview.Tokens.Output)
+		t.Errorf("Overview().Tokens input/output = %d/%d, want 50/15 across both assistant calls", overview.Tokens.Input, overview.Tokens.Output)
 	}
 
 	messages, err := src.Messages(ctx, period, 1, 100, chronologicalMessageSort())
 	if err != nil {
 		t.Fatalf("Messages(all) failed: %v", err)
 	}
-	if messages.Total != 1 {
-		t.Errorf("Messages().Total = %d, want 1 legitimate interaction; metadata prompt text must not become a row", messages.Total)
+	if messages.Total != 3 {
+		t.Errorf("Messages().Total = %d, want 3; metadata prompt text must not become a row", messages.Total)
 	}
 	assertJSONDoesNotContain(t, messages, "METADATA PROMPT-LIKE TEXT")
 	for _, msg := range messages.Messages {
@@ -342,36 +351,31 @@ func TestClaudeInteractionGroupingSkipsIsMetaUserRowsAfterToolResultPairing(t *t
 		}
 	}
 
-	entry := findMessage(t, messages, func(msg stats.MessageEntry) bool {
+	// The real prompt row exists, carries role user and no tokens (cost lives on the
+	// assistant rows now).
+	userEntry := findMessage(t, messages, func(msg stats.MessageEntry) bool {
 		return msg.ID == "claude_code:is-meta-tool-result-session:is-meta-real-user"
 	})
-	if !approxEqual(entry.Cost, 5) {
-		t.Errorf("real prompt Cost = %.6f, want 5.000000; assistant cost must not be stolen by metadata row", entry.Cost)
+	if userEntry.Role != "user" {
+		t.Errorf("real prompt Role = %q, want user", userEntry.Role)
 	}
-	if entry.Tokens == nil {
-		t.Fatalf("real prompt Tokens = nil, want folded assistant token totals")
-	}
-	if entry.Tokens.Input != 50 || entry.Tokens.Output != 15 {
-		t.Errorf("real prompt Tokens input/output = %d/%d, want 50/15", entry.Tokens.Input, entry.Tokens.Output)
-	}
-	if entry.FoldedAssistantCalls != 2 {
-		t.Errorf("FoldedAssistantCalls = %d, want 2 assistant records folded into one interaction", entry.FoldedAssistantCalls)
-	}
-	if entry.FoldedToolCalls != 1 {
-		t.Errorf("FoldedToolCalls = %d, want 1 tool use folded into one interaction", entry.FoldedToolCalls)
+	if userEntry.Tokens != nil {
+		t.Errorf("real prompt Tokens = %#v, want nil for user prompt row", userEntry.Tokens)
 	}
 
-	detail := mustMessageDetail(t, src, entry.ID)
-	assertDetailToolCompleted(t, detail, "toolu_is_meta_read", "metadata tool result completed")
-	assertDetailTextContains(t, detail, "Final answer stays attached to the legitimate prompt.")
-	if detailContainsText(detail, "METADATA PROMPT-LIKE TEXT") {
-		t.Errorf("MessageDetail(%q) leaked metadata prompt-like text in %#v", detail.ID, detail.Content.TextParts)
+	// Tool detail and final text live on their respective assistant rows; the metadata
+	// prompt-like text must not leak into any detail.
+	details := messageDetails(t, src, messages.Messages)
+	if !detailsContainCompletedTool(t, details, "toolu_is_meta_read", "metadata tool result completed") {
+		t.Errorf("message details do not contain the paired tool toolu_is_meta_read")
 	}
-	if detail.FoldedAssistantCalls != 2 {
-		t.Errorf("detail FoldedAssistantCalls = %d, want 2", detail.FoldedAssistantCalls)
+	if !detailsContainText(details, "Final answer stays attached to the legitimate prompt.") {
+		t.Errorf("message details do not contain the final assistant text")
 	}
-	if detail.FoldedToolCalls != 1 {
-		t.Errorf("detail FoldedToolCalls = %d, want 1", detail.FoldedToolCalls)
+	for _, detail := range details {
+		if detailContainsText(detail, "METADATA PROMPT-LIKE TEXT") {
+			t.Errorf("MessageDetail(%q) leaked metadata prompt-like text in %#v", detail.ID, detail.Content.TextParts)
+		}
 	}
 
 	session, err := src.SessionByID(ctx, "is-meta-tool-result-session")
@@ -381,11 +385,11 @@ func TestClaudeInteractionGroupingSkipsIsMetaUserRowsAfterToolResultPairing(t *t
 	if session == nil {
 		t.Fatalf("SessionByID(is-meta-tool-result-session) = nil, want session detail")
 	}
-	if session.MessageCount != 1 {
-		t.Errorf("SessionByID().MessageCount = %d, want 1 legitimate interaction", session.MessageCount)
+	if session.MessageCount != 3 {
+		t.Errorf("SessionByID().MessageCount = %d, want 3", session.MessageCount)
 	}
 	if !approxEqual(session.TotalCost, 5) {
-		t.Errorf("SessionByID().TotalCost = %.6f, want 5.000000 folded onto the real prompt", session.TotalCost)
+		t.Errorf("SessionByID().TotalCost = %.6f, want 5.000000 across the two assistant calls", session.TotalCost)
 	}
 	assertJSONDoesNotContain(t, session, "METADATA PROMPT-LIKE TEXT")
 }
@@ -401,8 +405,11 @@ func TestClaudeInteractionGroupingHybridToolResultTextStartsNextPrompt(t *testin
 	if err != nil {
 		t.Fatalf("Overview(all) failed: %v", err)
 	}
-	if overview.Messages != 2 {
-		t.Errorf("Overview().Messages = %d, want 2 user prompts/interactions; hybrid tool_result+text must not add a raw metadata row", overview.Messages)
+	// Rows: user-1 prompt, assistant-tool request, user-2 prompt (the hybrid row has
+	// prompt text so it creates a user row), assistant-final request. The user-2
+	// tool_result still pairs onto the assistant-tool message.
+	if overview.Messages != 4 {
+		t.Errorf("Overview().Messages = %d, want 4 (2 user prompts + 2 assistant API requests); hybrid tool_result+text must not add a raw metadata row", overview.Messages)
 	}
 	if !approxEqual(overview.Cost, 12) {
 		t.Errorf("Overview().Cost = %.6f, want 12.000000 from the two assistant API calls", overview.Cost)
@@ -415,11 +422,11 @@ func TestClaudeInteractionGroupingHybridToolResultTextStartsNextPrompt(t *testin
 	if err != nil {
 		t.Fatalf("Messages(all) failed: %v", err)
 	}
-	if messages.Total != 2 {
-		t.Errorf("Messages().Total = %d, want 2 user prompts/interactions; hybrid tool_result+text should split into tool detail plus next prompt", messages.Total)
+	if messages.Total != 4 {
+		t.Errorf("Messages().Total = %d, want 4 rows; hybrid tool_result+text should pair the tool and start the next user prompt row", messages.Total)
 	}
-	if len(messages.Messages) != 2 {
-		t.Fatalf("Messages().Messages len = %d, want 2 interactions to inspect details", len(messages.Messages))
+	if len(messages.Messages) != 4 {
+		t.Fatalf("Messages().Messages len = %d, want 4 rows to inspect details", len(messages.Messages))
 	}
 
 	details := messageDetails(t, src, messages.Messages)
@@ -440,8 +447,8 @@ func TestClaudeInteractionGroupingHybridToolResultTextStartsNextPrompt(t *testin
 	if session == nil {
 		t.Fatalf("SessionByID(hybrid-tool-result-session) = nil, want session detail")
 	}
-	if session.MessageCount != 2 {
-		t.Errorf("SessionByID().MessageCount = %d, want 2 user prompts/interactions", session.MessageCount)
+	if session.MessageCount != 4 {
+		t.Errorf("SessionByID().MessageCount = %d, want 4 rows (2 user prompts + 2 assistant API requests)", session.MessageCount)
 	}
 }
 
@@ -530,7 +537,7 @@ func assertDetailTextContains(t *testing.T, detail *stats.MessageDetail, want st
 	}
 }
 
-func messageDetails(t *testing.T, src *Source, messages []stats.MessageEntry) []*stats.MessageDetail {
+func messageDetails(t *testing.T, src source.Source, messages []stats.MessageEntry) []*stats.MessageDetail {
 	t.Helper()
 	details := make([]*stats.MessageDetail, 0, len(messages))
 	for _, msg := range messages {

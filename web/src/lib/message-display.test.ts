@@ -13,74 +13,44 @@ import {
 import { formatCostProvenance, formatCurrencyWithProvenance } from './format.ts'
 import type { CostProvenance } from '../types/api.ts'
 
-test('uses Claude interaction wording without overwriting OpenCode copy', () => {
-  assert.equal(getHistoryTitle('claude_code'), 'Interactions history')
-  assert.equal(getHistoryTitle('codex'), 'Interactions history')
-  assert.equal(getSessionColumnLabel('claude_code'), 'Prompt / session')
-  assert.equal(getSessionColumnLabel('codex'), 'Prompt / session')
-  assert.equal(getTotalRowLabel('claude_code'), 'interactions')
-  assert.equal(getTotalRowLabel('codex'), 'interactions')
-  assert.equal(getDetailTitle('claude_code', false), 'Interaction detail')
-  assert.equal(getDetailTitle('codex', false), 'Interaction detail')
-  assert.equal(getDetailLoadingCopy('claude_code'), 'Fetching grouped interaction content…')
-  assert.equal(getDetailLoadingCopy('codex'), 'Fetching grouped interaction content…')
-
-  assert.equal(getHistoryTitle('opencode'), 'Messages history')
-  assert.equal(getSessionColumnLabel('opencode'), 'Session')
-  assert.equal(getTotalRowLabel('opencode'), 'messages')
-  assert.equal(getDetailTitle('opencode', false), 'Request detail')
-  assert.equal(getDetailLoadingCopy('opencode'), 'Fetching verbose request content…')
+test('uses non-grouped wording for every source now that nothing folds', () => {
+  // Claude Code and Codex were the last folded-interaction sources; both now report
+  // one message per API request, so all sources use the non-grouped wording.
+  for (const source of ['claude_code', 'codex', 'opencode'] as const) {
+    assert.equal(getHistoryTitle(source), 'Messages history')
+    assert.equal(getSessionColumnLabel(source), 'Session')
+    assert.equal(getTotalRowLabel(source), 'messages')
+    assert.equal(getDetailTitle(source, false), 'Request detail')
+    assert.equal(getDetailLoadingCopy(source), 'Fetching verbose request content…')
+  }
 })
 
 test('uses source-aware empty state copy', () => {
   assert.equal(
     getEmptyHistoryCopy('claude_code', 'Claude Code'),
-    'No Claude Code interactions were found in readable local transcripts for this Daily window.',
+    'No Claude Code API requests were found in readable local transcripts for this Daily window.',
   )
   assert.equal(
     getEmptyHistoryCopy('codex', 'Codex'),
-    'No Codex interactions were found in readable local transcripts for this Daily window.',
+    'No Codex API requests were found in readable local transcripts for this Daily window.',
   )
   assert.equal(getEmptyHistoryCopy('opencode', 'OpenCode'), 'No OpenCode messages recorded for this Daily window yet.')
 })
 
-test('formats folded assistant and tool provenance for Claude interactions', () => {
+test('no source produces folded-interaction provenance text anymore', () => {
+  // Neither Claude Code nor Codex folds multiple API requests into one row, so no
+  // folded-interaction provenance text is produced even if legacy fields are present.
   assert.equal(
     getFoldedProvenanceText({ source_id: 'claude_code', folded_assistant_calls: 2, folded_tool_calls: 1 }),
-    'Grouped Claude Code interaction with 2 assistant calls and 1 tool call folded into one row.',
+    null,
   )
-  assert.equal(
-    getFoldedProvenanceText({ folded_assistant_calls: 1, folded_tool_calls: 2 }, 'claude_code'),
-    'Grouped Claude Code interaction with 1 assistant call and 2 tool calls folded into one row.',
-  )
-  assert.equal(hasFoldedProvenanceCounts({ folded_assistant_calls: 2, folded_tool_calls: 0 }), true)
-})
-
-test('uses honest fallback when Claude folded counts are unavailable', () => {
-  assert.equal(
-    getFoldedProvenanceText({ source_id: 'claude_code' }),
-    'Grouped Claude Code interaction; folded call counts unavailable.',
-  )
-  assert.equal(hasFoldedProvenanceCounts({ source_id: 'claude_code' }), false)
-})
-
-test('formats folded token assistant and tool provenance for Codex interactions', () => {
   assert.equal(
     getFoldedProvenanceText({ source_id: 'codex', folded_token_updates: 4, folded_assistant_calls: 1, folded_tool_calls: 3 }),
-    'Grouped Codex interaction with 4 token updates, 1 assistant message and 3 tool calls folded into one row.',
+    null,
   )
-  assert.equal(
-    getFoldedProvenanceText({ folded_token_updates: 1, folded_assistant_calls: 2, folded_tool_calls: 0 }, 'codex'),
-    'Grouped Codex interaction with 1 token update and 2 assistant messages folded into one row.',
-  )
-  assert.equal(hasFoldedProvenanceCounts({ source_id: 'codex', folded_token_updates: 1 }), true)
-})
-
-test('uses honest fallback when Codex folded counts are unavailable', () => {
-  assert.equal(
-    getFoldedProvenanceText({ source_id: 'codex' }),
-    'Grouped Codex interaction; folded activity counts unavailable.',
-  )
+  assert.equal(getFoldedProvenanceText({ source_id: 'codex' }), null)
+  // hasFoldedProvenanceCounts is source-agnostic and only inspects the count fields.
+  assert.equal(hasFoldedProvenanceCounts({ folded_assistant_calls: 2, folded_tool_calls: 0 }), true)
 })
 
 test('formats estimated API-equivalent cost honestly', () => {

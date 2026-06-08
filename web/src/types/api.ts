@@ -258,6 +258,7 @@ export interface SessionMessage extends SourceTagged {
   model_id?: string
   provider_id?: string
   agent?: string
+  is_subagent?: boolean
 }
 
 export interface SessionDetail extends SourceTagged {
@@ -284,6 +285,8 @@ export interface MessageEntry extends SourceTagged {
   tokens?: TokenStats
   model_id?: string
   provider_id?: string
+  agent?: string
+  is_subagent?: boolean
   folded_assistant_calls?: number
   folded_tool_calls?: number
   folded_token_updates?: number

@@ -2,8 +2,10 @@ import type { MessageEntry, SourceID } from '../types/api.ts'
 
 type SourceLike = Pick<MessageEntry, 'source_id' | 'folded_assistant_calls' | 'folded_tool_calls' | 'folded_token_updates'>
 
-function isGroupedInteractionSource(sourceId: SourceID | undefined): sourceId is 'claude_code' | 'codex' {
-  return sourceId === 'claude_code' || sourceId === 'codex'
+// Every source now reports one message per API request (Claude Code and Codex were
+// the last folded-interaction sources), so nothing folds multiple requests into a row.
+function isGroupedInteractionSource(_sourceId: SourceID | undefined): boolean {
+  return false
 }
 
 export function getHistoryTitle(sourceId: SourceID): string {
@@ -20,10 +22,10 @@ export function getTotalRowLabel(sourceId: SourceID): string {
 
 export function getEmptyHistoryCopy(sourceId: SourceID, sourceLabel: string): string {
   if (sourceId === 'claude_code') {
-    return 'No Claude Code interactions were found in readable local transcripts for this Daily window.'
+    return 'No Claude Code API requests were found in readable local transcripts for this Daily window.'
   }
   if (sourceId === 'codex') {
-    return 'No Codex interactions were found in readable local transcripts for this Daily window.'
+    return 'No Codex API requests were found in readable local transcripts for this Daily window.'
   }
 
   return `No ${sourceLabel} messages recorded for this Daily window yet.`

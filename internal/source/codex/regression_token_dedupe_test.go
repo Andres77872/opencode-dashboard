@@ -22,13 +22,12 @@ func TestCodexTokenAggregationUsesPositiveCumulativeDeltas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Messages(all) failed: %v", err)
 	}
-	if messages.Total != 1 || len(messages.Messages) != 1 {
-		t.Fatalf("Messages total/len = %d/%d, want one grouped turn", messages.Total, len(messages.Messages))
+	// 2 user prompts + 2 assistant API requests.
+	if messages.Total != 4 || len(messages.Messages) != 4 {
+		t.Fatalf("Messages total/len = %d/%d, want 4 per-request rows", messages.Total, len(messages.Messages))
 	}
-	if messages.Messages[0].Tokens == nil {
-		t.Fatalf("Messages()[0].Tokens = nil")
-	}
-	assertCodexTokenTotals(t, "Messages()[0].Tokens", *messages.Messages[0].Tokens, 1500, 300, 75, 30)
+	// Per-request deltas across the rows sum exactly to the cumulative totals.
+	assertCodexTokenTotals(t, "sum(Messages().Tokens)", sumMessageTokens(messages), 1500, 300, 75, 30)
 
 	models, err := src.Models(ctx, period)
 	if err != nil {
@@ -62,8 +61,12 @@ func TestCodexDuplicateCopiedTranscriptsCountOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Overview(all) failed: %v", err)
 	}
-	if overview.Sessions != 1 || overview.Messages != 1 {
-		t.Errorf("overview sessions/messages = %d/%d, want 1/1 after copied transcript dedupe", overview.Sessions, overview.Messages)
+	// Copied transcript collapses to one logical turn. tokenDedupeLines drives
+	// 2 positive cumulative deltas (r0, r1) plus a trailing assistant content
+	// row (r2, no usage) since its response_item follows all token_count events,
+	// alongside the single user prompt row.
+	if overview.Sessions != 1 || overview.Messages != 4 {
+		t.Errorf("overview sessions/messages = %d/%d, want 1/4 after copied transcript dedupe", overview.Sessions, overview.Messages)
 	}
 	assertCodexTokenTotals(t, "Overview().Tokens", overview.Tokens, 1500, 300, 75, 30)
 
@@ -71,13 +74,11 @@ func TestCodexDuplicateCopiedTranscriptsCountOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Messages(all) failed: %v", err)
 	}
-	if messages.Total != 1 || len(messages.Messages) != 1 {
+	if messages.Total != 4 || len(messages.Messages) != 4 {
 		t.Fatalf("Messages total/len = %d/%d, want copied logical turn counted once", messages.Total, len(messages.Messages))
 	}
-	if messages.Messages[0].Tokens == nil {
-		t.Fatalf("Messages()[0].Tokens = nil")
-	}
-	assertCodexTokenTotals(t, "Messages()[0].Tokens", *messages.Messages[0].Tokens, 1500, 300, 75, 30)
+	// Tokens are unchanged by the copy: per-request deltas sum to the cumulative totals.
+	assertCodexTokenTotals(t, "sum(Messages().Tokens)", sumMessageTokens(messages), 1500, 300, 75, 30)
 }
 
 func tokenDedupeLines(sessionID string) []string {
@@ -93,6 +94,21 @@ func tokenDedupeLines(sessionID string) []string {
 		`{"timestamp":"2026-01-02T07:00:08Z","type":"response_item","payload":{"turn_id":"turn-token","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"[REDACTED_TOKEN_ASSISTANT]"}]}}}`,
 		`{"timestamp":"2026-01-02T07:00:09Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-token","status":"success"}}`,
 	}
+}
+
+func sumMessageTokens(list stats.MessageList) stats.TokenStats {
+	var total stats.TokenStats
+	for _, msg := range list.Messages {
+		if msg.Tokens == nil {
+			continue
+		}
+		total.Input += msg.Tokens.Input
+		total.Output += msg.Tokens.Output
+		total.Reasoning += msg.Tokens.Reasoning
+		total.Cache.Read += msg.Tokens.Cache.Read
+		total.Cache.Write += msg.Tokens.Cache.Write
+	}
+	return total
 }
 
 func assertCodexTokenTotals(t *testing.T, label string, got stats.TokenStats, wantInput, wantCacheRead, wantOutput, wantReasoning int64) {

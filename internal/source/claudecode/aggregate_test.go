@@ -24,8 +24,8 @@ func TestClaudeCodeAggregatesReturnExistingStatsShapes(t *testing.T) {
 					t.Fatalf("Overview() failed: %v", err)
 				}
 				assertAllSourceID(t, got.SourceID)
-				if got.Sessions != 7 || got.Messages != 8 {
-					t.Errorf("Overview sessions/messages = %d/%d, want 7/8 grouped user-facing interactions", got.Sessions, got.Messages)
+				if got.Sessions != 7 || got.Messages != 14 {
+					t.Errorf("Overview sessions/messages = %d/%d, want 7/14 per-request message rows", got.Sessions, got.Messages)
 				}
 			},
 		},
@@ -110,26 +110,26 @@ func TestClaudeCodePeriodFilteringPaginationAndDetailLookups(t *testing.T) {
 	src := newFixtureSource(t, "valid_home")
 	ctx := testContext(t)
 
+	// The Jan 05 window is the tools-session: 1 user prompt + 2 assistant API requests
+	// (the tool_result-only user row does not create a message). PageSize 2 returns the
+	// first page of 2 of those 3 rows.
 	messages, err := src.Messages(ctx, stats.PeriodQuery{From: "2026-01-05", To: "2026-01-05"}, 1, 2, stats.DefaultMessageSort())
 	if err != nil {
 		t.Fatalf("Messages(custom day) failed: %v", err)
 	}
 	assertAllSourceID(t, messages.SourceID)
-	if messages.Total != 1 {
-		t.Errorf("Messages Jan 05 Total = %d, want 1 grouped user-facing interaction for the tool loop", messages.Total)
+	if messages.Total != 3 {
+		t.Errorf("Messages Jan 05 Total = %d, want 3 per-request rows for the tool loop", messages.Total)
 	}
-	if len(messages.Messages) != 1 {
-		t.Errorf("Messages Jan 05 page len = %d, want 1", len(messages.Messages))
+	if len(messages.Messages) != 2 {
+		t.Errorf("Messages Jan 05 page len = %d, want 2 (PageSize 2 of 3 rows)", len(messages.Messages))
 	}
 	for _, msg := range messages.Messages {
 		if msg.TimeCreated.Format("2006-01-02") != "2026-01-05" {
 			t.Errorf("message %q date = %s, want 2026-01-05", msg.ID, msg.TimeCreated.Format("2006-01-02"))
 		}
-		if msg.ID != "claude_code:tools-session:tools-user-1" {
-			t.Errorf("message ID = %q, want grouped interaction ID based on user prompt row", msg.ID)
-		}
-		if msg.Role != "assistant" {
-			t.Errorf("message role = %q, want assistant after folding assistant API calls into the prompt interaction", msg.Role)
+		if msg.SessionID != "tools-session" {
+			t.Errorf("message %q SessionID = %q, want tools-session", msg.ID, msg.SessionID)
 		}
 	}
 
@@ -173,11 +173,14 @@ func TestClaudeCodeSafeShapeFixtureAggregatesOnlyLegitimateInteraction(t *testin
 		t.Fatalf("Overview(all) failed: %v", err)
 	}
 	assertAllSourceID(t, overview.SourceID)
-	if overview.Messages != 1 {
-		t.Errorf("Overview().Messages = %d, want 1 legitimate safe-shape interaction; isMeta/user-shaped metadata and nested support transcripts must not count", overview.Messages)
+	// Main transcript: 1 user prompt + 2 assistant API requests. Subagent transcript
+	// (rolls into the parent session): 1 user prompt + 1 assistant API request. The
+	// isMeta/user-shaped metadata and tool-results/debug support files do not count.
+	if overview.Messages != 5 {
+		t.Errorf("Overview().Messages = %d, want 5 (main 1 user + 2 assistant; subagent 1 user + 1 assistant)", overview.Messages)
 	}
 	if overview.Sessions != 1 {
-		t.Errorf("Overview().Sessions = %d, want 1", overview.Sessions)
+		t.Errorf("Overview().Sessions = %d, want 1 (subagent rolls into the parent session)", overview.Sessions)
 	}
 	assertSafeShapeTokens(t, "Overview().Tokens", overview.Tokens)
 	if overview.Cost <= 0 {
@@ -199,8 +202,8 @@ func TestClaudeCodeSafeShapeFixtureAggregatesOnlyLegitimateInteraction(t *testin
 	if day.Date != "2026-04-01" {
 		t.Errorf("Daily()[0].Date = %q, want 2026-04-01", day.Date)
 	}
-	if day.Messages != 1 || day.Sessions != 1 {
-		t.Errorf("Daily()[0] messages/sessions = %d/%d, want 1/1 legitimate interaction", day.Messages, day.Sessions)
+	if day.Messages != 5 || day.Sessions != 1 {
+		t.Errorf("Daily()[0] messages/sessions = %d/%d, want 5/1", day.Messages, day.Sessions)
 	}
 	assertSafeShapeTokens(t, "Daily()[0].Tokens", day.Tokens)
 
@@ -213,8 +216,8 @@ func TestClaudeCodeSafeShapeFixtureAggregatesOnlyLegitimateInteraction(t *testin
 		t.Fatalf("Models().Models len = %d, want one model for the legitimate folded interaction: %#v", len(models.Models), models.Models)
 	}
 	model := findModelEntryByID(t, models, "claude-test-computed")
-	if model.Messages != 1 || model.Sessions != 1 {
-		t.Errorf("Models()[claude-test-computed] messages/sessions = %d/%d, want 1/1", model.Messages, model.Sessions)
+	if model.Messages != 3 || model.Sessions != 1 {
+		t.Errorf("Models()[claude-test-computed] messages/sessions = %d/%d, want 3/1 (2 main + 1 subagent assistant requests)", model.Messages, model.Sessions)
 	}
 	assertSafeShapeTokens(t, "Models()[claude-test-computed].Tokens", model.Tokens)
 	if model.CostStatus != stats.CostComputed {
@@ -232,8 +235,8 @@ func TestClaudeCodeSafeShapeFixtureAggregatesOnlyLegitimateInteraction(t *testin
 	if sessions.Sessions[0].ID != "safe-shape-session" {
 		t.Errorf("Sessions()[0].ID = %q, want safe-shape-session", sessions.Sessions[0].ID)
 	}
-	if sessions.Sessions[0].MessageCount != 1 {
-		t.Errorf("Sessions()[0].MessageCount = %d, want 1 legitimate interaction", sessions.Sessions[0].MessageCount)
+	if sessions.Sessions[0].MessageCount != 5 {
+		t.Errorf("Sessions()[0].MessageCount = %d, want 5", sessions.Sessions[0].MessageCount)
 	}
 	assertJSONDoesNotContain(t, sessions, safeShapeForbiddenText()...)
 
@@ -244,8 +247,8 @@ func TestClaudeCodeSafeShapeFixtureAggregatesOnlyLegitimateInteraction(t *testin
 	if session == nil {
 		t.Fatalf("SessionByID(safe-shape-session) = nil, want detail")
 	}
-	if session.MessageCount != 1 || len(session.Messages) != 1 {
-		t.Errorf("SessionByID().MessageCount/messages len = %d/%d, want 1/1", session.MessageCount, len(session.Messages))
+	if session.MessageCount != 5 || len(session.Messages) != 5 {
+		t.Errorf("SessionByID().MessageCount/messages len = %d/%d, want 5/5", session.MessageCount, len(session.Messages))
 	}
 	assertSafeShapeTokens(t, "SessionByID().TotalTokens", session.TotalTokens)
 	for _, msg := range session.Messages {
@@ -260,45 +263,51 @@ func TestClaudeCodeSafeShapeFixtureAggregatesOnlyLegitimateInteraction(t *testin
 		t.Fatalf("Messages(all) failed: %v", err)
 	}
 	assertAllSourceID(t, messages.SourceID)
-	if messages.Total != 1 || len(messages.Messages) != 1 {
-		t.Fatalf("Messages total/page len = %d/%d, want one legitimate interaction: %#v", messages.Total, len(messages.Messages), messages.Messages)
+	if messages.Total != 5 || len(messages.Messages) != 5 {
+		t.Fatalf("Messages total/page len = %d/%d, want 5/5: %#v", messages.Total, len(messages.Messages), messages.Messages)
 	}
+	// Chronologically the first row is the legitimate user prompt (role user, no tokens).
 	entry := messages.Messages[0]
 	if entry.ID != "claude_code:safe-shape-session:safe-user-1" {
-		t.Errorf("Messages()[0].ID = %q, want interaction ID based on legitimate user prompt", entry.ID)
+		t.Errorf("Messages()[0].ID = %q, want the legitimate user prompt row", entry.ID)
 	}
-	if entry.Role == "unknown" {
-		t.Errorf("Messages()[0].Role = unknown, metadata rows must not leak")
+	if entry.Role != "user" {
+		t.Errorf("Messages()[0].Role = %q, want user prompt row", entry.Role)
 	}
-	if entry.Tokens == nil {
-		t.Fatalf("Messages()[0].Tokens = nil, want folded assistant usage")
+	if entry.Tokens != nil {
+		t.Errorf("Messages()[0].Tokens = %#v, want nil for user prompt row", entry.Tokens)
 	}
-	assertSafeShapeTokens(t, "Messages()[0].Tokens", *entry.Tokens)
-	if entry.FoldedAssistantCalls != 2 {
-		t.Errorf("Messages()[0].FoldedAssistantCalls = %d, want 2", entry.FoldedAssistantCalls)
-	}
-	if entry.FoldedToolCalls != 1 {
-		t.Errorf("Messages()[0].FoldedToolCalls = %d, want 1", entry.FoldedToolCalls)
+	for _, msg := range messages.Messages {
+		if msg.Role == "unknown" {
+			t.Errorf("Messages() row %q Role = unknown, metadata rows must not leak", msg.ID)
+		}
 	}
 	assertJSONDoesNotContain(t, messages, safeShapeForbiddenText()...)
 
-	detail := mustMessageDetail(t, src, entry.ID)
-	assertDetailTextContains(t, detail, "Legitimate prompt: inspect the synthetic safe-shape fixture.")
-	assertDetailTextContains(t, detail, "Final answer after the folded tool loop.")
-	assertDetailToolCompleted(t, detail, "toolu_safe_read", "synthetic tool result from redacted fixture")
-	if detail.FoldedAssistantCalls != 2 {
-		t.Errorf("MessageByID().FoldedAssistantCalls = %d, want 2", detail.FoldedAssistantCalls)
+	// The prompt text, final assistant text, and completed tool live across the
+	// per-request rows of the session.
+	details := messageDetails(t, src, messages.Messages)
+	if !detailsContainText(details, "Legitimate prompt: inspect the synthetic safe-shape fixture.") {
+		t.Errorf("message details missing legitimate user prompt text")
 	}
-	if detail.FoldedToolCalls != 1 {
-		t.Errorf("MessageByID().FoldedToolCalls = %d, want 1", detail.FoldedToolCalls)
+	if !detailsContainText(details, "Final answer after the folded tool loop.") {
+		t.Errorf("message details missing final assistant text")
 	}
-	assertJSONDoesNotContain(t, detail, safeShapeForbiddenText()...)
+	if !detailsContainCompletedTool(t, details, "toolu_safe_read", "synthetic tool result from redacted fixture") {
+		t.Errorf("message details missing completed paired tool toolu_safe_read")
+	}
+	for _, detail := range details {
+		assertJSONDoesNotContain(t, detail, safeShapeForbiddenText()...)
+	}
 }
 
 func assertSafeShapeTokens(t *testing.T, label string, got stats.TokenStats) {
 	t.Helper()
-	if got.Input != 250 || got.Output != 40 || got.Cache.Read != 15 || got.Cache.Write != 19 {
-		t.Errorf("%s = input/output/cache.read/cache.write %d/%d/%d/%d, want 250/40/15/19 from top-level assistant rows only", label, got.Input, got.Output, got.Cache.Read, got.Cache.Write)
+	// Two main assistant requests (100/10/cr5/cc7 and 150/30/cr10/cc12) plus the
+	// subagent assistant request (200/50 no cache) sum to input 450, output 90,
+	// cache read 15, cache write 19.
+	if got.Input != 450 || got.Output != 90 || got.Cache.Read != 15 || got.Cache.Write != 19 {
+		t.Errorf("%s = input/output/cache.read/cache.write %d/%d/%d/%d, want 450/90/15/19 including the subagent assistant usage", label, got.Input, got.Output, got.Cache.Read, got.Cache.Write)
 	}
 }
 
@@ -314,7 +323,6 @@ func safeShapeForbiddenText() []string {
 		"metadata attachment event must not leak",
 		"metadata queue event must not leak",
 		"metadata system event must not leak",
-		"Nested subagent prompt must be skipped",
 		"Nested tool-results prompt must be skipped",
 		"Nested debug prompt must be skipped",
 	}

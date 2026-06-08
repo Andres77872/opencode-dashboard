@@ -12,12 +12,17 @@ import (
 func TestCodexCostUsesGPT55EstimatedAPIEquivalentPricing(t *testing.T) {
 	src := newFixtureSource(t, "valid_home")
 	messages := readAllMessages(t, src)
-	entry := messages.Messages[0]
+	// The first API request row (r0) carries the first cumulative delta
+	// 1000/100/50/25 plus all of the turn's content.
+	entry := findMessage(t, messages, func(m stats.MessageEntry) bool {
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 1000
+	})
 
 	if entry.CostStatus != stats.CostEstimatedAPIEquivalent {
 		t.Fatalf("CostStatus = %q, want %q", entry.CostStatus, stats.CostEstimatedAPIEquivalent)
 	}
-	wantCost := (float64(1200)*5.0 + float64(300)*0.50 + float64(75+30)*30.0) / 1_000_000
+	// (input-cached) at full rate + cached at discounted + (output+reasoning) as output.
+	wantCost := (float64(1000-100)*5.0 + float64(100)*0.50 + float64(50+25)*30.0) / 1_000_000
 	if !approxEqual(entry.Cost, wantCost) {
 		t.Errorf("Cost = %.9f, want %.9f from normal input + discounted cached input + output/reasoning", entry.Cost, wantCost)
 	}
@@ -40,12 +45,15 @@ func TestCodexCostUsesGPT55EstimatedAPIEquivalentPricing(t *testing.T) {
 
 func TestCodexReasoningTokensBillAsOutputButRemainVisible(t *testing.T) {
 	src := newFixtureSource(t, "valid_home")
-	entry := readAllMessages(t, src).Messages[0]
+	// Assert on the request row that carries tokens (r0: 1000/100/50/25).
+	entry := findMessage(t, readAllMessages(t, src), func(m stats.MessageEntry) bool {
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 1000
+	})
 	if entry.Tokens == nil {
 		t.Fatalf("Tokens = nil")
 	}
-	if entry.Tokens.Reasoning != 30 {
-		t.Errorf("Reasoning tokens = %d, want 30 visible reasoning tokens", entry.Tokens.Reasoning)
+	if entry.Tokens.Reasoning != 25 {
+		t.Errorf("Reasoning tokens = %d, want 25 visible per-request reasoning tokens", entry.Tokens.Reasoning)
 	}
 	wantOutputPriced := float64(entry.Tokens.Output+entry.Tokens.Reasoning) * 30.0 / 1_000_000
 	if entry.Cost < wantOutputPriced {
@@ -65,7 +73,10 @@ func TestCodexLongContextPricingMultipliers(t *testing.T) {
 			`{"timestamp":"2026-01-02T08:00:06Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"long-turn","status":"success"}}`,
 		},
 	})
-	entry := readAllMessages(t, src).Messages[0]
+	// The long-context model API request is its own row (token_count closes it).
+	entry := findMessage(t, readAllMessages(t, src), func(m stats.MessageEntry) bool {
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 300000
+	})
 	want := ((float64(200000)*5.0 + float64(100000)*0.50) * 2.0 / 1_000_000) + (float64(10000+5000) * 30.0 * 1.5 / 1_000_000)
 	if !approxEqual(entry.Cost, want) {
 		t.Errorf("long-context cost = %.9f, want %.9f with 2x input/cached and 1.5x output/reasoning multipliers", entry.Cost, want)
@@ -95,7 +106,10 @@ func TestCodexUnknownMissingOrClaudePricingFallbackRendersMissingCost(t *testing
 				pricingPath = tt.pricingSnapshotPath
 			}
 			src := New(Options{CodexHome: home, PathSource: "temp missing-cost fixture", PricingSnapshotPath: pricingPath})
-			entry := readAllMessages(t, src).Messages[0]
+			// The assistant request row that carries usage cannot be priced.
+			entry := findMessage(t, readAllMessages(t, src), func(m stats.MessageEntry) bool {
+				return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 1000
+			})
 			if entry.CostStatus != stats.CostMissing {
 				t.Errorf("CostStatus = %q, want %q", entry.CostStatus, stats.CostMissing)
 			}

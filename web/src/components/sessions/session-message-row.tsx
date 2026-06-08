@@ -56,6 +56,10 @@ export function SessionMessageRow({
             {message.role || 'unknown'}
           </Badge>
 
+          {message.is_subagent ? (
+            <Badge tone="accent" className="text-[9px]">subagent</Badge>
+          ) : null}
+
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="cursor-default font-mono text-xs text-muted-foreground">

@@ -353,7 +353,7 @@ func (s *snapshot) sessionByID(id string) *stats.SessionDetail {
 	}
 	messages := make([]stats.SessionMessage, 0, len(session.Messages))
 	for _, msg := range session.Messages {
-		entry := stats.SessionMessage{SourceID: claudeSourceID, ID: msg.Entry.ID, Role: msg.Entry.Role, TimeCreated: msg.Entry.TimeCreated}
+		entry := stats.SessionMessage{SourceID: claudeSourceID, ID: msg.Entry.ID, Role: msg.Entry.Role, TimeCreated: msg.Entry.TimeCreated, Agent: msg.Entry.Agent, IsSubagent: msg.Entry.IsSubagent}
 		if msg.Entry.Role == "assistant" {
 			entry.Cost = msg.Entry.Cost
 			entry.Tokens = cloneTokens(msg.Entry.Tokens)

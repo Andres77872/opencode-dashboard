@@ -36,7 +36,7 @@ func TestDuplicateClaudeTranscriptRecordsDoNotDoubleCountStableSessionMessageIde
 				"-home-andres-projects-dedupe-copy/duplicate-session.jsonl": duplicateStableIdentityLines(),
 			},
 			sessionID:         "duplicate-session",
-			wantMessages:      1,
+			wantMessages:      2,
 			wantSessions:      1,
 			wantCost:          30,
 			wantInputTokens:   1000,
@@ -52,7 +52,7 @@ func TestDuplicateClaudeTranscriptRecordsDoNotDoubleCountStableSessionMessageIde
 				),
 			},
 			sessionID:         "duplicate-session",
-			wantMessages:      1,
+			wantMessages:      2,
 			wantSessions:      1,
 			wantCost:          30,
 			wantInputTokens:   1000,
@@ -60,17 +60,17 @@ func TestDuplicateClaudeTranscriptRecordsDoNotDoubleCountStableSessionMessageIde
 			wantModelMessages: 1,
 		},
 		{
-			name: "duplicate UUID-less semantic records are counted once while distinct assistant usage is grouped under one prompt",
+			name: "duplicate UUID-less semantic records are counted once while distinct assistant usage stays distinct",
 			files: map[string][]string{
 				"-home-andres-projects-dedupe/fingerprint-session.jsonl": uuidlessSemanticDuplicateWithDistinctAssistantLines(),
 			},
 			sessionID:         "fingerprint-session",
-			wantMessages:      1,
+			wantMessages:      3,
 			wantSessions:      1,
 			wantCost:          45,
 			wantInputTokens:   1500,
 			wantOutputTokens:  300,
-			wantModelMessages: 1,
+			wantModelMessages: 2,
 		},
 	}
 
@@ -105,15 +105,28 @@ func TestDuplicateClaudeTranscriptRecordsDoNotDoubleCountStableSessionMessageIde
 			}
 			assertNoDuplicateMessageIDs(t, messages.Messages)
 			if len(messages.Messages) != int(tt.wantMessages) {
-				t.Fatalf("Messages().Messages len = %d, want %d grouped interactions", len(messages.Messages), tt.wantMessages)
+				t.Fatalf("Messages().Messages len = %d, want %d rows", len(messages.Messages), tt.wantMessages)
 			}
-			if len(messages.Messages) > 0 {
-				if messages.Messages[0].SessionID != tt.sessionID {
-					t.Errorf("Messages()[0].SessionID = %q, want %q", messages.Messages[0].SessionID, tt.sessionID)
+			// DefaultMessageSort is not chronological, so don't assume index 0 is a
+			// specific role. Instead assert the set contains the expected user prompt
+			// row plus assistant API-request rows, all attributed to the session.
+			userRows, assistantRows := 0, 0
+			for _, msg := range messages.Messages {
+				if msg.SessionID != tt.sessionID {
+					t.Errorf("Messages() row %q SessionID = %q, want %q", msg.ID, msg.SessionID, tt.sessionID)
 				}
-				if messages.Messages[0].Role != "assistant" {
-					t.Errorf("Messages()[0].Role = %q, want assistant grouped onto the prompt interaction", messages.Messages[0].Role)
+				switch msg.Role {
+				case "user":
+					userRows++
+				case "assistant":
+					assistantRows++
 				}
+			}
+			if userRows != 1 {
+				t.Errorf("Messages() user prompt rows = %d, want exactly 1 after dedupe", userRows)
+			}
+			if int64(assistantRows) != tt.wantModelMessages {
+				t.Errorf("Messages() assistant API-request rows = %d, want %d after dedupe", assistantRows, tt.wantModelMessages)
 			}
 
 			session, err := src.SessionByID(ctx, tt.sessionID)
@@ -166,8 +179,10 @@ func TestToolResultOnlyUserRecordPairsToolDetailWithoutInflatingMessageInteracti
 	if err != nil {
 		t.Fatalf("Overview(all) failed: %v", err)
 	}
-	if overview.Messages != 1 {
-		t.Errorf("Overview().Messages = %d, want 1 grouped prompt interaction; tool_result-only and assistant rows must fold into detail", overview.Messages)
+	// Rows: 1 user prompt + 2 assistant API requests. The tool_result-only user record
+	// pairs onto the assistant tool message and never becomes its own row.
+	if overview.Messages != 3 {
+		t.Errorf("Overview().Messages = %d, want 3 (1 user + 2 assistant); tool_result-only records must not create rows", overview.Messages)
 	}
 	if !approxEqual(overview.Cost, 35) {
 		t.Errorf("Overview().Cost = %.6f, want 35.000000", overview.Cost)
@@ -180,35 +195,28 @@ func TestToolResultOnlyUserRecordPairsToolDetailWithoutInflatingMessageInteracti
 	if err != nil {
 		t.Fatalf("Messages(all) failed: %v", err)
 	}
-	if messages.Total != 1 {
-		t.Errorf("Messages().Total = %d, want 1 grouped prompt interaction", messages.Total)
+	if messages.Total != 3 {
+		t.Errorf("Messages().Total = %d, want 3 rows (1 user + 2 assistant)", messages.Total)
 	}
-	if len(messages.Messages) != 1 {
-		t.Fatalf("Messages().Messages len = %d, want 1 grouped prompt interaction", len(messages.Messages))
-	}
-	if messages.Messages[0].ID != "claude_code:tool-result-session:tool-user-1" {
-		t.Errorf("Messages()[0].ID = %q, want grouped detail ID based on the user prompt row", messages.Messages[0].ID)
-	}
-	if messages.Messages[0].Role != "assistant" {
-		t.Errorf("Messages()[0].Role = %q, want assistant after folded assistant API calls", messages.Messages[0].Role)
+	if len(messages.Messages) != 3 {
+		t.Fatalf("Messages().Messages len = %d, want 3 rows", len(messages.Messages))
 	}
 	if containsMessageID(messages.Messages, "claude_code:tool-result-session:tool-result-1") {
-		t.Errorf("Messages() contains tool_result-only record %q; it should be paired onto the assistant tool detail, not listed as an interaction", "claude_code:tool-result-session:tool-result-1")
+		t.Errorf("Messages() contains tool_result-only record %q; it should be paired onto the assistant tool detail, not listed as a row", "claude_code:tool-result-session:tool-result-1")
 	}
 
-	detail := mustMessageDetail(t, src, messages.Messages[0].ID)
-	tool := findToolPart(t, detail, "toolu_shell_1")
-	if tool.State.Status != "completed" {
-		t.Errorf("paired tool status = %q, want completed", tool.State.Status)
+	// The tool pairs onto the assistant-tool message (tool-assistant-1); the final
+	// text lives on the assistant-final message (tool-assistant-2). The user prompt
+	// text lives on its own user row.
+	details := messageDetails(t, src, messages.Messages)
+	if !detailsContainCompletedTool(t, details, "toolu_shell_1", "tool completed successfully") {
+		t.Errorf("message details do not contain the completed paired tool toolu_shell_1")
 	}
-	if !strings.Contains(tool.State.Output, "tool completed successfully") {
-		t.Errorf("paired tool output = %q, want tool_result content", tool.State.Output)
+	if !detailsContainText(details, "Run the tool and summarize it.") {
+		t.Errorf("message details missing user prompt text")
 	}
-	if !detailContainsText(detail, "Run the tool and summarize it.") {
-		t.Errorf("grouped detail missing user prompt text: %#v", detail.Content.TextParts)
-	}
-	if !detailContainsText(detail, "The tool completed successfully.") {
-		t.Errorf("grouped detail missing assistant final text: %#v", detail.Content.TextParts)
+	if !detailsContainText(details, "The tool completed successfully.") {
+		t.Errorf("message details missing assistant final text")
 	}
 
 	session, err := src.SessionByID(ctx, "tool-result-session")
@@ -218,11 +226,11 @@ func TestToolResultOnlyUserRecordPairsToolDetailWithoutInflatingMessageInteracti
 	if session == nil {
 		t.Fatalf("SessionByID(tool-result-session) = nil, want session detail")
 	}
-	if session.MessageCount != 1 {
-		t.Errorf("SessionByID().MessageCount = %d, want 1 grouped prompt interaction", session.MessageCount)
+	if session.MessageCount != 3 {
+		t.Errorf("SessionByID().MessageCount = %d, want 3 rows (1 user + 2 assistant)", session.MessageCount)
 	}
-	if len(session.Messages) != 1 {
-		t.Errorf("SessionByID().Messages len = %d, want 1 grouped prompt interaction", len(session.Messages))
+	if len(session.Messages) != 3 {
+		t.Errorf("SessionByID().Messages len = %d, want 3 rows", len(session.Messages))
 	}
 	for _, msg := range session.Messages {
 		if msg.ID == "claude_code:tool-result-session:tool-result-1" {

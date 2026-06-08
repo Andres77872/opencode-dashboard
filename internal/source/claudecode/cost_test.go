@@ -407,22 +407,23 @@ func TestCacheCreationSplitKeepsPublicCacheWriteAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Messages(all) failed: %v", err)
 	}
-	if messages.Total != 1 || len(messages.Messages) != 1 {
-		t.Fatalf("Messages total/len = %d/%d, want 1/1", messages.Total, len(messages.Messages))
+	// 1 user prompt row + 1 assistant API-request row.
+	if messages.Total != 2 || len(messages.Messages) != 2 {
+		t.Fatalf("Messages total/len = %d/%d, want 2/2", messages.Total, len(messages.Messages))
 	}
-	entry := messages.Messages[0]
+	entry := findMessage(t, messages, func(m stats.MessageEntry) bool { return m.Role == "assistant" })
 	if entry.Tokens == nil {
-		t.Fatalf("Messages()[0].Tokens = nil, want aggregate cache write tokens")
+		t.Fatalf("assistant row Tokens = nil, want aggregate cache write tokens")
 	}
 	if entry.Tokens.Cache.Write != 30 {
-		t.Errorf("Messages()[0].Tokens.Cache.Write = %d, want aggregate cache_creation_input_tokens 30", entry.Tokens.Cache.Write)
+		t.Errorf("assistant row Tokens.Cache.Write = %d, want aggregate cache_creation_input_tokens 30", entry.Tokens.Cache.Write)
 	}
 	wantCost := (float64(10)*3.75 + float64(20)*6.0) / 1_000_000
 	if !approxEqual(entry.Cost, wantCost) {
-		t.Errorf("Messages()[0].Cost = %.9f, want %.9f from 10 five-minute + 20 one-hour cache write tokens", entry.Cost, wantCost)
+		t.Errorf("assistant row Cost = %.9f, want %.9f from 10 five-minute + 20 one-hour cache write tokens", entry.Cost, wantCost)
 	}
 	if entry.CostStatus != stats.CostComputed {
-		t.Errorf("Messages()[0].CostStatus = %q, want %q", entry.CostStatus, stats.CostComputed)
+		t.Errorf("assistant row CostStatus = %q, want %q", entry.CostStatus, stats.CostComputed)
 	}
 
 	overview, err := src.Overview(ctx, period)
@@ -434,49 +435,60 @@ func TestCacheCreationSplitKeepsPublicCacheWriteAggregate(t *testing.T) {
 	}
 }
 
-func TestClaudeCostCumulativeTotalCostUSDUsesFinalMaxSemantics(t *testing.T) {
+// TestClaudeCostCumulativeTotalCostUSDIsIgnoredInFavorOfPerRequestTokenCost
+// documents the per-request model: each assistant record is its own API-request
+// row, the cumulative total_cost_usd field is ignored when usage tokens are present
+// (to avoid overcounting), per-request cost is computed from tokens, and per-request
+// usage sums normally across requests.
+func TestClaudeCostCumulativeTotalCostUSDIsIgnoredInFavorOfPerRequestTokenCost(t *testing.T) {
 	src := newTempRegressionSource(t, map[string][]string{
 		"-home-andres-projects-cost/cumulative-total-cost-session.jsonl": cumulativeTotalCostUSDLines(),
 	})
 	ctx := testContext(t)
 	period := stats.PeriodQuery{Period: "all"}
 
+	// Per-request token cost (cumulative total_cost_usd ignored):
+	//   a1 (100/10/cr5/cc7) = (100*3+10*15+5*0.3+7*3.75)/1e6 = 477.75/1e6
+	//   a2 (300/30/cr15/cc17) = (300*3+30*15+15*0.3+17*3.75)/1e6 = 1418.25/1e6
+	//   a3 (600/60/cr25/cc27) = (600*3+60*15+25*0.3+27*3.75)/1e6 = 2808.75/1e6
+	wantCost := (477.75 + 1418.25 + 2808.75) / 1_000_000
+
 	overview, err := src.Overview(ctx, period)
 	if err != nil {
 		t.Fatalf("Overview(all) failed: %v", err)
 	}
-	if overview.Messages != 1 {
-		t.Errorf("Overview().Messages = %d, want 1 folded interaction", overview.Messages)
+	// 1 user prompt + 3 distinct assistant API-request rows (no shared requestId/message id).
+	if overview.Messages != 4 {
+		t.Errorf("Overview().Messages = %d, want 4 (1 user + 3 assistant API requests)", overview.Messages)
 	}
-	if !approxEqual(overview.Cost, 6) {
-		t.Errorf("Overview().Cost = %.6f, want 6.000000 final/max total_cost_usd rather than 10.000000 linear sum", overview.Cost)
+	if !approxEqual(overview.Cost, wantCost) {
+		t.Errorf("Overview().Cost = %.9f, want %.9f per-request token cost (cumulative total_cost_usd ignored)", overview.Cost, wantCost)
 	}
-	assertCumulativeCostTokens(t, "Overview().Tokens", overview.Tokens)
+	assertCumulativeSummedTokens(t, "Overview().Tokens", overview.Tokens)
 
 	messages, err := src.Messages(ctx, period, 1, 100, chronologicalMessageSort())
 	if err != nil {
 		t.Fatalf("Messages(all) failed: %v", err)
 	}
-	if messages.Total != 1 || len(messages.Messages) != 1 {
-		t.Fatalf("Messages total/len = %d/%d, want 1/1", messages.Total, len(messages.Messages))
+	if messages.Total != 4 || len(messages.Messages) != 4 {
+		t.Fatalf("Messages total/len = %d/%d, want 4/4", messages.Total, len(messages.Messages))
 	}
-	entry := messages.Messages[0]
-	if !approxEqual(entry.Cost, 6) {
-		t.Errorf("Messages()[0].Cost = %.6f, want 6.000000 final/max total_cost_usd", entry.Cost)
+	// Each assistant row is computed (not reported) because the cumulative reported
+	// value is ignored when usage is present.
+	for _, msg := range messages.Messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+		if msg.CostStatus != stats.CostComputed {
+			t.Errorf("assistant row %q CostStatus = %q, want %q (token-computed)", msg.ID, msg.CostStatus, stats.CostComputed)
+		}
+		if msg.CostProvenance == nil {
+			t.Fatalf("assistant row %q CostProvenance = nil, want computed provenance", msg.ID)
+		}
+		if msg.CostProvenance.ReportedCount != 0 {
+			t.Errorf("assistant row %q ReportedCount = %d, want 0; cumulative total_cost_usd must not be reported", msg.ID, msg.CostProvenance.ReportedCount)
+		}
 	}
-	if entry.CostStatus != stats.CostReported {
-		t.Errorf("Messages()[0].CostStatus = %q, want %q", entry.CostStatus, stats.CostReported)
-	}
-	if entry.CostProvenance == nil {
-		t.Fatalf("Messages()[0].CostProvenance = nil, want reported provenance")
-	}
-	if entry.CostProvenance.ReportedCount != 1 {
-		t.Errorf("reported count = %d, want 1 chosen final cumulative contribution", entry.CostProvenance.ReportedCount)
-	}
-	if entry.Tokens == nil {
-		t.Fatalf("Messages()[0].Tokens = nil, want max/final cumulative tokens")
-	}
-	assertCumulativeCostTokens(t, "Messages()[0].Tokens", *entry.Tokens)
 
 	session, err := src.SessionByID(ctx, "cumulative-total-cost-session")
 	if err != nil {
@@ -485,20 +497,23 @@ func TestClaudeCostCumulativeTotalCostUSDUsesFinalMaxSemantics(t *testing.T) {
 	if session == nil {
 		t.Fatalf("SessionByID(cumulative-total-cost-session) = nil, want session detail")
 	}
-	if !approxEqual(session.TotalCost, 6) {
-		t.Errorf("SessionByID().TotalCost = %.6f, want 6.000000 final/max total_cost_usd", session.TotalCost)
+	if !approxEqual(session.TotalCost, wantCost) {
+		t.Errorf("SessionByID().TotalCost = %.9f, want %.9f per-request token cost", session.TotalCost, wantCost)
 	}
-	assertCumulativeCostTokens(t, "SessionByID().TotalTokens", session.TotalTokens)
+	assertCumulativeSummedTokens(t, "SessionByID().TotalTokens", session.TotalTokens)
 
 	models, err := src.Models(ctx, period)
 	if err != nil {
 		t.Fatalf("Models(all) failed: %v", err)
 	}
 	model := findModelEntryByID(t, models, "claude-test-computed")
-	if !approxEqual(model.Cost, 6) {
-		t.Errorf("Models()[claude-test-computed].Cost = %.6f, want 6.000000 final/max total_cost_usd", model.Cost)
+	if model.Messages != 3 {
+		t.Errorf("Models()[claude-test-computed].Messages = %d, want 3 assistant API requests", model.Messages)
 	}
-	assertCumulativeCostTokens(t, "Models()[claude-test-computed].Tokens", model.Tokens)
+	if !approxEqual(model.Cost, wantCost) {
+		t.Errorf("Models()[claude-test-computed].Cost = %.9f, want %.9f per-request token cost", model.Cost, wantCost)
+	}
+	assertCumulativeSummedTokens(t, "Models()[claude-test-computed].Tokens", model.Tokens)
 }
 
 func TestClaudeCostExtraAssistantUsageKeysAreNotReportedCost(t *testing.T) {
@@ -534,10 +549,11 @@ func TestClaudeCostExtraAssistantUsageKeysAreNotReportedCost(t *testing.T) {
 				"-home-andres-projects-cost/" + tt.sessionID + ".jsonl": extraUsageKeyLines(tt.sessionID, tt.usageJSON),
 			})
 			messages := readAllMessages(t, src)
-			if messages.Total != 1 || len(messages.Messages) != 1 {
-				t.Fatalf("Messages total/len = %d/%d, want 1/1", messages.Total, len(messages.Messages))
+			// 1 user prompt row + 1 assistant API-request row.
+			if messages.Total != 2 || len(messages.Messages) != 2 {
+				t.Fatalf("Messages total/len = %d/%d, want 2/2", messages.Total, len(messages.Messages))
 			}
-			entry := messages.Messages[0]
+			entry := findMessage(t, messages, func(m stats.MessageEntry) bool { return m.Role == "assistant" })
 			if entry.CostStatus != tt.wantStatus {
 				t.Errorf("CostStatus = %q, want %q", entry.CostStatus, tt.wantStatus)
 			}
@@ -622,9 +638,9 @@ func extraUsageKeyLines(sessionID string, usageJSON string) []string {
 	}
 }
 
-func assertCumulativeCostTokens(t *testing.T, label string, got stats.TokenStats) {
+func assertCumulativeSummedTokens(t *testing.T, label string, got stats.TokenStats) {
 	t.Helper()
-	if got.Input != 600 || got.Output != 60 || got.Cache.Read != 25 || got.Cache.Write != 27 {
-		t.Errorf("%s = input/output/cache.read/cache.write %d/%d/%d/%d, want final/max 600/60/25/27", label, got.Input, got.Output, got.Cache.Read, got.Cache.Write)
+	if got.Input != 1000 || got.Output != 100 || got.Cache.Read != 45 || got.Cache.Write != 51 {
+		t.Errorf("%s = input/output/cache.read/cache.write %d/%d/%d/%d, want summed 1000/100/45/51", label, got.Input, got.Output, got.Cache.Read, got.Cache.Write)
 	}
 }

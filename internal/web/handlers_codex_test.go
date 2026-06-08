@@ -80,8 +80,8 @@ func TestSourceAwareCodexAPIRoutingFromFixture(t *testing.T) {
 		if body.Sessions == 999 || body.Sessions == 777 {
 			t.Errorf("overview sessions = %d, looks contaminated by OpenCode/Claude fake source", body.Sessions)
 		}
-		if body.Messages != 1 {
-			t.Errorf("overview messages = %d, want exactly 1 grouped Codex interaction", body.Messages)
+		if body.Messages != 4 {
+			t.Errorf("overview messages = %d, want 4 per-request Codex rows", body.Messages)
 		}
 	})
 
@@ -131,7 +131,7 @@ func TestCodexAPIEndpointClassesReturnCodexSourceTaggedPayloads(t *testing.T) {
 		{name: "sessions", path: "/api/v1/sessions?source=codex&period=all"},
 		{name: "session detail", path: "/api/v1/sessions/synthetic-session?source=codex"},
 		{name: "messages", path: "/api/v1/messages?source=codex&period=all"},
-		{name: "message detail", path: "/api/v1/messages/codex:synthetic-session:turn-1?source=codex"},
+		{name: "message detail", path: "/api/v1/messages/codex:synthetic-session:turn-1:r0?source=codex"},
 		{name: "config", path: "/api/v1/config?source=codex"},
 	}
 
@@ -208,7 +208,7 @@ func TestCodexInvalidUnavailableAndDetailCollisionDoNotFallback(t *testing.T) {
 		handler := newSourceTestHandler(t, opencodeSource, claudeSource, codexSource)
 
 		var detail stats.MessageDetail
-		getHandlerJSON(t, handler, "/api/v1/messages/codex:synthetic-session:turn-1?source=codex", &detail)
+		getHandlerJSON(t, handler, "/api/v1/messages/codex:synthetic-session:turn-1:r0?source=codex", &detail)
 		if detail.SourceID != string(source.SourceCodex) {
 			t.Errorf("detail source_id = %q, want %q", detail.SourceID, source.SourceCodex)
 		}

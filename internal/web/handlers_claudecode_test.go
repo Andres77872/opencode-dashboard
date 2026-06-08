@@ -79,8 +79,8 @@ func TestSourceAwareClaudeCodeAPIRoutingFromFixture(t *testing.T) {
 		if body.Sessions == 999 {
 			t.Errorf("overview sessions = %d, looks like OpenCode fake contamination", body.Sessions)
 		}
-		if body.Messages != 8 {
-			t.Errorf("overview messages = %d, want exactly 8 grouped user-facing Claude interactions", body.Messages)
+		if body.Messages != 14 {
+			t.Errorf("overview messages = %d, want exactly 14 Claude API-request/prompt rows", body.Messages)
 		}
 	})
 
@@ -103,11 +103,11 @@ func TestSourceAwareClaudeCodeAPIRoutingFromFixture(t *testing.T) {
 		if len(body.Messages) == 0 {
 			t.Fatalf("message list empty, want Claude fixture rows")
 		}
-		if body.Total != 8 {
-			t.Errorf("message list total = %d, want exactly 8 grouped user-facing Claude interactions", body.Total)
+		if body.Total != 14 {
+			t.Errorf("message list total = %d, want exactly 14 Claude API-request/prompt rows", body.Total)
 		}
-		if len(body.Messages) != 8 {
-			t.Errorf("message list page len = %d, want exactly 8 grouped user-facing Claude interactions", len(body.Messages))
+		if len(body.Messages) != 14 {
+			t.Errorf("message list page len = %d, want exactly 14 Claude API-request/prompt rows", len(body.Messages))
 		}
 		for _, msg := range body.Messages {
 			if msg.SourceID != string(source.SourceClaudeCode) {
@@ -222,8 +222,8 @@ func TestClaudeCodeSafeShapeHTTPDoesNotExposeMetadataRows(t *testing.T) {
 	if overview.SourceID != string(source.SourceClaudeCode) {
 		t.Errorf("overview source_id = %q, want %q", overview.SourceID, source.SourceClaudeCode)
 	}
-	if overview.Messages != 1 || overview.Sessions != 1 {
-		t.Errorf("overview messages/sessions = %d/%d, want 1/1 legitimate safe-shape interaction", overview.Messages, overview.Sessions)
+	if overview.Messages != 5 || overview.Sessions != 1 {
+		t.Errorf("overview messages/sessions = %d/%d, want 5/1 (main prompt+2 requests + subagent prompt+request, one session)", overview.Messages, overview.Sessions)
 	}
 
 	var daily stats.DailyStats
@@ -234,8 +234,8 @@ func TestClaudeCodeSafeShapeHTTPDoesNotExposeMetadataRows(t *testing.T) {
 	if len(daily.Days) != 1 {
 		t.Fatalf("daily days len = %d, want 1: %#v", len(daily.Days), daily.Days)
 	}
-	if daily.Days[0].Messages != 1 || daily.Days[0].Sessions != 1 {
-		t.Errorf("daily day messages/sessions = %d/%d, want 1/1", daily.Days[0].Messages, daily.Days[0].Sessions)
+	if daily.Days[0].Messages != 5 || daily.Days[0].Sessions != 1 {
+		t.Errorf("daily day messages/sessions = %d/%d, want 5/1", daily.Days[0].Messages, daily.Days[0].Sessions)
 	}
 
 	var models stats.ModelStats
@@ -246,8 +246,8 @@ func TestClaudeCodeSafeShapeHTTPDoesNotExposeMetadataRows(t *testing.T) {
 	if len(models.Models) != 1 {
 		t.Fatalf("models len = %d, want 1: %#v", len(models.Models), models.Models)
 	}
-	if models.Models[0].Messages != 1 || models.Models[0].Sessions != 1 {
-		t.Errorf("model messages/sessions = %d/%d, want 1/1", models.Models[0].Messages, models.Models[0].Sessions)
+	if models.Models[0].Messages != 3 || models.Models[0].Sessions != 1 {
+		t.Errorf("model messages/sessions = %d/%d, want 3/1 (two main + one subagent API request)", models.Models[0].Messages, models.Models[0].Sessions)
 	}
 
 	var sessions stats.SessionList
@@ -258,8 +258,8 @@ func TestClaudeCodeSafeShapeHTTPDoesNotExposeMetadataRows(t *testing.T) {
 	if sessions.Total != 1 || len(sessions.Sessions) != 1 {
 		t.Fatalf("sessions total/len = %d/%d, want 1/1: %#v", sessions.Total, len(sessions.Sessions), sessions.Sessions)
 	}
-	if sessions.Sessions[0].MessageCount != 1 {
-		t.Errorf("sessions[0].message_count = %d, want 1", sessions.Sessions[0].MessageCount)
+	if sessions.Sessions[0].MessageCount != 5 {
+		t.Errorf("sessions[0].message_count = %d, want 5", sessions.Sessions[0].MessageCount)
 	}
 
 	var messages stats.MessageList
@@ -267,27 +267,22 @@ func TestClaudeCodeSafeShapeHTTPDoesNotExposeMetadataRows(t *testing.T) {
 	if messages.SourceID != string(source.SourceClaudeCode) {
 		t.Errorf("messages source_id = %q, want %q", messages.SourceID, source.SourceClaudeCode)
 	}
-	if messages.Total != 1 || len(messages.Messages) != 1 {
-		t.Fatalf("messages total/len = %d/%d, want 1/1: %#v", messages.Total, len(messages.Messages), messages.Messages)
+	if messages.Total != 5 || len(messages.Messages) != 5 {
+		t.Fatalf("messages total/len = %d/%d, want 5/5: %#v", messages.Total, len(messages.Messages), messages.Messages)
 	}
-	msg := messages.Messages[0]
-	if msg.ID != "claude_code:safe-shape-session:safe-user-1" {
-		t.Errorf("messages[0].id = %q, want legitimate prompt ID", msg.ID)
+	if !containsHTTPMessageID(messages.Messages, "claude_code:safe-shape-session:safe-user-1") {
+		t.Errorf("messages do not include the legitimate prompt row: %#v", messages.Messages)
 	}
-	if msg.Role == "unknown" {
-		t.Errorf("messages[0].role = unknown; metadata taxonomy rows must not leak")
-	}
-	if msg.FoldedAssistantCalls != 2 {
-		t.Errorf("messages[0].folded_assistant_calls = %d, want 2", msg.FoldedAssistantCalls)
-	}
-	if msg.FoldedToolCalls != 1 {
-		t.Errorf("messages[0].folded_tool_calls = %d, want 1", msg.FoldedToolCalls)
+	for _, msg := range messages.Messages {
+		if msg.Role == "unknown" {
+			t.Errorf("messages contain role=unknown row %#v; metadata taxonomy rows must not leak", msg)
+		}
 	}
 
 	var session stats.SessionDetail
 	getHandlerJSON(t, handler, "/api/v1/sessions/safe-shape-session?source=claude_code", &session)
-	if session.MessageCount != 1 || len(session.Messages) != 1 {
-		t.Errorf("session detail message_count/messages len = %d/%d, want 1/1", session.MessageCount, len(session.Messages))
+	if session.MessageCount != 5 || len(session.Messages) != 5 {
+		t.Errorf("session detail message_count/messages len = %d/%d, want 5/5", session.MessageCount, len(session.Messages))
 	}
 	for _, row := range session.Messages {
 		if row.Role == "unknown" {
@@ -295,20 +290,28 @@ func TestClaudeCodeSafeShapeHTTPDoesNotExposeMetadataRows(t *testing.T) {
 		}
 	}
 
-	var detail stats.MessageDetail
-	getHandlerJSON(t, handler, "/api/v1/messages/claude_code:safe-shape-session:safe-user-1?source=claude_code", &detail)
-	if detail.ID != "claude_code:safe-shape-session:safe-user-1" {
-		t.Errorf("message detail id = %q, want legitimate prompt ID", detail.ID)
+	// The user prompt is its own row; the tool_result pairs onto the assistant
+	// API-request row that issued the tool_use.
+	var promptDetail stats.MessageDetail
+	getHandlerJSON(t, handler, "/api/v1/messages/claude_code:safe-shape-session:safe-user-1?source=claude_code", &promptDetail)
+	if promptDetail.ID != "claude_code:safe-shape-session:safe-user-1" {
+		t.Errorf("prompt detail id = %q, want legitimate prompt ID", promptDetail.ID)
 	}
-	if detail.FoldedAssistantCalls != 2 {
-		t.Errorf("message detail folded_assistant_calls = %d, want 2", detail.FoldedAssistantCalls)
+
+	var toolDetail stats.MessageDetail
+	getHandlerJSON(t, handler, "/api/v1/messages/claude_code:safe-shape-session:safe-assistant-tool-1?source=claude_code", &toolDetail)
+	if !httpDetailContainsToolResult(toolDetail, "toolu_safe_read", "synthetic tool result from redacted fixture") {
+		t.Errorf("assistant request detail does not contain completed safe tool_result: %#v", toolDetail.Content.ToolParts)
 	}
-	if detail.FoldedToolCalls != 1 {
-		t.Errorf("message detail folded_tool_calls = %d, want 1", detail.FoldedToolCalls)
+}
+
+func containsHTTPMessageID(messages []stats.MessageEntry, want string) bool {
+	for _, msg := range messages {
+		if msg.ID == want {
+			return true
+		}
 	}
-	if !httpDetailContainsToolResult(detail, "toolu_safe_read", "synthetic tool result from redacted fixture") {
-		t.Errorf("message detail does not contain completed safe tool_result: %#v", detail.Content.ToolParts)
-	}
+	return false
 }
 
 func getHandlerJSON(t *testing.T, handler http.Handler, path string, dest any) {
@@ -352,7 +355,6 @@ func safeShapeHTTPForbiddenText() []string {
 		"metadata attachment event must not leak",
 		"metadata queue event must not leak",
 		"metadata system event must not leak",
-		"Nested subagent prompt must be skipped",
 		"Nested tool-results prompt must be skipped",
 		"Nested debug prompt must be skipped",
 		`"role":"unknown"`,

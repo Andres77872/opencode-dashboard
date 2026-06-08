@@ -8,39 +8,59 @@ import (
 	"opencode-dashboard/internal/stats"
 )
 
-func TestNormalizerEmitsExactlyOneInteractionPerTurnID(t *testing.T) {
+func TestNormalizerEmitsOneRowPerAPIRequestAndUserPrompt(t *testing.T) {
 	src := newFixtureSource(t, "valid_home")
 	messages := readAllMessages(t, src)
 
 	if messages.SourceID != string(source.SourceCodex) {
 		t.Errorf("MessageList.SourceID = %q, want %q", messages.SourceID, source.SourceCodex)
 	}
-	if messages.Total != 1 || len(messages.Messages) != 1 {
-		t.Fatalf("Messages total/len = %d/%d, want exactly one grouped Codex interaction for turn-1", messages.Total, len(messages.Messages))
+	// 2 user prompts (u0, u1) + 2 assistant API requests (r0, r1).
+	if messages.Total != 4 || len(messages.Messages) != 4 {
+		t.Fatalf("Messages total/len = %d/%d, want 4 per-request Codex rows for turn-1", messages.Total, len(messages.Messages))
 	}
 
-	entry := messages.Messages[0]
-	assertCodexSourceID(t, entry.SourceID)
-	if entry.ID != "codex:synthetic-session:turn-1" {
-		t.Errorf("Message ID = %q, want codex:synthetic-session:turn-1", entry.ID)
+	roles := map[string]int{}
+	for _, msg := range messages.Messages {
+		assertCodexSourceID(t, msg.SourceID)
+		if msg.SessionID != "synthetic-session" {
+			t.Errorf("SessionID = %q, want synthetic-session", msg.SessionID)
+		}
+		roles[msg.Role]++
 	}
-	if entry.SessionID != "synthetic-session" {
-		t.Errorf("SessionID = %q, want synthetic-session", entry.SessionID)
+	if roles["user"] != 2 || roles["assistant"] != 2 {
+		t.Errorf("role counts = %#v, want 2 user + 2 assistant", roles)
 	}
-	if entry.Role != "assistant" {
-		t.Errorf("Role = %q, want assistant after folded assistant output", entry.Role)
+
+	// r0 is the request that carries the first cumulative delta (1000/100/50/25)
+	// plus all of the turn's content (it all precedes the token_count events).
+	r0 := findMessage(t, messages, func(m stats.MessageEntry) bool {
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 1000
+	})
+	if r0.ID != "codex:synthetic-session:turn-1:r0" {
+		t.Errorf("first request ID = %q, want codex:synthetic-session:turn-1:r0", r0.ID)
 	}
-	if entry.ModelID != "gpt-5.5" || entry.ProviderID != "openai" {
-		t.Errorf("model/provider = %q/%q, want gpt-5.5/openai", entry.ModelID, entry.ProviderID)
+	if r0.ModelID != "gpt-5.5" || r0.ProviderID != "openai" {
+		t.Errorf("model/provider = %q/%q, want gpt-5.5/openai", r0.ModelID, r0.ProviderID)
 	}
-	if entry.FoldedAssistantCalls != 1 {
-		t.Errorf("FoldedAssistantCalls = %d, want 1 deduped assistant message", entry.FoldedAssistantCalls)
+
+	// r1 is the usage-only second request delta (500/200/25/5), no content.
+	r1 := findMessage(t, messages, func(m stats.MessageEntry) bool {
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 500
+	})
+	if r1.ID != "codex:synthetic-session:turn-1:r1" {
+		t.Errorf("second request ID = %q, want codex:synthetic-session:turn-1:r1", r1.ID)
 	}
-	if entry.FoldedToolCalls != 3 {
-		t.Errorf("FoldedToolCalls = %d, want 3 deduped tool/search calls", entry.FoldedToolCalls)
+
+	// The two zero-delta token_count events (tc3/tc4) add no rows.
+	assistantCount := 0
+	for _, msg := range messages.Messages {
+		if msg.Role == "assistant" {
+			assistantCount++
+		}
 	}
-	if entry.FoldedTokenUpdates != 4 {
-		t.Errorf("FoldedTokenUpdates = %d, want 4 token_count rows folded into one interaction", entry.FoldedTokenUpdates)
+	if assistantCount != 2 {
+		t.Errorf("assistant rows = %d, want 2 (zero-delta token_count events add no rows)", assistantCount)
 	}
 }
 
@@ -56,10 +76,35 @@ func TestNormalizerFiltersRawChildRecordsFromTopLevelRows(t *testing.T) {
 		}
 	}
 
-	detail := mustMessageDetail(t, src, messages.Messages[0].ID)
-	if !detailTextContains(detail, "[REDACTED_USER_MESSAGE_PART_1]") || !detailTextContains(detail, "[REDACTED_USER_MESSAGE_PART_2]") {
-		t.Errorf("detail text parts = %#v, want both user_message rows folded into one interaction", detail.Content.TextParts)
+	// Each legitimate user_message is now its own user row (u0, u1).
+	userRows := 0
+	sawPart1, sawPart2 := false, false
+	for _, msg := range messages.Messages {
+		if msg.Role != "user" {
+			continue
+		}
+		userRows++
+		userDetail := mustMessageDetail(t, src, msg.ID)
+		if detailTextContains(userDetail, "[REDACTED_USER_MESSAGE_PART_1]") {
+			sawPart1 = true
+		}
+		if detailTextContains(userDetail, "[REDACTED_USER_MESSAGE_PART_2]") {
+			sawPart2 = true
+		}
 	}
+	if userRows != 2 {
+		t.Errorf("user rows = %d, want 2 (one per user_message)", userRows)
+	}
+	if !sawPart1 || !sawPart2 {
+		t.Errorf("user prompts seen part1/part2 = %v/%v, want both user_message rows present", sawPart1, sawPart2)
+	}
+
+	// All assistant/tool/reasoning content attaches to the request row that
+	// closes first (r0), since it all precedes the token_count events.
+	r0 := findMessage(t, messages, func(m stats.MessageEntry) bool {
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 1000
+	})
+	detail := mustMessageDetail(t, src, r0.ID)
 	if detailTextOccurrences(detail, "[REDACTED_ASSISTANT_SUMMARY]") != 1 {
 		t.Errorf("assistant mirror occurrences = %d, want exactly 1 after response_item/agent_message dedupe", detailTextOccurrences(detail, "[REDACTED_ASSISTANT_SUMMARY]"))
 	}
@@ -67,7 +112,7 @@ func TestNormalizerFiltersRawChildRecordsFromTopLevelRows(t *testing.T) {
 		t.Errorf("ReasoningParts len = %d, want 1 placeholder/count for redacted reasoning event", len(detail.Content.ReasoningParts))
 	}
 	if len(detail.Content.ToolParts) != 3 {
-		t.Errorf("ToolParts len = %d, want 3 folded tool/search calls", len(detail.Content.ToolParts))
+		t.Errorf("ToolParts len = %d, want 3 tool/search calls on the request row", len(detail.Content.ToolParts))
 	}
 	assertJSONDoesNotContain(t, detail, "[REDACTED_REPLAYED_USER_MESSAGE]", "[REDACTED_DEVELOPER_REPLAY]", "[REDACTED_USER_REPLAY]", "[REDACTED_ASSISTANT_REPLAY]")
 }
@@ -75,16 +120,21 @@ func TestNormalizerFiltersRawChildRecordsFromTopLevelRows(t *testing.T) {
 func TestNormalizerRepeatedTurnContextUpdatesMetadataOnly(t *testing.T) {
 	src := newFixtureSource(t, "valid_home")
 	messages := readAllMessages(t, src)
-	entry := messages.Messages[0]
 
-	if messages.Total != 1 {
-		t.Fatalf("Messages total = %d, want 1 despite repeated turn_context rows", messages.Total)
+	// Repeated turn_context records update metadata only; they never add rows.
+	// The per-request layout is 2 user + 2 assistant rows.
+	if messages.Total != 4 {
+		t.Fatalf("Messages total = %d, want 4 despite repeated turn_context rows", messages.Total)
 	}
-	if entry.ModelID != "gpt-5.5" {
-		t.Errorf("ModelID = %q, want updated turn_context model gpt-5.5", entry.ModelID)
+
+	assistant := findMessage(t, messages, func(m stats.MessageEntry) bool {
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 1000
+	})
+	if assistant.ModelID != "gpt-5.5" {
+		t.Errorf("ModelID = %q, want updated turn_context model gpt-5.5", assistant.ModelID)
 	}
-	if entry.SessionTitle == "" {
-		t.Errorf("SessionTitle is empty, want folded redacted user prompt/title")
+	if assistant.SessionTitle == "" {
+		t.Errorf("SessionTitle is empty, want redacted session title")
 	}
 }
 
@@ -102,14 +152,17 @@ func TestNormalizerFallbackIdentityIsStableWhenTurnIDMissing(t *testing.T) {
 
 	first := readAllMessages(t, src)
 	second := readAllMessages(t, src)
-	if first.Total != 1 || second.Total != 1 {
-		t.Fatalf("Messages totals = %d/%d, want stable one fallback interaction", first.Total, second.Total)
+	// 1 user prompt + 1 API request (token_count closes the assistant content).
+	if first.Total != 2 || second.Total != 2 {
+		t.Fatalf("Messages totals = %d/%d, want stable 2 fallback rows", first.Total, second.Total)
 	}
-	if !strings.HasPrefix(first.Messages[0].ID, "codex:fallback-session:fallback:") {
-		t.Errorf("fallback ID = %q, want codex:fallback-session:fallback:*", first.Messages[0].ID)
-	}
-	if first.Messages[0].ID != second.Messages[0].ID {
-		t.Errorf("fallback ID changed between reads: %q vs %q", first.Messages[0].ID, second.Messages[0].ID)
+	for i := range first.Messages {
+		if !strings.HasPrefix(first.Messages[i].ID, "codex:fallback-session:turn:") {
+			t.Errorf("fallback ID = %q, want codex:fallback-session:turn:*", first.Messages[i].ID)
+		}
+		if first.Messages[i].ID != second.Messages[i].ID {
+			t.Errorf("fallback ID changed between reads: %q vs %q", first.Messages[i].ID, second.Messages[i].ID)
+		}
 	}
 }
 
@@ -117,13 +170,27 @@ func TestNormalizerDoesNotPromoteReplayUserDeveloperRows(t *testing.T) {
 	src := newFixtureSource(t, "valid_home")
 	messages := readAllMessages(t, src)
 
+	// Legitimate user_message events DO produce user rows (u0, u1); only the
+	// replayed response_item role=user / developer / compacted rows must not leak.
+	userRows := 0
 	for _, msg := range messages.Messages {
-		if msg.Role == "user" || strings.Contains(msg.ID, "msg-user-replay") {
-			t.Errorf("top-level replay/raw user row leaked: %#v", msg)
+		if strings.Contains(msg.ID, "msg-user-replay") {
+			t.Errorf("replayed response_item user row leaked: %#v", msg)
+		}
+		if msg.Role == "user" {
+			userRows++
 		}
 	}
-	if messages.Total != 1 {
-		t.Errorf("Messages total = %d, want one interaction after compaction/replay filtering", messages.Total)
+	if userRows != 2 {
+		t.Errorf("user rows = %d, want exactly 2 legitimate user_message rows", userRows)
+	}
+	if messages.Total != 4 {
+		t.Errorf("Messages total = %d, want 4 per-request rows after compaction/replay filtering", messages.Total)
+	}
+	// No replayed/compacted content may leak into any row detail.
+	for _, msg := range messages.Messages {
+		detail := mustMessageDetail(t, src, msg.ID)
+		assertJSONDoesNotContain(t, detail, "[REDACTED_REPLAYED_USER_MESSAGE]", "[REDACTED_DEVELOPER_REPLAY]", "[REDACTED_USER_REPLAY]", "[REDACTED_ASSISTANT_REPLAY]")
 	}
 }
 

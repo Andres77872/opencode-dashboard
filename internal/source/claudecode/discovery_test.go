@@ -26,7 +26,7 @@ func TestClaudeCodeDiscoveryAndAvailability(t *testing.T) {
 			fixture:          "valid_home",
 			wantAvailable:    true,
 			wantScannedFiles: 7,
-			wantMessages:     8,
+			wantMessages:     14,
 		},
 		{
 			name:             "empty projects root is available with empty Claude data",
@@ -85,7 +85,7 @@ func TestClaudeCodeDiscoveryAndAvailability(t *testing.T) {
 			}
 			assertAllSourceID(t, overview.SourceID)
 			if overview.Messages != tt.wantMessages {
-				t.Errorf("Overview().Messages = %d, want %d grouped user-facing interactions", overview.Messages, tt.wantMessages)
+				t.Errorf("Overview().Messages = %d, want %d per-request message rows", overview.Messages, tt.wantMessages)
 			}
 
 			info = src.Info(ctx)
@@ -96,34 +96,56 @@ func TestClaudeCodeDiscoveryAndAvailability(t *testing.T) {
 	}
 }
 
-func TestSafeShapeDiscoverySkipsNestedSupportTranscriptDirectories(t *testing.T) {
+func TestDiscoveryIncludesSubagentsButSkipsToolResultsAndDebug(t *testing.T) {
 	discovered := discoverTranscripts(testContext(t), fixturePath(t, "safe_shape_home"))
 	if !discovered.available {
 		t.Fatalf("discoverTranscripts(safe_shape_home).available = false, diagnostics: %#v", discovered.diagnostics)
 	}
-	if discovered.diagnostics.ScannedFiles != 1 {
-		t.Errorf("ScannedFiles = %d, want 1 top-level project JSONL only", discovered.diagnostics.ScannedFiles)
+	// Subagent transcripts are real API requests and ARE discovered; only the
+	// tool-results/ and debug/ support directories stay skipped. So we expect the
+	// top-level session plus the subagent transcript.
+	if discovered.diagnostics.ScannedFiles != 2 {
+		t.Errorf("ScannedFiles = %d, want 2 (top-level session + subagent)", discovered.diagnostics.ScannedFiles)
 	}
-	if len(discovered.files) != 1 {
-		t.Fatalf("discovered files len = %d, want 1 top-level JSONL only: %#v", len(discovered.files), discovered.files)
-	}
-
-	file := discovered.files[0]
-	if filepath.Base(file.Path) != "safe-shape-session.jsonl" {
-		t.Errorf("discovered file = %q, want top-level safe-shape-session.jsonl", file.Path)
-	}
-	if file.ProjectID != "-redacted-safe" {
-		t.Errorf("ProjectID = %q, want -redacted-safe", file.ProjectID)
-	}
-	if file.SessionID != "safe-shape-session" {
-		t.Errorf("SessionID = %q, want safe-shape-session", file.SessionID)
+	if len(discovered.files) != 2 {
+		t.Fatalf("discovered files len = %d, want 2 (top-level session + subagent): %#v", len(discovered.files), discovered.files)
 	}
 
-	path := filepath.ToSlash(file.Path)
-	for _, skipped := range []string{"/subagents/", "/tool-results/", "/debug/"} {
-		if strings.Contains(path, skipped) {
-			t.Errorf("discovered nested support transcript %q in path %q; nested support directories must be skipped", skipped, path)
+	var topLevel, subagent *transcriptFile
+	for i := range discovered.files {
+		file := &discovered.files[i]
+		path := filepath.ToSlash(file.Path)
+		if file.ProjectID != "-redacted-safe" {
+			t.Errorf("ProjectID = %q, want -redacted-safe", file.ProjectID)
 		}
+		// Subagent transcripts carry the parent session id via sessionIDFromParts.
+		if file.SessionID != "safe-shape-session" {
+			t.Errorf("SessionID = %q, want safe-shape-session for %q", file.SessionID, path)
+		}
+		if strings.Contains(path, "/subagents/") {
+			subagent = file
+		} else {
+			topLevel = file
+		}
+		// tool-results/ and debug/ support directories must never be discovered.
+		for _, skipped := range []string{"/tool-results/", "/debug/"} {
+			if strings.Contains(path, skipped) {
+				t.Errorf("discovered nested support transcript %q in path %q; tool-results/ and debug/ must be skipped", skipped, path)
+			}
+		}
+	}
+
+	if topLevel == nil {
+		t.Fatalf("top-level safe-shape-session.jsonl not discovered: %#v", discovered.files)
+	}
+	if filepath.Base(topLevel.Path) != "safe-shape-session.jsonl" {
+		t.Errorf("top-level file = %q, want safe-shape-session.jsonl", topLevel.Path)
+	}
+	if subagent == nil {
+		t.Fatalf("subagent transcript under subagents/ not discovered: %#v", discovered.files)
+	}
+	if filepath.Base(subagent.Path) != "skipped-agent.jsonl" {
+		t.Errorf("subagent file = %q, want skipped-agent.jsonl under subagents/", subagent.Path)
 	}
 }
 

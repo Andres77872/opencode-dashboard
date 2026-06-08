@@ -29,20 +29,31 @@ func TestCodexConfigRedactsValuesAndDoesNotReadAuthLogsOrState(t *testing.T) {
 func TestCodexMessageDetailRedactsPromptAssistantToolPatchAndPaths(t *testing.T) {
 	src := newFixtureSource(t, "privacy_home")
 	messages := readAllMessages(t, src)
-	if messages.Total != 1 || len(messages.Messages) != 1 {
-		t.Fatalf("Messages total/len = %d/%d, want one privacy fixture interaction", messages.Total, len(messages.Messages))
+	// 1 user prompt row + 1 assistant API request row (carries the content).
+	if messages.Total != 2 || len(messages.Messages) != 2 {
+		t.Fatalf("Messages total/len = %d/%d, want two privacy fixture rows", messages.Total, len(messages.Messages))
 	}
-	detail := mustMessageDetail(t, src, messages.Messages[0].ID)
-	assertCodexSourceID(t, detail.SourceID)
-	assertJSONDoesNotContain(t, detail, codexForbiddenText()...)
 
-	if len(detail.Content.TextParts) == 0 {
-		t.Fatalf("TextParts empty, want redacted prompt/assistant placeholders")
-	}
-	for _, part := range detail.Content.TextParts {
-		if !part.Redacted {
-			t.Errorf("text part %#v Redacted = false, want redaction marker for privacy fixture", part)
+	// Every row's detail must stay redacted and never leak a secret sentinel.
+	for _, msg := range messages.Messages {
+		rowDetail := mustMessageDetail(t, src, msg.ID)
+		assertCodexSourceID(t, rowDetail.SourceID)
+		assertJSONDoesNotContain(t, rowDetail, codexForbiddenText()...)
+		for _, part := range rowDetail.Content.TextParts {
+			if !part.Redacted {
+				t.Errorf("text part %#v Redacted = false, want redaction marker for privacy fixture", part)
+			}
 		}
+	}
+
+	// The assistant request row carries the redacted prompt-driven content,
+	// including the redacted tool/args/output/patch.
+	assistant := findMessage(t, messages, func(m stats.MessageEntry) bool {
+		return m.Role == "assistant"
+	})
+	detail := mustMessageDetail(t, src, assistant.ID)
+	if len(detail.Content.TextParts) == 0 {
+		t.Fatalf("TextParts empty, want redacted assistant placeholders")
 	}
 	tool := findToolPart(t, detail, "privacy-call")
 	if !tool.State.Redacted {

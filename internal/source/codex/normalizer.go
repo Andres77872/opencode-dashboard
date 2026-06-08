@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,15 +52,18 @@ type messageRecord struct {
 }
 
 type sessionState struct {
-	id              string
-	provider        string
-	projectID       string
-	projectName     string
-	directory       string
-	activeTurnID    string
-	tokenMax        tokenSnapshot
-	fileSessionID   string
-	fallbackCounter int
+	id            string
+	provider      string
+	model         string
+	projectID     string
+	projectName   string
+	directory     string
+	turnID        string
+	requestSeq    int
+	userSeq       int
+	pending       *messageRecord
+	tokenMax      tokenSnapshot
+	fileSessionID string
 }
 
 func normalizeRecords(home string, records []codexRecord, pricing pricingSnapshot, diag source.SourceDiagnostics) *snapshot {
@@ -118,20 +122,18 @@ func normalizeRecords(home string, records []codexRecord, pricing pricingSnapsho
 			updateSessionTimes(snap.sessionMap[state.id], timestamp)
 
 		case record.TurnContext != nil:
-			turn := snap.ensureTurn(state, record.TurnContext.TurnID, timestamp, pricing)
+			snap.syncTurn(state, record.TurnContext.TurnID)
 			if record.TurnContext.Model != "" {
-				turn.Entry.ModelID = record.TurnContext.Model
+				state.model = record.TurnContext.Model
 			}
 			if record.TurnContext.Provider != "" {
-				turn.Entry.ProviderID = record.TurnContext.Provider
-			} else if turn.Entry.ProviderID == "" && state.provider != "" {
-				turn.Entry.ProviderID = state.provider
+				state.provider = record.TurnContext.Provider
 			}
 			if state.directory == "" && record.TurnContext.CWD != "" {
 				state.directory = redactDisplayPath(record.TurnContext.CWD)
 				state.projectID, state.projectName = projectFromPath(record.TurnContext.CWD)
-				turn.projectID = state.projectID
 			}
+			snap.ensureSession(state.id, snap.ensureProject(state.projectID, state.projectName, state.directory), state.directory)
 			updateSessionTimes(snap.sessionMap[state.id], timestamp)
 
 		case record.Event != nil:
@@ -199,44 +201,46 @@ func recordTimestamp(record codexRecord) time.Time {
 }
 
 func (s *snapshot) applyEvent(state *sessionState, event *eventMsgRecord, timestamp time.Time, pricing pricingSnapshot) {
+	s.syncTurn(state, event.TurnID)
 	switch event.PayloadType {
 	case "task_started":
-		turn := s.ensureTurn(state, event.TurnID, timestamp, pricing)
-		turn.Entry.Role = "user"
+		// Marks the turn; the user prompt (user_message) and assistant API requests
+		// (token_count) create the rows.
+		s.ensureSession(state.id, s.ensureProject(state.projectID, state.projectName, state.directory), state.directory)
 	case "user_message":
-		turn := s.ensureTurn(state, event.TurnID, timestamp, pricing)
+		// A new user prompt closes any open assistant request and starts its own row.
+		s.flushPending(state)
+		msg := s.newMessage(state, "user", timestamp)
 		if event.Text != "" {
-			turn.TextParts = append(turn.TextParts, redactAndTruncateMessagePart("text", event.Text))
+			msg.TextParts = append(msg.TextParts, redactAndTruncateMessagePart("text", event.Text))
 		}
+		state.userSeq++
 	case "agent_message":
 		// Assistant mirrors are intentionally ignored when response_item.message is
 		// available, preventing duplicate assistant text and row counts.
 	case "token_count":
-		turn := s.ensureTurn(state, event.TurnID, timestamp, pricing)
-		turn.Entry.FoldedTokenUpdates++
-		if event.PlanType != "" {
-			// Plan metadata affects provenance wording, but all current derived Codex
-			// costs remain API-equivalent estimates unless a future reported cost exists.
-		}
+		// Each token_count closes one model API request. The per-request usage is the
+		// delta of the session-cumulative total_token_usage (which clamps spikes and
+		// regressions and, for well-formed transcripts, equals last_token_usage). Fall
+		// back to last_token_usage only when no running total is present.
+		var usage tokenSnapshot
+		hasUsage := false
 		if event.HasTotalUsage {
-			delta := positiveDelta(state.tokenMax, event.TotalUsage)
+			usage = positiveDelta(state.tokenMax, event.TotalUsage)
 			state.tokenMax = maxSnapshot(state.tokenMax, event.TotalUsage)
-			turn.addTokenDelta(delta)
-			if event.TotalUsage.Input > turn.maxInputSnapshot {
-				turn.maxInputSnapshot = event.TotalUsage.Input
-			}
+			hasUsage = true
+		} else if event.HasLastUsage {
+			usage = event.LastUsage
+			hasUsage = true
 		}
+		s.closeRequest(state, timestamp, usage, hasUsage)
 	case "patch_apply_end", "web_search_end":
-		turn := s.ensureTurn(state, event.TurnID, timestamp, pricing)
-		if event.CallID != "" {
-			turn.applyToolStatus(event.CallID, event.Status, timestamp)
+		if event.CallID != "" && state.pending != nil {
+			state.pending.applyToolStatus(event.CallID, event.Status, timestamp)
 		}
 	case "task_complete":
-		turn := s.ensureTurn(state, event.TurnID, timestamp, pricing)
-		if turn.Entry.Role == "user" && (turn.Entry.Tokens != nil || len(turn.TextParts) > 0 || len(turn.ToolParts) > 0) {
-			turn.Entry.Role = "assistant"
-		}
-		state.activeTurnID = ""
+		// Trailing assistant content with no token_count stays as its own row.
+		s.flushPending(state)
 	case "context_compacted":
 		// Metadata only.
 	}
@@ -246,97 +250,152 @@ func (s *snapshot) applyEvent(state *sessionState, event *eventMsgRecord, timest
 }
 
 func (s *snapshot) applyResponse(state *sessionState, response *responseItemRecord, timestamp time.Time, pricing pricingSnapshot) {
-	turn := s.ensureTurn(state, response.TurnID, timestamp, pricing)
+	s.syncTurn(state, response.TurnID)
 	switch response.ItemType {
 	case "message":
 		if response.Role != "assistant" {
 			return
 		}
-		if response.Text != "" && !turn.seenAssistant[response.Text] {
-			turn.seenAssistant[response.Text] = true
-			turn.TextParts = append(turn.TextParts, redactAndTruncateMessagePart("text", response.Text))
-			turn.Entry.FoldedAssistantCalls++
-		}
-		turn.Entry.Role = "assistant"
-		if turn.Entry.ProviderID == "" {
-			turn.Entry.ProviderID = state.provider
+		req := s.ensurePending(state, timestamp)
+		if response.Text != "" && !req.seenAssistant[response.Text] {
+			req.seenAssistant[response.Text] = true
+			req.TextParts = append(req.TextParts, redactAndTruncateMessagePart("text", response.Text))
 		}
 	case "reasoning":
 		text := response.Text
 		if strings.TrimSpace(text) == "" {
 			text = "[Codex reasoning event redacted or encrypted]"
 		}
-		if len(turn.ReasoningParts) == 0 {
+		req := s.ensurePending(state, timestamp)
+		if len(req.ReasoningParts) == 0 {
 			part := redactAndTruncateMessagePart("reasoning", text)
 			part.Redacted = true
-			turn.ReasoningParts = append(turn.ReasoningParts, part)
+			req.ReasoningParts = append(req.ReasoningParts, part)
 		}
 	case "function_call", "custom_tool_call", "web_search_call", "tool_search_call":
-		turn.addToolCall(response, timestamp)
+		req := s.ensurePending(state, timestamp)
+		req.addToolCall(response, timestamp)
 	case "function_call_output", "custom_tool_call_output", "tool_search_output":
-		turn.applyToolOutput(response, timestamp)
+		if state.pending != nil {
+			state.pending.applyToolOutput(response, timestamp)
+		}
 	}
 	if session := s.sessionMap[state.id]; session != nil {
 		updateSessionTimes(session, timestamp)
 	}
 }
 
-func (s *snapshot) ensureTurn(state *sessionState, turnID string, timestamp time.Time, pricing pricingSnapshot) *messageRecord {
-	if turnID == "" {
-		turnID = state.activeTurnID
+// syncTurn advances the session to a new turn, flushing any open assistant request
+// and resetting the per-turn row counters so message IDs stay unique and stable.
+func (s *snapshot) syncTurn(state *sessionState, turnID string) {
+	if turnID == "" || turnID == state.turnID {
+		return
 	}
-	if turnID == "" {
-		state.fallbackCounter++
-		turnID = fmt.Sprintf("fallback:%s:%d", timestamp.UTC().Format("20060102T150405Z"), state.fallbackCounter)
+	s.flushPending(state)
+	state.turnID = turnID
+	state.requestSeq = 0
+	state.userSeq = 0
+}
+
+// newMessage creates and registers one dashboard row (a user prompt or an assistant
+// API request). Cost is left missing here and computed once at the end.
+func (s *snapshot) newMessage(state *sessionState, role string, timestamp time.Time) *messageRecord {
+	if state.projectID == "" {
+		state.projectID, state.projectName = projectFromPath(state.directory)
 	}
-	state.activeTurnID = turnID
-	projectID := state.projectID
-	projectName := state.projectName
-	if projectID == "" {
-		projectID, projectName = projectFromPath(state.directory)
-		state.projectID, state.projectName = projectID, projectName
-	}
-	project := s.ensureProject(projectID, projectName, state.directory)
+	project := s.ensureProject(state.projectID, state.projectName, state.directory)
 	session := s.ensureSession(state.id, project, state.directory)
-	messageID := synthesizeMessageID(state.id, turnID)
-	if msg := s.messageMap[messageID]; msg != nil {
-		return msg
+	turnID := state.turnID
+	if turnID == "" {
+		turnID = "turn"
 	}
-	missing := missingCost(defaultCurrency(pricing))
+	var id string
+	if role == "user" {
+		id = synthesizeRequestID(state.id, turnID, "u", state.userSeq)
+	} else {
+		id = synthesizeRequestID(state.id, turnID, "r", state.requestSeq)
+	}
 	msg := &messageRecord{
 		Entry: stats.MessageEntry{
-			SourceID:       codexSourceID,
-			ID:             messageID,
-			SessionID:      state.id,
-			Role:           "user",
-			TimeCreated:    timestamp.UTC(),
-			ProviderID:     state.provider,
-			CostStatus:     missing.Status,
-			CostProvenance: missing.Provenance,
+			SourceID:    codexSourceID,
+			ID:          id,
+			SessionID:   state.id,
+			Role:        role,
+			TimeCreated: timestamp.UTC(),
 		},
 		projectID:     project.ID,
 		seenAssistant: map[string]bool{},
 		seenTools:     map[string]bool{},
 	}
-	s.messageMap[messageID] = msg
+	if role == "assistant" {
+		msg.Entry.ModelID = state.model
+		msg.Entry.ProviderID = state.provider
+	}
+	s.messageMap[id] = msg
 	s.ordered = append(s.ordered, msg)
 	session.Messages = append(session.Messages, msg)
 	updateSessionTimes(session, timestamp)
 	return msg
 }
 
-func (m *messageRecord) addTokenDelta(delta tokenSnapshot) {
-	if delta.Input == 0 && delta.Cached == 0 && delta.Output == 0 && delta.Reasoning == 0 {
+// ensurePending returns the in-progress assistant API-request row, creating it on
+// first content. The row is registered immediately, so trailing content without a
+// token_count still surfaces (with missing cost).
+func (s *snapshot) ensurePending(state *sessionState, timestamp time.Time) *messageRecord {
+	if state.pending == nil {
+		state.pending = s.newMessage(state, "assistant", timestamp)
+	}
+	return state.pending
+}
+
+// closeRequest finalizes one API request when its token_count arrives, attaching the
+// per-request usage. A token_count with usage but no buffered content still yields a
+// usage-only assistant row.
+func (s *snapshot) closeRequest(state *sessionState, timestamp time.Time, usage tokenSnapshot, hasUsage bool) {
+	req := state.pending
+	if req == nil {
+		if !hasUsage || usageEmpty(usage) {
+			return
+		}
+		req = s.newMessage(state, "assistant", timestamp)
+	}
+	if hasUsage {
+		req.setTokens(usage)
+	}
+	if req.Entry.ModelID == "" {
+		req.Entry.ModelID = state.model
+	}
+	if req.Entry.ProviderID == "" {
+		req.Entry.ProviderID = state.provider
+	}
+	req.Entry.Role = "assistant"
+	state.pending = nil
+	state.requestSeq++
+}
+
+// flushPending releases an assistant request that never received a token_count (e.g.
+// trailing content at task_complete). The row is already registered; this just clears
+// the buffer and advances the counter so the next request id stays unique.
+func (s *snapshot) flushPending(state *sessionState) {
+	if state.pending != nil {
+		state.pending = nil
+		state.requestSeq++
+	}
+}
+
+func usageEmpty(u tokenSnapshot) bool {
+	return u.Input == 0 && u.Cached == 0 && u.Output == 0 && u.Reasoning == 0
+}
+
+func (m *messageRecord) setTokens(u tokenSnapshot) {
+	if usageEmpty(u) {
 		return
 	}
-	if m.Entry.Tokens == nil {
-		m.Entry.Tokens = &stats.TokenStats{}
-	}
-	m.Entry.Tokens.Input += delta.Input
-	m.Entry.Tokens.Cache.Read += delta.Cached
-	m.Entry.Tokens.Output += delta.Output
-	m.Entry.Tokens.Reasoning += delta.Reasoning
-	m.Entry.Tokens.Cache.Write = 0
+	tokens := &stats.TokenStats{Input: u.Input, Output: u.Output, Reasoning: u.Reasoning}
+	tokens.Cache.Read = u.Cached
+	tokens.Cache.Write = 0
+	m.Entry.Tokens = tokens
+	m.maxInputSnapshot = u.Input
 	m.Entry.Role = "assistant"
 }
 
@@ -372,7 +431,6 @@ func (m *messageRecord) addToolCall(response *responseItemRecord, timestamp time
 			Time:       &stats.ToolTime{Start: timestamp.UnixMilli()},
 		},
 	})
-	m.Entry.FoldedToolCalls++
 }
 
 func (m *messageRecord) applyToolOutput(response *responseItemRecord, timestamp time.Time) {
@@ -518,7 +576,21 @@ func updateSessionTimes(session *sessionRecord, timestamp time.Time) {
 }
 
 func sessionTitle(session *sessionRecord) string {
+	// Prefer the first user prompt's text, then any text-bearing row.
+	if text := firstSessionText(session, func(m *messageRecord) bool { return m.Entry.Role == "user" }); text != "" {
+		return text
+	}
+	if text := firstSessionText(session, func(m *messageRecord) bool { return true }); text != "" {
+		return text
+	}
+	return session.ID
+}
+
+func firstSessionText(session *sessionRecord, accept func(*messageRecord) bool) string {
 	for _, msg := range session.Messages {
+		if !accept(msg) {
+			continue
+		}
 		for _, part := range msg.TextParts {
 			text := strings.TrimSpace(part.Text)
 			if text == "" {
@@ -530,7 +602,7 @@ func sessionTitle(session *sessionRecord) string {
 			return text
 		}
 	}
-	return session.ID
+	return ""
 }
 
 func projectFromPath(path string) (string, string) {
@@ -557,8 +629,8 @@ func safeID(value string) string {
 	return out.String()
 }
 
-func synthesizeMessageID(sessionID, turnID string) string {
-	return codexSourceID + ":" + safeID(sessionID) + ":" + safeID(turnID)
+func synthesizeRequestID(sessionID, turnID, kind string, seq int) string {
+	return codexSourceID + ":" + safeID(sessionID) + ":" + safeID(turnID) + ":" + kind + strconv.Itoa(seq)
 }
 
 func defaultCurrency(pricing pricingSnapshot) string {

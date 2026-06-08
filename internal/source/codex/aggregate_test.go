@@ -25,8 +25,9 @@ func TestCodexAggregatesMapToExistingDashboardConcepts(t *testing.T) {
 					t.Fatalf("Overview() failed: %v", err)
 				}
 				assertCodexSourceID(t, got.SourceID)
-				if got.Sessions != 1 || got.Messages != 1 {
-					t.Errorf("Overview sessions/messages = %d/%d, want 1/1 grouped turn", got.Sessions, got.Messages)
+				// 2 user prompts + 2 assistant API requests across 1 session.
+				if got.Sessions != 1 || got.Messages != 4 {
+					t.Errorf("Overview sessions/messages = %d/%d, want 1/4 per-request rows", got.Sessions, got.Messages)
 				}
 				assertCodexTokenTotals(t, "Overview().Tokens", got.Tokens, 1500, 300, 75, 30)
 				assertCodexEstimatedProvenance(t, got.CostStatus, got.CostProvenance)
@@ -45,8 +46,8 @@ func TestCodexAggregatesMapToExistingDashboardConcepts(t *testing.T) {
 				}
 				day := got.Days[0]
 				assertCodexSourceID(t, day.SourceID)
-				if day.Date != "2026-01-02" || day.Messages != 1 || day.Sessions != 1 {
-					t.Errorf("day = %#v, want 2026-01-02 with 1 message/session", day)
+				if day.Date != "2026-01-02" || day.Messages != 4 || day.Sessions != 1 {
+					t.Errorf("day = %#v, want 2026-01-02 with 4 messages/1 session", day)
 				}
 			},
 		},
@@ -63,8 +64,8 @@ func TestCodexAggregatesMapToExistingDashboardConcepts(t *testing.T) {
 				if model.ProviderID != "openai" {
 					t.Errorf("provider_id = %q, want openai", model.ProviderID)
 				}
-				if model.Messages != 1 || model.Sessions != 1 {
-					t.Errorf("model messages/sessions = %d/%d, want 1/1", model.Messages, model.Sessions)
+				if model.Messages != 2 || model.Sessions != 1 {
+					t.Errorf("model messages/sessions = %d/%d, want 2/1 (2 assistant API requests)", model.Messages, model.Sessions)
 				}
 			},
 		},
@@ -114,8 +115,24 @@ func TestCodexAggregatesMapToExistingDashboardConcepts(t *testing.T) {
 					t.Fatalf("Messages() failed: %v", err)
 				}
 				assertCodexSourceID(t, messages.SourceID)
-				if messages.Total != 1 || messages.Messages[0].ID != "codex:synthetic-session:turn-1" {
-					t.Errorf("Messages = %#v, want one source-aware Codex turn", messages)
+				if messages.Total != 4 {
+					t.Errorf("Messages.Total = %d, want 4 source-aware Codex per-request rows", messages.Total)
+				}
+				wantIDs := map[string]bool{
+					"codex:synthetic-session:turn-1:u0": false,
+					"codex:synthetic-session:turn-1:u1": false,
+					"codex:synthetic-session:turn-1:r0": false,
+					"codex:synthetic-session:turn-1:r1": false,
+				}
+				for _, msg := range messages.Messages {
+					if _, ok := wantIDs[msg.ID]; ok {
+						wantIDs[msg.ID] = true
+					}
+				}
+				for id, seen := range wantIDs {
+					if !seen {
+						t.Errorf("Messages missing expected per-request id %q: %#v", id, messages.Messages)
+					}
 				}
 
 				config, err := src.Config(ctx)
@@ -144,23 +161,34 @@ func TestCodexMessageAndSessionDetailRemainSourceAwareAndRedacted(t *testing.T) 
 		t.Fatalf("SessionByID(synthetic-session) = nil")
 	}
 	assertCodexSourceID(t, session.SourceID)
-	if session.MessageCount != 1 || len(session.Messages) != 1 {
-		t.Errorf("session message_count/messages len = %d/%d, want 1/1 grouped turn", session.MessageCount, len(session.Messages))
+	// 2 user prompts + 2 assistant API requests.
+	if session.MessageCount != 4 || len(session.Messages) != 4 {
+		t.Errorf("session message_count/messages len = %d/%d, want 4/4 per-request rows", session.MessageCount, len(session.Messages))
 	}
 
-	detail, err := src.MessageByID(ctx, "codex:synthetic-session:turn-1")
+	// The first user prompt is its own row.
+	userDetail, err := src.MessageByID(ctx, "codex:synthetic-session:turn-1:u0")
 	if err != nil {
-		t.Fatalf("MessageByID(codex:synthetic-session:turn-1) failed: %v", err)
+		t.Fatalf("MessageByID(u0) failed: %v", err)
+	}
+	if userDetail == nil {
+		t.Fatalf("MessageByID(u0) = nil")
+	}
+	if !detailTextContains(userDetail, "[REDACTED_USER_MESSAGE_PART_1]") {
+		t.Errorf("user row detail missing redacted prompt: %#v", userDetail.Content.TextParts)
+	}
+
+	// All content attaches to the request row that closes first (r0).
+	detail, err := src.MessageByID(ctx, "codex:synthetic-session:turn-1:r0")
+	if err != nil {
+		t.Fatalf("MessageByID(r0) failed: %v", err)
 	}
 	if detail == nil {
-		t.Fatalf("MessageByID() = nil")
+		t.Fatalf("MessageByID(r0) = nil")
 	}
 	assertCodexSourceID(t, detail.SourceID)
-	if detail.FoldedTokenUpdates != 4 || detail.FoldedAssistantCalls != 1 || detail.FoldedToolCalls != 3 {
-		t.Errorf("folded counts token/assistant/tool = %d/%d/%d, want 4/1/3", detail.FoldedTokenUpdates, detail.FoldedAssistantCalls, detail.FoldedToolCalls)
-	}
-	if !detailTextContains(detail, "[REDACTED_USER_MESSAGE_PART_1]") || !detailTextContains(detail, "[REDACTED_ASSISTANT_SUMMARY]") {
-		t.Errorf("detail missing redacted folded prompt/assistant text: %#v", detail.Content.TextParts)
+	if !detailTextContains(detail, "[REDACTED_ASSISTANT_SUMMARY]") {
+		t.Errorf("detail missing redacted assistant text: %#v", detail.Content.TextParts)
 	}
 	if len(detail.Content.ReasoningParts) != 1 || !strings.Contains(strings.ToLower(detail.Content.ReasoningParts[0].Text), "reasoning") {
 		t.Errorf("reasoning parts = %#v, want redacted reasoning placeholder/count", detail.Content.ReasoningParts)

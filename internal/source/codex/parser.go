@@ -67,6 +67,7 @@ type eventMsgRecord struct {
 	ChangedFiles       int64
 	Compaction         bool
 	LastUsage          tokenSnapshot
+	HasLastUsage       bool
 	TotalUsage         tokenSnapshot
 	HasTotalUsage      bool
 	PlanType           string
@@ -197,7 +198,9 @@ func parseEventPayload(payload map[string]any) *eventMsgRecord {
 	}
 	info := mapValue(payload["info"])
 	if info != nil {
-		event.LastUsage = parseTokenSnapshot(mapValue(info["last_token_usage"]))
+		last := mapValue(info["last_token_usage"])
+		event.LastUsage = parseTokenSnapshot(last)
+		event.HasLastUsage = last != nil
 		total := mapValue(info["total_token_usage"])
 		event.TotalUsage = parseTokenSnapshot(total)
 		event.HasTotalUsage = total != nil

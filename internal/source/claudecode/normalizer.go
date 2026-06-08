@@ -53,13 +53,12 @@ type pendingToolRef struct {
 	Index     int
 }
 
-type interactionState struct {
-	msg                        *messageRecord
-	session                    *sessionRecord
-	startedByUser              bool
-	rawAssistantRecords        int64
-	assistantCalls             []assistantContribution
-	billingContributionIndexes map[string]int
+// assistantMessageState tracks an in-progress assistant message so that streaming
+// transcript chunks sharing one request id merge into a single API-request row
+// instead of being counted as separate messages.
+type assistantMessageState struct {
+	msg          *messageRecord
+	contribution assistantContribution
 }
 
 type assistantContribution struct {
@@ -94,15 +93,18 @@ func normalizeRecords(home string, records []parsedRecord, pricing pricingSnapsh
 	})
 
 	pendingTools := make(map[string]pendingToolRef)
-	activeInteractions := make(map[string]*interactionState)
+	// requestMessages keys an in-progress assistant message by its API request so
+	// streaming transcript chunks (same requestId / API message id) collapse into a
+	// single API-request row rather than separate messages.
+	requestMessages := make(map[string]*assistantMessageState)
 	seenRecords := make(map[string]struct{}, len(records))
 	for _, record := range records {
 		sessionID := recordSessionID(record)
 		timestamp := recordTimestamp(record)
 
 		// Deduplicate before aggregation so copied transcript files or repeated JSONL
-		// records do not double-count cost/tokens/interactions. UUID-bearing records
-		// are keyed by session/message identity plus equivalent semantic content; this
+		// records do not double-count cost/tokens/messages. UUID-bearing records are
+		// keyed by session/message identity plus equivalent semantic content; this
 		// skips exact duplicate copies without suppressing distinct assistant usage if
 		// a future Claude schema reuses an ID for different usage/content. UUID-less
 		// records use the same semantic fingerprint without file path/line so exact
@@ -130,21 +132,17 @@ func normalizeRecords(home string, records []parsedRecord, pricing pricingSnapsh
 			if !hasUserPromptText(record) {
 				continue
 			}
-			interaction := snap.startInteraction(sessionID, record, timestamp, true, pricing)
-			activeInteractions[sessionID] = interaction
-			interaction.msg.appendTextParts(record.TextParts)
-			interaction.msg.appendReasoningParts(record.ReasoningParts)
-			updateSessionTimes(interaction.session, timestamp)
+			// One row per user prompt (main or subagent). Cost/token rollups ignore
+			// user rows; they exist for the conversation view and session titles.
+			msg := snap.newMessage(sessionID, record, timestamp, "user")
+			msg.appendTextParts(record.TextParts)
+			msg.appendReasoningParts(record.ReasoningParts)
 
 		case "assistant":
-			interaction := activeInteractions[sessionID]
-			if interaction == nil || !interaction.startedByUser {
-				interaction = snap.startInteraction(sessionID, record, timestamp, false, pricing)
-				activeInteractions[sessionID] = interaction
-			}
-			interaction.addAssistantRecord(sessionID, record, timestamp, pricing, pendingTools)
+			// One row per assistant API request. Subagent (sidechain) requests roll
+			// into the same session as the parent, flagged via Agent/IsSubagent.
+			snap.addAssistantRequest(sessionID, record, timestamp, pricing, pendingTools, requestMessages)
 			snap.applyToolResults(sessionID, record.ToolResults, pendingTools, timestamp)
-			updateSessionTimes(interaction.session, timestamp)
 		}
 	}
 
@@ -178,7 +176,11 @@ func recordTimestamp(record parsedRecord) time.Time {
 	return record.File.ModTime
 }
 
-func (s *snapshot) startInteraction(sessionID string, record parsedRecord, timestamp time.Time, startedByUser bool, pricing pricingSnapshot) *interactionState {
+// newMessage creates a single dashboard message row (one user prompt or one
+// assistant API request) and registers it on the project, session and snapshot
+// ordering. Cost/token fields are left zero here; assistant rows are populated by
+// addAssistantRequest, and user rows carry no cost.
+func (s *snapshot) newMessage(sessionID string, record parsedRecord, timestamp time.Time, role string) *messageRecord {
 	projectID := record.File.ProjectID
 	projectPath := record.File.ProjectPath
 	if record.CWD != "" {
@@ -186,83 +188,92 @@ func (s *snapshot) startInteraction(sessionID string, record parsedRecord, times
 	}
 	project := s.ensureProject(projectID, projectPath)
 	session := s.ensureSession(sessionID, project, projectPath)
-	role := "assistant"
-	if startedByUser {
-		role = "user"
-	}
-	missing := missingCost(defaultCurrency(pricing))
 	msg := &messageRecord{
 		Entry: stats.MessageEntry{
-			SourceID:       claudeSourceID,
-			ID:             synthesizeMessageID(sessionID, record.UUID, record.Line),
-			SessionID:      sessionID,
-			Role:           role,
-			TimeCreated:    timestamp.UTC(),
-			CostStatus:     missing.Status,
-			CostProvenance: missing.Provenance,
+			SourceID:    claudeSourceID,
+			ID:          synthesizeMessageID(sessionID, record.UUID, record.Line),
+			SessionID:   sessionID,
+			Role:        role,
+			TimeCreated: timestamp.UTC(),
+			Agent:       record.Agent,
+			IsSubagent:  record.IsSidechain,
 		},
 		projectID: project.ID,
 		line:      record.Line,
 	}
-	interaction := &interactionState{msg: msg, session: session, startedByUser: startedByUser}
 	s.messageMap[msg.Entry.ID] = msg
 	s.ordered = append(s.ordered, msg)
 	session.Messages = append(session.Messages, msg)
 	updateSessionTimes(session, timestamp)
-	return interaction
+	return msg
 }
 
-func defaultCurrency(pricing pricingSnapshot) string {
-	if pricing.Currency != "" {
-		return pricing.Currency
-	}
-	return "USD"
-}
-
-func (i *interactionState) addAssistantRecord(sessionID string, record parsedRecord, timestamp time.Time, pricing pricingSnapshot, pendingTools map[string]pendingToolRef) {
-	if len(i.assistantCalls) == 0 {
-		i.msg.Entry.Role = "assistant"
-		// Interaction rows carry the time of the first assistant/API response when
-		// one exists, which keeps cost/day/model rollups tied to usage-producing
-		// records while still grouping under the user prompt text in detail/title.
-		i.msg.Entry.TimeCreated = timestamp.UTC()
-	}
-	if record.Model != "" {
-		i.msg.Entry.ModelID = record.Model
-		i.msg.Entry.ProviderID = "anthropic"
-	}
-	i.msg.appendTextParts(record.TextParts)
-	i.msg.appendReasoningParts(record.ReasoningParts)
-	i.addToolUses(sessionID, record, timestamp, pendingTools)
-
-	cost := computeCost(record.Model, record.Usage, record.HasUsage, record.ReportedUSD, pricing)
+// addAssistantRequest records one assistant API request as its own message. When
+// a later transcript chunk shares the same request id (streaming), it merges into
+// the existing row instead of creating a new message or double-counting usage.
+func (s *snapshot) addAssistantRequest(sessionID string, record parsedRecord, timestamp time.Time, pricing pricingSnapshot, pendingTools map[string]pendingToolRef, requestMessages map[string]*assistantMessageState) {
 	contribution := assistantContribution{
 		usage:      record.Usage,
 		hasUsage:   record.HasUsage,
-		cost:       cost,
+		cost:       computeAssistantCost(record, pricing),
 		cumulative: record.ReportedUSDCumulative,
 	}
-	i.rawAssistantRecords++
-	i.upsertAssistantContribution(sessionID, record, contribution)
-	i.msg.Entry.FoldedAssistantCalls = i.rawAssistantRecords
-	i.recomputeCostAndTokens()
+
+	key := assistantBillingKey(sessionID, record)
+	if key != "" {
+		if state, ok := requestMessages[key]; ok {
+			state.contribution = mergeRepeatedBillingContribution(state.contribution, contribution)
+			s.appendAssistantContent(state.msg, sessionID, record, timestamp, pendingTools)
+			if record.Model != "" && state.msg.Entry.ModelID == "" {
+				state.msg.Entry.ModelID = record.Model
+				state.msg.Entry.ProviderID = "anthropic"
+			}
+			applyContributionToEntry(&state.msg.Entry, state.contribution)
+			updateSessionTimes(s.sessionMap[sessionID], timestamp)
+			return
+		}
+	}
+
+	msg := s.newMessage(sessionID, record, timestamp, "assistant")
+	if record.Model != "" {
+		msg.Entry.ModelID = record.Model
+		msg.Entry.ProviderID = "anthropic"
+	}
+	s.appendAssistantContent(msg, sessionID, record, timestamp, pendingTools)
+	applyContributionToEntry(&msg.Entry, contribution)
+	if key != "" {
+		requestMessages[key] = &assistantMessageState{msg: msg, contribution: contribution}
+	}
 }
 
-func (i *interactionState) upsertAssistantContribution(sessionID string, record parsedRecord, contribution assistantContribution) {
-	key := assistantBillingKey(sessionID, record)
-	if key == "" {
-		i.assistantCalls = append(i.assistantCalls, contribution)
-		return
+// computeAssistantCost derives the per-request cost. Cumulative reported totals
+// (total_cost_usd) cannot be summed across requests without overcounting, so when
+// usage tokens are present they are preferred over the cumulative reported value.
+func computeAssistantCost(record parsedRecord, pricing pricingSnapshot) costResult {
+	reported := record.ReportedUSD
+	if record.ReportedUSDCumulative && record.HasUsage {
+		reported = nil
 	}
-	if i.billingContributionIndexes == nil {
-		i.billingContributionIndexes = make(map[string]int)
+	return computeCost(record.Model, record.Usage, record.HasUsage, reported, pricing)
+}
+
+// applyContributionToEntry writes a single API request's cost and tokens onto its
+// message row (replacing, not accumulating — one request == one usage).
+func applyContributionToEntry(entry *stats.MessageEntry, c assistantContribution) {
+	entry.Cost = c.cost.Cost
+	status := c.cost.Status
+	if status == "" {
+		status = stats.CostMissing
 	}
-	if index, ok := i.billingContributionIndexes[key]; ok {
-		i.assistantCalls[index] = mergeRepeatedBillingContribution(i.assistantCalls[index], contribution)
-		return
+	entry.CostStatus = status
+	entry.CostProvenance = c.cost.Provenance
+	if c.hasUsage {
+		var tokens stats.TokenStats
+		addUsageToTokens(&tokens, c.usage)
+		entry.Tokens = tokenPointer(tokens, true)
+	} else {
+		entry.Tokens = nil
 	}
-	i.billingContributionIndexes[key] = len(i.assistantCalls)
-	i.assistantCalls = append(i.assistantCalls, contribution)
 }
 
 func assistantBillingKey(sessionID string, record parsedRecord) string {
@@ -289,7 +300,15 @@ func mergeRepeatedBillingContribution(previous, current assistantContribution) a
 	return current
 }
 
-func (i *interactionState) addToolUses(sessionID string, record parsedRecord, timestamp time.Time, pendingTools map[string]pendingToolRef) {
+// appendAssistantContent appends one transcript chunk's text, reasoning and tool
+// uses onto an assistant message row.
+func (s *snapshot) appendAssistantContent(msg *messageRecord, sessionID string, record parsedRecord, timestamp time.Time, pendingTools map[string]pendingToolRef) {
+	msg.appendTextParts(record.TextParts)
+	msg.appendReasoningParts(record.ReasoningParts)
+	s.addToolUses(msg, sessionID, record, timestamp, pendingTools)
+}
+
+func (s *snapshot) addToolUses(msg *messageRecord, sessionID string, record parsedRecord, timestamp time.Time, pendingTools map[string]pendingToolRef) {
 	for _, toolUse := range record.ToolUses {
 		input, truncation, redacted := redactAndTruncateToolInput(toolUse.Input)
 		name := toolUse.Name
@@ -298,9 +317,9 @@ func (i *interactionState) addToolUses(sessionID string, record parsedRecord, ti
 		}
 		callID := toolUse.ID
 		if callID == "" {
-			callID = fmt.Sprintf("%s:tool:%d:%d", sessionID, record.Line, len(i.msg.ToolParts)+1)
+			callID = fmt.Sprintf("%s:tool:%d:%d", sessionID, record.Line, len(msg.ToolParts)+1)
 		}
-		i.msg.ToolParts = append(i.msg.ToolParts, stats.ToolPart{
+		msg.ToolParts = append(msg.ToolParts, stats.ToolPart{
 			SourceID: claudeSourceID,
 			Type:     "tool",
 			CallID:   callID,
@@ -314,96 +333,8 @@ func (i *interactionState) addToolUses(sessionID string, record parsedRecord, ti
 				Time:       &stats.ToolTime{Start: timestamp.UnixMilli()},
 			},
 		})
-		i.msg.Entry.FoldedToolCalls++
-		pendingTools[toolKey(sessionID, callID)] = pendingToolRef{MessageID: i.msg.Entry.ID, Index: len(i.msg.ToolParts) - 1}
+		pendingTools[toolKey(sessionID, callID)] = pendingToolRef{MessageID: msg.Entry.ID, Index: len(msg.ToolParts) - 1}
 	}
-}
-
-func (i *interactionState) recomputeCostAndTokens() {
-	cost, tokens, status, provenance := combineInteractionContributions(i.assistantCalls)
-	i.msg.Entry.Cost = cost
-	i.msg.Entry.Tokens = tokens
-	i.msg.Entry.CostStatus = status
-	i.msg.Entry.CostProvenance = provenance
-}
-
-func combineInteractionContributions(contributions []assistantContribution) (float64, *stats.TokenStats, stats.CostStatus, *stats.CostProvenance) {
-	if len(contributions) == 0 {
-		missing := missingCost("USD")
-		return 0, nil, missing.Status, missing.Provenance
-	}
-	for _, contribution := range contributions {
-		if contribution.cumulative {
-			return combineCumulativeInteractionContributions(contributions)
-		}
-	}
-	return combineDeltaInteractionContributions(contributions)
-}
-
-func combineDeltaInteractionContributions(contributions []assistantContribution) (float64, *stats.TokenStats, stats.CostStatus, *stats.CostProvenance) {
-	var totalCost float64
-	var tokens stats.TokenStats
-	hasTokens := false
-	prov := &stats.CostProvenance{Currency: "USD"}
-	statuses := make(map[stats.CostStatus]bool)
-	for _, contribution := range contributions {
-		totalCost += contribution.cost.Cost
-		if contribution.hasUsage {
-			hasTokens = true
-			addUsageToTokens(&tokens, contribution.usage)
-		}
-		status := contribution.cost.Status
-		if status == "" {
-			status = stats.CostMissing
-		}
-		statuses[status] = true
-		mergeCostProvenance(prov, contribution.cost.Provenance)
-	}
-	status := combineStatuses(statuses)
-	prov.Status = status
-	if status == stats.CostMixed {
-		prov.Note = "interaction mixes reported, computed, approximate, or missing Claude Code costs"
-	} else if status == stats.CostMissing {
-		prov.Note = "interaction cost is unknown because Claude Code cost data is missing"
-	}
-	return totalCost, tokenPointer(tokens, hasTokens), status, prov
-}
-
-func combineCumulativeInteractionContributions(contributions []assistantContribution) (float64, *stats.TokenStats, stats.CostStatus, *stats.CostProvenance) {
-	var tokens stats.TokenStats
-	hasTokens := false
-	chosen := contributions[0]
-	for _, contribution := range contributions {
-		if contribution.hasUsage {
-			hasTokens = true
-			maxUsageIntoTokens(&tokens, contribution.usage)
-		}
-		if contribution.cost.Cost >= chosen.cost.Cost {
-			chosen = contribution
-		}
-	}
-	status := chosen.cost.Status
-	if status == "" {
-		status = stats.CostMissing
-	}
-	provenance := cloneProvenance(chosen.cost.Provenance)
-	if provenance == nil {
-		provenance = &stats.CostProvenance{Status: status, Currency: "USD"}
-		if status == stats.CostMissing {
-			provenance.MissingCount = 1
-		}
-	}
-	provenance.Status = status
-	if provenance.Currency == "" {
-		provenance.Currency = "USD"
-	}
-	cumulativeNote := "grouped Claude Code interaction uses final/max cumulative cost and token values to avoid linear overcount"
-	if provenance.Note == "" {
-		provenance.Note = cumulativeNote
-	} else if !strings.Contains(provenance.Note, cumulativeNote) {
-		provenance.Note += "; " + cumulativeNote
-	}
-	return chosen.cost.Cost, tokenPointer(tokens, hasTokens), status, provenance
 }
 
 func addUsageToTokens(tokens *stats.TokenStats, usage tokenUsage) {
@@ -414,49 +345,12 @@ func addUsageToTokens(tokens *stats.TokenStats, usage tokenUsage) {
 	tokens.Cache.Write += usage.CacheCreate
 }
 
-func maxUsageIntoTokens(tokens *stats.TokenStats, usage tokenUsage) {
-	if usage.Input > tokens.Input {
-		tokens.Input = usage.Input
-	}
-	if usage.Output > tokens.Output {
-		tokens.Output = usage.Output
-	}
-	if usage.Reasoning > tokens.Reasoning {
-		tokens.Reasoning = usage.Reasoning
-	}
-	if usage.CacheRead > tokens.Cache.Read {
-		tokens.Cache.Read = usage.CacheRead
-	}
-	if usage.CacheCreate > tokens.Cache.Write {
-		tokens.Cache.Write = usage.CacheCreate
-	}
-}
-
 func tokenPointer(tokens stats.TokenStats, ok bool) *stats.TokenStats {
 	if !ok {
 		return nil
 	}
 	out := tokens
 	return &out
-}
-
-func mergeCostProvenance(dst *stats.CostProvenance, src *stats.CostProvenance) {
-	if src == nil {
-		dst.MissingCount++
-		return
-	}
-	dst.MissingCount += src.MissingCount
-	dst.ComputedCount += src.ComputedCount
-	dst.ReportedCount += src.ReportedCount
-	if dst.PricingSnapshotID == "" {
-		dst.PricingSnapshotID = src.PricingSnapshotID
-	}
-	if dst.PricingSource == "" {
-		dst.PricingSource = src.PricingSource
-	}
-	if src.Currency != "" {
-		dst.Currency = src.Currency
-	}
 }
 
 func (m *messageRecord) appendTextParts(texts []string) {
@@ -601,8 +495,23 @@ func updateSessionTimes(session *sessionRecord, timestamp time.Time) {
 }
 
 func sessionTitle(session *sessionRecord) string {
+	// Prefer the first human (non-subagent) user prompt, then any user prompt, then
+	// any text-bearing row, so subagent prompts never displace the real session title.
+	if text := firstPromptText(session, func(m *messageRecord) bool { return m.Entry.Role == "user" && !m.Entry.IsSubagent }); text != "" {
+		return text
+	}
+	if text := firstPromptText(session, func(m *messageRecord) bool { return m.Entry.Role == "user" }); text != "" {
+		return text
+	}
+	if text := firstPromptText(session, func(m *messageRecord) bool { return true }); text != "" {
+		return text
+	}
+	return session.ID
+}
+
+func firstPromptText(session *sessionRecord, accept func(*messageRecord) bool) string {
 	for _, msg := range session.Messages {
-		if len(msg.TextParts) == 0 {
+		if !accept(msg) || len(msg.TextParts) == 0 {
 			continue
 		}
 		text := strings.TrimSpace(msg.TextParts[0].Text)
@@ -614,7 +523,7 @@ func sessionTitle(session *sessionRecord) string {
 		}
 		return text
 	}
-	return session.ID
+	return ""
 }
 
 func synthesizeMessageID(sessionID, uuid string, line int) string {

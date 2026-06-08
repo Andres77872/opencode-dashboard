@@ -65,6 +65,17 @@ func TestMessageDetailRedactsToolInputAndResultSecrets(t *testing.T) {
 func TestLongContentAndSpillMarkersAreVisibleWithoutLeakingSpillFile(t *testing.T) {
 	src := newFixtureSource(t, "valid_home")
 	list := readAllMessages(t, src)
+
+	// The user prompt text now lives on its own user row, separate from the assistant
+	// row that carries the long content and spill tool.
+	userMsg := findMessage(t, list, func(msg stats.MessageEntry) bool {
+		return msg.SessionID == "long-content-session" && msg.Role == "user"
+	})
+	userDetail := mustMessageDetail(t, src, userMsg.ID)
+	if !detailContainsText(userDetail, "Generate a very long answer and run a command that spills output.") {
+		t.Errorf("user prompt row detail missing prompt text: %#v", userDetail.Content.TextParts)
+	}
+
 	longMsg := findMessage(t, list, func(msg stats.MessageEntry) bool {
 		return msg.SessionID == "long-content-session" && msg.Role == "assistant"
 	})
@@ -72,9 +83,6 @@ func TestLongContentAndSpillMarkersAreVisibleWithoutLeakingSpillFile(t *testing.
 	detail := mustMessageDetail(t, src, longMsg.ID)
 	if len(detail.Content.TextParts) == 0 {
 		t.Fatalf("long content detail has no text parts")
-	}
-	if !detailContainsText(detail, "Generate a very long answer and run a command that spills output.") {
-		t.Errorf("long content detail missing folded user prompt text: %#v", detail.Content.TextParts)
 	}
 	var text stats.MessagePart
 	foundLongText := false

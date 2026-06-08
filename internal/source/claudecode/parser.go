@@ -49,11 +49,18 @@ type parsedRecord struct {
 	CWD          string
 	Role         string
 	IsMeta       bool
-	Timestamp    time.Time
-	Model        string
-	Usage        tokenUsage
-	HasUsage     bool
-	ReportedUSD  *float64
+	// IsSidechain is true for subagent (Task tool) transcript records, which Claude
+	// Code marks with "isSidechain": true. These are real API requests and carry
+	// their own usage/cost.
+	IsSidechain bool
+	// Agent names the subagent type for sidechain records (e.g. "Explore", "Plan"),
+	// taken from attributionAgent or agentId. Empty for main-conversation records.
+	Agent       string
+	Timestamp   time.Time
+	Model       string
+	Usage       tokenUsage
+	HasUsage    bool
+	ReportedUSD *float64
 	// ReportedUSDCumulative is true when the transcript field name explicitly
 	// indicates a cumulative total rather than a per-call delta. Claude JSONL
 	// field semantics are not fully public, so normalization uses this only as a
@@ -123,6 +130,11 @@ func normalizeRawRecord(file transcriptFile, lineNo int, raw map[string]any) (pa
 	message := mapValue(raw["message"])
 	record := parsedRecord{File: file, Line: lineNo}
 	record.IsMeta = boolValue(raw["isMeta"]) || boolValue(raw["is_meta"])
+	record.IsSidechain = boolValue(raw["isSidechain"]) || boolValue(raw["is_sidechain"])
+	record.Agent = firstString(raw, "attributionAgent", "attribution_agent", "agentId", "agent_id")
+	if record.Agent == "" {
+		record.Agent = firstString(message, "attributionAgent", "attribution_agent", "agentId", "agent_id")
+	}
 	record.SessionID = firstString(raw, "session_id", "sessionId", "sessionID")
 	if record.SessionID == "" {
 		record.SessionID = firstString(message, "session_id", "sessionId", "sessionID")

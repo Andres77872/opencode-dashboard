@@ -344,6 +344,7 @@ type SessionMessage struct {
 	ModelID        string          `json:"model_id,omitempty"`
 	ProviderID     string          `json:"provider_id,omitempty"`
 	Agent          string          `json:"agent,omitempty"`
+	IsSubagent     bool            `json:"is_subagent,omitempty"`
 	CostStatus     CostStatus      `json:"cost_status,omitempty"`
 	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 }
@@ -411,6 +412,13 @@ type MessageEntry struct {
 	ProviderID     string          `json:"provider_id,omitempty"`
 	CostStatus     CostStatus      `json:"cost_status,omitempty"`
 	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
+
+	// Agent names the subagent type (e.g. "Explore", "Plan") when this row comes
+	// from a Claude Code subagent (Task tool) transcript. IsSubagent marks such
+	// rows so the UI can attribute them while they still roll up into the parent
+	// session totals.
+	Agent      string `json:"agent,omitempty"`
+	IsSubagent bool   `json:"is_subagent,omitempty"`
 
 	// Claude Code interactions may fold multiple raw assistant/tool events into
 	// one user-facing row. These additive counts make that folding discoverable

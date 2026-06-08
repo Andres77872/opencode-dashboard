@@ -18,48 +18,52 @@ func TestParserToleratesMalformedUnknownAndMissingOptionalFields(t *testing.T) {
 		t.Fatalf("Messages(all) failed: %v", err)
 	}
 
-	interaction := findMessage(t, list, func(msg stats.MessageEntry) bool {
+	// The valid user line before the malformed JSON becomes its own user prompt row.
+	userRow := findMessage(t, list, func(msg stats.MessageEntry) bool {
 		return msg.SessionID == "malformed-session" && msg.ID == "claude_code:malformed-session:malformed-user-before"
 	})
-	assertAllSourceID(t, interaction.SourceID)
-	if interaction.Role != "assistant" {
-		t.Errorf("malformed-session grouped interaction role = %q, want assistant after folding the assistant row into the user prompt", interaction.Role)
+	assertAllSourceID(t, userRow.SourceID)
+	if userRow.Role != "user" {
+		t.Errorf("malformed-session user prompt row role = %q, want user", userRow.Role)
 	}
-	if interaction.SessionTitle != "This valid line appears before malformed JSON." {
-		t.Errorf("malformed-session title = %q, want user prompt text", interaction.SessionTitle)
+	if userRow.SessionTitle != "This valid line appears before malformed JSON." {
+		t.Errorf("malformed-session title = %q, want user prompt text", userRow.SessionTitle)
 	}
-	if interaction.ModelID != "" {
-		t.Errorf("missing optional model normalized as %q, want empty/unknown", interaction.ModelID)
+
+	// The assistant record with missing optional fields becomes its own assistant row.
+	assistantRow := findMessage(t, list, func(msg stats.MessageEntry) bool {
+		return msg.SessionID == "malformed-session" && msg.Role == "assistant"
+	})
+	if assistantRow.ModelID != "" {
+		t.Errorf("missing optional model normalized as %q, want empty/unknown", assistantRow.ModelID)
 	}
-	if interaction.ProviderID != "" {
-		t.Errorf("missing optional provider normalized as %q, want empty/unknown", interaction.ProviderID)
+	if assistantRow.ProviderID != "" {
+		t.Errorf("missing optional provider normalized as %q, want empty/unknown", assistantRow.ProviderID)
 	}
-	if interaction.CostStatus != stats.CostMissing {
-		t.Errorf("missing optional cost status = %q, want %q", interaction.CostStatus, stats.CostMissing)
+	if assistantRow.CostStatus != stats.CostMissing {
+		t.Errorf("missing optional cost status = %q, want %q", assistantRow.CostStatus, stats.CostMissing)
 	}
-	if interaction.Cost != 0 {
-		t.Errorf("missing optional cost compatibility value = %v, want 0", interaction.Cost)
+	if assistantRow.Cost != 0 {
+		t.Errorf("missing optional cost compatibility value = %v, want 0", assistantRow.Cost)
 	}
 
 	count := 0
 	for _, msg := range list.Messages {
 		if msg.SessionID == "malformed-session" {
 			count++
-			if msg.Role == "user" {
-				t.Errorf("malformed-session contains separate user row %#v; user prompt should be folded into one interaction detail", msg)
-			}
 		}
 	}
-	if count != 1 {
-		t.Errorf("malformed-session message count = %d, want 1 grouped interaction", count)
+	if count != 2 {
+		t.Errorf("malformed-session message count = %d, want 2 (1 user prompt + 1 assistant)", count)
 	}
 
-	detail := mustMessageDetail(t, src, interaction.ID)
-	if !detailContainsText(detail, "This valid line appears before malformed JSON.") {
-		t.Errorf("MessageDetail(%q) missing folded user prompt text: %#v", interaction.ID, detail.Content.TextParts)
+	userDetail := mustMessageDetail(t, src, userRow.ID)
+	if !detailContainsText(userDetail, "This valid line appears before malformed JSON.") {
+		t.Errorf("MessageDetail(%q) missing user prompt text: %#v", userRow.ID, userDetail.Content.TextParts)
 	}
-	if !detailContainsText(detail, "Optional fields are missing") {
-		t.Errorf("MessageDetail(%q) missing folded assistant text: %#v", interaction.ID, detail.Content.TextParts)
+	assistantDetail := mustMessageDetail(t, src, assistantRow.ID)
+	if !detailContainsText(assistantDetail, "Optional fields are missing") {
+		t.Errorf("MessageDetail(%q) missing assistant text: %#v", assistantRow.ID, assistantDetail.Content.TextParts)
 	}
 
 	info := src.Info(ctx)
