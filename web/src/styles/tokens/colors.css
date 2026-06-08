@@ -1,0 +1,94 @@
+/* ============================================================
+   VAEL — Color tokens
+   Dark-first. A cool near-black canvas, cool-gray parchment text,
+   a single blue signal accent, and a calibrated categorical
+   palette for charts (tools / projects / models).
+   ============================================================ */
+
+:root {
+  /* ---- Ink scale (canvas + surfaces). Depth = lighten, not shadow. ---- */
+  --ink-950: #08090c; /* void — app gutter, scrims */
+  --ink-900: #0b0d11; /* canvas — default page background */
+  --ink-850: #0e1116; /* surface-sunken — wells, code blocks */
+  --ink-800: #12151c; /* surface — cards, panels */
+  --ink-750: #161a22; /* surface-2 — nested cards, table header */
+  --ink-700: #1b212b; /* elevated — popovers, menus */
+  --ink-650: #222936; /* hover surface */
+  --ink-600: #2b333f; /* pressed / active surface */
+
+  /* ---- Hairline borders (parchment at low alpha) ---- */
+  --border-subtle: rgba(233, 237, 243, 0.06);
+  --border-default: rgba(233, 237, 243, 0.10);
+  --border-strong: rgba(233, 237, 243, 0.16);
+  --border-accent: rgba(77, 159, 255, 0.45);
+
+  /* ---- Foreground (cool gray, never pure white) ---- */
+  --fg-primary: #e9edf3;
+  --fg-secondary: #aab3c0;
+  --fg-muted: #727c8b;
+  --fg-faint: #4a525f;
+  --fg-on-accent: #07101f;
+
+  /* ---- Blue — the single signal accent ---- */
+  --blue-300: #8fc1ff;
+  --blue-400: #6fb0ff;
+  --blue-500: #4d9fff; /* accent */
+  --blue-600: #3a86ec;
+  --blue-700: #2c6bc4;
+  --accent: var(--blue-500);
+  --accent-hover: var(--blue-400);
+  --accent-press: var(--blue-600);
+  --accent-soft: rgba(77, 159, 255, 0.12);
+  --accent-soft-2: rgba(77, 159, 255, 0.20);
+
+  /* ---- Semantic ---- */
+  --success: #3ddc97;
+  --success-soft: rgba(61, 220, 151, 0.13);
+  --danger: #ff6b6b;
+  --danger-soft: rgba(255, 107, 107, 0.13);
+  --warning: #f2b347;
+  --warning-soft: rgba(242, 179, 71, 0.14);
+  --info: var(--blue-500);
+  --info-soft: var(--accent-soft);
+
+  /* positive/negative deltas (success up = good, but spend up = bad — use neutral too) */
+  --pos: var(--success);
+  --neg: var(--danger);
+
+  /* ---- Categorical chart palette (8-way, harmonized on dark) ---- */
+  --cat-1: #4d9fff; /* blue   */
+  --cat-2: #35d0c0; /* teal   */
+  --cat-3: #9b7bff; /* violet */
+  --cat-4: #3ddc97; /* green  */
+  --cat-5: #f2b347; /* amber  */
+  --cat-6: #ff7a9c; /* rose   */
+  --cat-7: #6c7bff; /* indigo */
+  --cat-8: #e2a0ff; /* orchid */
+
+  /* soft fills for area charts / chips, matched to the categoricals */
+  --cat-1-soft: rgba(77, 159, 255, 0.16);
+  --cat-2-soft: rgba(53, 208, 192, 0.16);
+  --cat-3-soft: rgba(155, 123, 255, 0.16);
+  --cat-4-soft: rgba(61, 220, 151, 0.16);
+  --cat-5-soft: rgba(242, 179, 71, 0.16);
+  --cat-6-soft: rgba(255, 122, 156, 0.16);
+  --cat-7-soft: rgba(108, 123, 255, 0.16);
+  --cat-8-soft: rgba(226, 160, 255, 0.16);
+
+  /* ---- Focus ring ---- */
+  --ring-focus: 0 0 0 2px var(--ink-900), 0 0 0 4px var(--blue-500);
+
+  /* ---- Brand-vendor accents (the tracked CLI agents) ---- */
+  --vendor-claude: #d97757;
+  --vendor-codex: #10a37f;
+  --vendor-opencode: #9b7bff;
+  --vendor-gemini: #4d9fff;
+
+  /* ---- Chart-series aliases (token breakdown order) → categorical palette.
+     Kept so lib code referencing --color-chart-* resolves to Vael colors. ---- */
+  --color-chart-1: var(--cat-1);
+  --color-chart-2: var(--cat-2);
+  --color-chart-3: var(--cat-3);
+  --color-chart-4: var(--cat-4);
+  --color-chart-5: var(--cat-5);
+}

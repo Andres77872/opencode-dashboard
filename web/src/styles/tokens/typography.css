@@ -1,0 +1,81 @@
+/* ============================================================
+   VAEL — Typography tokens
+   Two families: a precise grotesque for UI, a code-native mono
+   for numbers, tokens, IDs, and CLI text.
+   Fonts are self-hosted via @fontsource (imported in main.tsx).
+   ============================================================ */
+
+:root {
+  --font-ui: "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  --font-display: var(--font-ui);
+
+  /* ---- Type scale (compact dashboard rhythm) ---- */
+  --text-display-size: 40px;
+  --text-display-line: 44px;
+  --text-display-weight: 700;
+  --text-display-spacing: -0.02em;
+
+  --text-h1-size: 28px;
+  --text-h1-line: 34px;
+  --text-h1-spacing: -0.015em;
+
+  --text-h2-size: 21px;
+  --text-h2-line: 28px;
+  --text-h2-spacing: -0.01em;
+
+  --text-h3-size: 16px;
+  --text-h3-line: 22px;
+  --text-h3-spacing: -0.005em;
+
+  --text-body-size: 14px;
+  --text-body-line: 21px;
+
+  --text-sm-size: 13px;
+  --text-sm-line: 18px;
+
+  --text-caption-size: 12px;
+  --text-caption-line: 16px;
+
+  --text-eyebrow-size: 11px;
+  --text-eyebrow-line: 14px;
+  --text-eyebrow-spacing: 0.08em;
+
+  /* ---- Metric numerals — big tabular figures for KPIs ---- */
+  --text-metric-size: 30px;
+  --text-metric-line: 34px;
+  --text-metric-spacing: -0.02em;
+
+  --text-metric-lg-size: 44px;
+  --text-metric-lg-line: 46px;
+
+  /* ---- Weights ---- */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* tabular figures helper — apply where numbers must align in columns */
+  --fontfeat-tnum: "tnum" 1, "cv01" 1;
+}
+
+/* Utility classes (optional, used by specimen cards + kits) */
+.vael-display { font: var(--weight-bold) var(--text-display-size)/var(--text-display-line) var(--font-display); letter-spacing: var(--text-display-spacing); }
+.vael-h1 { font: var(--weight-bold) var(--text-h1-size)/var(--text-h1-line) var(--font-ui); letter-spacing: var(--text-h1-spacing); }
+.vael-h2 { font: var(--weight-semibold) var(--text-h2-size)/var(--text-h2-line) var(--font-ui); letter-spacing: var(--text-h2-spacing); }
+.vael-h3 { font: var(--weight-semibold) var(--text-h3-size)/var(--text-h3-line) var(--font-ui); letter-spacing: var(--text-h3-spacing); }
+.vael-body { font: var(--weight-regular) var(--text-body-size)/var(--text-body-line) var(--font-ui); }
+.vael-caption { font: var(--weight-regular) var(--text-caption-size)/var(--text-caption-line) var(--font-ui); }
+.vael-eyebrow {
+  font: var(--weight-semibold) var(--text-eyebrow-size)/var(--text-eyebrow-line) var(--font-ui);
+  letter-spacing: var(--text-eyebrow-spacing);
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.vael-metric {
+  font: var(--weight-bold) var(--text-metric-size)/var(--text-metric-line) var(--font-mono);
+  letter-spacing: var(--text-metric-spacing);
+  font-feature-settings: var(--fontfeat-tnum);
+}
+.vael-mono { font-family: var(--font-mono); font-feature-settings: var(--fontfeat-tnum); }
+.vael-tnum { font-feature-settings: var(--fontfeat-tnum); font-variant-numeric: tabular-nums; }

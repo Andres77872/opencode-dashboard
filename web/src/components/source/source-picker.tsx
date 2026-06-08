@@ -1,31 +1,19 @@
-import { useMemo, useRef, useState } from 'react'
+/* Global data-source switcher (Vael). Aggregate read-only state on /overview;
+   per-source selector elsewhere. Pending/unavailable sources stay visible so the
+   SourceNotice can explain why they can't be queried. */
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import { Check, ChevronDown, Database, FileText, Layers, Server } from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
-import { Button } from '../ui/button'
-import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
-import { cn } from '../../lib/utils'
+import { Icon, type IconName } from '../vael/icon'
 import { useDashboardContext } from '../layout/dashboard-context'
 import type { SourceID, SourceInfo } from '../../types/api'
 
-/**
- * Global data-source switcher. Shares the PeriodPicker's chrome (outline-button
- * trigger + popover panel) so the two global filters read as one family.
- *
- * It is route-aware: on the Overview — which aggregates every source — it renders
- * a read-only "All sources" state that lists what is being aggregated, instead of
- * a per-source selector. On every other view it switches the active source.
- *
- * Unlike a plain <select>, the panel stays informative when only one source is
- * configured (it surfaces that source's path/kind), and it lets you select an
- * unavailable source so SourceNotice can explain why it can't be queried.
- */
+const KIND_ICON: Record<string, IconName> = {
+  sqlite: 'database',
+  jsonl: 'file-text',
+}
 
-// Map of source kind → icon. Looked up (not called) at render so the icon keeps a
-// stable component identity (see react-hooks/static-components).
-const KIND_ICONS: Record<string, LucideIcon> = {
-  sqlite: Database,
-  jsonl: FileText,
+function kindIcon(kind: string | undefined): IconName {
+  return KIND_ICON[kind ?? ''] ?? 'database'
 }
 
 function kindLabel(kind: string | undefined): string {
@@ -40,220 +28,185 @@ function kindLabel(kind: string | undefined): string {
 }
 
 function sourceSubtitle(source: SourceInfo): string {
-  if (!source.available) {
-    return source.diagnostics?.reason ?? 'Not available'
-  }
-  if (source.path) {
-    return source.path_source ? `${source.path_source}: ${source.path}` : source.path
-  }
+  if (!source.available) return source.diagnostics?.reason ?? 'Not available'
+  if (source.path) return source.path_source ? `${source.path_source}: ${source.path}` : source.path
   return kindLabel(source.kind)
 }
 
-function StatusDot({ available, className }: { available: boolean; className?: string }) {
+function StatusDot({ available }: { available: boolean }) {
   return (
     <span
       aria-hidden
-      className={cn(
-        'size-2 shrink-0 rounded-full ring-2',
-        available ? 'bg-success ring-success/20' : 'bg-warning ring-warning/20',
-        className,
-      )}
+      style={{
+        width: 8,
+        height: 8,
+        borderRadius: '50%',
+        flexShrink: 0,
+        marginTop: 5,
+        background: available ? 'var(--success)' : 'var(--warning)',
+        boxShadow: available ? 'var(--glow-success)' : 'none',
+      }}
     />
   )
 }
 
 export function SourcePicker() {
-  const {
-    selectedSourceId,
-    selectedSourceInfo,
-    setSelectedSourceId,
-    sourceMetadataLoading,
-    sources,
-  } = useDashboardContext()
-
+  const { selectedSourceId, selectedSourceInfo, setSelectedSourceId, sourceMetadataLoading, sources } = useDashboardContext()
   const aggregate = useLocation().pathname.startsWith('/overview')
   const [open, setOpen] = useState(false)
-  const rowRefs = useRef<Partial<Record<SourceID, HTMLButtonElement | null>>>({})
+  const ref = useRef<HTMLDivElement>(null)
 
-  // Keep the selected source visible even if it is a pending/unregistered one
-  // that the backend did not return in the list.
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
   const options = useMemo(() => {
-    if (selectedSourceInfo && !sources.some((source) => source.id === selectedSourceInfo.id)) {
+    if (selectedSourceInfo && !sources.some((s) => s.id === selectedSourceInfo.id)) {
       return [...sources, selectedSourceInfo]
     }
     return sources
   }, [selectedSourceInfo, sources])
 
-  // The Overview legend lists exactly what the backend aggregates (`sources`); the
-  // per-source picker also keeps a selected-but-unregistered source visible.
   const listItems = aggregate ? sources : options
-  const availableCount = listItems.filter((source) => source.available).length
+  const availableCount = listItems.filter((s) => s.available).length
   const singleSource = options.length <= 1
   const loadingEmpty = sourceMetadataLoading && options.length === 0
 
-  // Roving-tabindex anchor: focus the selected row first, else the top row.
-  const rovingId =
-    !aggregate && options.some((source) => source.id === selectedSourceId)
-      ? selectedSourceId
-      : options[0]?.id
-
   const selectRow = (sourceId: SourceID) => {
-    if (sourceId !== selectedSourceId) {
-      setSelectedSourceId(sourceId)
-    }
+    if (sourceId !== selectedSourceId) setSelectedSourceId(sourceId)
     setOpen(false)
   }
 
-  const handleRowKeyDown = (event: React.KeyboardEvent, index: number) => {
-    let nextIndex: number | null = null
-    switch (event.key) {
-      case 'ArrowDown':
-        nextIndex = (index + 1) % options.length
-        break
-      case 'ArrowUp':
-        nextIndex = (index - 1 + options.length) % options.length
-        break
-      case 'Home':
-        nextIndex = 0
-        break
-      case 'End':
-        nextIndex = options.length - 1
-        break
-      default:
-        return
-    }
-    event.preventDefault()
-    const nextId = options[nextIndex]?.id
-    if (nextId) {
-      rowRefs.current[nextId]?.focus()
-    }
-  }
-
-  const TriggerIcon = aggregate ? Layers : (KIND_ICONS[selectedSourceInfo?.kind ?? ''] ?? Server)
-  const triggerLabel = loadingEmpty
-    ? 'Loading sources…'
-    : aggregate
-      ? 'All sources'
-      : (selectedSourceInfo?.label ?? selectedSourceId)
+  const triggerIcon: IconName = aggregate ? 'layers' : kindIcon(selectedSourceInfo?.kind)
+  const triggerLabel = loadingEmpty ? 'Loading sources…' : aggregate ? 'All sources' : selectedSourceInfo?.label ?? selectedSourceId
   const triggerUnavailable = !aggregate && selectedSourceInfo?.available === false
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={loadingEmpty}
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          aria-label={aggregate ? 'Data source: all sources' : `Data source: ${triggerLabel}`}
-          className="min-w-[11rem] justify-between gap-2 font-normal"
-        >
-          <span className="flex min-w-0 items-center gap-2">
-            <TriggerIcon
-              className={cn('size-4 shrink-0', triggerUnavailable ? 'text-warning' : 'opacity-70')}
-            />
-            <span className="truncate">{triggerLabel}</span>
-          </span>
-          <ChevronDown className="size-4 shrink-0 opacity-60" />
-        </Button>
-      </PopoverTrigger>
-
-      <PopoverContent
-        align="end"
-        sideOffset={6}
-        className="w-80 max-w-[calc(100vw-2rem)] p-0"
+    <div ref={ref} style={{ position: 'relative', display: 'inline-flex' }}>
+      <button
+        type="button"
+        onClick={() => !loadingEmpty && setOpen((v) => !v)}
+        disabled={loadingEmpty}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 8,
+          height: 32,
+          padding: '0 11px',
+          background: open ? 'var(--ink-700)' : 'var(--ink-750)',
+          border: `1px solid ${open ? 'var(--border-accent)' : 'var(--border-default)'}`,
+          borderRadius: 'var(--radius-md)',
+          cursor: loadingEmpty ? 'default' : 'pointer',
+          font: '500 13px/1 var(--font-ui)',
+          color: 'var(--fg-primary)',
+          whiteSpace: 'nowrap',
+          minWidth: 150,
+        }}
       >
-        <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
-          <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
-            {aggregate ? 'Overview · all sources' : 'Data source'}
-          </span>
-          {availableCount > 0 ? (
-            <span className="text-[11px] text-muted-foreground">
-              {availableCount} available
-            </span>
-          ) : null}
-        </div>
+        <Icon name={triggerIcon} size={15} color={triggerUnavailable ? 'var(--warning)' : 'var(--fg-muted)'} />
+        <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis' }}>{triggerLabel}</span>
+        <Icon name="chevron-down" size={14} color="var(--fg-muted)" style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform var(--dur-fast)' }} />
+      </button>
 
+      {open && (
         <div
-          role={aggregate ? 'list' : 'listbox'}
-          aria-label="Data sources"
-          className="max-h-[18rem] overflow-y-auto p-1"
+          role="dialog"
+          aria-label="Data source"
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 6px)',
+            right: 0,
+            zIndex: 60,
+            width: 320,
+            maxWidth: 'calc(100vw - 2rem)',
+            background: 'var(--ink-700)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: 'var(--radius-lg)',
+            boxShadow: 'var(--shadow-lg)',
+            overflow: 'hidden',
+          }}
         >
-          {listItems.map((source, index) => {
-            const selected = !aggregate && source.id === selectedSourceId
-            const RowIcon = KIND_ICONS[source.kind] ?? Server
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '9px 12px', borderBottom: '1px solid var(--border-default)' }}>
+            <span style={{ font: '600 11px/1 var(--font-ui)', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>{aggregate ? 'Overview · all sources' : 'Data source'}</span>
+            {availableCount > 0 && <span style={{ font: '500 11px/1 var(--font-mono)', color: 'var(--fg-muted)' }}>{availableCount} available</span>}
+          </div>
 
-            const inner = (
-              <>
-                <StatusDot available={source.available} className="mt-1.5" />
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="flex items-center gap-2">
-                    <span className="truncate font-medium text-foreground">{source.label}</span>
-                    {source.default ? (
-                      <span className="rounded-full border border-border/70 px-1.5 py-px text-[9px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                        default
-                      </span>
-                    ) : null}
-                    {!source.available ? (
-                      <span className="rounded-full border border-warning/35 bg-warning/10 px-1.5 py-px text-[9px] font-medium uppercase tracking-[0.12em] text-warning">
-                        unavailable
-                      </span>
-                    ) : null}
+          <div style={{ maxHeight: 288, overflowY: 'auto', padding: 5 }}>
+            {listItems.map((source) => {
+              const selected = !aggregate && source.id === selectedSourceId
+              const inner = (
+                <>
+                  <StatusDot available={source.available} />
+                  <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, flex: 1 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                      <span style={{ font: '600 13px/1 var(--font-ui)', color: 'var(--fg-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{source.label}</span>
+                      {source.default && <span style={{ font: '600 9px/1 var(--font-ui)', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--fg-muted)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-pill)', padding: '2px 6px' }}>default</span>}
+                      {!source.available && <span style={{ font: '600 9px/1 var(--font-ui)', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--warning)', background: 'var(--warning-soft)', borderRadius: 'var(--radius-pill)', padding: '2px 6px' }}>unavailable</span>}
+                    </span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, font: '400 12px/1.3 var(--font-mono)', color: 'var(--fg-muted)', minWidth: 0 }}>
+                      <Icon name={kindIcon(source.kind)} size={12} color="var(--fg-faint)" />
+                      <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sourceSubtitle(source)}</span>
+                    </span>
                   </span>
-                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <RowIcon className="size-3 shrink-0 opacity-70" />
-                    <span className="truncate">{sourceSubtitle(source)}</span>
-                  </span>
-                </span>
-                {selected ? <Check className="mt-0.5 size-4 shrink-0 text-accent" /> : null}
-              </>
-            )
+                  {selected && <Icon name="check" size={16} color="var(--accent)" style={{ marginTop: 2 }} />}
+                </>
+              )
 
-            if (aggregate) {
+              if (aggregate) {
+                return (
+                  <div key={source.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 8px', borderRadius: 'var(--radius-md)' }}>
+                    {inner}
+                  </div>
+                )
+              }
+
               return (
-                <div
+                <button
                   key={source.id}
-                  role="listitem"
-                  className="flex items-start gap-2.5 rounded-md px-2 py-2 text-sm"
+                  type="button"
+                  onClick={() => selectRow(source.id)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 10,
+                    width: '100%',
+                    padding: '8px 8px',
+                    border: 'none',
+                    borderRadius: 'var(--radius-md)',
+                    background: selected ? 'var(--accent-soft)' : 'transparent',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                  }}
+                  onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = 'var(--ink-650)' }}
+                  onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = 'transparent' }}
                 >
                   {inner}
-                </div>
+                </button>
               )
-            }
+            })}
+          </div>
 
-            return (
-              <button
-                key={source.id}
-                ref={(node) => {
-                  rowRefs.current[source.id] = node
-                }}
-                type="button"
-                role="option"
-                aria-selected={selected}
-                tabIndex={source.id === rovingId ? 0 : -1}
-                onClick={() => selectRow(source.id)}
-                onKeyDown={(event) => handleRowKeyDown(event, index)}
-                className={cn(
-                  'flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left text-sm transition-colors',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  selected ? 'bg-muted/60' : 'hover:bg-muted/40',
-                )}
-              >
-                {inner}
-              </button>
-            )
-          })}
+          <p style={{ margin: 0, borderTop: '1px solid var(--border-default)', padding: '9px 12px', font: '400 12px/1.5 var(--font-ui)', color: 'var(--fg-muted)' }}>
+            {aggregate
+              ? 'The Overview aggregates every source. Costs are shown per source and never combined.'
+              : singleSource
+                ? 'Only one data source is configured. Start with --claude-home or --codex-home to add Claude Code or Codex.'
+                : 'Applies to every view except the Overview, which always aggregates all sources.'}
+          </p>
         </div>
-
-        <p className="border-t border-border/60 px-3 py-2 text-xs leading-5 text-muted-foreground">
-          {aggregate
-            ? 'The Overview aggregates every source. Costs are shown per source and never combined. Open another view to filter by a single source.'
-            : singleSource
-              ? 'Only one data source is configured. Start with --claude-home or --codex-home to add Claude Code or Codex.'
-              : 'Applies to every view except the Overview, which always aggregates all sources.'}
-        </p>
-      </PopoverContent>
-    </Popover>
+      )}
+    </div>
   )
 }

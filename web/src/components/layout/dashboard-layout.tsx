@@ -1,46 +1,30 @@
-import { useEffect, useRef } from 'react'
-import { Outlet } from 'react-router-dom'
-import { Header } from './header'
+/* Vael app shell — full-height flex: Sidebar rail + (TopBar / FilterBar / PageBody).
+   The in-page scroll lives in PageBody so the chrome stays fixed. */
+import { Outlet, useLocation } from 'react-router-dom'
+import { Sidebar } from './sidebar'
+import { TopBar } from './topbar'
 import { FilterBar } from './filter-bar'
-import { PrimaryNav } from './primary-nav'
 import { SidebarProvider } from './sidebar-context'
+import { ViewErrorBoundary } from './error-boundary'
 import { SourceNotice } from '../source/source-notice'
 
 export function DashboardLayout() {
-  const stickyRef = useRef<HTMLDivElement>(null)
-
-  // Track the combined height of the sticky header + filter bar and expose it as
-  // --header-height, so sticky in-page sidebar cards offset below the whole stack.
-  useEffect(() => {
-    const el = stickyRef.current
-    if (!el) return
-
-    const ro = new ResizeObserver(([entry]) => {
-      document.documentElement.style.setProperty('--header-height', `${entry.contentRect.height}px`)
-    })
-    ro.observe(el)
-    document.documentElement.style.setProperty(
-      '--header-height',
-      `${el.getBoundingClientRect().height}px`,
-    )
-    return () => ro.disconnect()
-  }, [])
-
+  const { pathname } = useLocation()
   return (
     <SidebarProvider>
-      <div className="flex min-h-screen text-foreground">
-        <PrimaryNav />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div ref={stickyRef} className="sticky top-0 z-20">
-            <Header />
-            <FilterBar />
-          </div>
-          <main className="flex-1 px-6 pb-8 pt-6 xl:px-8">
-            <div className="mx-auto w-full max-w-7xl">
+      <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--ink-900)' }}>
+        <Sidebar />
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          <TopBar />
+          <FilterBar />
+          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+            <div style={{ maxWidth: 'var(--content-max)', margin: '0 auto', padding: '20px 24px 40px' }}>
               <SourceNotice />
-              <Outlet />
+              <ViewErrorBoundary key={pathname}>
+                <Outlet />
+              </ViewErrorBoundary>
             </div>
-          </main>
+          </div>
         </div>
       </div>
     </SidebarProvider>

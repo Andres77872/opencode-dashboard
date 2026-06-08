@@ -1,79 +1,83 @@
+/* Tools — per-source tool usage ranking (Vael). Costs/latency are not part of
+   tool data, so those columns are omitted. No fabricated deltas or sparklines:
+   the API has no per-tool trend. Source column is only shown if entries carry
+   distinct source_id (overview view); a per-source view omits it. */
 import { useMemo, useState } from 'react'
+import {
+  Card,
+  StatCard,
+  DataTable,
+  Badge,
+  Skeleton,
+  ErrorState,
+  Notice,
+  type Column,
+  type SortSpec,
+} from '../components/vael'
 import { useDashboardContext } from '../components/layout/dashboard-context'
-import { MetricCard } from '../components/overview/metric-card'
-import { DataPageSkeleton } from '../components/common/data-page-skeleton'
-import { DataTable, type DataTableColumn } from '../components/common/data-table'
-import { EmptyStateCard } from '../components/common/empty-state-card'
-import { ErrorState } from '../components/common/error-state'
-import { KpiGrid } from '../components/common/kpi-grid'
-import { PageHeader } from '../components/layout/page-header'
-import { Badge } from '../components/ui/badge'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
-import { Progress } from '../components/ui/progress'
 import { getTools } from '../lib/api'
-import { usePeriodResource } from '../lib/use-period-resource'
-import { formatCompactInteger, formatInteger, formatPercentage, safeDivide } from '../lib/format'
-import { type SortDirection, type SortState } from '../lib/table-sort'
 import { usePeriodControls } from '../lib/use-period-controls'
+import { usePeriodResource } from '../lib/use-period-resource'
+import { getNextSortState, type SortState } from '../lib/table-sort'
+import { formatCompactInteger, formatInteger, formatPercentage, safeDivide } from '../lib/format'
 import type { ToolEntry } from '../types/api'
 
-type SortKey = 'invocations' | 'sessions' | 'tool' | 'successRate' | 'failures'
+type SortKey = 'tool' | 'invocations' | 'successRate' | 'failures' | 'sessions' | 'share'
 
-const DEFAULT_SORT_DIRECTIONS: Record<SortKey, SortDirection> = {
-  failures: 'desc',
-  invocations: 'desc',
-  sessions: 'desc',
-  successRate: 'desc',
+const DEFAULT_SORT_DIRECTIONS: Record<SortKey, 'asc' | 'desc'> = {
   tool: 'asc',
+  invocations: 'desc',
+  successRate: 'desc',
+  failures: 'desc',
+  sessions: 'desc',
+  share: 'desc',
 }
 
-const DEFAULT_TABLE_SORT: SortState<SortKey> = {
-  key: 'invocations',
-  direction: 'desc',
-}
+const DEFAULT_SORT: SortState<SortKey> = { key: 'invocations', direction: 'desc' }
 
-interface EnrichedToolRow extends ToolEntry {
+interface ToolRow extends ToolEntry {
   share: number
   successRate: number
 }
 
-function getToolLabel(tool: ToolEntry) {
+function toolLabel(tool: ToolEntry) {
   return tool.name || 'Unknown tool'
 }
 
-function compareRows(sortKey: SortKey, left: EnrichedToolRow, right: EnrichedToolRow) {
-  switch (sortKey) {
-    case 'tool': return getToolLabel(left).localeCompare(getToolLabel(right))
-    case 'sessions': return right.sessions - left.sessions
-    case 'successRate': return right.successRate - left.successRate
-    case 'failures': return right.failures - left.failures
-    case 'invocations': default: return right.invocations - left.invocations
-  }
-}
-
-function getFailureTone(failures: number) {
+function stabilityTone(failures: number) {
   if (failures === 0) return 'success' as const
   if (failures < 5) return 'warning' as const
   return 'danger' as const
 }
 
-export function ToolsView() {
-  const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
-  const [sortState, setSortState] = useState<SortState<string> | null>(null)
+function stabilityLabel(failures: number) {
+  if (failures === 0) return 'stable'
+  if (failures < 5) return 'watch'
+  return 'hot'
+}
 
+function successColor(rate: number) {
+  if (rate >= 95) return 'var(--success)'
+  if (rate >= 90) return 'var(--fg-primary)'
+  return 'var(--warning)'
+}
+
+function compareRows(key: SortKey, a: ToolRow, b: ToolRow): number {
+  switch (key) {
+    case 'tool': return toolLabel(a).localeCompare(toolLabel(b))
+    case 'successRate': return b.successRate - a.successRate
+    case 'failures': return b.failures - a.failures
+    case 'sessions': return b.sessions - a.sessions
+    case 'share':
+    case 'invocations': default: return b.invocations - a.invocations
+  }
+}
+
+export function ToolsView() {
+  const { requestRefresh } = useDashboardContext()
   const { cacheKey } = usePeriodControls()
   const { data, loading, error } = usePeriodResource(getTools, cacheKey)
-  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
-
-  const handleSortChange = (key: string) => {
-    setSortState((current) => {
-      if (!current || current.key !== key) {
-        return { key: key as SortKey, direction: DEFAULT_SORT_DIRECTIONS[key as SortKey] }
-      }
-      const dir = current.direction === 'asc' ? 'desc' : 'asc'
-      return { key: key as SortKey, direction: dir }
-    })
-  }
+  const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
 
   const summary = useMemo(() => {
     if (!data) return null
@@ -81,240 +85,209 @@ export function ToolsView() {
     const totalInvocations = data.tools.reduce((a, t) => a + t.invocations, 0)
     const totalSuccesses = data.tools.reduce((a, t) => a + t.successes, 0)
     const totalFailures = data.tools.reduce((a, t) => a + t.failures, 0)
+    const maxInvocations = Math.max(1, ...data.tools.map((t) => t.invocations))
 
-    const rows = data.tools.map<EnrichedToolRow>((tool) => ({
+    const rows = data.tools.map<ToolRow>((tool) => ({
       ...tool,
       share: safeDivide(tool.invocations, totalInvocations) * 100,
       successRate: safeDivide(tool.successes, tool.invocations) * 100,
     }))
 
-    const effectiveSort = (sortState ?? DEFAULT_TABLE_SORT) as SortState<SortKey>
-
+    const effective = sortState ?? DEFAULT_SORT
     const sortedRows = [...rows].sort((left, right) => {
-      const primary = compareRows(effectiveSort.key, left, right)
-      const m = effectiveSort.direction === DEFAULT_SORT_DIRECTIONS[effectiveSort.key] ? 1 : -1
+      const primary = compareRows(effective.key, left, right)
+      const m = effective.direction === DEFAULT_SORT_DIRECTIONS[effective.key] ? 1 : -1
       const d = primary * m
       if (d !== 0) return d
       if (right.invocations !== left.invocations) return right.invocations - left.invocations
-      return getToolLabel(left).localeCompare(getToolLabel(right))
+      return toolLabel(left).localeCompare(toolLabel(right))
     })
 
-    const topTools = [...rows].sort((a, b) => b.invocations - a.invocations).slice(0, 3)
-    const usageLeader = topTools[0] ?? null
-    const failureLeader = [...rows].sort((a, b) => b.failures - a.failures)[0] ?? null
+    const usageLeader = [...rows].sort((a, b) => b.invocations - a.invocations)[0] ?? null
 
     return {
-      rows: sortedRows, topTools, usageLeader, failureLeader,
-      totalInvocations, totalSuccesses, totalFailures,
+      rows: sortedRows,
+      usageLeader,
+      maxInvocations,
+      totalInvocations,
+      totalSuccesses,
+      totalFailures,
       overallSuccessRate: safeDivide(totalSuccesses, totalInvocations) * 100,
       empty: rows.length === 0,
     }
   }, [data, sortState])
 
-  const handleRetry = () => requestRefresh()
+  // Only surface a source column if entries actually carry distinct sources.
+  const distinctSources = useMemo(() => {
+    const ids = new Set((data?.tools ?? []).map((t) => t.source_id).filter(Boolean))
+    return ids.size > 1
+  }, [data?.tools])
 
-  // DataTable columns
-  const columns: DataTableColumn<EnrichedToolRow>[] = [
-    {
-      key: 'tool',
-      label: 'Tool',
-      width: 'min-w-[15rem]',
-      sortable: true,
-      render: (row) => (
-        <div className="space-y-2">
-          <div className="truncate font-medium text-foreground">{getToolLabel(row)}</div>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Badge tone={getFailureTone(row.failures)} className="px-2 py-0.5 text-[10px] tracking-[0.16em]">
-              {row.failures === 0 ? 'stable' : row.failures < 5 ? 'watch' : 'hot'}
-            </Badge>
-            <span>{formatCompactInteger(row.successes)} ok</span>
-            <span aria-hidden="true">•</span>
-            <span>{formatCompactInteger(row.failures)} failed</span>
-          </div>
-        </div>
-      ),
-    },
-    {
-      key: 'sessions',
-      label: 'Sessions',
-      width: 'w-[6rem]',
-      sortable: true,
-      render: (row) => <span className="font-mono text-sm text-foreground">{formatCompactInteger(row.sessions)}</span>,
-    },
-    {
-      key: 'invocations',
-      label: 'Runs',
-      width: 'w-[7rem]',
-      sortable: true,
-      render: (row) => <span className="font-mono text-sm text-foreground">{formatCompactInteger(row.invocations)}</span>,
-    },
-    {
-      key: 'successRate',
-      label: 'Success',
-      width: 'w-[8rem]',
-      sortable: true,
-      render: (row) => <span className="font-mono text-sm text-foreground">{formatPercentage(row.successRate)}</span>,
-    },
-    {
-      key: 'failures',
-      label: 'Errors',
-      width: 'w-[6rem]',
-      sortable: true,
-      render: (row) => <span className="font-mono text-sm text-foreground">{formatCompactInteger(row.failures)}</span>,
-    },
-    {
-      key: 'share',
-      label: 'Share',
-      width: 'w-[10rem]',
-      sortable: false,
-      render: (row) => (
-        <div className="space-y-2">
-          <Progress value={Math.max(row.share, row.invocations > 0 ? 4 : 0)} />
-          <div className="font-mono text-xs text-muted-foreground">{formatPercentage(row.share)}</div>
-        </div>
-      ),
-    },
-  ]
+  const sortSpec: SortSpec = {
+    key: (sortState ?? DEFAULT_SORT).key,
+    dir: (sortState ?? DEFAULT_SORT).direction,
+  }
 
-  // Loading state
+  const handleSort = (key: string) => {
+    setSortState((current) => {
+      const next = getNextSortState(current, key as SortKey, DEFAULT_SORT_DIRECTIONS[key as SortKey])
+      return next ?? DEFAULT_SORT
+    })
+  }
+
+  const columns: Column<ToolRow>[] = useMemo(() => {
+    const cols: Column<ToolRow>[] = [
+      {
+        key: 'tool',
+        header: 'Tool',
+        sortable: true,
+        render: (row, i) => (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span
+              style={{
+                width: 26,
+                height: 26,
+                borderRadius: 7,
+                flexShrink: 0,
+                background: `color-mix(in srgb, var(--cat-${(i % 6) + 1}) 16%, var(--ink-800))`,
+                border: '1px solid var(--border-subtle)',
+              }}
+            />
+            <span style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+              <span style={{ font: '600 13px/1 var(--font-mono)', color: 'var(--fg-primary)' }}>{toolLabel(row)}</span>
+            </span>
+            <Badge tone={stabilityTone(row.failures)}>{stabilityLabel(row.failures)}</Badge>
+          </span>
+        ),
+      },
+      {
+        key: 'invocations',
+        header: 'Runs',
+        numeric: true,
+        sortable: true,
+        width: 110,
+        render: (row) => formatCompactInteger(row.invocations),
+      },
+      {
+        key: 'successRate',
+        header: 'Success %',
+        numeric: true,
+        sortable: true,
+        width: 120,
+        render: (row) => <span style={{ color: successColor(row.successRate) }}>{formatPercentage(row.successRate)}</span>,
+      },
+      {
+        key: 'failures',
+        header: 'Errors',
+        numeric: true,
+        sortable: true,
+        width: 100,
+        render: (row) => formatCompactInteger(row.failures),
+      },
+      {
+        key: 'sessions',
+        header: 'Sessions',
+        numeric: true,
+        sortable: true,
+        width: 110,
+        render: (row) => formatCompactInteger(row.sessions),
+      },
+      {
+        key: 'share',
+        header: 'Share',
+        numeric: true,
+        width: 150,
+        render: (row) => {
+          const pct = safeDivide(row.invocations, summary?.maxInvocations ?? 1) * 100
+          return (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+              <span style={{ width: 60, height: 6, borderRadius: 3, background: 'var(--ink-700)', overflow: 'hidden' }}>
+                <span style={{ display: 'block', width: `${Math.max(pct, row.invocations > 0 ? 4 : 0)}%`, height: '100%', background: 'var(--accent)' }} />
+              </span>
+              <span style={{ width: 34, textAlign: 'right' }}>{formatPercentage(row.share)}</span>
+            </span>
+          )
+        },
+      },
+    ]
+    return cols
+  }, [summary?.maxInvocations])
+
   if (loading && !data) {
     return (
-      <section className="space-y-6">
-        <PageHeader title="Tools" description="Which tools dominate execution volume, and where failures pile up." />
-        <DataPageSkeleton sections={['kpi-grid', 'chips', 'table']} tableRows={7} />
-      </section>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-lg)', padding: 16 }}>
+              <Skeleton width={90} height={11} />
+              <Skeleton width={120} height={28} style={{ marginTop: 12 }} />
+            </div>
+          ))}
+        </div>
+        <div style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', height: 320 }} />
+      </div>
     )
   }
 
+  if (!data || !summary) {
+    return <Card><ErrorState title="Tools failed to load" message={error ?? undefined} onRetry={requestRefresh} /></Card>
+  }
+
+  const topToolLabel = summary.usageLeader ? toolLabel(summary.usageLeader) : 'No data'
+
   return (
-    <section className="space-y-6">
-      <PageHeader title="Tools" description="Which tools dominate execution volume, and where failures pile up." />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {error && <Notice tone="warning" title="Tools partially loaded">{error}</Notice>}
 
-      {error ? <ErrorState title="Tools failed to load" message={error} onRetry={handleRetry} /> : null}
+      {/* KPI row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+        <StatCard
+          accent
+          label="Tracked tools"
+          value={formatInteger(summary.rows.length)}
+          hint={summary.rows.length === 1 ? 'One tool recorded' : 'Distinct tool names'}
+        />
+        <StatCard
+          label="Total runs"
+          value={formatInteger(summary.totalInvocations)}
+          title={formatInteger(summary.totalInvocations)}
+          hint={`${formatCompactInteger(summary.totalSuccesses)} ok · ${formatCompactInteger(summary.totalFailures)} failed`}
+        />
+        <StatCard
+          label="Overall success"
+          value={formatPercentage(summary.overallSuccessRate)}
+          hint={summary.totalFailures > 0 ? `${formatInteger(summary.totalFailures)} failed runs` : 'No failed runs'}
+        />
+        <StatCard
+          label="Top tool"
+          value={topToolLabel}
+          title={topToolLabel}
+          hint={summary.usageLeader ? `${formatPercentage(summary.usageLeader.share)} of all runs` : 'Awaiting activity'}
+        />
+      </div>
 
-      {summary ? (
-        <>
-          <KpiGrid>
-            <MetricCard label="Tracked tools" value={formatInteger(summary.rows.length)}
-              hint={summary.rows.length === 1 ? 'One tool recorded so far' : 'Distinct tool names aggregated from tool events'} />
-            <MetricCard label="Total runs" value={formatInteger(summary.totalInvocations)}
-              hint={`${formatCompactInteger(summary.totalSuccesses)} completed · ${formatCompactInteger(summary.totalFailures)} errored`} />
-            <MetricCard label="Top tool" value={summary.usageLeader ? getToolLabel(summary.usageLeader) : 'No data'}
-              hint={summary.usageLeader ? `${formatPercentage(summary.usageLeader.share)} of all tool invocations` : 'Awaiting activity'} />
-            <MetricCard label="Overall success" value={formatPercentage(summary.overallSuccessRate)}
-              hint={summary.totalFailures > 0 ? `${formatInteger(summary.totalFailures)} failed tool runs detected` : 'No failed tool runs recorded'} />
-          </KpiGrid>
-
-          <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_18rem] 2xl:items-start">
-            <div className="min-w-0 space-y-4">
-              {summary.empty ? (
-                <EmptyStateCard title="No tool usage recorded yet">
-                  <p>
-                    {selectedSourceId === 'claude_code'
-                      ? 'No Claude Code tool-use/tool-result data was found in readable local transcripts for this window.'
-                      : `This endpoint stays empty until ${sourceLabel} provides tool event data.`}
-                  </p>
-                </EmptyStateCard>
-              ) : (
-                <Card>
-                  <CardHeader className="gap-3 lg:flex-row lg:items-end lg:justify-between">
-                    <div className="space-y-1.5">
-                      <CardDescription>Primary artifact</CardDescription>
-                      <CardTitle>Tool usage ranking</CardTitle>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      {summary.topTools.map((tool, i) => (
-                        <Badge key={tool.name} tone={i === 0 ? 'accent' : 'default'}>
-                          #{i + 1} {getToolLabel(tool)} · {formatCompactInteger(tool.invocations)}
-                        </Badge>
-                      ))}
-                    </div>
-                  </CardHeader>
-
-                  <CardContent className="space-y-4">
-                    <DataTable<EnrichedToolRow>
-                      rows={summary.rows}
-                      columns={columns}
-                      sortState={sortState}
-                      onSortChange={handleSortChange}
-                      rowKey={(row) => row.name}
-                      mobileCard={(row) => (
-                        <div className="rounded-2xl border border-border/70 bg-panel/65 p-4">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="truncate font-medium text-foreground">{getToolLabel(row)}</div>
-                              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.14em] text-muted-foreground">
-                                <span>{formatPercentage(row.share)} share</span>
-                                <span aria-hidden="true">•</span>
-                                <span>{formatPercentage(row.successRate)} success</span>
-                              </div>
-                            </div>
-                            <Badge tone={getFailureTone(row.failures)}>
-                              {row.failures === 0 ? 'stable' : `${formatCompactInteger(row.failures)} errors`}
-                            </Badge>
-                          </div>
-                          <Progress className="mt-3" value={Math.max(row.share, row.invocations > 0 ? 4 : 0)} />
-                          <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                            <div className="rounded-lg bg-background/40 px-2.5 py-2">
-                              <div className="uppercase tracking-[0.14em]">Runs</div>
-                              <div className="mt-1 font-mono text-sm text-foreground">{formatCompactInteger(row.invocations)}</div>
-                            </div>
-                            <div className="rounded-lg bg-background/40 px-2.5 py-2">
-                              <div className="uppercase tracking-[0.14em]">Sessions</div>
-                              <div className="mt-1 font-mono text-sm text-foreground">{formatCompactInteger(row.sessions)}</div>
-                            </div>
-                            <div className="rounded-lg bg-background/40 px-2.5 py-2">
-                              <div className="uppercase tracking-[0.14em]">Completed</div>
-                              <div className="mt-1 font-mono text-sm text-foreground">{formatCompactInteger(row.successes)}</div>
-                            </div>
-                            <div className="rounded-lg bg-background/40 px-2.5 py-2">
-                              <div className="uppercase tracking-[0.14em]">Errors</div>
-                              <div className="mt-1 font-mono text-sm text-foreground">{formatCompactInteger(row.failures)}</div>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                      emptyState={<span className="text-sm text-muted-foreground">No tool usage recorded yet.</span>}
-                    />
-                  </CardContent>
-                </Card>
-              )}
+      {summary.empty ? (
+        <Card>
+          <Notice tone="info" title="No tool usage recorded">
+            No tool event data was found for this range. Adjust the time range or check that the source provides tool events.
+          </Notice>
+        </Card>
+      ) : (
+        <Card title="Tool usage" subtitle="What your agents call, ranked by volume" pad={0}>
+          <DataTable
+            columns={columns}
+            rows={summary.rows}
+            sort={sortSpec}
+            onSort={handleSort}
+            rowKey={(row) => `${row.source_id ?? ''}/${row.name}`}
+          />
+          {distinctSources && (
+            <div style={{ padding: '10px 14px', font: '400 12px/1 var(--font-ui)', color: 'var(--fg-faint)' }}>
+              Tools aggregated across multiple sources.
             </div>
-
-            {/* Sidebar cues */}
-            <Card className="hidden border-border/70 bg-panel/55 2xl:block 2xl:sticky self-start" style={{ top: 'var(--header-height)' }}>
-              <CardHeader>
-                <CardDescription>Operational cues</CardDescription>
-                <CardTitle>Read the table faster</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm text-muted-foreground">
-                <div className="rounded-xl border border-border/70 bg-background/40 px-3 py-3">
-                  <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Most used</div>
-                  <div className="mt-2 font-mono text-base text-foreground">
-                    {summary.usageLeader ? getToolLabel(summary.usageLeader) : 'No data'}
-                  </div>
-                  <div className="mt-1 text-sm">
-                    {summary.usageLeader
-                      ? `${formatCompactInteger(summary.usageLeader.invocations)} runs across ${formatCompactInteger(summary.usageLeader.sessions)} sessions`
-                      : 'Awaiting activity'}
-                  </div>
-                </div>
-                <div className="rounded-xl border border-border/70 bg-background/40 px-3 py-3">
-                  <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Noisiest failure source</div>
-                  <div className="mt-2 font-mono text-base text-foreground">
-                    {summary.failureLeader && summary.failureLeader.failures > 0 ? getToolLabel(summary.failureLeader) : 'No failures logged'}
-                  </div>
-                  <div className="mt-1 text-sm">
-                    {summary.failureLeader && summary.failureLeader.failures > 0
-                      ? `${formatCompactInteger(summary.failureLeader.failures)} errors at ${formatPercentage(summary.failureLeader.successRate)} success`
-                      : 'Nothing is throwing errors in the current aggregate'}
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </>
-      ) : null}
-    </section>
+          )}
+        </Card>
+      )}
+    </div>
   )
 }

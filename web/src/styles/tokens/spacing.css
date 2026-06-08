@@ -1,0 +1,37 @@
+/* ============================================================
+   VAEL — Spacing & sizing tokens
+   4px base scale. Compact density: tight chrome, scannable rows.
+   ============================================================ */
+
+:root {
+  --space-0: 0;
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 10px;
+  --space-6: 12px;
+  --space-8: 16px;
+  --space-10: 20px;
+  --space-12: 24px;
+  --space-16: 32px;
+  --space-20: 40px;
+  --space-24: 48px;
+  --space-32: 64px;
+
+  /* ---- Layout rails (fixed chrome of the app) ---- */
+  --rail-width: 232px;        /* left nav, expanded */
+  --rail-width-collapsed: 60px;
+  --topbar-height: 56px;
+  --filterbar-height: 52px;
+  --content-max: 1440px;
+  --page-pad-x: 24px;
+  --page-pad-y: 20px;
+
+  /* ---- Control heights (compact) ---- */
+  --control-sm: 28px;
+  --control-md: 34px;
+  --control-lg: 40px;
+  --row-height: 44px;         /* table row */
+  --row-height-dense: 36px;
+}

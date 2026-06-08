@@ -1,87 +1,105 @@
+/* Sessions — list + full-page detail (Vael). The old Radix Sheet drawer is replaced
+   by an in-view full-page swap keyed on a ?session=<id> URL param for deep-linking.
+   No fabricated data: duration is time_updated − time_created, cache-hit is derived
+   from total_tokens, and costs always use the *WithProvenance helpers. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useDashboardContext } from '../components/layout/dashboard-context'
-import { DataPageSkeleton } from '../components/common/data-page-skeleton'
-import { EmptyStateCard } from '../components/common/empty-state-card'
-import { ErrorState } from '../components/common/error-state'
-import { PageHeader } from '../components/layout/page-header'
-import { SessionsKpiGrid, type SessionsSummary } from '../components/sessions/sessions-kpi-grid'
-import { SessionsTable } from '../components/sessions/sessions-table'
-import { SessionDetailCard } from '../components/sessions/session-detail-card'
-import { SessionCuesSidebar } from '../components/sessions/session-cues-sidebar'
-import { SessionPagination } from '../components/sessions/session-pagination'
-import { Input } from '../components/ui/input'
-import { Badge } from '../components/ui/badge'
-import { Button } from '../components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '../components/ui/sheet'
+  Card,
+  StatCard,
+  DataTable,
+  VendorChip,
+  Badge,
+  Legend,
+  Button,
+  Icon,
+  Tabs,
+  Skeleton,
+  EmptyState,
+  ErrorState,
+  Notice,
+  type Column,
+} from '../components/vael'
+import { useDashboardContext } from '../components/layout/dashboard-context'
 import { getSessionDetail, getSessionsWithFilter } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
-import { formatDateTime, formatInteger } from '../lib/format'
 import { usePeriodControls } from '../lib/use-period-controls'
-import type { SessionDetail, SessionEntry, SessionList, SourceID } from '../types/api'
+import { getTokenTotal } from '../lib/token-breakdown'
+import {
+  formatCompactCurrencyWithProvenance,
+  formatCompactInteger,
+  formatCurrencyWithProvenance,
+  formatDateTime,
+  formatInteger,
+  formatRelativeTime,
+  formatTokenCount,
+  safeDivide,
+} from '../lib/format'
+import type {
+  SessionDetail,
+  SessionEntry,
+  SessionList,
+  SessionMessage,
+  SourceID,
+} from '../types/api'
 
 const PAGE_SIZE = 12
 const SEARCH_DEBOUNCE_MS = 300
 
-function getSessionProjectLabel(session: Pick<SessionEntry, 'project_name' | 'project_id'>) {
+function getSessionLabel(session: Pick<SessionEntry, 'title'>) {
+  return session.title || 'Untitled session'
+}
+
+function getSessionProjectLabel(
+  session: Pick<SessionEntry, 'project_name' | 'project_id'>,
+) {
   return session.project_name || session.project_id || 'No linked project'
 }
 
-function formatSessionWindow(createdAt: string, updatedAt: string) {
-  const created = new Date(createdAt)
-  const updated = new Date(updatedAt)
-  const deltaMinutes = Math.max(0, Math.round((updated.getTime() - created.getTime()) / 60000))
-
-  if (deltaMinutes < 1) return 'Under 1 minute'
-  if (deltaMinutes < 60) return `${deltaMinutes}m span`
-
-  const deltaHours = deltaMinutes / 60
-  if (deltaHours < 24) return `${deltaHours.toFixed(deltaHours >= 10 ? 0 : 1)}h span`
-
-  return `${(deltaHours / 24).toFixed(1)}d span`
+// Duration between created/updated, e.g. "4m 12s" / "2h 30m" / "3d 4h".
+function fmtDur(createdAt: string, updatedAt: string): string {
+  const ms = new Date(updatedAt).getTime() - new Date(createdAt).getTime()
+  const totalSec = Math.max(0, Math.round(ms / 1000))
+  if (totalSec < 1) return '0s'
+  const d = Math.floor(totalSec / 86400)
+  const h = Math.floor((totalSec % 86400) / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  const s = totalSec % 60
+  if (d > 0) return `${d}d ${h}h`
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
 }
 
 export function SessionsView() {
   const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
-  const [detail, setDetail] = useState<SessionDetail | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailError, setDetailError] = useState<string | null>(null)
-  const [detailRequestNonce, setDetailRequestNonce] = useState(0)
-  const triggerButtonRef = useRef<HTMLButtonElement | null>(null)
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sourceLabel =
+    selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
 
   const { cacheKey } = usePeriodControls()
   const rawFilter = searchParams.get('filter') ?? ''
   const projectId = searchParams.get('project_id') ?? undefined
-  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
-  const previousSourceRef = useRef(selectedSourceId)
-
-  useEffect(() => {
-    if (previousSourceRef.current === selectedSourceId) {
-      return
-    }
-    previousSourceRef.current = selectedSourceId
-    setSelectedSessionId(null)
-    setDetail(null)
-    setDetailError(null)
-    setSearchParams((prev) => {
-      const n = new URLSearchParams(prev)
-      n.set('page', '1')
-      return n
-    }, { replace: true })
-  }, [selectedSourceId, setSearchParams])
+  const selectedSessionId = searchParams.get('session')
 
   const pageFromUrl = parseInt(searchParams.get('page') ?? '1', 10)
   const page = isNaN(pageFromUrl) || pageFromUrl < 1 ? 1 : pageFromUrl
+
+  // ── Reset list + close detail when the source changes ──
+  const previousSourceRef = useRef(selectedSourceId)
+  useEffect(() => {
+    if (previousSourceRef.current === selectedSourceId) return
+    previousSourceRef.current = selectedSourceId
+    setSearchParams(
+      (prev) => {
+        const n = new URLSearchParams(prev)
+        n.set('page', '1')
+        n.delete('session')
+        return n
+      },
+      { replace: true },
+    )
+  }, [selectedSourceId, setSearchParams])
 
   // Normalize URL params on mount
   useEffect(() => {
@@ -94,7 +112,6 @@ export function SessionsView() {
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // URL page setter
   const setPage = (updater: number | ((prev: number) => number)) => {
     const np = typeof updater === 'function' ? updater(page) : updater
     setSearchParams((prev) => {
@@ -104,11 +121,24 @@ export function SessionsView() {
     })
   }
 
+  const openSession = (id: string) =>
+    setSearchParams((prev) => {
+      const n = new URLSearchParams(prev)
+      n.set('session', id)
+      return n
+    })
+
+  const closeSession = () =>
+    setSearchParams((prev) => {
+      const n = new URLSearchParams(prev)
+      n.delete('session')
+      return n
+    })
+
   // ── Sessions list via usePeriodResource ──
-  // Sessions has additional query dimensions (page, filter, projectId) beyond period.
-  // We use cachePeriods: false and a stable fetcher that reads latest values via ref.
-  // When page/filter/projectId changes, we call requestRefresh which increments
-  // the dashboard refreshNonce, triggering the hook's effect to re-fetch.
+  // Sessions has extra query dimensions (page, filter, projectId) beyond period.
+  // cachePeriods: false + a stable fetcher reading latest values via ref; a version
+  // string triggers requestRefresh when those dimensions change.
   const sessionQueryRef = useRef({ page, filter: rawFilter, projectId })
   sessionQueryRef.current = { page, filter: rawFilter, projectId }
 
@@ -119,7 +149,6 @@ export function SessionsView() {
 
   const { data, loading, error } = usePeriodResource<SessionList>(fetcher, cacheKey, { cachePeriods: false })
 
-  // Trigger re-fetch when page/filter/projectId changes (the hook only watches period/refreshNonce)
   const sessionVersion = `${page}:${rawFilter}:${projectId ?? ''}`
   const lastVersionRef = useRef(sessionVersion)
   useEffect(() => {
@@ -129,62 +158,9 @@ export function SessionsView() {
     }
   }, [sessionVersion, requestRefresh])
 
-  // Fetch session detail
-  useEffect(() => {
-    if (!selectedSessionId) {
-      setDetail(null); setDetailError(null); setDetailLoading(false)
-      return
-    }
-    const sid = selectedSessionId
-    const ctrl = new AbortController()
-    async function load() {
-      setDetail(null); setDetailError(null); setDetailLoading(true)
-      try {
-        setDetail(await getSessionDetail(sid, ctrl.signal, selectedSourceId))
-      } catch (caught) {
-        if (ctrl.signal.aborted) return
-        setDetailError(caught instanceof Error ? caught.message : 'Failed to load session detail')
-      } finally {
-        if (!ctrl.signal.aborted) setDetailLoading(false)
-      }
-    }
-    void load()
-    return () => ctrl.abort()
-  }, [detailRequestNonce, selectedSessionId, selectedSourceId])
-
-  // Summary
-  const summary = useMemo((): SessionsSummary | null => {
-    if (!data) return null
-    const tp = Math.max(1, Math.ceil(data.total / data.page_size))
-    const fv = data.total === 0 ? 0 : (data.page - 1) * data.page_size + 1
-    const lv = data.total === 0 ? 0 : fv + data.sessions.length - 1
-    const vc = data.sessions.reduce((a, s) => a + s.cost, 0)
-    const vm = data.sessions.reduce((a, s) => a + s.message_count, 0)
-    const vp = new Set(data.sessions.map((s) => getSessionProjectLabel(s))).size
-    const h = [...data.sessions].sort((a, b) => b.cost - a.cost)[0] ?? null
-    return {
-      totalPages: tp, firstVisible: fv, lastVisible: lv,
-      visibleCost: vc, visibleMessages: vm, visibleProjects: vp,
-      hottestSession: h ? { label: h.title || 'Untitled session', cost: h.cost, message_count: h.message_count, cost_status: h.cost_status, cost_provenance: h.cost_provenance } : null,
-      total: data.total, pageSize: data.page_size, page: data.page,
-      empty: data.sessions.length === 0,
-      costStatus: data.cost_status,
-      costProvenance: data.cost_provenance,
-    }
-  }, [data])
-
-  // Handlers
-  const handleRetry = () => requestRefresh()
-  const handleDetailRetry = () => { if (selectedSessionId) setDetailRequestNonce((c) => c + 1) }
-  const handleSelectSession = (s: SessionEntry) => setSelectedSessionId(s.id)
-  const handleTriggerClick = (s: SessionEntry, e: React.MouseEvent) => {
-    e.stopPropagation()
-    triggerButtonRef.current = e.currentTarget as HTMLButtonElement
-    setSelectedSessionId(s.id)
-  }
-
-  // Search/filter with 300ms debounce
+  // ── Search/filter with 300ms debounce ──
   const [searchText, setSearchText] = useState(rawFilter)
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value
     setSearchText(v)
@@ -201,142 +177,516 @@ export function SessionsView() {
   }
   useEffect(() => () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current) }, [])
 
-  // ── Loading ──
+  // ── Page summary ──
+  const summary = useMemo(() => {
+    if (!data) return null
+    const totalPages = Math.max(1, Math.ceil(data.total / data.page_size))
+    const firstVisible = data.total === 0 ? 0 : (data.page - 1) * data.page_size + 1
+    const lastVisible = data.total === 0 ? 0 : firstVisible + data.sessions.length - 1
+    const visibleCost = data.sessions.reduce((a, s) => a + s.cost, 0)
+    const visibleMessages = data.sessions.reduce((a, s) => a + s.message_count, 0)
+    const visibleProjects = new Set(data.sessions.map((s) => getSessionProjectLabel(s))).size
+    return {
+      totalPages,
+      firstVisible,
+      lastVisible,
+      visibleCost,
+      visibleMessages,
+      visibleProjects,
+      total: data.total,
+      pageSize: data.page_size,
+      page: data.page,
+      empty: data.sessions.length === 0,
+      costStatus: data.cost_status,
+      costProvenance: data.cost_provenance,
+    }
+  }, [data])
+
+  // ── Detail full-page swap ──
+  if (selectedSessionId) {
+    return (
+      <SessionDetailScreen
+        id={selectedSessionId}
+        sourceId={selectedSourceId}
+        sourceLabel={sourceLabel}
+        onBack={closeSession}
+      />
+    )
+  }
+
+  // ── List loading ──
   if (loading && !data) {
     return (
-      <section className="space-y-6">
-        <PageHeader title="Sessions" description="Session triage with dense scan lines and a live metadata drawer." />
-        <DataPageSkeleton sections={['kpi-grid', 'table']} tableRows={8} />
-      </section>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-lg)', padding: 16 }}>
+              <Skeleton width={90} height={11} />
+              <Skeleton width={120} height={28} style={{ marginTop: 12 }} />
+            </div>
+          ))}
+        </div>
+        <div style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', height: 340 }} />
+      </div>
+    )
+  }
+
+  if (!data && error) {
+    return <Card><ErrorState title="Sessions failed to load" message={error} onRetry={requestRefresh} /></Card>
+  }
+
+  const columns: Column<SessionEntry>[] = [
+    {
+      key: 'id',
+      header: 'Session',
+      width: 240,
+      render: (s) => (
+        <span style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+          <span style={{ font: '600 13px/1.3 var(--font-ui)', color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {getSessionLabel(s)}
+          </span>
+          <span style={{ font: '400 11px/1 var(--font-mono)', color: 'var(--fg-faint)' }} title={s.id}>
+            id {s.id.slice(0, 12)}
+          </span>
+        </span>
+      ),
+    },
+    {
+      key: 'source',
+      header: 'Source',
+      render: (s) => <VendorChip id={s.source_id ?? selectedSourceId} />,
+    },
+    {
+      key: 'project',
+      header: 'Project',
+      render: (s) => (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, font: '400 12px/1.3 var(--font-ui)', color: 'var(--fg-muted)' }}>
+          <Icon name="folder" size={13} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>
+            {getSessionProjectLabel(s)}
+          </span>
+        </span>
+      ),
+    },
+    {
+      key: 'started',
+      header: 'Started',
+      render: (s) => (
+        <span title={formatDateTime(s.time_created)} style={{ color: 'var(--fg-muted)', font: '400 12px/1 var(--font-mono)' }}>
+          {formatRelativeTime(new Date(s.time_created))}
+        </span>
+      ),
+    },
+    {
+      key: 'duration',
+      header: 'Duration',
+      numeric: true,
+      render: (s) => fmtDur(s.time_created, s.time_updated),
+    },
+    {
+      key: 'messages',
+      header: 'Messages',
+      numeric: true,
+      render: (s) => formatCompactInteger(s.message_count),
+    },
+    {
+      key: 'cost',
+      header: 'Est. cost',
+      numeric: true,
+      render: (s) => formatCompactCurrencyWithProvenance(s.cost, s.cost_status ?? data?.cost_status, s.cost_provenance ?? data?.cost_provenance),
+    },
+  ]
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {error && <Notice tone="warning" title="Sessions partially loaded">{error}</Notice>}
+
+      {/* Search */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+        <div style={{ position: 'relative', flex: '0 1 320px', minWidth: 200 }}>
+          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', color: 'var(--fg-faint)', pointerEvents: 'none' }}>
+            <Icon name="search" size={15} />
+          </span>
+          <input
+            type="text"
+            placeholder="Search sessions…"
+            value={searchText}
+            onChange={handleSearchChange}
+            style={{
+              width: '100%',
+              height: 36,
+              padding: '0 12px 0 34px',
+              background: 'var(--ink-800)',
+              border: '1px solid var(--border-default)',
+              borderRadius: 'var(--radius-md)',
+              color: 'var(--fg-primary)',
+              font: '400 13px/1 var(--font-ui)',
+              outline: 'none',
+            }}
+          />
+        </div>
+        {rawFilter && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, font: '400 12px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>
+            Filtering
+            <code style={{ font: '500 12px/1 var(--font-mono)', color: 'var(--fg-secondary)', background: 'var(--ink-700)', padding: '3px 6px', borderRadius: 'var(--radius-sm)' }}>{rawFilter}</code>
+          </span>
+        )}
+      </div>
+
+      {/* KPI summary */}
+      {summary && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+          <StatCard
+            accent
+            label="Total sessions"
+            value={formatInteger(summary.total)}
+            hint={summary.empty ? 'No sessions in range' : `${formatInteger(summary.totalPages)} pages · ${formatInteger(summary.pageSize)} / page`}
+          />
+          <StatCard
+            label="Visible window"
+            value={summary.empty ? '0' : `${summary.firstVisible}–${summary.lastVisible}`}
+            hint={summary.empty ? 'Nothing to paginate yet' : `Page ${formatInteger(summary.page)} of ${formatInteger(summary.totalPages)}`}
+          />
+          <StatCard
+            label="Visible cost"
+            value={formatCurrencyWithProvenance(summary.visibleCost, summary.costStatus, summary.costProvenance)}
+            hint={`${formatCompactInteger(summary.visibleMessages)} messages on this page`}
+          />
+          <StatCard
+            label="Projects on page"
+            value={formatInteger(summary.visibleProjects)}
+            hint={summary.empty ? 'Awaiting session activity' : 'distinct projects visible'}
+          />
+        </div>
+      )}
+
+      {/* Table / empty */}
+      {summary?.empty ? (
+        <Card>
+          <EmptyState
+            icon="folder"
+            title="No sessions recorded yet"
+            description={
+              selectedSourceId === 'claude_code'
+                ? 'No persisted Claude Code sessions were found in readable local transcripts for this window.'
+                : `This view stays empty until ${sourceLabel} contains session rows for this range.`
+            }
+          />
+        </Card>
+      ) : (
+        <Card
+          title="Session index"
+          subtitle={summary ? `${formatInteger(summary.total)} total · click a row to inspect` : undefined}
+          action={summary ? <Badge>Page {data?.page ?? 1}</Badge> : undefined}
+          pad={0}
+        >
+          <DataTable<SessionEntry>
+            columns={columns}
+            rows={data?.sessions ?? []}
+            rowKey={(s) => s.id}
+            onRowClick={(s) => openSession(s.id)}
+          />
+          {summary && (
+            <Pagination
+              page={data?.page ?? 1}
+              total={data?.total ?? 0}
+              pageSize={data?.page_size ?? PAGE_SIZE}
+              totalPages={summary.totalPages}
+              firstVisible={summary.firstVisible}
+              lastVisible={summary.lastVisible}
+              onPageChange={setPage}
+            />
+          )}
+        </Card>
+      )}
+    </div>
+  )
+}
+
+// ── Pagination ────────────────────────────────────────────────
+function Pagination({
+  page,
+  total,
+  pageSize,
+  totalPages,
+  firstVisible,
+  lastVisible,
+  onPageChange,
+}: {
+  page: number
+  total: number
+  pageSize: number
+  totalPages: number
+  firstVisible: number
+  lastVisible: number
+  onPageChange: (updater: number | ((prev: number) => number)) => void
+}) {
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 16px', borderTop: '1px solid var(--border-default)' }}>
+      <div style={{ font: '400 12px/1.5 var(--font-ui)', color: 'var(--fg-muted)' }}>
+        <span style={{ color: 'var(--fg-secondary)' }}>Showing {firstVisible}–{lastVisible}</span> of{' '}
+        <span style={{ font: '500 12px/1 var(--font-mono)', color: 'var(--fg-secondary)', fontVariantNumeric: 'tabular-nums' }}>{formatInteger(total)}</span> sessions
+        <span style={{ marginLeft: 8, font: '400 11px/1 var(--font-mono)', color: 'var(--fg-faint)' }}>
+          page_size={pageSize}
+        </span>
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button variant="secondary" size="sm" iconLeft="chevron-left" disabled={page <= 1} onClick={() => onPageChange((c) => Math.max(1, c - 1))}>
+          Previous
+        </Button>
+        <Button variant="secondary" size="sm" disabled={page >= totalPages} onClick={() => onPageChange((c) => c + 1)}>
+          Next
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// ── Detail screen (full-page swap) ────────────────────────────
+function SessionDetailScreen({
+  id,
+  sourceId,
+  sourceLabel,
+  onBack,
+}: {
+  id: string
+  sourceId: SourceID
+  sourceLabel: string
+  onBack: () => void
+}) {
+  const [detail, setDetail] = useState<SessionDetail | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+  const [tab, setTab] = useState<'timeline' | 'raw'>('timeline')
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    async function load() {
+      setDetail(null); setError(null); setLoading(true)
+      try {
+        setDetail(await getSessionDetail(id, ctrl.signal, sourceId))
+      } catch (caught) {
+        if (ctrl.signal.aborted) return
+        setError(caught instanceof Error ? caught.message : 'Failed to load session detail')
+      } finally {
+        if (!ctrl.signal.aborted) setLoading(false)
+      }
+    }
+    void load()
+    return () => ctrl.abort()
+  }, [id, sourceId, nonce])
+
+  const stats = useMemo(() => {
+    if (!detail) return null
+    const t = detail.total_tokens
+    const totalTokens = getTokenTotal(t)
+    const cacheRead = t.cache.read
+    const cacheDenom = t.input + cacheRead
+    const cacheHit = cacheDenom > 0 ? Math.round(safeDivide(cacheRead, cacheDenom) * 100) : 0
+    // Token composition: distinct buckets of total_tokens (no double-counting input/cache.read).
+    const inputOnly = Math.max(0, t.input)
+    const segments = [
+      { key: 'input', label: 'Input', color: 'var(--cat-1)', value: inputOnly },
+      { key: 'cache', label: 'Cached (read)', color: 'var(--cat-2)', value: Math.max(0, cacheRead) },
+      { key: 'output', label: 'Output', color: 'var(--cat-3)', value: Math.max(0, t.output) },
+    ].filter((s) => s.value > 0)
+    const segTotal = segments.reduce((a, s) => a + s.value, 0) || 1
+    return { totalTokens, cacheHit, segments, segTotal }
+  }, [detail])
+
+  const backButton = (
+    <button
+      type="button"
+      onClick={onBack}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 14, background: 'transparent', border: 'none', color: 'var(--fg-muted)', font: '500 13px/1 var(--font-ui)', cursor: 'pointer', padding: 0 }}
+    >
+      <Icon name="chevron-left" size={16} /> All sessions
+    </button>
+  )
+
+  if (loading) {
+    return (
+      <div>
+        {backButton}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 12 }}>
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-lg)', padding: 16 }}>
+              <Skeleton width={90} height={11} />
+              <Skeleton width={120} height={28} style={{ marginTop: 12 }} />
+            </div>
+          ))}
+        </div>
+        <div style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', height: 320 }} />
+      </div>
+    )
+  }
+
+  if (error || !detail || !stats) {
+    return (
+      <div>
+        {backButton}
+        <Card>
+          <ErrorState title="Session detail failed to load" message={error ?? undefined} onRetry={() => setNonce((c) => c + 1)} />
+        </Card>
+      </div>
     )
   }
 
   return (
-    <>
-      <section className="space-y-6">
-        <PageHeader title="Sessions" description="Session triage with dense scan lines and a live metadata drawer." />
+    <div>
+      {backButton}
 
-        {error && <ErrorState title="Sessions failed to load" message={error} onRetry={handleRetry} />}
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+        <VendorChip id={detail.source_id ?? sourceId} label={false} size={34} />
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <h2 style={{ margin: 0, font: '700 18px/1.2 var(--font-ui)', color: 'var(--fg-primary)' }}>
+              {getSessionLabel(detail)}
+            </h2>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 7, flexWrap: 'wrap', font: '400 12px/1 var(--font-mono)', color: 'var(--fg-muted)' }}>
+            <span title={detail.id} style={{ color: 'var(--fg-faint)' }}>id {detail.id.slice(0, 14)}</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><Icon name="folder" size={13} />{getSessionProjectLabel(detail)}</span>
+            <span>{sourceLabel}</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><Icon name="clock" size={13} />{formatDateTime(detail.time_created)}</span>
+            <span>{fmtDur(detail.time_created, detail.time_updated)}</span>
+          </div>
+        </div>
+      </div>
 
-        {summary && (
+      {/* KPI */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <StatCard
+          accent
+          label="Total tokens"
+          value={formatTokenCount(stats.totalTokens)}
+          title={`${formatInteger(stats.totalTokens)} tokens`}
+          hint={`${formatTokenCount(detail.total_tokens.input)} in · ${formatTokenCount(detail.total_tokens.output)} out`}
+        />
+        <StatCard
+          label="Est. cost"
+          value={formatCurrencyWithProvenance(detail.total_cost, detail.cost_status, detail.cost_provenance)}
+          hint={detail.messages.length > 0 ? `${formatCurrencyWithProvenance(safeDivide(detail.total_cost, detail.messages.length), detail.cost_status, detail.cost_provenance)} / message` : 'this session'}
+        />
+        <StatCard
+          label="Messages"
+          value={formatInteger(detail.message_count)}
+          hint={`${formatInteger(detail.messages.length)} recorded rows`}
+        />
+        <StatCard
+          label="Cache hit"
+          value={`${stats.cacheHit}%`}
+          hint="read / (input + read)"
+        />
+      </div>
+
+      {/* Token composition */}
+      <Card title="Token composition" subtitle="Distinct buckets of total tokens" style={{ marginBottom: 16 }}>
+        {stats.segments.length > 0 ? (
           <>
-            {/* Search input */}
-            <div className="flex flex-wrap items-center gap-3">
-              <Input placeholder="Search sessions..." value={searchText} onChange={handleSearchChange} className="max-w-xs" />
-              {rawFilter && <span className="text-xs text-muted-foreground">Filtering: <code className="rounded bg-muted px-1 py-0.5 font-mono">{rawFilter}</code></span>}
+            <div style={{ display: 'flex', width: '100%', height: 12, borderRadius: 6, overflow: 'hidden', background: 'var(--ink-700)', gap: 1 }}>
+              {stats.segments.map((seg) => (
+                <div
+                  key={seg.key}
+                  title={`${seg.label}: ${formatInteger(seg.value)}`}
+                  style={{ width: `${(seg.value / stats.segTotal) * 100}%`, background: seg.color }}
+                />
+              ))}
             </div>
-
-            <SessionsKpiGrid summary={summary} />
-
-            <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_18rem]">
-              <div className="min-w-0 space-y-3">
-                {summary.empty ? (
-                  <EmptyStateCard title="No sessions recorded yet">
-                    <p>
-                      {selectedSourceId === 'claude_code'
-                        ? 'No persisted Claude Code sessions were found in readable local transcripts for this selected window.'
-                        : `This route stays empty until ${sourceLabel} contains session rows.`}
-                    </p>
-                  </EmptyStateCard>
-                ) : (
-                  <Card>
-                    <CardHeader className="gap-3 lg:flex-row lg:items-end lg:justify-between">
-                      <div className="space-y-1.5">
-                        <CardDescription>Primary artifact</CardDescription>
-                        <CardTitle>Session index</CardTitle>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge>Page {data?.page ?? 1}</Badge>
-                        {summary.hottestSession && <Badge tone="accent">Top spend · {summary.hottestSession.label}</Badge>}
-                      </div>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <SessionsTable
-                        sessions={data?.sessions ?? []}
-                        summary={summary}
-                        sortState={null}
-                        onSortChange={() => {}}
-                        onRowClick={handleSelectSession}
-                        onTriggerClick={handleTriggerClick}
-                      />
-                      <SessionPagination
-                        page={data?.page ?? 1}
-                        total={data?.total ?? 0}
-                        pageSize={data?.page_size ?? PAGE_SIZE}
-                        totalPages={summary.totalPages}
-                        firstVisible={summary.firstVisible}
-                        lastVisible={summary.lastVisible}
-                        onPageChange={setPage}
-                      />
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
-              <SessionCuesSidebar summary={summary} />
+            <div style={{ marginTop: 14 }}>
+              <Legend items={stats.segments.map((seg) => ({ label: seg.label, color: seg.color, value: formatTokenCount(seg.value) }))} />
             </div>
           </>
+        ) : (
+          <div style={{ font: '400 13px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>No token activity recorded for this session.</div>
         )}
+      </Card>
 
-        {!summary && error && (
-          <Card>
-            <CardHeader>
-              <CardDescription>Unavailable</CardDescription>
-              <CardTitle>Session list could not be loaded</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Button variant="ghost" onClick={handleRetry}>Retry sessions request</Button>
-            </CardContent>
-          </Card>
-        )}
-      </section>
-
-      {/* Detail drawer */}
-      <Sheet
-        open={selectedSessionId !== null}
-        onOpenChange={(o) => { if (!o) setSelectedSessionId(null) }}
-      >
-        <SheetContent
-          side="right"
-          className="flex h-full w-full max-w-[calc(100vw-0.75rem)] flex-col overflow-hidden border-l border-border/70 bg-background shadow-[0_24px_100px_-32px_rgba(0,0,0,0.95)] sm:max-w-[42rem] xl:max-w-[min(100vw-2rem,72rem)] 2xl:max-w-[78rem]"
-          onCloseAutoFocus={(e) => { e.preventDefault(); triggerButtonRef.current?.focus() }}
-        >
-          <SheetHeader className="sticky top-0 z-10 border-b border-border/70 bg-background/95 px-4 py-4 pr-14 backdrop-blur-xl sm:px-6 sm:pr-16">
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge tone="accent">Telemetry inspector</Badge>
-                {detail && <Badge>{getSessionProjectLabel(detail)}</Badge>}
-                <Badge>{sourceLabel}</Badge>
-                {detail && <span className="font-mono text-xs text-muted-foreground">id {detail.id.slice(0, 12)}</span>}
+      {/* Tabs: Timeline / Raw JSON */}
+      <Card pad={0}>
+        <div style={{ padding: '0 16px' }}>
+          <Tabs
+            tabs={[
+              { value: 'timeline', label: 'Timeline', count: detail.messages.length },
+              { value: 'raw', label: 'Raw JSON' },
+            ]}
+            value={tab}
+            onChange={setTab}
+          />
+        </div>
+        <div style={{ padding: 16 }}>
+          {tab === 'timeline' && (
+            detail.messages.length === 0 ? (
+              <Notice tone="info" title="No message rows">This session exists, but the detail endpoint returned no message rows.</Notice>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                {detail.messages.map((m, i) => (
+                  <MessageRow key={m.id} message={m} last={i === detail.messages.length - 1} />
+                ))}
               </div>
-              <div className="space-y-2">
-                <SheetTitle className="sr-only">Session Detail</SheetTitle>
-                <h3 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
-                  {detail ? (detail.title || 'Untitled session') : 'Loading session detail'}
-                </h3>
-                <SheetDescription className="sr-only">Session metadata drawer.</SheetDescription>
-                <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                  {detail ? (
-                    <>
-                      <span className="font-mono text-foreground">{formatDateTime(detail.time_created)}</span>
-                      <span aria-hidden="true">•</span>
-                      <span>{formatSessionWindow(detail.time_created, detail.time_updated)}</span>
-                      <span aria-hidden="true">•</span>
-                      <span>{formatInteger(detail.message_count)} recorded messages</span>
-                    </>
-                  ) : <span>Fetching live session telemetry…</span>}
-                </div>
-                <div className="rounded-xl border border-border/70 bg-panel/40 px-3 py-2 text-sm text-muted-foreground">
-                  Telemetry inspector only — transcript text is not available from this endpoint.
-                </div>
-              </div>
-            </div>
-          </SheetHeader>
+            )
+          )}
+          {tab === 'raw' && (
+            <pre style={{ margin: 0, font: '400 12px/1.7 var(--font-mono)', color: 'var(--fg-secondary)', background: 'var(--ink-850)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: 14, overflowX: 'auto', maxHeight: 520, overflowY: 'auto' }}>
+              {JSON.stringify(detail, null, 2)}
+            </pre>
+          )}
+        </div>
+      </Card>
+    </div>
+  )
+}
 
-          <div className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-5 sm:px-6">
-            <SessionDetailCard detail={detail} loading={detailLoading} error={detailError} onRetry={handleDetailRetry} />
+function roleTone(role: string): { color: string; dot: string } {
+  switch (role) {
+    case 'assistant':
+      return { color: 'var(--blue-300)', dot: 'var(--accent)' }
+    case 'user':
+      return { color: 'var(--fg-muted)', dot: 'var(--fg-muted)' }
+    case 'system':
+      return { color: 'var(--amber-300, var(--cat-4))', dot: 'var(--cat-4)' }
+    default:
+      return { color: 'var(--fg-muted)', dot: 'var(--fg-faint)' }
+  }
+}
+
+function MessageRow({ message, last }: { message: SessionMessage; last: boolean }) {
+  const tone = roleTone(message.role)
+  const tokens = message.tokens ? getTokenTotal(message.tokens) : 0
+  const cost = message.cost ?? 0
+  const meta = [message.model_id, message.provider_id, message.agent].filter(Boolean).join(' · ')
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '16px minmax(0,1fr) auto', gap: 12, padding: '10px 0', borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}>
+      <div style={{ display: 'flex', justifyContent: 'center' }}>
+        <span style={{ width: 9, height: 9, borderRadius: '50%', background: tone.dot, marginTop: 5 }} />
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ font: '600 11px/1 var(--font-ui)', letterSpacing: '0.06em', textTransform: 'uppercase', color: tone.color }}>
+            {message.role || 'unknown'}
+          </span>
+          {message.is_subagent && <Badge tone="accent">subagent</Badge>}
+          <span style={{ font: '400 11px/1 var(--font-mono)', color: 'var(--fg-faint)' }} title={message.id}>
+            {formatDateTime(message.time_created)}
+          </span>
+        </div>
+        {meta && (
+          <div style={{ marginTop: 4, font: '400 11px/1.4 var(--font-mono)', color: 'var(--fg-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '40ch' }}>
+            {meta}
           </div>
-        </SheetContent>
-      </Sheet>
-    </>
+        )}
+      </div>
+      <div style={{ textAlign: 'right', whiteSpace: 'nowrap', display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
+        <span style={{ font: '600 12px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }} title={`${formatInteger(tokens)} tokens`}>
+          {formatTokenCount(tokens)}
+        </span>
+        <span style={{ font: '400 11px/1 var(--font-mono)', color: 'var(--fg-muted)' }}>
+          {formatCurrencyWithProvenance(cost, message.cost_status, message.cost_provenance)}
+        </span>
+      </div>
+    </div>
   )
 }

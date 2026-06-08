@@ -41,13 +41,21 @@ const hourFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'UTC',
 })
 
+/**
+ * Intl.DateTimeFormat.prototype.format() throws RangeError ("Invalid time value")
+ * on an invalid Date — unlike Date.prototype.toLocaleDateString(), which returns
+ * "Invalid Date". Guard every formatter call so bad/edge timestamps can't crash a view.
+ */
+function safeFormat(formatter: Intl.DateTimeFormat, date: Date, fallback = '—'): string {
+  return Number.isNaN(date.getTime()) ? fallback : formatter.format(date)
+}
+
 export function isHourlyDate(value: string): boolean {
   return value.includes('T') && value.endsWith('Z')
 }
 
 export function formatHour(value: string): string {
-  const date = new Date(value)
-  return hourFormatter.format(date)
+  return safeFormat(hourFormatter, new Date(value))
 }
 
 export function formatInteger(value: number) {
@@ -147,11 +155,13 @@ export function formatShortDate(value: string) {
   if (isHourlyDate(value)) {
     return formatHour(value)
   }
-  return shortDateFormatter.format(new Date(`${value}T00:00:00Z`))
+  return safeFormat(shortDateFormatter, new Date(`${value}T00:00:00Z`))
 }
 
 export function formatShortWeekday(value: string) {
-  return shortWeekdayFormatter.format(new Date(`${value}T00:00:00Z`))
+  // Hourly ISO timestamps are already full dates; plain YYYY-MM-DD needs a time suffix.
+  const date = isHourlyDate(value) ? new Date(value) : new Date(`${value}T00:00:00Z`)
+  return safeFormat(shortWeekdayFormatter, date)
 }
 
 export function formatTokenCount(value: number) {
@@ -160,6 +170,7 @@ export function formatTokenCount(value: number) {
 
 export function formatDateTime(value: string | Date) {
   const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
   return `${dateTimeFormatter.format(date)} UTC`
 }
 
