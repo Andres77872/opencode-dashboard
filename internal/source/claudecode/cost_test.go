@@ -145,6 +145,17 @@ func TestBundledPricingSnapshotCoversCurrentClaudeRates(t *testing.T) {
 		wantApproximate bool
 	}{
 		{
+			name: "current fable 5 exact rate uses current price",
+			key:  "claude-fable-5",
+			want: pricingRate{
+				InputPerMillion:         10.0,
+				OutputPerMillion:        50.0,
+				CacheReadPerMillion:     1.0,
+				CacheCreatePerMillion:   12.5,
+				CacheCreate1hPerMillion: 20.0,
+			},
+		},
+		{
 			name: "current opus 4.8 exact rate uses current price",
 			key:  "claude-opus-4-8",
 			want: pricingRate{
