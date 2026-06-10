@@ -25,7 +25,7 @@ import {
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { usePeriodControls } from '../lib/use-period-controls'
 import { usePeriodResource } from '../lib/use-period-resource'
-import { getDaily, getMessages, getMessageDetail } from '../lib/api'
+import { getDaily, getDailyDimension, getMessages, getMessageDetail } from '../lib/api'
 import {
   formatCompactCurrency,
   formatCompactCurrencyWithProvenance,
@@ -39,6 +39,7 @@ import {
   safeDivide,
 } from '../lib/format'
 import { getNextSortState, type SortState } from '../lib/table-sort'
+import { groupModelDaysByDate } from '../lib/daily-models'
 import { getTokenBreakdownItems, getTokenTotal } from '../lib/token-breakdown'
 import {
   getDetailLoadingCopy,
@@ -51,10 +52,17 @@ import type {
   MessageDetail,
   MessageEntry,
   MessageList,
+  SourceID,
   ToolPart,
 } from '../types/api'
 
 const REQUESTS_PAGE_SIZE = 12
+const DAILY_MODELS_SHOWN = 3
+
+// Period-resource fetcher for the per-day model breakdown (daily?dimension=model).
+function getDailyModels(period: string, signal?: AbortSignal, sourceId?: SourceID) {
+  return getDailyDimension('model', period, signal, sourceId)
+}
 
 // ── Daily metric lens (inlined from components/daily/daily-metrics.ts) ──
 type DailyMetric = 'cost' | 'requests' | 'tokens'
@@ -154,6 +162,12 @@ export function DailyView() {
   const { cacheKey } = usePeriodControls()
   const period = cacheKey
   const { data, loading, error } = usePeriodResource(getDaily, cacheKey)
+
+  // Per-day model message counts for the breakdown table. Loads independently;
+  // the table renders without the Models column data until it arrives.
+  const { data: modelDaily } = usePeriodResource(getDailyModels, cacheKey)
+
+  const modelsByDate = useMemo(() => groupModelDaysByDate(modelDaily?.days), [modelDaily])
 
   // ── Message ledger (own page/sort state; page mirrors the URL) ──
   const [messages, setMessages] = useState<MessageList | null>(null)
@@ -308,6 +322,35 @@ export function DailyView() {
     },
     { key: 'sessions', header: 'Sessions', numeric: true, render: (d) => formatInteger(d.sessions) },
     { key: 'messages', header: 'Messages', numeric: true, render: (d) => formatInteger(d.messages) },
+    // Per-model message history — only at day granularity since the
+    // dimension endpoint buckets by day, not hour.
+    ...(data.granularity !== 'hour'
+      ? [
+          {
+            key: 'models',
+            header: 'Models · messages',
+            wrap: true,
+            render: (d: DayStats) => {
+              const rows = modelsByDate.get(d.date) ?? []
+              if (rows.length === 0) return <span style={{ color: 'var(--fg-faint)' }}>—</span>
+              const shown = rows.slice(0, DAILY_MODELS_SHOWN)
+              const hidden = rows.length - shown.length
+              const fullBreakdown = rows.map((r) => `${r.dimension_key}: ${formatInteger(r.messages)} messages`).join('\n')
+              return (
+                <span title={fullBreakdown} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                  {shown.map((r) => (
+                    <span key={r.dimension_key} style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
+                      <span style={{ font: '400 11px/1.3 var(--font-mono)', color: 'var(--fg-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.dimension_key}</span>
+                      <span style={{ font: '600 11px/1.3 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{formatInteger(r.messages)}</span>
+                    </span>
+                  ))}
+                  {hidden > 0 && <span style={{ font: '400 11px/1.3 var(--font-ui)', color: 'var(--fg-faint)' }}>+{hidden} more</span>}
+                </span>
+              )
+            },
+          } satisfies Column<DayStats>,
+        ]
+      : []),
     {
       key: 'tokens',
       header: 'Tokens',

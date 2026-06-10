@@ -36,6 +36,10 @@ func (s *snapshot) daily(pq stats.PeriodQuery, granularity ...stats.Granularity)
 	} else if pq.Period == "1d" || isHourPreset(pq.Period) {
 		gran = stats.GranularityHour
 	}
+	window, err := s.window(pq)
+	if err != nil {
+		return stats.DailyStats{}, err
+	}
 	messages, err := s.filteredMessages(pq)
 	if err != nil {
 		return stats.DailyStats{}, err
@@ -48,10 +52,15 @@ func (s *snapshot) daily(pq stats.PeriodQuery, granularity ...stats.Granularity)
 		}
 		groups[key] = append(groups[key], msg)
 	}
+	fillEmptyBuckets(groups, window, gran, messages)
 	keys := sortedKeys(groups)
 	days := make([]stats.DayStats, 0, len(keys))
 	for _, key := range keys {
 		group := groups[key]
+		if len(group) == 0 {
+			days = append(days, stats.DayStats{SourceID: codexSourceID, Date: key})
+			continue
+		}
 		cost, tokens, status, provenance := aggregateCostProvenance(group)
 		days = append(days, stats.DayStats{SourceID: codexSourceID, Date: key, Sessions: int64(len(uniqueSessions(group))), Messages: int64(len(group)), Cost: cost, Tokens: tokens, CostStatus: status, CostProvenance: provenance})
 	}
@@ -70,6 +79,11 @@ func (s *snapshot) dailyDimension(dimension string, pq stats.PeriodQuery) (stats
 	type key struct{ day, dim string }
 	groups := make(map[key][]*messageRecord)
 	for _, msg := range messages {
+		// Dimension breakdowns count assistant API-request rows only, matching
+		// the other sources; user-prompt rows carry no model/cost anyway.
+		if msg.Entry.Role != "assistant" {
+			continue
+		}
 		day := msg.Entry.TimeCreated.UTC().Format("2006-01-02")
 		switch dimension {
 		case "model":
@@ -396,6 +410,45 @@ func (s *snapshot) window(pq stats.PeriodQuery) (periodWindow, error) {
 
 func inWindow(t time.Time, window periodWindow) bool {
 	return !t.Before(window.start) && t.Before(window.end)
+}
+
+// fillEmptyBuckets adds zero-value bucket keys for every day (or hour) in the
+// window so gaps stay visible, matching the OpenCode SQL daily path. The "all"
+// window has no bounds, so it spans the observed message times instead.
+func fillEmptyBuckets(groups map[string][]*messageRecord, window periodWindow, gran stats.Granularity, messages []*messageRecord) {
+	start, end := window.start, window.end
+	if window.all {
+		if len(messages) == 0 {
+			return
+		}
+		start, end = messages[0].Entry.TimeCreated, messages[0].Entry.TimeCreated
+		for _, msg := range messages {
+			if msg.Entry.TimeCreated.Before(start) {
+				start = msg.Entry.TimeCreated
+			}
+			if msg.Entry.TimeCreated.After(end) {
+				end = msg.Entry.TimeCreated
+			}
+		}
+		end = end.Add(time.Nanosecond)
+	}
+	if gran == stats.GranularityHour {
+		for t := start.UTC().Truncate(time.Hour); t.Before(end); t = t.Add(time.Hour) {
+			key := t.Format("2006-01-02T15:04:05Z")
+			if _, ok := groups[key]; !ok {
+				groups[key] = nil
+			}
+		}
+		return
+	}
+	first := start.UTC()
+	first = time.Date(first.Year(), first.Month(), first.Day(), 0, 0, 0, 0, time.UTC)
+	for t := first; t.Before(end); t = t.AddDate(0, 0, 1) {
+		key := t.Format("2006-01-02")
+		if _, ok := groups[key]; !ok {
+			groups[key] = nil
+		}
+	}
 }
 
 func parseHourPreset(period string) (int, bool) {

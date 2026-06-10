@@ -13,16 +13,18 @@ func TestCodexCostUsesGPT55EstimatedAPIEquivalentPricing(t *testing.T) {
 	src := newFixtureSource(t, "valid_home")
 	messages := readAllMessages(t, src)
 	// The first API request row (r0) carries the first cumulative delta
-	// 1000/100/50/25 plus all of the turn's content.
+	// 1000/100/50/25 (raw input/cached/output/reasoning) plus all of the turn's
+	// content. Stored buckets are disjoint: Input 900, Cache.Read 100, Output 25,
+	// Reasoning 25.
 	entry := findMessage(t, messages, func(m stats.MessageEntry) bool {
-		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 1000
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 900
 	})
 
 	if entry.CostStatus != stats.CostEstimatedAPIEquivalent {
 		t.Fatalf("CostStatus = %q, want %q", entry.CostStatus, stats.CostEstimatedAPIEquivalent)
 	}
-	// (input-cached) at full rate + cached at discounted + (output+reasoning) as output.
-	wantCost := (float64(1000-100)*5.0 + float64(100)*0.50 + float64(50+25)*30.0) / 1_000_000
+	// Non-cached input at full rate + cached at discounted + (output+reasoning) as output.
+	wantCost := (float64(900)*5.0 + float64(100)*0.50 + float64(25+25)*30.0) / 1_000_000
 	if !approxEqual(entry.Cost, wantCost) {
 		t.Errorf("Cost = %.9f, want %.9f from normal input + discounted cached input + output/reasoning", entry.Cost, wantCost)
 	}
@@ -45,9 +47,10 @@ func TestCodexCostUsesGPT55EstimatedAPIEquivalentPricing(t *testing.T) {
 
 func TestCodexReasoningTokensBillAsOutputButRemainVisible(t *testing.T) {
 	src := newFixtureSource(t, "valid_home")
-	// Assert on the request row that carries tokens (r0: 1000/100/50/25).
+	// Assert on the request row that carries tokens (r0: raw 1000/100/50/25,
+	// stored disjoint as Input 900 / Cache.Read 100 / Output 25 / Reasoning 25).
 	entry := findMessage(t, readAllMessages(t, src), func(m stats.MessageEntry) bool {
-		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 1000
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 900
 	})
 	if entry.Tokens == nil {
 		t.Fatalf("Tokens = nil")
@@ -74,10 +77,12 @@ func TestCodexLongContextPricingMultipliers(t *testing.T) {
 		},
 	})
 	// The long-context model API request is its own row (token_count closes it).
+	// The long-context threshold compares the raw request input (300000, cached
+	// included) even though the stored disjoint Input is 200000.
 	entry := findMessage(t, readAllMessages(t, src), func(m stats.MessageEntry) bool {
-		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 300000
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 200000
 	})
-	want := ((float64(200000)*5.0 + float64(100000)*0.50) * 2.0 / 1_000_000) + (float64(10000+5000) * 30.0 * 1.5 / 1_000_000)
+	want := ((float64(200000)*5.0 + float64(100000)*0.50) * 2.0 / 1_000_000) + (float64(5000+5000) * 30.0 * 1.5 / 1_000_000)
 	if !approxEqual(entry.Cost, want) {
 		t.Errorf("long-context cost = %.9f, want %.9f with 2x input/cached and 1.5x output/reasoning multipliers", entry.Cost, want)
 	}
@@ -107,8 +112,9 @@ func TestCodexUnknownMissingOrClaudePricingFallbackRendersMissingCost(t *testing
 			}
 			src := New(Options{CodexHome: home, PathSource: "temp missing-cost fixture", PricingSnapshotPath: pricingPath})
 			// The assistant request row that carries usage cannot be priced.
+			// (Raw input 1000 with 100 cached stores as disjoint Input 900.)
 			entry := findMessage(t, readAllMessages(t, src), func(m stats.MessageEntry) bool {
-				return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 1000
+				return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 900
 			})
 			if entry.CostStatus != stats.CostMissing {
 				t.Errorf("CostStatus = %q, want %q", entry.CostStatus, stats.CostMissing)

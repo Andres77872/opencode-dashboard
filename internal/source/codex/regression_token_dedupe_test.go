@@ -16,7 +16,7 @@ func TestCodexTokenAggregationUsesPositiveCumulativeDeltas(t *testing.T) {
 		t.Fatalf("Overview(all) failed: %v", err)
 	}
 	assertCodexSourceID(t, overview.SourceID)
-	assertCodexTokenTotals(t, "Overview().Tokens", overview.Tokens, 1500, 300, 75, 30)
+	assertCodexTokenTotals(t, "Overview().Tokens", overview.Tokens, 1200, 300, 45, 30)
 
 	messages, err := src.Messages(ctx, period, 1, 50, chronologicalMessageSort())
 	if err != nil {
@@ -27,14 +27,14 @@ func TestCodexTokenAggregationUsesPositiveCumulativeDeltas(t *testing.T) {
 		t.Fatalf("Messages total/len = %d/%d, want 4 per-request rows", messages.Total, len(messages.Messages))
 	}
 	// Per-request deltas across the rows sum exactly to the cumulative totals.
-	assertCodexTokenTotals(t, "sum(Messages().Tokens)", sumMessageTokens(messages), 1500, 300, 75, 30)
+	assertCodexTokenTotals(t, "sum(Messages().Tokens)", sumMessageTokens(messages), 1200, 300, 45, 30)
 
 	models, err := src.Models(ctx, period)
 	if err != nil {
 		t.Fatalf("Models(all) failed: %v", err)
 	}
 	model := findModelEntryByID(t, models, "gpt-5.5")
-	assertCodexTokenTotals(t, "Models()[gpt-5.5].Tokens", model.Tokens, 1500, 300, 75, 30)
+	assertCodexTokenTotals(t, "Models()[gpt-5.5].Tokens", model.Tokens, 1200, 300, 45, 30)
 }
 
 func TestCodexLastTokenUsageDoesNotInflateUnchangedOrLowerCumulativeVectors(t *testing.T) {
@@ -45,7 +45,7 @@ func TestCodexLastTokenUsageDoesNotInflateUnchangedOrLowerCumulativeVectors(t *t
 	if err != nil {
 		t.Fatalf("Overview(all) failed: %v", err)
 	}
-	assertCodexTokenTotals(t, "Overview().Tokens", overview.Tokens, 1500, 300, 75, 30)
+	assertCodexTokenTotals(t, "Overview().Tokens", overview.Tokens, 1200, 300, 45, 30)
 }
 
 func TestCodexDuplicateCopiedTranscriptsCountOnce(t *testing.T) {
@@ -68,7 +68,7 @@ func TestCodexDuplicateCopiedTranscriptsCountOnce(t *testing.T) {
 	if overview.Sessions != 1 || overview.Messages != 4 {
 		t.Errorf("overview sessions/messages = %d/%d, want 1/4 after copied transcript dedupe", overview.Sessions, overview.Messages)
 	}
-	assertCodexTokenTotals(t, "Overview().Tokens", overview.Tokens, 1500, 300, 75, 30)
+	assertCodexTokenTotals(t, "Overview().Tokens", overview.Tokens, 1200, 300, 45, 30)
 
 	messages, err := src.Messages(ctx, period, 1, 50, chronologicalMessageSort())
 	if err != nil {
@@ -78,7 +78,7 @@ func TestCodexDuplicateCopiedTranscriptsCountOnce(t *testing.T) {
 		t.Fatalf("Messages total/len = %d/%d, want copied logical turn counted once", messages.Total, len(messages.Messages))
 	}
 	// Tokens are unchanged by the copy: per-request deltas sum to the cumulative totals.
-	assertCodexTokenTotals(t, "sum(Messages().Tokens)", sumMessageTokens(messages), 1500, 300, 75, 30)
+	assertCodexTokenTotals(t, "sum(Messages().Tokens)", sumMessageTokens(messages), 1200, 300, 45, 30)
 }
 
 func tokenDedupeLines(sessionID string) []string {

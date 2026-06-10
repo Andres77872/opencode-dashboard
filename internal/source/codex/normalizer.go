@@ -391,10 +391,17 @@ func (m *messageRecord) setTokens(u tokenSnapshot) {
 	if usageEmpty(u) {
 		return
 	}
-	tokens := &stats.TokenStats{Input: u.Input, Output: u.Output, Reasoning: u.Reasoning}
+	// Rollout usage buckets overlap (cached_input ⊆ input, reasoning ⊆ output);
+	// stats.TokenStats buckets are disjoint, so subtract the subsets out.
+	tokens := &stats.TokenStats{
+		Input:     positive(u.Input - u.Cached),
+		Output:    positive(u.Output - u.Reasoning),
+		Reasoning: u.Reasoning,
+	}
 	tokens.Cache.Read = u.Cached
 	tokens.Cache.Write = 0
 	m.Entry.Tokens = tokens
+	// Long-context detection needs the raw (cached-inclusive) request input.
 	m.maxInputSnapshot = u.Input
 	m.Entry.Role = "assistant"
 }

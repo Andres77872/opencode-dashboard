@@ -47,14 +47,15 @@ func TestCodexEmitsOneMessagePerTokenCountAPIRequest(t *testing.T) {
 	if overview.Messages != 3 {
 		t.Errorf("Overview().Messages = %d, want 3 (1 user + 2 API requests)", overview.Messages)
 	}
-	// Per-request deltas sum exactly to the turn's cumulative usage.
-	if overview.Tokens.Input != 1500 || overview.Tokens.Cache.Read != 150 || overview.Tokens.Output != 80 || overview.Tokens.Reasoning != 30 {
-		t.Errorf("Overview().Tokens in/cache/out/reason = %d/%d/%d/%d, want 1500/150/80/30",
+	// Per-request deltas sum exactly to the turn's cumulative usage, stored as
+	// disjoint buckets (cached subtracted from input, reasoning from output).
+	if overview.Tokens.Input != 1350 || overview.Tokens.Cache.Read != 150 || overview.Tokens.Output != 50 || overview.Tokens.Reasoning != 30 {
+		t.Errorf("Overview().Tokens in/cache/out/reason = %d/%d/%d/%d, want 1350/150/50/30",
 			overview.Tokens.Input, overview.Tokens.Cache.Read, overview.Tokens.Output, overview.Tokens.Reasoning)
 	}
-	// Cost: r0=(900*5+100*0.5+70*30)/1e6=0.00665, r1=(450*5+50*0.5+40*30)/1e6=0.003475 => 0.010125
-	if !approxEqual(overview.Cost, 0.010125) {
-		t.Errorf("Overview().Cost = %.9f, want 0.010125 (sum of per-request estimated costs)", overview.Cost)
+	// Cost: r0=(900*5+100*0.5+50*30)/1e6=0.00605, r1=(450*5+50*0.5+30*30)/1e6=0.003175 => 0.009225
+	if !approxEqual(overview.Cost, 0.009225) {
+		t.Errorf("Overview().Cost = %.9f, want 0.009225 (sum of per-request estimated costs)", overview.Cost)
 	}
 	if overview.CostStatus != stats.CostEstimatedAPIEquivalent {
 		t.Errorf("Overview().CostStatus = %q, want %q", overview.CostStatus, stats.CostEstimatedAPIEquivalent)
@@ -75,15 +76,16 @@ func TestCodexEmitsOneMessagePerTokenCountAPIRequest(t *testing.T) {
 		t.Errorf("role counts = %#v, want 1 user + 2 assistant", roles)
 	}
 
-	// Request 1 row carries its own delta and tool call_a.
+	// Request 1 row carries its own delta (raw 1000/100/50/20, stored disjoint)
+	// and tool call_a.
 	r0 := findMessage(t, messages, func(m stats.MessageEntry) bool {
-		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 1000
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 900
 	})
-	if r0.Tokens.Output != 50 || r0.Tokens.Reasoning != 20 || r0.Tokens.Cache.Read != 100 {
-		t.Errorf("request 1 tokens = %#v, want input 1000 / out 50 / reason 20 / cache 100", *r0.Tokens)
+	if r0.Tokens.Output != 30 || r0.Tokens.Reasoning != 20 || r0.Tokens.Cache.Read != 100 {
+		t.Errorf("request 1 tokens = %#v, want input 900 / out 30 / reason 20 / cache 100", *r0.Tokens)
 	}
-	if !approxEqual(r0.Cost, 0.00665) {
-		t.Errorf("request 1 cost = %.9f, want 0.00665", r0.Cost)
+	if !approxEqual(r0.Cost, 0.00605) {
+		t.Errorf("request 1 cost = %.9f, want 0.00605", r0.Cost)
 	}
 	if r0.ModelID != "gpt-5.5" || r0.ProviderID != "openai" {
 		t.Errorf("request 1 model/provider = %q/%q, want gpt-5.5/openai", r0.ModelID, r0.ProviderID)
@@ -94,12 +96,13 @@ func TestCodexEmitsOneMessagePerTokenCountAPIRequest(t *testing.T) {
 		t.Errorf("request 1 detail missing its assistant text: %#v", r0detail.Content.TextParts)
 	}
 
-	// Request 2 row carries the second delta and tool call_b (not call_a).
+	// Request 2 row carries the second delta (raw 500/50/30/10, stored disjoint)
+	// and tool call_b (not call_a).
 	r1 := findMessage(t, messages, func(m stats.MessageEntry) bool {
-		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 500
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 450
 	})
-	if !approxEqual(r1.Cost, 0.003475) {
-		t.Errorf("request 2 cost = %.9f, want 0.003475", r1.Cost)
+	if !approxEqual(r1.Cost, 0.003175) {
+		t.Errorf("request 2 cost = %.9f, want 0.003175", r1.Cost)
 	}
 	r1detail := mustMessageDetail(t, src, r1.ID)
 	_ = findToolPart(t, r1detail, "call_b")
@@ -127,7 +130,7 @@ func TestCodexEmitsOneMessagePerTokenCountAPIRequest(t *testing.T) {
 	if session == nil || session.MessageCount != 3 {
 		t.Fatalf("session message_count = %v, want 3", session)
 	}
-	if session.TotalTokens.Input != 1500 || session.TotalTokens.Output != 80 {
-		t.Errorf("session totals in/out = %d/%d, want 1500/80", session.TotalTokens.Input, session.TotalTokens.Output)
+	if session.TotalTokens.Input != 1350 || session.TotalTokens.Output != 50 {
+		t.Errorf("session totals in/out = %d/%d, want 1350/50", session.TotalTokens.Input, session.TotalTokens.Output)
 	}
 }

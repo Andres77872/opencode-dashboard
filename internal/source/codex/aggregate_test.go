@@ -29,7 +29,7 @@ func TestCodexAggregatesMapToExistingDashboardConcepts(t *testing.T) {
 				if got.Sessions != 1 || got.Messages != 4 {
 					t.Errorf("Overview sessions/messages = %d/%d, want 1/4 per-request rows", got.Sessions, got.Messages)
 				}
-				assertCodexTokenTotals(t, "Overview().Tokens", got.Tokens, 1500, 300, 75, 30)
+				assertCodexTokenTotals(t, "Overview().Tokens", got.Tokens, 1200, 300, 45, 30)
 				assertCodexEstimatedProvenance(t, got.CostStatus, got.CostProvenance)
 			},
 		},

@@ -32,10 +32,11 @@ func TestNormalizerEmitsOneRowPerAPIRequestAndUserPrompt(t *testing.T) {
 		t.Errorf("role counts = %#v, want 2 user + 2 assistant", roles)
 	}
 
-	// r0 is the request that carries the first cumulative delta (1000/100/50/25)
-	// plus all of the turn's content (it all precedes the token_count events).
+	// r0 is the request that carries the first cumulative delta (raw
+	// 1000/100/50/25, stored disjoint as Input 900) plus all of the turn's
+	// content (it all precedes the token_count events).
 	r0 := findMessage(t, messages, func(m stats.MessageEntry) bool {
-		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 1000
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 900
 	})
 	if r0.ID != "codex:synthetic-session:turn-1:r0" {
 		t.Errorf("first request ID = %q, want codex:synthetic-session:turn-1:r0", r0.ID)
@@ -44,9 +45,10 @@ func TestNormalizerEmitsOneRowPerAPIRequestAndUserPrompt(t *testing.T) {
 		t.Errorf("model/provider = %q/%q, want gpt-5.5/openai", r0.ModelID, r0.ProviderID)
 	}
 
-	// r1 is the usage-only second request delta (500/200/25/5), no content.
+	// r1 is the usage-only second request delta (raw 500/200/25/5, stored
+	// disjoint as Input 300), no content.
 	r1 := findMessage(t, messages, func(m stats.MessageEntry) bool {
-		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 500
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 300
 	})
 	if r1.ID != "codex:synthetic-session:turn-1:r1" {
 		t.Errorf("second request ID = %q, want codex:synthetic-session:turn-1:r1", r1.ID)
@@ -102,7 +104,7 @@ func TestNormalizerFiltersRawChildRecordsFromTopLevelRows(t *testing.T) {
 	// All assistant/tool/reasoning content attaches to the request row that
 	// closes first (r0), since it all precedes the token_count events.
 	r0 := findMessage(t, messages, func(m stats.MessageEntry) bool {
-		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 1000
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 900
 	})
 	detail := mustMessageDetail(t, src, r0.ID)
 	if detailTextOccurrences(detail, "[REDACTED_ASSISTANT_SUMMARY]") != 1 {
@@ -128,7 +130,7 @@ func TestNormalizerRepeatedTurnContextUpdatesMetadataOnly(t *testing.T) {
 	}
 
 	assistant := findMessage(t, messages, func(m stats.MessageEntry) bool {
-		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 1000
+		return m.Role == "assistant" && m.Tokens != nil && m.Tokens.Input == 900
 	})
 	if assistant.ModelID != "gpt-5.5" {
 		t.Errorf("ModelID = %q, want updated turn_context model gpt-5.5", assistant.ModelID)

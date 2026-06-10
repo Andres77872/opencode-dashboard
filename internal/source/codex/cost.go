@@ -107,10 +107,9 @@ func computeCost(model string, tokens stats.TokenStats, maxInputSnapshot int64, 
 	if !ok || rate.InputPerMillion == 0 || rate.OutputPerMillion == 0 {
 		return missingCost(currency)
 	}
-	normalInput := tokens.Input - tokens.Cache.Read
-	if normalInput < 0 {
-		normalInput = 0
-	}
+	// TokenStats buckets are disjoint: Input excludes cached reads, Output
+	// excludes reasoning. Reasoning bills at the output rate.
+	normalInput := tokens.Input
 	cachedInput := tokens.Cache.Read
 	outputBillable := tokens.Output + tokens.Reasoning
 	inputMultiplier := 1.0
