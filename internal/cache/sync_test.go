@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -444,13 +445,15 @@ func boolPtr(v bool) *bool {
 const syncFakeSourceID = "cache_sync_test"
 
 type syncFakeSource struct {
-	id             string // overrides syncFakeSourceID, so one store can host several fakes
-	messages       []stats.MessageEntry
-	available      *bool
-	scannedFiles   int64
-	messagesErr    error
-	messagesGate   chan struct{} // when set, Messages blocks until closed
-	ignoreWindows  bool          // when set, window hints are ignored (everything is returned)
+	id            string // overrides syncFakeSourceID, so one store can host several fakes
+	messages      []stats.MessageEntry
+	available     *bool
+	scannedFiles  int64
+	messagesErr   error
+	messagesGate  chan struct{} // when set, Messages blocks until closed
+	ignoreWindows bool          // when set, window hints are ignored (everything is returned)
+
+	mu             sync.Mutex // guards the call-tracking fields; reads are racy with concurrent calls otherwise
 	detailCalls    []string
 	messagesCalls  int
 	messageQueries []stats.PeriodQuery
@@ -531,7 +534,9 @@ func (s *syncFakeSource) ProjectByID(context.Context, string, stats.PeriodQuery,
 }
 
 func (s *syncFakeSource) Sessions(_ context.Context, query stats.SessionQuery) (stats.SessionList, error) {
+	s.mu.Lock()
 	s.sessionQueries = append(s.sessionQueries, query)
+	s.mu.Unlock()
 	start, end := s.fakeWindow(stats.PeriodQuery{FromTime: query.FromTime, ToTime: query.ToTime})
 	sessions := make(map[string][]stats.MessageEntry)
 	for _, msg := range s.messages {
@@ -585,8 +590,10 @@ func (s *syncFakeSource) SessionByID(context.Context, string) (*stats.SessionDet
 }
 
 func (s *syncFakeSource) Messages(_ context.Context, pq stats.PeriodQuery, _ int, _ int, _ stats.MessageSort) (stats.MessageList, error) {
+	s.mu.Lock()
 	s.messagesCalls++
 	s.messageQueries = append(s.messageQueries, pq)
+	s.mu.Unlock()
 	if s.messagesGate != nil {
 		<-s.messagesGate
 	}
@@ -616,7 +623,9 @@ func (s *syncFakeSource) Messages(_ context.Context, pq stats.PeriodQuery, _ int
 }
 
 func (s *syncFakeSource) MessageByID(_ context.Context, id string) (*stats.MessageDetail, error) {
+	s.mu.Lock()
 	s.detailCalls = append(s.detailCalls, id)
+	s.mu.Unlock()
 	for _, entry := range s.messages {
 		if entry.ID == id {
 			return &stats.MessageDetail{
