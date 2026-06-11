@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 )
 
 type closeableSource interface {
@@ -16,6 +17,7 @@ type registryEntry struct {
 }
 
 type Registry struct {
+	mu        sync.RWMutex
 	defaultID SourceID
 	startupID SourceID
 	entries   map[SourceID]registryEntry
@@ -34,23 +36,38 @@ func NewRegistry(defaultID SourceID) *Registry {
 }
 
 func (r *Registry) DefaultID() SourceID {
-	if r == nil || r.defaultID == "" {
+	if r == nil {
+		return SourceOpenCode
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.defaultID == "" {
 		return SourceOpenCode
 	}
 	return r.defaultID
 }
 
 func (r *Registry) StartupID() SourceID {
-	if r == nil || r.startupID == "" {
-		return r.DefaultID()
+	if r == nil {
+		return SourceOpenCode
 	}
-	return r.startupID
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.startupID != "" {
+		return r.startupID
+	}
+	if r.defaultID != "" {
+		return r.defaultID
+	}
+	return SourceOpenCode
 }
 
 func (r *Registry) SetStartupID(id SourceID) {
 	if r == nil || id == "" {
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.startupID = id
 }
 
@@ -62,6 +79,8 @@ func (r *Registry) Register(src Source) error {
 	if info.ID == "" {
 		return InvalidSourceError{ID: "<empty>"}
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.upsert(info.ID, registryEntry{source: src, info: info})
 	return nil
 }
@@ -71,6 +90,8 @@ func (r *Registry) RegisterUnavailable(info SourceInfo) error {
 		return InvalidSourceError{ID: "<empty>"}
 	}
 	info.Available = false
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.upsert(info.ID, registryEntry{info: info})
 	return nil
 }
@@ -79,6 +100,8 @@ func (r *Registry) Resolve(selectedID string) (Source, error) {
 	if r == nil {
 		return nil, UnavailableSourceError{ID: SourceOpenCode, Reason: "source registry is not configured"}
 	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	id := strings.TrimSpace(selectedID)
 	if id == "" {
 		// Omitted/empty source parameters intentionally resolve to the API
@@ -109,6 +132,8 @@ func (r *Registry) List(ctx context.Context) []SourceInfo {
 	if r == nil {
 		return []SourceInfo{}
 	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	infos := make([]SourceInfo, 0, len(r.order))
 	for _, id := range r.order {
 		entry := r.entries[id]
@@ -130,6 +155,8 @@ func (r *Registry) Available(ctx context.Context) []Source {
 	if r == nil {
 		return nil
 	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]Source, 0, len(r.order))
 	for _, id := range r.order {
 		entry := r.entries[id]
@@ -148,6 +175,8 @@ func (r *Registry) Close() error {
 	if r == nil {
 		return nil
 	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	var errs []error
 	for _, id := range r.order {
 		entry := r.entries[id]

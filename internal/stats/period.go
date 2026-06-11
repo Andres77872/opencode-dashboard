@@ -30,6 +30,11 @@ func ComputePeriodWindow(ctx context.Context, s *store.Store, period string) (Pe
 // Otherwise it delegates to presetPeriodWindow based on pq.Period.
 // If both are empty, defaults to "7d" preset.
 func ComputePeriodWindowFromQuery(ctx context.Context, s *store.Store, pq PeriodQuery) (PeriodWindow, error) {
+	// Internal time-precision bounds beat everything (cache gap-merge layer).
+	if from, to, ok := pq.TimeBounds(); ok {
+		return explicitPeriodWindow(from, to), nil
+	}
+
 	// From beats Period — explicit range mode
 	if pq.From != "" {
 		from, err := time.ParseInLocation("2006-01-02", pq.From, time.UTC)
@@ -49,7 +54,7 @@ func ComputePeriodWindowFromQuery(ctx context.Context, s *store.Store, pq Period
 			to = time.Now().UTC()
 		}
 
-		return explicitPeriodWindow(from, to), nil
+		return capWindowEnd(explicitPeriodWindow(from, to), pq.ToTime), nil
 	}
 
 	// Default to "7d" if period is empty
@@ -58,7 +63,26 @@ func ComputePeriodWindowFromQuery(ctx context.Context, s *store.Store, pq Period
 		period = "7d"
 	}
 
-	return presetPeriodWindow(ctx, s, period)
+	window, err := presetPeriodWindow(ctx, s, period)
+	if err != nil {
+		return PeriodWindow{}, err
+	}
+	return capWindowEnd(window, pq.ToTime), nil
+}
+
+// capWindowEnd clamps the window end to toTime when set, so a caller can
+// bound a preset or explicit window at the cache finality cutoff.
+func capWindowEnd(w PeriodWindow, toTime time.Time) PeriodWindow {
+	if toTime.IsZero() {
+		return w
+	}
+	toTime = toTime.UTC()
+	if toTime.UnixMilli() >= w.EndMs {
+		return w
+	}
+	w.EndDate = toTime
+	w.EndMs = toTime.UnixMilli()
+	return w
 }
 
 // presetPeriodWindow handles all preset strings.

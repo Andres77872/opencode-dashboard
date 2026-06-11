@@ -43,8 +43,8 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 	// Compute period window if period or from is specified
 	var startMs, endMs int64
 	var hasPeriod bool
-	if query.Period != "" || query.From != "" {
-		pq := PeriodQuery{Period: query.Period, From: query.From, To: query.To}
+	if query.Period != "" || query.From != "" || !query.FromTime.IsZero() {
+		pq := PeriodQuery{Period: query.Period, From: query.From, To: query.To, FromTime: query.FromTime, ToTime: query.ToTime}
 		pw, err := ComputePeriodWindowFromQuery(ctx, s, pq)
 		if err != nil {
 			return SessionList{}, err

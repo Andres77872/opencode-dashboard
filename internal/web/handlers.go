@@ -14,10 +14,15 @@ import (
 
 type Handlers struct {
 	registry *source.Registry
+	cache    CacheManager
 }
 
 func NewHandlers(registry *source.Registry) *Handlers {
-	return &Handlers{registry: registry}
+	return NewHandlersWithCache(registry, nil)
+}
+
+func NewHandlersWithCache(registry *source.Registry, cache CacheManager) *Handlers {
+	return &Handlers{registry: registry, cache: cache}
 }
 
 func (h *Handlers) Sources(w http.ResponseWriter, r *http.Request) {

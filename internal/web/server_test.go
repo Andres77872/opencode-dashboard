@@ -89,8 +89,8 @@ func TestCORSMiddleware(t *testing.T) {
 				}
 			}
 
-			if w.Header().Get("Access-Control-Allow-Methods") != "GET, OPTIONS" {
-				t.Errorf("Access-Control-Allow-Methods = %q, want %q", w.Header().Get("Access-Control-Allow-Methods"), "GET, OPTIONS")
+			if w.Header().Get("Access-Control-Allow-Methods") != "GET, POST, OPTIONS" {
+				t.Errorf("Access-Control-Allow-Methods = %q, want %q", w.Header().Get("Access-Control-Allow-Methods"), "GET, POST, OPTIONS")
 			}
 		})
 	}

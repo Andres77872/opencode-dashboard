@@ -60,6 +60,59 @@ export interface SourceListResponse {
   sources: SourceInfo[]
 }
 
+export interface CacheSourceStatus {
+  source_id: SourceID
+  label: string
+  available: boolean
+  cached: boolean
+  needs_sync: boolean
+  status?: string
+  reason?: string
+  last_synced_ms?: number
+  safe_cutoff_ms?: number
+  fresh_through_ms?: number
+  fill_attempt_ms?: number
+  fill_error?: string
+}
+
+export interface CacheStatusResponse {
+  enabled: boolean
+  path?: string
+  source?: string
+  active: boolean
+  last_updated_ms?: number
+  sources?: CacheSourceStatus[]
+  sync?: CacheSyncStatus
+}
+
+export interface CacheSyncStatus {
+  running: boolean
+  status: string
+  mode?: CacheSyncMode
+  target?: string
+  current_source_id?: string
+  total: number
+  completed: number
+  current_phase?: string
+  items_done?: number
+  items_total?: number
+  safe_cutoff_ms?: number
+  started_at_ms?: number
+  updated_at_ms?: number
+  finished_at_ms?: number
+  error?: string
+  logs?: CacheLogEntry[]
+}
+
+export type CacheSyncMode = 'incremental' | 'rebuild'
+
+export interface CacheLogEntry {
+  time_ms: number
+  level: 'info' | 'error' | string
+  source_id?: SourceID | string
+  message: string
+}
+
 export type CostStatus = 'reported' | 'computed' | 'approximate' | 'estimated_api_equivalent' | 'mixed' | 'missing'
 
 export interface CostProvenance {

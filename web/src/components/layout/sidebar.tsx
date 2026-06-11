@@ -89,7 +89,7 @@ function StatusFooter() {
         <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--success)', boxShadow: 'var(--glow-success)', flexShrink: 0 }} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ font: '600 12px/1.2 var(--font-ui)', color: 'var(--fg-primary)' }}>Local agent</div>
-          <div style={{ font: '400 11px/1 var(--font-mono)', color: 'var(--fg-muted)', marginTop: 3 }}>{isRefreshing ? 'syncing…' : `synced ${formatRelativeTime(lastUpdatedAt)}`}</div>
+          <div style={{ font: '400 11px/1 var(--font-mono)', color: 'var(--fg-muted)', marginTop: 3 }}>{isRefreshing ? 'refreshing...' : `refreshed ${formatRelativeTime(lastUpdatedAt)}`}</div>
         </div>
         <Icon name="refresh" size={14} color="var(--fg-muted)" style={isRefreshing ? { animation: 'vael-spin 0.9s linear infinite' } : undefined} />
       </button>

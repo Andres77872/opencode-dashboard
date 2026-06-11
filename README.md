@@ -1,12 +1,12 @@
 # opencode-dashboard
 
-> Local, read-only analytics for your AI coding-assistant usage — one binary, web or terminal, works offline.
+> Local analytics for your AI coding-assistant usage — one binary, web or terminal, works offline.
 
-See your usage across **OpenCode**, **Claude Code**, and **Codex** — sessions, costs, tokens, models, tools, projects, and messages — through a web dashboard or a terminal UI. Nothing leaves your machine; no servers are started against your data; no files are modified.
+See your usage across **OpenCode**, **Claude Code**, and **Codex** — sessions, costs, tokens, models, tools, projects, and messages — through a web dashboard or a terminal UI. Nothing leaves your machine; no source files are modified. The dashboard keeps its own local SQLite cache for aggregate metrics.
 
 ## Overview
 
-**opencode-dashboard** reads each tool's local usage data directly and renders it two ways:
+**opencode-dashboard** reads each tool's local usage data read-only, stores dashboard-owned aggregate metadata in a local SQLite cache, and renders it two ways:
 
 - **Web dashboard** — browser SPA served at `http://127.0.0.1:7450`
 - **TUI dashboard** — terminal interface built with Bubble Tea
@@ -19,7 +19,7 @@ It supports three data sources, all read **read-only** and **local-only**:
 | Claude Code | `claude_code` | JSONL transcripts | `~/.claude` |
 | Codex | `codex` | JSONL transcripts | `~/.codex` |
 
-Most views are scoped to one selected source. The **Overview** is the exception: it merges every available source into combined totals plus a per-source breakdown. You can switch the active source and time range live in both interfaces. No OpenCode (or other) server needs to be running, and at least one source's local data is all that's required.
+Most views are scoped to one selected source. The **Overview** is the exception: it merges every available source into combined totals plus a per-source breakdown. You can switch the active source and time range live in both interfaces. No OpenCode (or other) server needs to be running, and at least one source's local data is all that's required. The dashboard creates `~/.local/share/opencode-dashboard/usage-cache.sqlite` by default; an empty cache is consolidated by a background sync at startup while views are served live from raw data. Once a source is cached, views load from the cache and the gap since the finality cutoff (six hours behind the last sync) is automatically re-mirrored from raw content when the source changes, so recent activity is never missing. The web UI also offers an explicit incremental resync and a clear-and-rebuild action.
 
 ## Data sources
 
@@ -39,6 +39,9 @@ The Overview deliberately does **not** present a single combined cost number. Op
 
 - **Read-only** — no source file or database is ever written to or mutated.
 - **Local-only** — data is read from local paths and served on `127.0.0.1`; nothing is uploaded.
+- **Dashboard cache** — aggregate metadata is stored in `~/.local/share/opencode-dashboard/usage-cache.sqlite` by default; override with `--cache-db` or `OPENCODE_DASHBOARD_CACHE_DB`.
+- **Self-maintaining consolidation** — an empty cache is built by a background sync at startup (views serve live raw data meanwhile); a ready cache re-mirrors recent raw activity on read, so cached views stay complete through now. The web top bar database action opens a sync panel with status, progress, last update, logs, incremental resync, and clear-and-rebuild.
+- **No cached transcripts** — raw conversation text, reasoning text, tool input, tool output, and patches are not stored in the dashboard cache.
 - **Plaintext transcripts** — Claude Code and Codex JSONL transcripts are local plaintext and may contain prompts, tool output, file paths, patches, and secrets.
 - **Redaction** — config previews (`/api/v1/config`) redact obvious secrets before display.
 
@@ -118,6 +121,9 @@ opencode-dashboard web --db /path/to/db         # Explicit OpenCode DB path
 opencode-dashboard web --channel beta           # Channel-specific OpenCode DB
 opencode-dashboard web --claude-home ~/.claude  # Explicit Claude Code home
 opencode-dashboard web --codex-home ~/.codex    # Explicit Codex home
+opencode-dashboard web --cache-db /tmp/usage.db # Explicit dashboard cache
+opencode-dashboard web --rebuild-cache          # Remove dashboard cache before start
+opencode-dashboard web --no-cache               # Start without dashboard cache
 opencode-dashboard web --no-open                # Don't auto-open the browser
 ```
 
@@ -127,6 +133,8 @@ opencode-dashboard web --no-open                # Don't auto-open the browser
 opencode-dashboard tui                       # Interactive terminal UI
 opencode-dashboard tui --source claude_code  # Start on Claude Code
 opencode-dashboard tui --channel latest      # Channel-specific OpenCode DB
+opencode-dashboard tui --rebuild-cache       # Remove dashboard cache before start
+opencode-dashboard tui --no-cache            # Start without dashboard cache
 ```
 
 Key bindings:
@@ -156,6 +164,9 @@ Key bindings:
 | `--source <id>` | `web`, `tui` | Initial source: `opencode`, `claude_code`, or `codex` (default `opencode`) |
 | `--claude-home <dir>` | `web`, `tui` | Claude Code config directory |
 | `--codex-home <dir>` | `web`, `tui` | Codex config directory |
+| `--cache-db <path>` | `web`, `tui` | Dashboard-owned SQLite cache path |
+| `--rebuild-cache` | `web`, `tui` | Delete the dashboard cache before start |
+| `--no-cache` | `web`, `tui` | Run against live sources without using the dashboard cache |
 | `--no-open` | `web` | Do not launch the browser automatically |
 
 ### Time ranges
@@ -191,7 +202,7 @@ opencode-dashboard uninstall --force      # Remove without confirmation
 | Target | Path | Condition |
 |--------|------|-----------|
 | Binary | `~/.local/bin/opencode-dashboard` | If not currently running |
-| Data dir | `~/.local/share/opencode-dashboard` | If exists |
+| Data dir | `~/.local/share/opencode-dashboard` | If exists, including the default dashboard cache |
 | Config dir | `~/.config/opencode-dashboard` | If exists |
 | State dir | `~/.local/state/opencode-dashboard` | If exists |
 
@@ -263,6 +274,7 @@ The `embedassets` build tag is required for production builds. Without it the bi
 ```bash
 ./scripts/dev.sh                 # Build frontend + embed + run on port 7450
 ./scripts/dev.sh --port 9090     # Custom port
+./scripts/dev.sh --no-cache      # Skip cache during local development
 ```
 
 For a fast frontend-only loop, run the Vite dev server, which proxies the API to a running `web` instance:
@@ -283,6 +295,7 @@ opencode-dashboard/
 ├── cmd/opencode-dashboard/main.go   # CLI entry point and source wiring
 ├── internal/
 │   ├── config/                      # XDG paths, DB/channel + source-home resolution
+│   ├── cache/                       # Dashboard-owned SQLite aggregate cache
 │   ├── store/                       # SQLite read-only store (OpenCode)
 │   ├── source/                      # Source registry + cross-source aggregate
 │   │   ├── opencode/                # OpenCode (SQLite) source
@@ -314,7 +327,7 @@ cd web && npm run build    # Type-check + frontend build
 ## Limitations
 
 - **Read-only** — cannot modify any source database, transcript, or settings.
-- **Snapshot caching** — JSONL sources (Claude Code, Codex) are re-scanned on a short TTL; very large transcript trees take longer to load.
+- **Cache refresh** — source fingerprints are re-checked on read (debounced ~15s); when raw data changes, the window after the finality cutoff is re-mirrored from raw content before serving. Data older than the cutoff is treated as final — use the rebuild action to re-read full history.
 - **Release targets** — Linux and macOS on `amd64` and `arm64`, built CGO-free with embedded assets (see `.goreleaser.yaml`).
 
 ## License

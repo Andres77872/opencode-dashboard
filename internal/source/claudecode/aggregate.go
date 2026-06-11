@@ -329,7 +329,7 @@ func (s *snapshot) projectByID(id string, pq stats.PeriodQuery, page, limit int)
 }
 
 func (s *snapshot) sessions(query stats.SessionQuery) (stats.SessionList, error) {
-	pq := stats.PeriodQuery{Period: query.Period, From: query.From, To: query.To}
+	pq := stats.PeriodQuery{Period: query.Period, From: query.From, To: query.To, FromTime: query.FromTime, ToTime: query.ToTime}
 	window, err := s.window(pq)
 	if err != nil {
 		return stats.SessionList{}, err
@@ -431,6 +431,32 @@ func (s *snapshot) filteredMessages(pq stats.PeriodQuery) ([]*messageRecord, err
 }
 
 func (s *snapshot) window(pq stats.PeriodQuery) (periodWindow, error) {
+	// Internal time-precision bounds beat everything (cache gap-merge layer).
+	if from, to, ok := pq.TimeBounds(); ok {
+		return periodWindow{start: from, end: to}, nil
+	}
+	w, err := s.presetWindow(pq)
+	if err != nil {
+		return periodWindow{}, err
+	}
+	if !pq.ToTime.IsZero() {
+		capped := pq.ToTime.UTC()
+		if w.all {
+			// Bound the open "all" window so downstream bucket fills stay sane.
+			start := capped
+			if len(s.ordered) > 0 && s.ordered[0].Entry.TimeCreated.Before(capped) {
+				start = s.ordered[0].Entry.TimeCreated
+			}
+			return periodWindow{start: start, end: capped}, nil
+		}
+		if capped.Before(w.end) {
+			w.end = capped
+		}
+	}
+	return w, nil
+}
+
+func (s *snapshot) presetWindow(pq stats.PeriodQuery) (periodWindow, error) {
 	if pq.From != "" {
 		from, err := time.ParseInLocation("2006-01-02", pq.From, time.UTC)
 		if err != nil {

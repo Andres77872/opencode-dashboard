@@ -61,16 +61,18 @@ export interface IconButtonProps {
   onClick?: () => void
   size?: number
   spinning?: boolean
+  disabled?: boolean
 }
 
-export function IconButton({ name, label, active, onClick, size = 32, spinning }: IconButtonProps) {
+export function IconButton({ name, label, active, onClick, size = 32, spinning, disabled }: IconButtonProps) {
   const [h, setH] = useState(false)
   return (
     <button
       type="button"
       aria-label={label}
       title={label}
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
       onMouseEnter={() => setH(true)}
       onMouseLeave={() => setH(false)}
       style={{
@@ -79,11 +81,12 @@ export function IconButton({ name, label, active, onClick, size = 32, spinning }
         justifyContent: 'center',
         width: size,
         height: size,
-        color: active ? 'var(--accent)' : h ? 'var(--fg-primary)' : 'var(--fg-muted)',
+        color: disabled ? 'var(--fg-subtle)' : active ? 'var(--accent)' : h ? 'var(--fg-primary)' : 'var(--fg-muted)',
         background: active ? 'var(--accent-soft)' : h ? 'var(--ink-750)' : 'transparent',
         border: `1px solid ${active ? 'var(--border-accent)' : 'transparent'}`,
         borderRadius: 'var(--radius-md)',
-        cursor: 'pointer',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.55 : 1,
         transition: 'all var(--dur-fast)',
       }}
     >

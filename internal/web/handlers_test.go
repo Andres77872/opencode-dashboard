@@ -132,7 +132,7 @@ func TestWriteJSONCacheControl(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeJSON(rec, http.StatusOK, map[string]string{"status": "ok"})
 
-	expected := "public, max-age=30"
+	expected := "private, max-age=30"
 	got := rec.Header().Get("Cache-Control")
 	if got != expected {
 		t.Errorf("Cache-Control header = %q, want %q", got, expected)
@@ -147,12 +147,12 @@ func TestWriteJSONCacheControl(t *testing.T) {
 	}
 }
 
-// TestWriteJSONCacheControlOnErrorResponse validates Cache-Control on error responses too.
+// TestWriteJSONCacheControlOnErrorResponse validates error responses are never cacheable.
 func TestWriteJSONCacheControlOnErrorResponse(t *testing.T) {
 	rec := httptest.NewRecorder()
 	NotFound("test not found").Write(rec)
 
-	expected := "public, max-age=30"
+	expected := "no-store"
 	got := rec.Header().Get("Cache-Control")
 	if got != expected {
 		t.Errorf("Cache-Control header on error = %q, want %q", got, expected)

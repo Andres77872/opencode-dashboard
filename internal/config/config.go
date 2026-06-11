@@ -9,10 +9,12 @@ import (
 
 const (
 	EnvDBPath          = "OPENCODE_DASHBOARD_DB"
+	EnvCacheDBPath     = "OPENCODE_DASHBOARD_CACHE_DB"
 	EnvClaudeConfigDir = "CLAUDE_CONFIG_DIR"
 	EnvCodexHome       = "OPENCODE_DASHBOARD_CODEX_HOME"
 
-	AppName = "opencode"
+	AppName          = "opencode"
+	DashboardAppName = "opencode-dashboard"
 
 	SourceOpenCode   = "opencode"
 	SourceClaudeCode = "claude_code"
@@ -134,6 +136,20 @@ func (c *Config) StateDir() string {
 
 func DefaultDBPath() string {
 	return filepath.Join(XDGDataHome(), AppName, DefaultDBName)
+}
+
+func DefaultCacheDBPath() string {
+	return filepath.Join(XDGDataHome(), DashboardAppName, "usage-cache.sqlite")
+}
+
+func ResolveCacheDB(flagDB string) PathSelection {
+	if flagDB != "" {
+		return PathSelection{Path: flagDB, Source: "--cache-db"}
+	}
+	if envPath := os.Getenv(EnvCacheDBPath); envPath != "" {
+		return PathSelection{Path: envPath, Source: EnvCacheDBPath + " environment override"}
+	}
+	return PathSelection{Path: DefaultCacheDBPath(), Source: "default dashboard cache"}
 }
 
 func DefaultClaudeHomePath() string {

@@ -16,6 +16,11 @@ const (
 	codexSourceID        = string(source.SourceCodex)
 	defaultSnapshotTTL   = 2 * time.Second
 	defaultSourceTimeout = 10 * time.Second
+
+	// boundedLoadMargin is subtracted from a bounded load's lower bound before
+	// pruning files by mtime, absorbing filesystem timestamp coarseness and
+	// small clock skew.
+	boundedLoadMargin = 10 * time.Minute
 )
 
 type Options struct {
@@ -36,6 +41,12 @@ type Source struct {
 	lastStatus bool
 	pricing    pricingSnapshot
 	pricingErr error
+
+	// Bounded (mtime-pruned) snapshot slot for recent-window queries. Kept
+	// separate so a partial load never poisons the full-snapshot cache above.
+	bounded         *snapshot
+	boundedFrom     time.Time // prune threshold the bounded slot was built with
+	boundedLoadedAt time.Time
 }
 
 func New(opts Options) *Source {
@@ -118,56 +129,56 @@ func unavailableInfo(path, pathSource, reason string) source.SourceInfo {
 }
 
 func (s *Source) Overview(ctx context.Context, pq stats.PeriodQuery) (stats.OverviewStats, error) {
-	snap, err := s.loadSnapshot(ctx)
+	snap, err := s.snapshotFor(ctx, pq)
 	if err != nil {
 		return stats.OverviewStats{}, err
 	}
 	return snap.overview(pq)
 }
 func (s *Source) Daily(ctx context.Context, pq stats.PeriodQuery, granularity ...stats.Granularity) (stats.DailyStats, error) {
-	snap, err := s.loadSnapshot(ctx)
+	snap, err := s.snapshotFor(ctx, pq)
 	if err != nil {
 		return stats.DailyStats{}, err
 	}
 	return snap.daily(pq, granularity...)
 }
 func (s *Source) DailyDimension(ctx context.Context, dimension string, pq stats.PeriodQuery) (stats.DailyDimensionStats, error) {
-	snap, err := s.loadSnapshot(ctx)
+	snap, err := s.snapshotFor(ctx, pq)
 	if err != nil {
 		return stats.DailyDimensionStats{}, err
 	}
 	return snap.dailyDimension(dimension, pq)
 }
 func (s *Source) Models(ctx context.Context, pq stats.PeriodQuery) (stats.ModelStats, error) {
-	snap, err := s.loadSnapshot(ctx)
+	snap, err := s.snapshotFor(ctx, pq)
 	if err != nil {
 		return stats.ModelStats{}, err
 	}
 	return snap.models(pq)
 }
 func (s *Source) Tools(ctx context.Context, pq stats.PeriodQuery) (stats.ToolStats, error) {
-	snap, err := s.loadSnapshot(ctx)
+	snap, err := s.snapshotFor(ctx, pq)
 	if err != nil {
 		return stats.ToolStats{}, err
 	}
 	return snap.tools(pq)
 }
 func (s *Source) Projects(ctx context.Context, pq stats.PeriodQuery) (stats.ProjectStats, error) {
-	snap, err := s.loadSnapshot(ctx)
+	snap, err := s.snapshotFor(ctx, pq)
 	if err != nil {
 		return stats.ProjectStats{}, err
 	}
 	return snap.projects(pq)
 }
 func (s *Source) ProjectByID(ctx context.Context, id string, pq stats.PeriodQuery, page, limit int) (*stats.ProjectDetail, error) {
-	snap, err := s.loadSnapshot(ctx)
+	snap, err := s.snapshotFor(ctx, pq)
 	if err != nil {
 		return nil, err
 	}
 	return snap.projectByID(id, pq, page, limit)
 }
 func (s *Source) Sessions(ctx context.Context, query stats.SessionQuery) (stats.SessionList, error) {
-	snap, err := s.loadSnapshot(ctx)
+	snap, err := s.snapshotFor(ctx, stats.PeriodQuery{FromTime: query.FromTime})
 	if err != nil {
 		return stats.SessionList{}, err
 	}
@@ -181,13 +192,24 @@ func (s *Source) SessionByID(ctx context.Context, id string) (*stats.SessionDeta
 	return snap.sessionByID(id), nil
 }
 func (s *Source) Messages(ctx context.Context, pq stats.PeriodQuery, page, limit int, sort stats.MessageSort) (stats.MessageList, error) {
-	snap, err := s.loadSnapshot(ctx)
+	snap, err := s.snapshotFor(ctx, pq)
 	if err != nil {
 		return stats.MessageList{}, err
 	}
 	return snap.messages(pq, page, limit, sort)
 }
 func (s *Source) MessageByID(ctx context.Context, id string) (*stats.MessageDetail, error) {
+	// A fresh bounded snapshot usually already holds recent messages (the
+	// consolidation collect lists with FromTime and then fetches details);
+	// fall back to the full snapshot only on a miss.
+	s.mu.Lock()
+	if s.bounded != nil && time.Since(s.boundedLoadedAt) <= s.opts.SnapshotTTL {
+		if detail := s.bounded.messageByID(id); detail != nil {
+			s.mu.Unlock()
+			return detail, nil
+		}
+	}
+	s.mu.Unlock()
 	snap, err := s.loadSnapshot(ctx)
 	if err != nil {
 		return nil, err
@@ -288,10 +310,23 @@ func (s *Source) loadSnapshot(ctx context.Context) (*snapshot, error) {
 		s.setLastDiagnostics(disc.diagnostics, false)
 		return nil, source.UnavailableSourceError{ID: source.SourceCodex, Reason: disc.diagnostics.Reason}
 	}
+	snap, err := s.parseFiles(ctx, disc.files, disc.diagnostics)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.snapshot = snap
+	s.loadedAt = time.Now()
+	s.lastDiag = snap.diagnostics
+	s.lastStatus = snap.diagnostics.Status != "unavailable" && snap.diagnostics.Status != "empty"
+	s.mu.Unlock()
+	return snap, nil
+}
+
+func (s *Source) parseFiles(ctx context.Context, files []transcriptFile, diag source.SourceDiagnostics) (*snapshot, error) {
 	pricing := s.loadPricing(ctx)
 	records := make([]codexRecord, 0)
-	diag := disc.diagnostics
-	for _, file := range disc.files {
+	for _, file := range files {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -311,12 +346,65 @@ func (s *Source) loadSnapshot(ctx context.Context) (*snapshot, error) {
 		diag.UnsupportedEvents += parseDiag.UnsupportedEvents
 		records = append(records, parsed...)
 	}
-	snap := normalizeRecords(s.opts.CodexHome, records, pricing, diag)
+	return normalizeRecords(s.opts.CodexHome, records, pricing, diag), nil
+}
+
+// snapshotFor picks the snapshot for a query: a bounded (mtime-pruned) load
+// when the query carries a time-precision lower bound, else the full snapshot.
+func (s *Source) snapshotFor(ctx context.Context, pq stats.PeriodQuery) (*snapshot, error) {
+	if pq.FromTime.IsZero() {
+		return s.loadSnapshot(ctx)
+	}
+	return s.loadBoundedSnapshot(ctx, pq.FromTime)
+}
+
+// loadBoundedSnapshot parses only rollout files whose mtime is at/after from
+// minus a safety margin. Rollouts are append-only, so a file whose mtime
+// predates the threshold cannot contain a record created after from; included
+// files are parsed whole, so in-window records keep full session context. The
+// result lives in its own cache slot and never replaces the full snapshot or
+// its diagnostics.
+func (s *Source) loadBoundedSnapshot(ctx context.Context, from time.Time) (*snapshot, error) {
+	if s == nil {
+		return nil, source.UnavailableSourceError{ID: source.SourceCodex, Reason: "Codex source is not configured"}
+	}
+	ctx, cancel := s.contextWithTimeout(ctx)
+	defer cancel()
+	pruneT := from.UTC().Add(-boundedLoadMargin)
+
 	s.mu.Lock()
-	s.snapshot = snap
-	s.loadedAt = time.Now()
-	s.lastDiag = snap.diagnostics
-	s.lastStatus = snap.diagnostics.Status != "unavailable" && snap.diagnostics.Status != "empty"
+	if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
+		snap := s.snapshot
+		s.mu.Unlock()
+		return snap, nil // a fresh full snapshot is a superset
+	}
+	if s.bounded != nil && time.Since(s.boundedLoadedAt) <= s.opts.SnapshotTTL && !s.boundedFrom.After(pruneT) {
+		snap := s.bounded
+		s.mu.Unlock()
+		return snap, nil // cached bounded superset
+	}
+	s.mu.Unlock()
+
+	disc := discoverTranscripts(ctx, s.opts.CodexHome)
+	if !disc.available {
+		s.setLastDiagnostics(disc.diagnostics, false)
+		return nil, source.UnavailableSourceError{ID: source.SourceCodex, Reason: disc.diagnostics.Reason}
+	}
+	files := make([]transcriptFile, 0, len(disc.files))
+	for _, file := range disc.files {
+		if !file.ModTime.Before(pruneT) {
+			files = append(files, file)
+		}
+	}
+	snap, err := s.parseFiles(ctx, files, disc.diagnostics)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	s.bounded = snap
+	s.boundedFrom = pruneT
+	s.boundedLoadedAt = time.Now()
 	s.mu.Unlock()
 	return snap, nil
 }

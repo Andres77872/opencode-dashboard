@@ -60,9 +60,25 @@ func (e APIError) Write(w http.ResponseWriter) {
 	writeJSON(w, e.Code, e)
 }
 
+// writeJSON respects a Cache-Control header the handler already set. Error
+// responses are never cacheable: a transient failure must not be replayed by
+// the browser for 30 seconds.
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "public, max-age=30")
+	if w.Header().Get("Cache-Control") == "" {
+		if status >= 400 {
+			w.Header().Set("Cache-Control", "no-store")
+		} else {
+			w.Header().Set("Cache-Control", "private, max-age=30")
+		}
+	}
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
+}
+
+// writeJSONNoStore is for live-status responses (e.g. sync progress) that the
+// browser polls and must never serve from its HTTP cache.
+func writeJSONNoStore(w http.ResponseWriter, status int, data any) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, status, data)
 }

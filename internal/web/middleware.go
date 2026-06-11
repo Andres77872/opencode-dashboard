@@ -42,6 +42,7 @@ func LoggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 			logger.Info("request",
 				"method", r.Method,
 				"path", r.URL.Path,
+				"query", r.URL.RawQuery,
 				"status", wrapped.status,
 				"duration", time.Since(start).Milliseconds(),
 				"remote", r.RemoteAddr,

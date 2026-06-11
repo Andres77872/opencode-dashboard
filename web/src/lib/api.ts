@@ -1,6 +1,8 @@
 import type {
   AllSourcesOverview,
   ApiErrorResponse,
+  CacheStatusResponse,
+  CacheSyncMode,
   ConfigStats,
   DailyDimensionStats,
   DailyStats,
@@ -130,6 +132,23 @@ function buildDetailUrl(basePath: string, sourceId?: SourceID): string {
 
 export function getSources(signal?: AbortSignal) {
   return request<SourceListResponse>('/api/v1/sources', { signal })
+}
+
+export function getCacheStatus(signal?: AbortSignal) {
+  return request<CacheStatusResponse>('/api/v1/cache', { signal })
+}
+
+export function syncCache(sourceId?: SourceID, mode: CacheSyncMode = 'incremental', signal?: AbortSignal) {
+  const params = new URLSearchParams()
+  if (sourceId) {
+    params.set('source', sourceId)
+  }
+  params.set('mode', mode)
+  const query = params.toString()
+  return request<CacheStatusResponse>(`/api/v1/cache/sync${query ? `?${query}` : ''}`, {
+    method: 'POST',
+    signal,
+  })
 }
 
 export function getOverview(period: string, signal?: AbortSignal, sourceId?: SourceID) {

@@ -230,6 +230,13 @@ type SessionQuery struct {
 	Period    string // "1d", "7d", "30d", "1y", "all" — filters by message activity time
 	From      string // ISO 8601 date "2006-01-02" for custom range
 	To        string // ISO 8601 date "2006-01-02" for custom range (optional)
+
+	// FromTime/ToTime are internal time-precision window bounds used by the
+	// cache consolidation and gap-merge layers. Zero = unset. A non-zero
+	// FromTime takes precedence over From/Period; a non-zero ToTime caps the
+	// window end instead of To/now. Never populated from HTTP requests.
+	FromTime time.Time
+	ToTime   time.Time
 }
 
 // PeriodQuery carries either a preset period string OR explicit from/to dates.
@@ -240,6 +247,27 @@ type PeriodQuery struct {
 	Period string // preset: "1h", "6h", "12h", "24h", "72h", "1d", "7d", "14d", "30d", "1y", "all"
 	From   string // ISO 8601 date "2006-01-02". When From is set, Period is ignored.
 	To     string // ISO 8601 date "2006-01-02". Optional — empty = now in server timezone.
+
+	// FromTime/ToTime are internal time-precision window bounds used by the
+	// cache consolidation and gap-merge layers. Zero = unset. A non-zero
+	// FromTime takes precedence over From/Period; a non-zero ToTime caps the
+	// window end instead of To/now. Never populated from HTTP requests.
+	FromTime time.Time
+	ToTime   time.Time
+}
+
+// TimeBounds resolves the internal time-precision window. ok is true when
+// FromTime is set, meaning the caller should use [from, to) directly instead
+// of resolving Period/From/To strings. A zero ToTime resolves to now.
+func (pq PeriodQuery) TimeBounds() (from, to time.Time, ok bool) {
+	if pq.FromTime.IsZero() {
+		return time.Time{}, time.Time{}, false
+	}
+	to = pq.ToTime
+	if to.IsZero() {
+		to = time.Now().UTC()
+	}
+	return pq.FromTime.UTC(), to.UTC(), true
 }
 
 type MessageSortField string

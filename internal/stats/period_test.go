@@ -519,3 +519,67 @@ func TestHourPresetUTCTimezone(t *testing.T) {
 		t.Errorf("EndDate timezone = %v, want time.UTC", pw.EndDate.Location())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ComputePeriodWindowFromQuery — internal time-precision bounds
+// ---------------------------------------------------------------------------
+
+func TestComputePeriodWindowFromQuery_fromTimeBeatsEverything(t *testing.T) {
+	from := time.Date(2026, 6, 10, 6, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 6, 10, 9, 30, 0, 0, time.UTC)
+	pw, err := ComputePeriodWindowFromQuery(context.Background(), nil, PeriodQuery{
+		Period:   "30d",
+		From:     "2026-01-01",
+		FromTime: from,
+		ToTime:   to,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pw.StartMs != from.UnixMilli() || pw.EndMs != to.UnixMilli() {
+		t.Fatalf("window = [%d, %d), want FromTime/ToTime [%d, %d)", pw.StartMs, pw.EndMs, from.UnixMilli(), to.UnixMilli())
+	}
+}
+
+func TestComputePeriodWindowFromQuery_fromTimeDefaultsEndToNow(t *testing.T) {
+	from := time.Now().UTC().Add(-3 * time.Hour)
+	pw, err := ComputePeriodWindowFromQuery(context.Background(), nil, PeriodQuery{FromTime: from})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pw.StartMs != from.UnixMilli() {
+		t.Fatalf("StartMs = %d, want %d", pw.StartMs, from.UnixMilli())
+	}
+	if drift := time.Since(time.UnixMilli(pw.EndMs)); drift < 0 || drift > time.Minute {
+		t.Fatalf("EndMs = %d, want ~now", pw.EndMs)
+	}
+}
+
+func TestComputePeriodWindowFromQuery_toTimeCapsPresetAndExplicit(t *testing.T) {
+	cap := time.Now().UTC().Add(-6 * time.Hour).Truncate(time.Hour)
+	pw, err := ComputePeriodWindowFromQuery(context.Background(), nil, PeriodQuery{Period: "7d", ToTime: cap})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pw.EndMs != cap.UnixMilli() {
+		t.Fatalf("preset EndMs = %d, want capped at %d", pw.EndMs, cap.UnixMilli())
+	}
+
+	pw, err = ComputePeriodWindowFromQuery(context.Background(), nil, PeriodQuery{From: "2026-01-01", ToTime: cap})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pw.EndMs != cap.UnixMilli() {
+		t.Fatalf("explicit EndMs = %d, want capped at %d", pw.EndMs, cap.UnixMilli())
+	}
+
+	// A ToTime after the resolved end must not extend the window.
+	future := time.Now().UTC().Add(48 * time.Hour)
+	pw, err = ComputePeriodWindowFromQuery(context.Background(), nil, PeriodQuery{Period: "1h", ToTime: future})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if drift := time.Since(time.UnixMilli(pw.EndMs)); drift < 0 || drift > time.Minute {
+		t.Fatalf("EndMs = %d, want unchanged ~now (cap must never extend)", pw.EndMs)
+	}
+}

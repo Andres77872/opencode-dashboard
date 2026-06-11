@@ -30,6 +30,10 @@ type Server struct {
 }
 
 func NewServer(addr string, registry *source.Registry, logger *slog.Logger) *http.Server {
+	return NewServerWithCache(addr, registry, logger, nil)
+}
+
+func NewServerWithCache(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager) *http.Server {
 	if addr == "" {
 		addr = defaultAddr
 	}
@@ -43,7 +47,7 @@ func NewServer(addr string, registry *source.Registry, logger *slog.Logger) *htt
 	srv := &Server{
 		Addr:     addr,
 		Registry: registry,
-		handlers: NewHandlers(registry),
+		handlers: NewHandlersWithCache(registry, cache),
 		mux:      http.NewServeMux(),
 	}
 
@@ -79,6 +83,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/messages", s.handlers.Messages)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/messages/{id}", s.handlers.MessageByID)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/config", s.handlers.Config)
+	s.mux.HandleFunc("GET "+apiV1Prefix+"/cache", s.handlers.CacheStatus)
+	s.mux.HandleFunc("POST "+apiV1Prefix+"/cache/sync", s.handlers.CacheSync)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/version", s.handlers.Version)
 	s.mux.HandleFunc("GET /health", s.healthHandler)
 }
@@ -97,7 +103,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		} else {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 		}
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		if r.Method == http.MethodOptions {
