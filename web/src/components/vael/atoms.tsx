@@ -1,6 +1,7 @@
 /* Vael atoms — DeltaChip, Badge, VendorChip, Avatar, Legend, SourceStack,
    BarRow, Sparkline. Ported from the Vael ui_kit (inline styles + CSS vars). */
-import type { CSSProperties, ReactNode } from 'react'
+import { useId, useState } from 'react'
+import type { CSSProperties, MouseEvent, ReactNode } from 'react'
 import type { SourceID } from '../../types/api'
 import { vendorMeta } from './vendors'
 
@@ -213,18 +214,32 @@ export function BarRow({ label, value, max, rawValue, color = 'var(--accent)', s
   )
 }
 
+export interface RSparkProps {
+  data: number[]
+  tone?: string
+  height?: number
+  /** Per-point labels (same length as data). Presence enables hover crosshair + tooltip. */
+  labels?: string[]
+  /** Tooltip value formatter. */
+  fmt?: (v: number) => string
+}
+
 /* responsive full-width sparkline strip (non-scaling stroke) */
-export function RSpark({ data = [], tone = 'var(--accent)', height = 30 }: { data: number[]; tone?: string; height?: number }) {
+export function RSpark({ data = [], tone = 'var(--accent)', height = 30, labels, fmt }: RSparkProps) {
+  // useId delimiters (« » / :) are not safe inside url(#...) refs
+  const gid = `rs${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
+  const [hov, setHov] = useState<{ idx: number; w: number } | null>(null)
   if (!data.length) return null
   const min = Math.min(...data)
   const max = Math.max(...data)
   const span = max - min || 1
   const n = data.length
   const W = 100
-  const pts = data.map((d, i) => [(i / (n - 1 || 1)) * W, height - 2 - ((d - min) / span) * (height - 5)] as const)
+  // y in CSS px (the svg height attr matches the viewBox height, so only x stretches)
+  const py = (d: number) => height - 2 - ((d - min) / span) * (height - 5)
+  const pts = data.map((d, i) => [(i / (n - 1 || 1)) * W, py(d)] as const)
   const line = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(2)} ${y.toFixed(2)}`).join(' ')
-  const gid = `rs${Math.round(data[0])}_${n}_${height}`
-  return (
+  const svg = (
     <svg width="100%" height={height} viewBox={`0 0 ${W} ${height}`} preserveAspectRatio="none" style={{ display: 'block' }}>
       <defs>
         <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
@@ -235,6 +250,60 @@ export function RSpark({ data = [], tone = 'var(--accent)', height = 30 }: { dat
       <path d={`${line} L${W} ${height} L0 ${height} Z`} fill={`url(#${gid})`} />
       <path d={line} fill="none" stroke={tone} strokeWidth="1.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
     </svg>
+  )
+  if (!labels || labels.length !== n) return svg
+
+  const onMove = (e: MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect()
+    const frac = (e.clientX - rect.left) / (rect.width || 1)
+    const idx = Math.max(0, Math.min(n - 1, Math.round(frac * (n - 1))))
+    setHov({ idx, w: rect.width })
+  }
+  const leftPct = (i: number) => (n > 1 ? (i / (n - 1)) * 100 : 0)
+  const TT = 110
+  return (
+    <div style={{ position: 'relative' }} onMouseMove={onMove} onMouseLeave={() => setHov(null)}>
+      {svg}
+      {hov && (
+        <>
+          <div style={{ position: 'absolute', left: `${leftPct(hov.idx)}%`, top: 0, bottom: 0, width: 1, background: 'var(--border-strong)', pointerEvents: 'none' }} />
+          <div
+            style={{
+              position: 'absolute',
+              left: `${leftPct(hov.idx)}%`,
+              top: py(data[hov.idx]),
+              width: 7,
+              height: 7,
+              borderRadius: '50%',
+              background: 'var(--ink-900)',
+              border: `1.5px solid ${tone}`,
+              transform: 'translate(-50%, -50%)',
+              pointerEvents: 'none',
+            }}
+          />
+          <div
+            style={{
+              position: 'absolute',
+              bottom: height + 6,
+              left: Math.min(Math.max(0, hov.w - TT), Math.max(0, (leftPct(hov.idx) / 100) * hov.w - TT / 2)),
+              pointerEvents: 'none',
+              background: 'var(--ink-700)',
+              border: '1px solid var(--border-strong)',
+              borderRadius: 'var(--radius-md)',
+              boxShadow: 'var(--shadow-lg)',
+              padding: '6px 8px',
+              whiteSpace: 'nowrap',
+              zIndex: 5,
+            }}
+          >
+            <div style={{ font: '600 11px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>{labels[hov.idx]}</div>
+            <div style={{ font: '600 12px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums', marginTop: 4 }}>
+              {fmt ? fmt(data[hov.idx]) : String(data[hov.idx])}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 

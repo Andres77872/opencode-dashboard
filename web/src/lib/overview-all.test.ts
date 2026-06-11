@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildSourceTrendData, trendMetricValue } from './overview-all.ts'
+import { buildCombinedDailyTotals, buildSourceTrendData, trendMetricValue } from './overview-all.ts'
 import type { DayStats, SourceOverview } from '../types/api.ts'
 
-function day(date: string, messages: number, cost: number): DayStats {
+function day(date: string, messages: number, cost: number, sessions = 0): DayStats {
   return {
     date,
-    sessions: 0,
+    sessions,
     messages,
     cost,
     tokens: { input: messages * 2, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
@@ -57,4 +57,21 @@ test('buildSourceTrendData merges by date with one column per source, ascending'
 test('buildSourceTrendData tolerates missing trends', () => {
   const sources = [src('opencode', [])]
   assert.deepEqual(buildSourceTrendData(sources, 'cost'), [])
+})
+
+test('buildCombinedDailyTotals sums tokens, sessions, and messages per day, ascending', () => {
+  const sources = [
+    src('opencode', [day('2026-01-02', 4, 9.9, 1), day('2026-01-01', 2, 9.9, 1)]),
+    src('codex', [day('2026-01-02', 7, 9.9, 3)]),
+  ]
+  const rows = buildCombinedDailyTotals(sources)
+
+  assert.deepEqual(rows, [
+    { date: '2026-01-01', tokens: 4, sessions: 1, messages: 2 },
+    { date: '2026-01-02', tokens: 22, sessions: 4, messages: 11 },
+  ])
+})
+
+test('buildCombinedDailyTotals tolerates missing trends', () => {
+  assert.deepEqual(buildCombinedDailyTotals([src('opencode', [])]), [])
 })

@@ -61,12 +61,14 @@ export interface StatCardProps {
   delta?: DeltaChipProps
   spark?: number[]
   sparkTone?: string
+  sparkLabels?: string[]
+  sparkFmt?: (v: number) => string
   hint?: ReactNode
   accent?: boolean
   title?: string
 }
 
-export function StatCard({ label, value, unit, delta, spark, sparkTone = 'var(--accent)', hint, accent = false, title }: StatCardProps) {
+export function StatCard({ label, value, unit, delta, spark, sparkTone = 'var(--accent)', sparkLabels, sparkFmt, hint, accent = false, title }: StatCardProps) {
   return (
     <div
       title={title}
@@ -93,7 +95,7 @@ export function StatCard({ label, value, unit, delta, spark, sparkTone = 'var(--
         </div>
         {spark && spark.length > 0 && (
           <div style={{ marginTop: 12 }}>
-            <RSpark data={spark} tone={sparkTone} height={30} />
+            <RSpark data={spark} tone={sparkTone} height={30} labels={sparkLabels} fmt={sparkFmt} />
           </div>
         )}
       </div>

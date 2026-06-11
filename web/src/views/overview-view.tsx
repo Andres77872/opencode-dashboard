@@ -1,6 +1,7 @@
 /* Overview — all-sources aggregate (Vael). Costs are shown per source, never
-   combined (see useOverviewAll). No fabricated deltas: KPI sparklines come from
-   the per-source daily trend; period-over-period deltas are omitted. */
+   combined (see useOverviewAll) — hence no cost KPI spark and no Total overlay
+   on the cost tab. Each KPI card always shows its own metric's daily history;
+   no fabricated deltas: period-over-period deltas are omitted. */
 import { useMemo, useState } from 'react'
 import {
   Card,
@@ -27,7 +28,7 @@ import { useDashboardContext } from '../components/layout/dashboard-context'
 import { useOverviewAll } from '../lib/use-overview-all'
 import { usePeriodControls } from '../lib/use-period-controls'
 import { getAvgTokenTotal, getTokenBreakdownItems, getTokenTotal } from '../lib/token-breakdown'
-import { buildSourceTrendData, type TrendMetric } from '../lib/overview-all'
+import { buildCombinedDailyTotals, buildSourceTrendData, type TrendMetric } from '../lib/overview-all'
 import {
   formatCompactCurrency,
   formatCompactCurrencyWithProvenance,
@@ -64,8 +65,8 @@ export function OverviewView() {
     return (id?: SourceID) => (id ? map.get(id) ?? id : 'unknown')
   }, [data?.sources])
 
-  // Per-source daily series (stacked) + a combined daily total for the KPI spark.
-  const { stackedDays, stackedKeys, sparkSeries } = useMemo(() => {
+  // Per-source daily series for the stacked chart (depends on the selected metric).
+  const { stackedDays, stackedKeys } = useMemo(() => {
     const sources = data?.sources ?? []
     const keyed: StackedBarKey[] = sources
       .filter((s) => (s.trend?.length ?? 0) > 0)
@@ -76,9 +77,20 @@ export function OverviewView() {
       wd: formatShortWeekday(String(r.date)),
       per: Object.fromEntries(keyed.map((k) => [k.id, Number(r[k.id] ?? 0)])),
     }))
-    const spark = rows.map((r) => keyed.reduce((sum, k) => sum + Number(r[k.id] ?? 0), 0))
-    return { stackedDays: days, stackedKeys: keyed, sparkSeries: spark }
+    return { stackedDays: days, stackedKeys: keyed }
   }, [data?.sources, metric])
+
+  // Combined daily totals for the always-on KPI sparklines (metric-independent;
+  // cost is intentionally absent — never combined across sources).
+  const { sparkLabels, tokenSpark, sessionSpark, messageSpark } = useMemo(() => {
+    const daily = buildCombinedDailyTotals(data?.sources ?? [])
+    return {
+      sparkLabels: daily.map((d) => `${formatShortDate(d.date)} · ${formatShortWeekday(d.date)}`),
+      tokenSpark: daily.map((d) => d.tokens),
+      sessionSpark: daily.map((d) => d.sessions),
+      messageSpark: daily.map((d) => d.messages),
+    }
+  }, [data?.sources])
 
   if (loading && !data) {
     return (
@@ -148,9 +160,9 @@ export function OverviewView() {
 
       {/* KPI row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-        <StatCard accent label="Tokens" value={formatTokenCount(totalTokens)} title={formatInteger(totalTokens)} hint={`${formatCompactInteger(getAvgTokenTotal(data.tokens_per_message))} / message`} spark={metric === 'tokens' ? sparkSeries : undefined} />
-        <StatCard label="Sessions" value={formatInteger(data.total.sessions)} hint={`${data.total.days} active days`} />
-        <StatCard label="Messages" value={formatInteger(data.total.messages)} hint={`${data.messages_per_session.toFixed(1)} / session`} />
+        <StatCard accent label="Tokens" value={formatTokenCount(totalTokens)} title={formatInteger(totalTokens)} hint={`${formatCompactInteger(getAvgTokenTotal(data.tokens_per_message))} / message`} spark={tokenSpark} sparkLabels={sparkLabels} sparkFmt={formatTokenCount} />
+        <StatCard label="Sessions" value={formatInteger(data.total.sessions)} hint={`${data.total.days} active days`} spark={sessionSpark} sparkLabels={sparkLabels} sparkFmt={formatInteger} />
+        <StatCard label="Messages" value={formatInteger(data.total.messages)} hint={`${data.messages_per_session.toFixed(1)} / session`} spark={messageSpark} sparkLabels={sparkLabels} sparkFmt={formatCompactInteger} />
         <StatCard label="Sources active" value={`${activeSources} / ${data.sources.length}`} hint="with activity in range" />
       </div>
 
@@ -163,7 +175,7 @@ export function OverviewView() {
         >
           <div ref={chartRef} style={{ minWidth: 0 }}>
             {stackedDays.length > 0 && stackedKeys.length > 0 ? (
-              <StackedBars days={stackedDays} keys={stackedKeys} width={Math.max(320, chartWidth)} height={240} valueFmt={metricFmt(metric)} />
+              <StackedBars days={stackedDays} keys={stackedKeys} width={Math.max(320, chartWidth)} height={240} valueFmt={metricFmt(metric)} showTotal={metric !== 'cost'} />
             ) : (
               <div style={{ height: 240, display: 'flex', alignItems: 'center', justifyContent: 'center', font: '400 13px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>No trend data for this range.</div>
             )}

@@ -1,7 +1,7 @@
 /* Vael charts — pure SVG, calm + exact. AreaChart, StackedBars, Donut,
    BudgetRing, Heatmap. Ported from the Vael ui_kit (replaces Recharts). */
 import { useLayoutEffect, useRef, useState } from 'react'
-import type { MouseEvent, RefObject } from 'react'
+import type { CSSProperties, MouseEvent, RefObject } from 'react'
 
 export function niceMax(v: number): number {
   if (v <= 0) return 1
@@ -158,9 +158,12 @@ export interface StackedBarsProps {
   width?: number
   height?: number
   valueFmt?: (v: number) => string
+  /** Overlay a combined-total trend line and a Total tooltip row. Disable when
+      summing across keys is not meaningful (e.g. per-source costs). */
+  showTotal?: boolean
 }
 
-export function StackedBars({ days = [], keys = [], width = 600, height = 220, valueFmt = (v) => String(v) }: StackedBarsProps) {
+export function StackedBars({ days = [], keys = [], width = 600, height = 220, valueFmt = (v) => String(v), showTotal = true }: StackedBarsProps) {
   const [hi, setHi] = useState(-1)
   const padL = 48
   const padR = 14
@@ -172,12 +175,20 @@ export function StackedBars({ days = [], keys = [], width = 600, height = 220, v
   const max = niceMax(Math.max(1, ...totals))
   const n = days.length
   const gap = 3
-  const bw = Math.max(3, iw / (n || 1) - gap)
+  const slot = iw / (n || 1)
+  const bw = Math.max(3, slot - gap)
   const y = (v: number) => padT + ih - (v / max) * ih
   const ticks = 4
+
+  const onMove = (e: MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect()
+    const idx = Math.floor((e.clientX - rect.left - padL) / (slot || 1))
+    setHi(Math.max(0, Math.min(n - 1, idx)))
+  }
+
   return (
     <div style={{ position: 'relative', width }}>
-      <svg width={width} height={height} style={{ display: 'block' }}>
+      <svg width={width} height={height} onMouseMove={onMove} onMouseLeave={() => setHi(-1)} style={{ display: 'block' }}>
         {Array.from({ length: ticks + 1 }).map((_, i) => {
           const v = (max / ticks) * i
           return (
@@ -188,18 +199,36 @@ export function StackedBars({ days = [], keys = [], width = 600, height = 220, v
           )
         })}
         {days.map((d, i) => {
-          const cx = padL + i * (iw / (n || 1)) + (iw / (n || 1) - bw) / 2
+          const cx = padL + i * slot + (slot - bw) / 2
           let acc = 0
           const active = hi === i
           return (
-            <g key={i} onMouseEnter={() => setHi(i)} onMouseLeave={() => setHi(-1)}>
+            <g key={i}>
               <rect x={cx - 1} y={padT} width={bw + 2} height={ih} fill={active ? 'var(--ink-750)' : 'transparent'} rx="2" />
               {keys.map((k) => {
                 const v = d.per[k.id] || 0
                 const h = (v / max) * ih
                 const yy = y(acc + v)
                 acc += v
-                return <rect key={k.id} x={cx} y={yy} width={bw} height={Math.max(0, h)} fill={k.color} opacity={hi === -1 || active ? 1 : 0.45} rx="1" />
+                return (
+                  <rect
+                    key={k.id}
+                    x={cx}
+                    width={bw}
+                    fill={k.color}
+                    rx="1"
+                    style={
+                      {
+                        // y/height live in style (not attributes) so the metric-switch
+                        // transition fires reliably; SVG2 geometry props are CSS-transitionable
+                        y: yy,
+                        height: Math.max(0, h),
+                        opacity: hi === -1 || active ? 1 : 0.45,
+                        transition: 'y var(--dur-base) var(--ease-out), height var(--dur-base) var(--ease-out), opacity var(--dur-fast) var(--ease-out)',
+                      } as CSSProperties
+                    }
+                  />
+                )
               })}
               {(n <= 14 || i % Math.ceil(n / 8) === 0) && (
                 <text x={cx + bw / 2} y={height - 7} textAnchor="middle" fontFamily="var(--font-mono)" fontSize="10" fill="var(--fg-faint)">{d.key.split(' ').slice(-1)[0]}</text>
@@ -207,6 +236,21 @@ export function StackedBars({ days = [], keys = [], width = 600, height = 220, v
             </g>
           )
         })}
+        {showTotal && n > 1 && (
+          <path
+            d={totals.map((t, i) => `${i ? 'L' : 'M'}${(padL + (i + 0.5) * slot).toFixed(1)} ${y(t).toFixed(1)}`).join(' ')}
+            fill="none"
+            stroke="var(--fg-secondary)"
+            strokeOpacity={0.55}
+            strokeWidth={1.5}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            style={{ pointerEvents: 'none' }}
+          />
+        )}
+        {showTotal && n > 1 && hi >= 0 && (
+          <circle cx={padL + (hi + 0.5) * slot} cy={y(totals[hi])} r={3} fill="var(--ink-900)" stroke="var(--fg-secondary)" strokeWidth={1.5} style={{ pointerEvents: 'none' }} />
+        )}
       </svg>
       {hi >= 0 && days[hi] && (
         <div
@@ -232,6 +276,13 @@ export function StackedBars({ days = [], keys = [], width = 600, height = 220, v
               <span style={{ font: '600 12px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{valueFmt(days[hi].per[k.id] || 0)}</span>
             </div>
           ))}
+          {showTotal && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--border-subtle)' }}>
+              <span style={{ width: 8 }} />
+              <span style={{ font: '600 12px/1 var(--font-ui)', color: 'var(--fg-secondary)', flex: 1 }}>Total</span>
+              <span style={{ font: '600 12px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{valueFmt(totals[hi])}</span>
+            </div>
+          )}
         </div>
       )}
     </div>
