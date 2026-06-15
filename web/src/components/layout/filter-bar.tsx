@@ -25,6 +25,10 @@ export function FilterBar() {
         padding: '0 24px',
         borderBottom: '1px solid var(--border-default)',
         background: 'var(--ink-850)',
+        // Keep the period/source picker popovers above the scrollable page body,
+        // and below the TopBar (z 40) so its wider popover can overlap this bar.
+        position: 'relative',
+        zIndex: 30,
       }}
     >
       {!isConfig && <PeriodPicker {...pickerProps} />}

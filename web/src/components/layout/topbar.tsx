@@ -121,6 +121,11 @@ export function TopBar() {
         borderBottom: '1px solid var(--border-default)',
         background: 'color-mix(in srgb, var(--ink-900) 80%, transparent)',
         backdropFilter: 'blur(8px)',
+        // backdrop-filter makes this header its own stacking context; without an
+        // explicit z-index its popover (e.g. the database-sync panel) would paint
+        // under the later page-body sibling. Elevate the chrome above page content.
+        position: 'relative',
+        zIndex: 40,
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
