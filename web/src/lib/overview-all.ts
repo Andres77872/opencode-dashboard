@@ -1,4 +1,4 @@
-import type { DayStats, SourceOverview } from '../types/api'
+import type { DayStats, OverviewStats, SourceOverview } from '../types/api'
 import { getTokenTotal } from './token-breakdown.ts'
 
 export type TrendMetric = 'messages' | 'cost' | 'tokens'
@@ -12,6 +12,36 @@ export function trendMetricValue(day: DayStats, metric: TrendMetric): number {
     default:
       return day.messages
   }
+}
+
+/** The selected metric's scalar from a source's roll-up totals (s.overview).
+    Mirrors trendMetricValue, but for the per-source totals used by the donut. */
+export function overviewMetricValue(o: OverviewStats, metric: TrendMetric): number {
+  switch (metric) {
+    case 'cost':
+      return o.cost
+    case 'tokens':
+      return getTokenTotal(o.tokens)
+    default:
+      return o.messages
+  }
+}
+
+export interface SourceMetricShare {
+  source: SourceOverview
+  value: number
+  /** 0..1 fraction of the selected metric across all sources. */
+  share: number
+}
+
+/** Per-source value + share for the selected metric, used by the "Usage by
+    source" donut + legend. Cost share is computed here client-side because the
+    backend exposes token_share/message_share only (no cost_share); centralizing
+    it also keeps the divide-by-zero guard in one place. */
+export function buildSourceMetricShares(sources: SourceOverview[], metric: TrendMetric): SourceMetricShare[] {
+  const vals = sources.map((s) => ({ source: s, value: overviewMetricValue(s.overview, metric) }))
+  const total = vals.reduce((a, b) => a + b.value, 0)
+  return vals.map((v) => ({ ...v, share: total > 0 ? v.value / total : 0 }))
 }
 
 /** Per-day totals combined across sources. Cost is intentionally excluded:

@@ -1,7 +1,9 @@
-/* Overview — all-sources aggregate (Vael). Costs are shown per source, never
-   combined (see useOverviewAll) — hence no cost KPI spark and no Total overlay
-   on the cost tab. Each KPI card always shows its own metric's daily history;
-   no fabricated deltas: period-over-period deltas are omitted. */
+/* Overview — all-sources aggregate (Vael). A single metric toggle (tokens/cost/
+   messages) drives both the "Usage over time" stacked chart and the "Usage by
+   source" donut in sync. Costs are shown per source and never rolled up into a
+   headline KPI (no cost KPI spark); the stacked chart's per-day Total row is just
+   the on-screen sum of the visible bars and is shown for every metric, cost too.
+   Each KPI card shows its own metric's daily history; deltas are omitted. */
 import { useMemo, useState } from 'react'
 import {
   Card,
@@ -27,13 +29,15 @@ import {
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { useOverviewAll } from '../lib/use-overview-all'
 import { usePeriodControls } from '../lib/use-period-controls'
-import { getAvgTokenTotal, getTokenBreakdownItems, getTokenTotal } from '../lib/token-breakdown'
-import { buildCombinedDailyTotals, buildSourceTrendData, type TrendMetric } from '../lib/overview-all'
+import { getAvgTokenTotal, getTokenBreakdownItems, getTokenTotal, type TokenBreakdownItem } from '../lib/token-breakdown'
+import { buildCombinedDailyTotals, buildSourceMetricShares, buildSourceTrendData, type TrendMetric } from '../lib/overview-all'
 import {
   formatCompactCurrency,
   formatCompactCurrencyWithProvenance,
   formatCompactInteger,
+  formatCostProvenance,
   formatInteger,
+  formatPercentage,
   formatShortDate,
   formatShortWeekday,
   formatTokenCount,
@@ -46,6 +50,9 @@ const METRIC_OPTS: { value: TrendMetric; label: string }[] = [
   { value: 'messages', label: 'Messages' },
 ]
 
+const METRIC_NOUN: Record<TrendMetric, string> = { tokens: 'tokens', cost: 'cost', messages: 'messages' }
+const METRIC_LABEL: Record<TrendMetric, string> = { tokens: 'Tokens', cost: 'Cost', messages: 'Messages' }
+
 function metricFmt(metric: TrendMetric): (v: number) => string {
   if (metric === 'cost') return (v) => formatCompactCurrency(v)
   if (metric === 'messages') return (v) => formatCompactInteger(v)
@@ -57,6 +64,7 @@ export function OverviewView() {
   const { cacheKey } = usePeriodControls()
   const { data, loading, error } = useOverviewAll(cacheKey)
   const [metric, setMetric] = useState<TrendMetric>('tokens')
+  const [donutHover, setDonutHover] = useState<number | null>(null)
   const [chartRef, chartWidth] = useWidth(720)
 
   const labelFor = useMemo(() => {
@@ -117,9 +125,25 @@ export function OverviewView() {
   const breakdown = getTokenBreakdownItems(data.token_distribution).filter((i) => i.value > 0)
   const breakdownTotal = breakdown.reduce((s, i) => s + i.value, 0) || 1
 
-  const donutSegments: DonutSegment[] = data.sources
-    .filter((s) => getTokenTotal(s.overview.tokens) > 0)
-    .map((s) => ({ value: getTokenTotal(s.overview.tokens), color: vendorMeta(s.source_id).color, label: vendorMeta(s.source_id).short }))
+  // Usage-by-source donut + leaderboard, driven by the selected metric. Segments
+  // and legend rows derive from this one sorted/filtered array so a hovered arc and
+  // its legend row share an index (cross-highlight).
+  const donutFmt = metricFmt(metric)
+  const donutShares = buildSourceMetricShares(data.sources, metric)
+    .filter((x) => x.value > 0)
+    .sort((a, b) => b.value - a.value)
+  const donutTotal = donutShares.reduce((s, x) => s + x.value, 0)
+  const donutSegments: DonutSegment[] = donutShares.map((x) => ({
+    value: x.value,
+    color: vendorMeta(x.source.source_id).color,
+    label: vendorMeta(x.source.source_id).short,
+    valueText:
+      metric === 'cost'
+        ? formatCompactCurrencyWithProvenance(x.value, x.source.overview.cost_status, x.source.overview.cost_provenance)
+        : donutFmt(x.value),
+    shareText: formatPercentage(x.share * 100),
+    sub: metric === 'cost' ? formatCostProvenance(x.source.overview.cost_status, x.source.overview.cost_provenance) ?? undefined : undefined,
+  }))
 
   const sourceCols: Column<SourceOverview>[] = [
     { key: 'source', header: 'Source', render: (s) => <VendorChip id={s.source_id} /> },
@@ -166,51 +190,84 @@ export function OverviewView() {
         <StatCard label="Sources active" value={`${activeSources} / ${data.sources.length}`} hint="with activity in range" />
       </div>
 
-      {/* Charts row */}
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[2.1fr_1fr]">
-        <Card
-          title="Usage over time"
-          subtitle="Per source, stacked"
-          action={<SegmentedControl size="sm" options={METRIC_OPTS} value={metric} onChange={setMetric} />}
-        >
-          <div ref={chartRef} style={{ minWidth: 0 }}>
-            {stackedDays.length > 0 && stackedKeys.length > 0 ? (
-              <StackedBars days={stackedDays} keys={stackedKeys} width={Math.max(320, chartWidth)} height={240} valueFmt={metricFmt(metric)} showTotal={metric !== 'cost'} />
-            ) : (
-              <div style={{ height: 240, display: 'flex', alignItems: 'center', justifyContent: 'center', font: '400 13px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>No trend data for this range.</div>
-            )}
+      {/* Usage — one metric toggle drives both the trend chart and the donut */}
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0 }}>
+            <h2 style={{ margin: 0, font: '600 15px/1.2 var(--font-ui)', color: 'var(--fg-primary)' }}>Usage</h2>
+            <span style={{ font: '400 12px/1 var(--font-ui)', color: 'var(--fg-muted)', whiteSpace: 'nowrap' }}>Tokens, cost &amp; messages across sources</span>
           </div>
-          {stackedKeys.length > 0 && (
-            <div style={{ marginTop: 12 }}>
-              <Legend items={stackedKeys.map((k) => ({ label: k.short, color: k.color }))} />
-            </div>
-          )}
-        </Card>
+          <SegmentedControl size="sm" options={METRIC_OPTS} value={metric} onChange={setMetric} />
+        </div>
 
-        <Card title="Usage by source" subtitle="Share of tokens">
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
-            {donutSegments.length > 0 ? (
-              <Donut segments={donutSegments} size={172} thickness={18} centerTop={formatTokenCount(totalTokens)} centerBottom="tokens" />
-            ) : (
-              <div style={{ height: 172, display: 'flex', alignItems: 'center', color: 'var(--fg-muted)', font: '400 13px/1 var(--font-ui)' }}>No token data.</div>
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[2.1fr_1fr]">
+          <Card title="Usage over time" subtitle="Per source, stacked">
+            <div ref={chartRef} style={{ minWidth: 0 }}>
+              {stackedDays.length > 0 && stackedKeys.length > 0 ? (
+                <StackedBars days={stackedDays} keys={stackedKeys} width={Math.max(320, chartWidth)} height={240} valueFmt={metricFmt(metric)} label={METRIC_LABEL[metric]} showTotal />
+              ) : (
+                <div style={{ height: 240, display: 'flex', alignItems: 'center', justifyContent: 'center', font: '400 13px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>No trend data for this range.</div>
+              )}
+            </div>
+            {stackedKeys.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <Legend items={stackedKeys.map((k) => ({ label: k.short, color: k.color }))} />
+              </div>
             )}
-            <Legend
-              items={data.sources
-                .filter((s) => getTokenTotal(s.overview.tokens) > 0)
-                .map((s) => ({ label: vendorMeta(s.source_id).short, color: vendorMeta(s.source_id).color, value: `${Math.round(s.token_share * 100)}%` }))}
-            />
-          </div>
-        </Card>
+          </Card>
+
+          <Card title="Usage by source" subtitle={`Share of ${METRIC_NOUN[metric]}`}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18 }}>
+              {donutSegments.length > 0 ? (
+                <Donut
+                  segments={donutSegments}
+                  size={180}
+                  thickness={20}
+                  centerTop={donutFmt(donutTotal)}
+                  centerBottom={METRIC_NOUN[metric]}
+                  activeIndex={donutHover}
+                  onHoverIndex={setDonutHover}
+                />
+              ) : (
+                <div style={{ height: 180, display: 'flex', alignItems: 'center', color: 'var(--fg-muted)', font: '400 13px/1 var(--font-ui)' }}>No {METRIC_NOUN[metric]} data.</div>
+              )}
+              {donutSegments.length > 0 && (
+                <div style={{ width: '100%', display: 'flex', flexDirection: 'column' }}>
+                  {donutSegments.map((seg, i) => {
+                    const on = donutHover === i
+                    return (
+                      <div
+                        key={i}
+                        onMouseEnter={() => setDonutHover(i)}
+                        onMouseLeave={() => setDonutHover(null)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '7px 8px',
+                          borderRadius: 'var(--radius-sm)',
+                          background: on ? 'var(--ink-750)' : 'transparent',
+                          transition: 'background var(--dur-fast) var(--ease-out)',
+                        }}
+                      >
+                        <span style={{ width: 9, height: 9, borderRadius: 2, background: seg.color, flexShrink: 0 }} />
+                        <span style={{ flex: 1, font: '500 13px/1 var(--font-ui)', color: 'var(--fg-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{seg.label}</span>
+                        <span style={{ font: '600 13px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{seg.valueText}</span>
+                        <span style={{ width: 42, textAlign: 'right', font: '500 12px/1 var(--font-mono)', color: 'var(--fg-muted)', fontVariantNumeric: 'tabular-nums' }}>{seg.shareText}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
       </div>
 
       {/* Token breakdown + efficiency */}
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1.4fr_1fr]">
         <Card title="Token composition" subtitle="Combined token mix across sources">
-          <div style={{ display: 'flex', height: 12, borderRadius: 6, overflow: 'hidden', background: 'var(--ink-700)' }}>
-            {breakdown.map((i) => (
-              <div key={i.key} title={`${i.label}: ${formatInteger(i.value)}`} style={{ width: `${(i.value / breakdownTotal) * 100}%`, background: i.color }} />
-            ))}
-          </div>
+          <CompositionBar items={breakdown} total={breakdownTotal} />
           <div style={{ marginTop: 14 }}>
             <Legend items={breakdown.map((i) => ({ label: i.label, color: i.color, value: formatTokenCount(i.value) }))} />
           </div>
@@ -239,6 +296,60 @@ export function OverviewView() {
         <TopProjects projects={data.top_projects} labelFor={labelFor} />
         <TopTools tools={data.top_tools} labelFor={labelFor} />
       </div>
+    </div>
+  )
+}
+
+/* Horizontal stacked composition bar with per-segment hover (label · value · %). */
+function CompositionBar({ items, total }: { items: TokenBreakdownItem[]; total: number }) {
+  const [hov, setHov] = useState<number | null>(null)
+  const it = hov != null && items[hov] ? items[hov] : null
+  let before = 0
+  if (it) for (let i = 0; i < (hov as number); i++) before += items[i].value / total
+  const center = it ? (before + it.value / total / 2) * 100 : 0
+  return (
+    <div style={{ position: 'relative' }}>
+      <div style={{ display: 'flex', height: 12, borderRadius: 6, overflow: 'hidden', background: 'var(--ink-700)' }}>
+        {items.map((i, idx) => (
+          <div
+            key={i.key}
+            onMouseEnter={() => setHov(idx)}
+            onMouseLeave={() => setHov(null)}
+            style={{
+              width: `${(i.value / total) * 100}%`,
+              background: i.color,
+              opacity: hov == null || hov === idx ? 1 : 0.4,
+              transition: 'opacity var(--dur-fast) var(--ease-out)',
+            }}
+          />
+        ))}
+      </div>
+      {it && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: '100%',
+            left: `${center}%`,
+            transform: 'translateX(-50%)',
+            marginBottom: 8,
+            pointerEvents: 'none',
+            background: 'var(--ink-700)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: 'var(--radius-md)',
+            boxShadow: 'var(--shadow-lg)',
+            padding: '8px 10px',
+            whiteSpace: 'nowrap',
+            zIndex: 5,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: it.color }} />
+            <span style={{ font: '400 12px/1 var(--font-ui)', color: 'var(--fg-secondary)', flex: 1 }}>{it.label}</span>
+            <span style={{ font: '600 12px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{formatTokenCount(it.value)}</span>
+          </div>
+          <div style={{ font: '600 11px/1 var(--font-ui)', color: 'var(--fg-muted)', marginTop: 5, textAlign: 'right' }}>{formatPercentage((it.value / total) * 100)} of total</div>
+        </div>
+      )}
     </div>
   )
 }

@@ -158,12 +158,15 @@ export interface StackedBarsProps {
   width?: number
   height?: number
   valueFmt?: (v: number) => string
-  /** Overlay a combined-total trend line and a Total tooltip row. Disable when
-      summing across keys is not meaningful (e.g. per-source costs). */
+  /** Metric name shown as an uppercase eyebrow in the hover tooltip (e.g. "Tokens"),
+      so it's always clear which metric the bars represent. */
+  label?: string
+  /** Overlay a combined-total trend line and a Total tooltip row. The Total is the
+      per-day sum of the stacked segments on screen; shown for every metric. */
   showTotal?: boolean
 }
 
-export function StackedBars({ days = [], keys = [], width = 600, height = 220, valueFmt = (v) => String(v), showTotal = true }: StackedBarsProps) {
+export function StackedBars({ days = [], keys = [], width = 600, height = 220, valueFmt = (v) => String(v), label, showTotal = true }: StackedBarsProps) {
   const [hi, setHi] = useState(-1)
   const padL = 48
   const padR = 14
@@ -268,7 +271,10 @@ export function StackedBars({ days = [], keys = [], width = 600, height = 220, v
             zIndex: 5,
           }}
         >
-          <div style={{ font: '600 11px/1 var(--font-ui)', color: 'var(--fg-muted)', marginBottom: 6 }}>{days[hi].key}{days[hi].wd ? ` · ${days[hi].wd}` : ''}</div>
+          <div style={{ marginBottom: 6 }}>
+            {label && <div style={{ font: '600 9px/1 var(--font-ui)', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--fg-faint)', marginBottom: 4 }}>{label}</div>}
+            <div style={{ font: '600 11px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>{days[hi].key}{days[hi].wd ? ` · ${days[hi].wd}` : ''}</div>
+          </div>
           {keys.map((k) => (
             <div key={k.id} style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 4 }}>
               <span style={{ width: 8, height: 8, borderRadius: 2, background: k.color }} />
@@ -293,21 +299,76 @@ export interface DonutSegment {
   value: number
   color: string
   label?: string
+  /** Optional secondary line in the tooltip (e.g. a cost-provenance note). */
+  sub?: string
+  /** Preformatted value for the tooltip (falls back to String(value)). */
+  valueText?: string
+  /** Preformatted share for the tooltip (falls back to a computed %). */
+  shareText?: string
 }
 
-export function Donut({ segments = [], size = 150, thickness = 16, centerTop = '', centerBottom = '' }: { segments: DonutSegment[]; size?: number; thickness?: number; centerTop?: string; centerBottom?: string }) {
+export interface DonutProps {
+  segments: DonutSegment[]
+  size?: number
+  thickness?: number
+  centerTop?: string
+  centerBottom?: string
+  /** Externally-controlled highlighted segment (enables legend↔arc cross-highlight).
+      Pass `undefined` to let the donut manage hover on its own. */
+  activeIndex?: number | null
+  /** Reports the hovered segment index (or null) so a parent can sync the legend. */
+  onHoverIndex?: (i: number | null) => void
+}
+
+export function Donut({ segments = [], size = 150, thickness = 16, centerTop = '', centerBottom = '', activeIndex, onHoverIndex }: DonutProps) {
+  const [hovInternal, setHovInternal] = useState<number | null>(null)
   const total = segments.reduce((s, x) => s + x.value, 0) || 1
   const r = (size - thickness) / 2
   const c = 2 * Math.PI * r
-  let acc = 0
+  const active = activeIndex !== undefined ? activeIndex : hovInternal
+
+  const report = (i: number | null) => {
+    setHovInternal(i)
+    onHoverIndex?.(i)
+  }
+  const onMove = (e: MouseEvent<HTMLDivElement>) => {
+    if (!segments.length) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const dx = e.clientX - rect.left - size / 2
+    const dy = e.clientY - rect.top - size / 2
+    const dist = Math.hypot(dx, dy)
+    if (dist < size / 2 - thickness - 2 || dist > size / 2 + 2) return report(null)
+    // angle clockwise from 12 o'clock (the svg is rotate(-90deg), so the stroke
+    // starts at the top); match the segment paint order.
+    let ang = (Math.atan2(dy, dx) * 180) / Math.PI + 90
+    if (ang < 0) ang += 360
+    const frac = ang / 360
+    let walk = 0
+    let idx = -1
+    for (let i = 0; i < segments.length; i++) {
+      const f = segments[i].value / total
+      if (frac >= walk && frac < walk + f) {
+        idx = i
+        break
+      }
+      walk += f
+    }
+    report(idx < 0 ? null : idx)
+  }
+
+  const act = active != null && active >= 0 && active < segments.length ? segments[active] : null
   return (
-    <div style={{ position: 'relative', width: size, height: size }}>
-      <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+    <div style={{ position: 'relative', width: size, height: size }} onMouseMove={onMove} onMouseLeave={() => report(null)}>
+      <svg width={size} height={size} style={{ transform: 'rotate(-90deg)', overflow: 'visible' }}>
         <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--ink-700)" strokeWidth={thickness} />
         {segments.map((s, i) => {
           const frac = s.value / total
           const dash = frac * c
-          const el = (
+          // cumulative fraction of all earlier segments (n is tiny → no mutable accumulator)
+          const offset = segments.slice(0, i).reduce((a, x) => a + x.value, 0) / total
+          const isActive = active === i
+          const dimmed = active != null && active >= 0 && !isActive
+          return (
             <circle
               key={i}
               cx={size / 2}
@@ -315,20 +376,46 @@ export function Donut({ segments = [], size = 150, thickness = 16, centerTop = '
               r={r}
               fill="none"
               stroke={s.color}
-              strokeWidth={thickness}
+              strokeWidth={isActive ? thickness + 2 : thickness}
               strokeDasharray={`${dash} ${c - dash}`}
-              strokeDashoffset={-acc * c}
+              strokeDashoffset={-offset * c}
               strokeLinecap="butt"
+              style={{ opacity: dimmed ? 0.4 : 1, transition: 'opacity var(--dur-fast) var(--ease-out), stroke-width var(--dur-fast) var(--ease-out)' }}
             />
           )
-          acc += frac
-          return el
         })}
       </svg>
       {(centerTop || centerBottom) && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
           <div style={{ font: '700 22px/1 var(--font-mono)', color: 'var(--fg-primary)', letterSpacing: '-0.02em' }}>{centerTop}</div>
           <div style={{ font: '600 10px/1 var(--font-ui)', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--fg-muted)', marginTop: 5 }}>{centerBottom}</div>
+        </div>
+      )}
+      {act && (
+        <div
+          style={{
+            position: 'absolute',
+            left: '50%',
+            bottom: '100%',
+            transform: 'translateX(-50%)',
+            marginBottom: 8,
+            pointerEvents: 'none',
+            background: 'var(--ink-700)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: 'var(--radius-md)',
+            boxShadow: 'var(--shadow-lg)',
+            padding: '8px 10px',
+            minWidth: 132,
+            zIndex: 5,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap' }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: act.color }} />
+            <span style={{ font: '400 12px/1 var(--font-ui)', color: 'var(--fg-secondary)', flex: 1 }}>{act.label ?? ''}</span>
+            <span style={{ font: '600 12px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{act.valueText ?? String(act.value)}</span>
+          </div>
+          <div style={{ font: '600 11px/1 var(--font-ui)', color: 'var(--fg-muted)', marginTop: 5, textAlign: 'right' }}>{act.shareText ?? `${Math.round((act.value / total) * 100)}%`}</div>
+          {act.sub && <div style={{ font: '400 10px/1.35 var(--font-ui)', color: 'var(--fg-faint)', marginTop: 5, maxWidth: 200 }}>{act.sub}</div>}
         </div>
       )}
     </div>

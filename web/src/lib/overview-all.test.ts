@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildCombinedDailyTotals, buildSourceTrendData, trendMetricValue } from './overview-all.ts'
+import {
+  buildCombinedDailyTotals,
+  buildSourceMetricShares,
+  buildSourceTrendData,
+  overviewMetricValue,
+  trendMetricValue,
+} from './overview-all.ts'
 import type { DayStats, SourceOverview } from '../types/api.ts'
 
 function day(date: string, messages: number, cost: number, sessions = 0): DayStats {
@@ -30,6 +36,19 @@ function src(id: string, trend: DayStats[]): SourceOverview {
     messages_per_session: 0,
     tokens_per_message: { input: 0, output: 0, reasoning: 0, cache_read: 0, cache_write: 0 },
     trend,
+  }
+}
+
+function srcWith(id: string, ov: { tokens?: number; cost?: number; messages?: number }): SourceOverview {
+  const base = src(id, [])
+  return {
+    ...base,
+    overview: {
+      ...base.overview,
+      messages: ov.messages ?? 0,
+      cost: ov.cost ?? 0,
+      tokens: { input: ov.tokens ?? 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    },
   }
 }
 
@@ -74,4 +93,43 @@ test('buildCombinedDailyTotals sums tokens, sessions, and messages per day, asce
 
 test('buildCombinedDailyTotals tolerates missing trends', () => {
   assert.deepEqual(buildCombinedDailyTotals([src('opencode', [])]), [])
+})
+
+test('overviewMetricValue selects the requested metric from per-source totals', () => {
+  const s = srcWith('claude_code', { tokens: 100, cost: 2.5, messages: 7 })
+  assert.equal(overviewMetricValue(s.overview, 'tokens'), 100)
+  assert.equal(overviewMetricValue(s.overview, 'cost'), 2.5)
+  assert.equal(overviewMetricValue(s.overview, 'messages'), 7)
+})
+
+test('buildSourceMetricShares computes positive shares that sum to 1', () => {
+  const shares = buildSourceMetricShares([srcWith('a', { tokens: 30 }), srcWith('b', { tokens: 10 })], 'tokens')
+  assert.equal(shares[0].value, 30)
+  assert.equal(shares[1].value, 10)
+  assert.ok(Math.abs(shares[0].share - 0.75) < 1e-9)
+  assert.ok(Math.abs(shares[1].share - 0.25) < 1e-9)
+  assert.ok(Math.abs(shares[0].share + shares[1].share - 1) < 1e-9)
+})
+
+test('buildSourceMetricShares returns zero shares (no NaN) when the metric total is zero', () => {
+  const shares = buildSourceMetricShares([srcWith('a', { tokens: 0 }), srcWith('b', { tokens: 0 })], 'tokens')
+  for (const s of shares) {
+    assert.equal(s.value, 0)
+    assert.equal(s.share, 0)
+    assert.ok(!Number.isNaN(s.share))
+  }
+})
+
+test('buildSourceMetricShares gives a single source a share of 1', () => {
+  const shares = buildSourceMetricShares([srcWith('a', { cost: 5 })], 'cost')
+  assert.equal(shares.length, 1)
+  assert.equal(shares[0].value, 5)
+  assert.equal(shares[0].share, 1)
+})
+
+test('buildSourceMetricShares reads cost for the cost metric', () => {
+  const shares = buildSourceMetricShares([srcWith('a', { cost: 3, tokens: 999 }), srcWith('b', { cost: 1, tokens: 1 })], 'cost')
+  assert.equal(shares[0].value, 3)
+  assert.equal(shares[1].value, 1)
+  assert.ok(Math.abs(shares[0].share - 0.75) < 1e-9)
 })
