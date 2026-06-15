@@ -76,6 +76,12 @@ opencode-dashboard version
 |----------|---------|---------|
 | `VERSION` | `latest` | Pin to a specific release, e.g. `v0.1.12` |
 | `NO_CHECKSUM` | `0` | Set to `1` to skip checksum verification |
+| `CONFIGURE_PATH` | `0` | Set to `1` to append `~/.local/bin` to your shell rc (`.zshrc`/`.bashrc`/`.profile`) if it is not already on `PATH` |
+| `NO_COLOR` | _unset_ | Set to disable colored output |
+
+If `~/.local/bin` is not on your `PATH`, the installer prints the exact
+`export` line and which shell rc file to add it to. It never edits your
+dotfiles unless you opt in with `CONFIGURE_PATH=1`.
 
 ### Version comparison behavior
 
@@ -89,6 +95,23 @@ To install a specific version:
 ```bash
 VERSION=v0.1.12 curl -sSL https://raw.githubusercontent.com/Andres77872/opencode-dashboard/master/scripts/install.sh | bash
 ```
+
+### Updating
+
+Once installed, upgrade in place with the built-in command — it runs the same
+official installer for you:
+
+```bash
+opencode-dashboard update                 # update to the latest release
+opencode-dashboard update --check         # report current vs latest, install nothing
+opencode-dashboard update --version v0.1.20  # install a specific version
+opencode-dashboard update --force         # reinstall even if already up to date
+opencode-dashboard update --no-checksum   # skip release checksum verification
+```
+
+`update` prints the current and latest versions, then downloads and atomically
+replaces the binary in `~/.local/bin` (safe to run even while another instance
+is open). It is bash-only and supported on Linux and macOS.
 
 ### Build from source
 
@@ -109,6 +132,7 @@ Commands:
   tui        Run the local terminal dashboard
   version    Print version and build metadata
   uninstall  Remove dashboard-owned local files
+  update     Update to the latest release (or a specific version)
 ```
 
 ### Web dashboard
@@ -185,6 +209,9 @@ Pick a range with `T` in the TUI or the period picker in the web UI; the web UI 
 | Command | Description |
 |---------|-------------|
 | `opencode-dashboard version` | Print build info |
+| `opencode-dashboard version --short` | Print just the version string |
+| `opencode-dashboard update` | Update to the latest release |
+| `opencode-dashboard update --check` | Report current vs latest, install nothing |
 | `opencode-dashboard uninstall --dry-run` | Preview removal without deleting |
 | `opencode-dashboard uninstall --force` | Skip the confirmation prompt |
 

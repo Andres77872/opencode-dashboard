@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ import (
 	"opencode-dashboard/internal/store"
 	"opencode-dashboard/internal/tui"
 	"opencode-dashboard/internal/uninstall"
+	"opencode-dashboard/internal/update"
 	"opencode-dashboard/internal/version"
 	"opencode-dashboard/internal/web"
 )
@@ -58,6 +60,8 @@ func run(args []string) error {
 		return cmdVersion(args[1:])
 	case "uninstall":
 		return cmdUninstall(args[1:])
+	case "update":
+		return cmdUpdate(args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -79,6 +83,7 @@ Commands:
   tui        Run the local terminal dashboard
   version    Print version and build metadata
   uninstall  Remove dashboard-owned local files
+  update     Update to the latest release (or a specific version)
 
 Global help:
   opencode-dashboard help
@@ -92,6 +97,9 @@ Examples:
   opencode-dashboard tui --channel stable
   opencode-dashboard version
   opencode-dashboard uninstall --dry-run
+  opencode-dashboard update
+  opencode-dashboard update --check
+  opencode-dashboard update --version v0.1.20
 
 Web flags:
   --port <n>     Bind localhost port (default: 7450)
@@ -114,7 +122,13 @@ TUI flags:
 
 Uninstall flags:
   --dry-run      Show the removal plan only
-  --force        Skip the confirmation prompt`)
+  --force        Skip the confirmation prompt
+
+Update flags:
+  --check        Report current and latest versions, then exit (no install)
+  --version <v>  Install a specific version instead of the latest
+  --no-checksum  Skip release checksum verification in the installer
+  --force        Reinstall even if already up to date`)
 }
 
 func cmdWeb(args []string) error {
@@ -327,12 +341,27 @@ func cmdTUI(args []string) error {
 }
 
 func cmdVersion(args []string) error {
-	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
-		fmt.Println("Usage: opencode-dashboard version")
-		return nil
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	short := fs.Bool("short", false, "print only the version string")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard version [--short]\n")
 	}
-	if len(args) != 0 {
-		return fmt.Errorf("version does not accept arguments")
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("version does not accept positional arguments")
+	}
+
+	if *short {
+		fmt.Println(version.Version)
+		return nil
 	}
 
 	fmt.Printf("opencode-dashboard %s\n", version.BuildInfo())
@@ -407,6 +436,100 @@ func cmdUninstall(args []string) error {
 	}
 
 	fmt.Println("uninstall complete")
+	return nil
+}
+
+func cmdUpdate(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	check := fs.Bool("check", false, "report versions only; do not install")
+	targetVersion := fs.String("version", "", "install a specific version instead of latest")
+	noChecksum := fs.Bool("no-checksum", false, "skip checksum verification in the installer")
+	force := fs.Bool("force", false, "reinstall even if already up to date")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard update [--check] [--version <v>] [--no-checksum] [--force]\n\n")
+		fmt.Fprintln(fs.Output(), "Updates opencode-dashboard by running the official installer into ~/.local/bin.")
+	}
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
+		return fmt.Errorf("update does not accept positional arguments")
+	}
+
+	// The installer is bash-only and releases target linux/darwin.
+	if runtime.GOOS == "windows" {
+		return fmt.Errorf("update is not supported on windows; download a release from https://github.com/%s/releases", update.Repo)
+	}
+
+	current := version.Version
+	fmt.Printf("Current version: %s\n", current)
+
+	ctx := context.Background()
+	var latest string
+	if *targetVersion != "" {
+		latest = update.NormalizeTag(*targetVersion)
+		fmt.Printf("Target version:  %s\n", latest)
+	} else {
+		resolved, err := update.LatestRelease(ctx, http.DefaultClient)
+		if err != nil {
+			return fmt.Errorf("look up latest release: %w", err)
+		}
+		latest = resolved
+		fmt.Printf("Latest version:  %s\n", latest)
+	}
+
+	cmp, comparable := update.CompareVersions(current, latest)
+	upToDate := comparable && cmp >= 0
+
+	if *check {
+		switch {
+		case !comparable:
+			fmt.Printf("Cannot compare %q to %q; run update to (re)install.\n", current, latest)
+		case upToDate:
+			fmt.Println("Already up to date.")
+		default:
+			fmt.Printf("Update available: %s -> %s\n", current, latest)
+		}
+		return nil
+	}
+
+	if upToDate && !*force {
+		fmt.Println("Already up to date.")
+		return nil
+	}
+
+	// Warn if the running binary is not the one the installer will replace.
+	if exe, err := os.Executable(); err == nil {
+		if installed, derr := update.DefaultInstallPath(); derr == nil {
+			if resolved := update.ResolveExecutable(exe); resolved != installed {
+				fmt.Printf("note: running binary is %s\n", resolved)
+				fmt.Printf("      the installer updates %s and will not replace this binary.\n", installed)
+			}
+		}
+	}
+
+	fmt.Printf("Updating to %s...\n", latest)
+	if err := update.RunInstaller(ctx, http.DefaultClient, update.RunOptions{
+		Version:    latest,
+		NoChecksum: *noChecksum,
+		Stdout:     os.Stdout,
+		Stderr:     os.Stderr,
+	}); err != nil {
+		return fmt.Errorf("run installer: %w", err)
+	}
+
+	if comparable && !upToDate {
+		fmt.Printf("Updated %s -> %s\n", current, latest)
+	} else {
+		fmt.Printf("Installed %s\n", latest)
+	}
 	return nil
 }
 
