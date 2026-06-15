@@ -41,7 +41,9 @@ import {
   formatShortDate,
   formatShortWeekday,
   formatTokenCount,
+  getCostStatus,
 } from '../lib/format'
+import type { CostProvenance, CostStatus } from '../types/api'
 import type { ModelEntry, ProjectEntry, SourceID, SourceOverview, ToolEntry } from '../types/api'
 
 const METRIC_OPTS: { value: TrendMetric; label: string }[] = [
@@ -52,6 +54,20 @@ const METRIC_OPTS: { value: TrendMetric; label: string }[] = [
 
 const METRIC_NOUN: Record<TrendMetric, string> = { tokens: 'tokens', cost: 'cost', messages: 'messages' }
 const METRIC_LABEL: Record<TrendMetric, string> = { tokens: 'Tokens', cost: 'Cost', messages: 'Messages' }
+
+// Donut-only: cost shown with exactly two decimals (the shared currency formatter
+// allows up to 6). Scoped here on purpose — other surfaces keep their formatting.
+const donutUsd2 = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 })
+function donutCostText(value: number): string {
+  if (!Number.isFinite(value)) return donutUsd2.format(0)
+  return Math.abs(value) >= 1_000_000 ? formatCompactCurrency(value) : donutUsd2.format(value)
+}
+function donutCostWithProvenance(value: number, status?: CostStatus, provenance?: CostProvenance): string {
+  const st = getCostStatus(status, provenance)
+  if (st === 'missing') return 'Unknown'
+  const f = donutCostText(value)
+  return st === 'approximate' || st === 'estimated_api_equivalent' ? `≈ ${f}` : f
+}
 
 function metricFmt(metric: TrendMetric): (v: number) => string {
   if (metric === 'cost') return (v) => formatCompactCurrency(v)
@@ -139,7 +155,7 @@ export function OverviewView() {
     label: vendorMeta(x.source.source_id).short,
     valueText:
       metric === 'cost'
-        ? formatCompactCurrencyWithProvenance(x.value, x.source.overview.cost_status, x.source.overview.cost_provenance)
+        ? donutCostWithProvenance(x.value, x.source.overview.cost_status, x.source.overview.cost_provenance)
         : donutFmt(x.value),
     shareText: formatPercentage(x.share * 100),
     sub: metric === 'cost' ? formatCostProvenance(x.source.overview.cost_status, x.source.overview.cost_provenance) ?? undefined : undefined,
@@ -223,7 +239,7 @@ export function OverviewView() {
                   segments={donutSegments}
                   size={180}
                   thickness={20}
-                  centerTop={donutFmt(donutTotal)}
+                  centerTop={metric === 'cost' ? donutCostText(donutTotal) : donutFmt(donutTotal)}
                   centerBottom={METRIC_NOUN[metric]}
                   activeIndex={donutHover}
                   onHoverIndex={setDonutHover}
