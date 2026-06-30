@@ -1,6 +1,6 @@
 {
-  "id": "anthropic-bundled-2026-06-09",
-  "retrieved_at": "2026-06-09T00:00:00Z",
+  "id": "anthropic-bundled-2026-06-30",
+  "retrieved_at": "2026-06-30T00:00:00Z",
   "source": "bundled static Anthropic pricing snapshot; no network updates",
   "currency": "USD",
   "models": {
@@ -63,6 +63,14 @@
       "cache_creation_input_per_million": 18.75,
       "cache_creation_input_1h_per_million": 30.0,
       "note": "deprecated original Opus 4 rate"
+    },
+    "claude-sonnet-5": {
+      "input_per_million": 2.0,
+      "output_per_million": 10.0,
+      "cache_read_input_per_million": 0.2,
+      "cache_creation_input_per_million": 2.5,
+      "cache_creation_input_1h_per_million": 4.0,
+      "note": "introductory Sonnet 5 rate through 2026-08-31; reverts to 3.0/15.0 input/output (cache 0.3/3.75/6.0, read 0.3) on 2026-09-01"
     },
     "claude-sonnet-4-6": {
       "input_per_million": 3.0,

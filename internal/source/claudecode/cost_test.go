@@ -291,6 +291,7 @@ func TestBundledPricingRealClaudeModelsComputeNonMissingCosts(t *testing.T) {
 		wantCost float64
 	}{
 		{name: "opus 4.8 uses current input output price", model: "claude-opus-4-8", wantCost: 30.0},
+		{name: "sonnet 5 computes non-missing", model: "claude-sonnet-5", wantCost: 12.0},
 		{name: "sonnet 4.6 computes non-missing", model: "claude-sonnet-4-6", wantCost: 18.0},
 		{name: "haiku 4.5 dated model computes non-missing", model: "claude-haiku-4-5-20251001", wantCost: 6.0},
 	}
