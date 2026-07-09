@@ -34,14 +34,90 @@ func TestCodexCostUsesGPT55EstimatedAPIEquivalentPricing(t *testing.T) {
 	if entry.CostProvenance.Status != stats.CostEstimatedAPIEquivalent {
 		t.Errorf("provenance status = %q, want %q", entry.CostProvenance.Status, stats.CostEstimatedAPIEquivalent)
 	}
-	if entry.CostProvenance.PricingSnapshotID != "openai-codex-gpt-5.5-2026-04-23" {
-		t.Errorf("PricingSnapshotID = %q, want openai-codex-gpt-5.5-2026-04-23", entry.CostProvenance.PricingSnapshotID)
+	if entry.CostProvenance.PricingSnapshotID != "openai-codex-api-pricing-2026-07-09" {
+		t.Errorf("PricingSnapshotID = %q, want openai-codex-api-pricing-2026-07-09", entry.CostProvenance.PricingSnapshotID)
 	}
 	if !strings.Contains(strings.ToLower(entry.CostProvenance.Note), "api-equivalent") || !strings.Contains(strings.ToLower(entry.CostProvenance.Note), "not actual") {
 		t.Errorf("provenance note = %q, want API-equivalent/not actual spend caveat", entry.CostProvenance.Note)
 	}
 	if entry.Tokens == nil || entry.Tokens.Cache.Write != 0 {
 		t.Fatalf("Cache.Write = %#v, want zero/absent Codex cache write tokens", entry.Tokens)
+	}
+}
+
+func TestBundledCodexPricingCoversCurrentModels(t *testing.T) {
+	pricing := New(Options{PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json")}).loadPricing(testContext(t))
+	tokens := stats.TokenStats{
+		Input:     1_000_000,
+		Output:    1_000_000,
+		Reasoning: 1_000_000,
+		Cache:     stats.CacheStats{Read: 1_000_000, Write: 1_000_000},
+	}
+	tests := []struct {
+		model    string
+		wantCost float64
+	}{
+		{model: "gpt-5.6", wantCost: 71.75},
+		{model: "gpt-5.6-sol", wantCost: 71.75},
+		{model: "gpt-5.6-terra", wantCost: 35.875},
+		{model: "gpt-5.6-luna", wantCost: 14.35},
+		{model: "gpt-5.5", wantCost: 65.5},
+		{model: "gpt-5.4", wantCost: 32.75},
+		{model: "gpt-5.4-mini", wantCost: 9.825},
+		{model: "gpt-5.3-codex", wantCost: 29.925},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			result := computeCost(tt.model, tokens, 100_000, pricing)
+			if result.Status != stats.CostEstimatedAPIEquivalent {
+				t.Fatalf("computeCost(%q) status = %q, want %q", tt.model, result.Status, stats.CostEstimatedAPIEquivalent)
+			}
+			if !approxEqual(result.Cost, tt.wantCost) {
+				t.Errorf("computeCost(%q) = %.9f, want %.9f", tt.model, result.Cost, tt.wantCost)
+			}
+		})
+	}
+}
+
+func TestGPT56AliasUsesSolPricing(t *testing.T) {
+	pricing := New(Options{PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json")}).loadPricing(testContext(t))
+	tokens := stats.TokenStats{Input: 500_000, Output: 100_000, Cache: stats.CacheStats{Read: 250_000, Write: 50_000}}
+	alias := computeCost("gpt-5.6", tokens, 250_000, pricing)
+	sol := computeCost("gpt-5.6-sol", tokens, 250_000, pricing)
+	if !approxEqual(alias.Cost, sol.Cost) {
+		t.Errorf("gpt-5.6 cost = %.9f, gpt-5.6-sol cost = %.9f; want equal alias pricing", alias.Cost, sol.Cost)
+	}
+}
+
+func TestCodexLongContextRulesByModel(t *testing.T) {
+	pricing := New(Options{PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json")}).loadPricing(testContext(t))
+	tokens := stats.TokenStats{Input: 100_000, Output: 10_000, Cache: stats.CacheStats{Read: 20_000, Write: 5_000}}
+	tests := []struct {
+		model          string
+		wantMultiplier bool
+	}{
+		{model: "gpt-5.6", wantMultiplier: true},
+		{model: "gpt-5.6-sol", wantMultiplier: true},
+		{model: "gpt-5.6-terra", wantMultiplier: true},
+		{model: "gpt-5.6-luna", wantMultiplier: true},
+		{model: "gpt-5.5", wantMultiplier: true},
+		{model: "gpt-5.4", wantMultiplier: true},
+		{model: "gpt-5.4-mini", wantMultiplier: false},
+		{model: "gpt-5.3-codex", wantMultiplier: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			standard := computeCost(tt.model, tokens, 272_000, pricing)
+			long := computeCost(tt.model, tokens, 272_001, pricing)
+			if tt.wantMultiplier && !(long.Cost > standard.Cost) {
+				t.Errorf("long-context cost %.9f is not greater than standard cost %.9f", long.Cost, standard.Cost)
+			}
+			if !tt.wantMultiplier && !approxEqual(long.Cost, standard.Cost) {
+				t.Errorf("long-context cost %.9f differs from standard cost %.9f", long.Cost, standard.Cost)
+			}
+		})
 	}
 }
 
@@ -96,6 +172,7 @@ func TestCodexUnknownMissingOrClaudePricingFallbackRendersMissingCost(t *testing
 		pricingSnapshotPath string
 	}{
 		{name: "unknown OpenAI model is missing", model: "gpt-unknown"},
+		{name: "unpriced Codex Spark preview is missing", model: "gpt-5.3-codex-spark"},
 		{name: "Claude model never falls back to Anthropic pricing", model: "claude-sonnet-4-6"},
 		{name: "missing pricing snapshot is missing", model: "gpt-5.5", pricingSnapshotPath: "testdata/does-not-exist-pricing.json"},
 		{name: "stale pricing snapshot is missing", model: "gpt-5.5", pricingSnapshotPath: stalePricingPath},

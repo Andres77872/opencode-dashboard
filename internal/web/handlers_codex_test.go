@@ -50,8 +50,8 @@ func TestSourceAwareCodexAPIRoutingFromFixture(t *testing.T) {
 		if codexInfo.Kind != "jsonl" || !codexInfo.ReadOnly || !codexInfo.LocalOnly {
 			t.Errorf("codex kind/read/local = %q/%v/%v, want jsonl/true/true", codexInfo.Kind, codexInfo.ReadOnly, codexInfo.LocalOnly)
 		}
-		if codexInfo.CostPolicy.Status != string(stats.CostEstimatedAPIEquivalent) || codexInfo.CostPolicy.PricingSnapshotID != "openai-codex-gpt-5.5-2026-04-23" {
-			t.Errorf("codex cost policy = %#v, want estimated API-equivalent gpt-5.5 snapshot", codexInfo.CostPolicy)
+		if codexInfo.CostPolicy.Status != string(stats.CostEstimatedAPIEquivalent) || codexInfo.CostPolicy.PricingSnapshotID != "openai-codex-api-pricing-2026-07-09" {
+			t.Errorf("codex cost policy = %#v, want current estimated API-equivalent snapshot", codexInfo.CostPolicy)
 		}
 		if !codexInfo.Privacy.PlaintextTranscripts || !codexInfo.Privacy.Redaction || !codexInfo.Privacy.ReadOnly || !codexInfo.Privacy.LocalOnly {
 			t.Errorf("codex privacy = %#v, want plaintext/read-only/local/redaction metadata", codexInfo.Privacy)
