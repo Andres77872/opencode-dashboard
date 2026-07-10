@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"os"
+	"regexp"
 	"time"
 
 	"opencode-dashboard/internal/stats"
@@ -103,7 +104,7 @@ func computeCost(model string, tokens stats.TokenStats, maxInputSnapshot int64, 
 	if model == "" || len(pricing.Models) == 0 {
 		return missingCost(currency)
 	}
-	rate, ok := pricing.Models[model]
+	rate, ok := lookupRate(model, pricing.Models)
 	if !ok || rate.InputPerMillion == 0 || rate.OutputPerMillion == 0 {
 		return missingCost(currency)
 	}
@@ -133,6 +134,26 @@ func computeCost(model string, tokens stats.TokenStats, maxInputSnapshot int64, 
 			Note:              apiEquivalentNote,
 		},
 	}
+}
+
+// dateSuffixPattern matches dated model releases like "gpt-5.5-2026-01-15".
+var dateSuffixPattern = regexp.MustCompile(`-\d{4}-\d{2}-\d{2}$`)
+
+// lookupRate resolves a transcript model id against the pricing snapshot:
+// exact key first, then with one trailing release-date suffix stripped (a dated
+// release is unambiguously the same model). Named variants ("-spark", "-nova")
+// deliberately stay unresolved: variant models carry materially different rates
+// and an honest CostMissing beats a wrong estimate.
+func lookupRate(model string, models map[string]pricingRate) (pricingRate, bool) {
+	if rate, ok := models[model]; ok {
+		return rate, true
+	}
+	if stripped := dateSuffixPattern.ReplaceAllString(model, ""); stripped != model {
+		if rate, ok := models[stripped]; ok {
+			return rate, true
+		}
+	}
+	return pricingRate{}, false
 }
 
 func nonZero(value, fallback float64) float64 {

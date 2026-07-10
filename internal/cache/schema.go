@@ -1,5 +1,10 @@
 package cache
 
+// schemaSQL is the FROZEN v4-era baseline schema, applied as structural
+// migration 1 (see migrations.go). Do not edit it: new tables, columns, or
+// index changes belong in a new migration entry so existing databases upgrade
+// in place. (schema_migrations and source_files below are part of the frozen
+// baseline; migration 2 drops them.)
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
 	version INTEGER PRIMARY KEY,

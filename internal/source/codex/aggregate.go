@@ -316,7 +316,7 @@ func (s *snapshot) sessionByID(id string) *stats.SessionDetail {
 	}
 	messages := make([]stats.SessionMessage, 0, len(session.Messages))
 	for _, msg := range session.Messages {
-		entry := stats.SessionMessage{SourceID: codexSourceID, ID: msg.Entry.ID, Role: msg.Entry.Role, TimeCreated: msg.Entry.TimeCreated, Cost: msg.Entry.Cost, Tokens: cloneTokens(msg.Entry.Tokens), ModelID: msg.Entry.ModelID, ProviderID: msg.Entry.ProviderID, CostStatus: msg.Entry.CostStatus, CostProvenance: cloneProvenance(msg.Entry.CostProvenance)}
+		entry := stats.SessionMessage{SourceID: codexSourceID, ID: msg.Entry.ID, Role: msg.Entry.Role, TimeCreated: msg.Entry.TimeCreated, Cost: msg.Entry.Cost, Tokens: cloneTokens(msg.Entry.Tokens), ModelID: msg.Entry.ModelID, ProviderID: msg.Entry.ProviderID, IsSubagent: msg.Entry.IsSubagent, CostStatus: msg.Entry.CostStatus, CostProvenance: cloneProvenance(msg.Entry.CostProvenance)}
 		messages = append(messages, entry)
 	}
 	cost, tokens, status, provenance := aggregateCostProvenance(session.Messages)

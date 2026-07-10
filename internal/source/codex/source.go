@@ -325,10 +325,18 @@ func (s *Source) loadSnapshot(ctx context.Context) (*snapshot, error) {
 
 func (s *Source) parseFiles(ctx context.Context, files []transcriptFile, diag source.SourceDiagnostics) (*snapshot, error) {
 	pricing := s.loadPricing(ctx)
+	records, diag, err := s.parseFileRecords(ctx, files, diag)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeRecords(s.opts.CodexHome, records, pricing, diag), nil
+}
+
+func (s *Source) parseFileRecords(ctx context.Context, files []transcriptFile, diag source.SourceDiagnostics) ([]codexRecord, source.SourceDiagnostics, error) {
 	records := make([]codexRecord, 0)
 	for _, file := range files {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, diag, err
 		}
 		parsed, parseDiag, err := parseTranscriptFile(ctx, file)
 		if err != nil {
@@ -340,13 +348,34 @@ func (s *Source) parseFiles(ctx context.Context, files []transcriptFile, diag so
 				diag.Reason = appendReason(diag.Reason, "some Codex transcript files could not be read due to permissions")
 				continue
 			}
-			return nil, err
+			return nil, diag, err
 		}
 		diag.MalformedLines += parseDiag.MalformedLines
 		diag.UnsupportedEvents += parseDiag.UnsupportedEvents
 		records = append(records, parsed...)
 	}
-	return normalizeRecords(s.opts.CodexHome, records, pricing, diag), nil
+	return records, diag, nil
+}
+
+// wantedParentThreadIDs collects the thread/session ids that derived
+// (forked/resumed) rollout files replay history from. Their transcripts must be
+// parsed alongside the derived files so the replayed token ladder is
+// recognizable as already-counted usage.
+func wantedParentThreadIDs(records []codexRecord) map[string]bool {
+	wanted := make(map[string]bool)
+	for _, record := range records {
+		meta := record.SessionMeta
+		if meta == nil {
+			continue
+		}
+		if meta.ForkedFromID != "" {
+			wanted[meta.ForkedFromID] = true
+		}
+		if meta.SessionID != "" && meta.ID != "" && meta.SessionID != meta.ID {
+			wanted[meta.SessionID] = true
+		}
+	}
+	return wanted
 }
 
 // snapshotFor picks the snapshot for a query: a bounded (mtime-pruned) load
@@ -391,15 +420,49 @@ func (s *Source) loadBoundedSnapshot(ctx context.Context, from time.Time) (*snap
 		return nil, source.UnavailableSourceError{ID: source.SourceCodex, Reason: disc.diagnostics.Reason}
 	}
 	files := make([]transcriptFile, 0, len(disc.files))
+	included := make(map[string]bool, len(disc.files))
 	for _, file := range disc.files {
 		if !file.ModTime.Before(pruneT) {
 			files = append(files, file)
+			included[file.Path] = true
 		}
 	}
-	snap, err := s.parseFiles(ctx, files, disc.diagnostics)
+	records, diag, err := s.parseFileRecords(ctx, files, disc.diagnostics)
 	if err != nil {
 		return nil, err
 	}
+	// Forked/resumed threads replay their parent thread's whole token ladder
+	// with fresh timestamps. If the (possibly long-inactive, mtime-pruned)
+	// parent transcript is missing from the parse set, that replay would be
+	// indistinguishable from new usage inside the window. Pull parent files
+	// back in by their filename thread id, transitively for chained forks.
+	byFilenameID := make(map[string][]transcriptFile, len(disc.files))
+	for _, file := range disc.files {
+		if file.SessionID != "" {
+			byFilenameID[file.SessionID] = append(byFilenameID[file.SessionID], file)
+		}
+	}
+	for {
+		added := make([]transcriptFile, 0)
+		for id := range wantedParentThreadIDs(records) {
+			for _, file := range byFilenameID[id] {
+				if !included[file.Path] {
+					included[file.Path] = true
+					added = append(added, file)
+				}
+			}
+		}
+		if len(added) == 0 {
+			break
+		}
+		var parentRecords []codexRecord
+		parentRecords, diag, err = s.parseFileRecords(ctx, added, diag)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, parentRecords...)
+	}
+	snap := normalizeRecords(s.opts.CodexHome, records, s.loadPricing(ctx), diag)
 
 	s.mu.Lock()
 	s.bounded = snap

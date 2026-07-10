@@ -15,7 +15,7 @@ import (
 
 func sourceFingerprint(ctx context.Context, info source.SourceInfo) (string, error) {
 	h := sha256.New()
-	fmt.Fprintf(h, "v=%d\nid=%s\nkind=%s\npath=%s\n", schemaVersion, info.ID, info.Kind, info.Path)
+	fmt.Fprintf(h, "v=%d\nid=%s\nkind=%s\npath=%s\n", dataVersion, info.ID, info.Kind, info.Path)
 
 	switch info.ID {
 	case source.SourceOpenCode:
@@ -45,7 +45,7 @@ func sourceFingerprint(ctx context.Context, info source.SourceInfo) (string, err
 func fallbackFingerprint(info source.SourceInfo) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "v=%d\nid=%s\nkind=%s\npath=%s\navailable=%v\nfiles=%d\nmalformed=%d\nunsupported=%d\n",
-		schemaVersion, info.ID, info.Kind, info.Path, info.Available, info.Diagnostics.ScannedFiles, info.Diagnostics.MalformedLines, info.Diagnostics.UnsupportedEvents)
+		dataVersion, info.ID, info.Kind, info.Path, info.Available, info.Diagnostics.ScannedFiles, info.Diagnostics.MalformedLines, info.Diagnostics.UnsupportedEvents)
 	return hex.EncodeToString(h.Sum(nil))
 }
 

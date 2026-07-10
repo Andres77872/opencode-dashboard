@@ -2,6 +2,8 @@ package codex
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -32,6 +34,25 @@ func TestParserRecognizesCodexTopLevelRecordFamilies(t *testing.T) {
 				}
 				if record.SessionMeta.ModelProvider != "openai" {
 					t.Errorf("SessionMeta.ModelProvider = %q, want openai", record.SessionMeta.ModelProvider)
+				}
+			},
+		},
+		{
+			name: "session metadata preserves fork and agent lineage fields",
+			line: `{"timestamp":"2026-01-02T03:04:05Z","type":"session_meta","payload":{"id":"fork-thread","session_id":"parent-session","forked_from_id":"parent-session","parent_thread_id":"parent-session","agent_role":"worker","cli_version":"codex-synthetic-1.0.0","source":"codex_cli"}}`,
+			assert: func(t *testing.T, record codexRecord) {
+				meta := record.SessionMeta
+				if meta == nil {
+					t.Fatalf("SessionMeta = nil")
+				}
+				if meta.ID != "fork-thread" || meta.SessionID != "parent-session" {
+					t.Errorf("SessionMeta ID/SessionID = %q/%q, want fork-thread/parent-session", meta.ID, meta.SessionID)
+				}
+				if meta.ForkedFromID != "parent-session" || meta.ParentThreadID != "parent-session" {
+					t.Errorf("SessionMeta fork lineage = %q/%q, want parent-session/parent-session", meta.ForkedFromID, meta.ParentThreadID)
+				}
+				if meta.AgentRole != "worker" {
+					t.Errorf("SessionMeta.AgentRole = %q, want worker", meta.AgentRole)
 				}
 			},
 		},
@@ -253,6 +274,65 @@ func TestParserToleratesMalformedUnknownAndPartialData(t *testing.T) {
 	}
 	if record.Event == nil || record.Event.TurnID != "" {
 		t.Errorf("partial Event = %#v, want missing turn_id represented as empty", record.Event)
+	}
+}
+
+func TestParserIgnoresKnownAuxiliaryTopLevelTypes(t *testing.T) {
+	file := transcriptFile{Path: "synthetic-rollout.jsonl", SessionID: "fallback-session"}
+
+	for _, topType := range []string{"world_state", "inter_agent_communication_metadata"} {
+		record, ok, malformed := parseLine(file, 1, `{"timestamp":"2026-01-02T03:04:05Z","type":"`+topType+`","payload":{"secret":"SYNTHETIC_MUST_NOT_LEAK"}}`)
+		if ok || malformed {
+			t.Fatalf("%s parse ok/malformed = %v/%v, want false/false", topType, ok, malformed)
+		}
+		if record.TopType != topType {
+			t.Errorf("%s TopType = %q, want the envelope type preserved for ignore matching", topType, record.TopType)
+		}
+		if record.SessionMeta != nil || record.Event != nil || record.Response != nil {
+			t.Errorf("%s record carries payload data, want envelope only", topType)
+		}
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollout-2026-01-02T03-04-05Z-ignored.jsonl")
+	lines := strings.Join([]string{
+		`{"timestamp":"2026-01-02T03:04:05Z","type":"session_meta","payload":{"id":"ignored-session","cwd":"/tmp/proj"}}`,
+		`{"timestamp":"2026-01-02T03:04:06Z","type":"world_state","payload":{"state":"opaque"}}`,
+		`{"timestamp":"2026-01-02T03:04:07Z","type":"inter_agent_communication_metadata","payload":{"chatter":"opaque"}}`,
+		`{"timestamp":"2026-01-02T03:04:08Z","type":"unknown_top_level","payload":{"x":1}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	records, diag, err := parseTranscriptFile(testContext(t), transcriptFile{Path: path, SessionID: "ignored-session"})
+	if err != nil {
+		t.Fatalf("parseTranscriptFile() failed: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want only the session_meta record", len(records))
+	}
+	if diag.IgnoredEvents != 2 {
+		t.Errorf("IgnoredEvents = %d, want 2", diag.IgnoredEvents)
+	}
+	if diag.UnsupportedEvents != 1 {
+		t.Errorf("UnsupportedEvents = %d, want 1 (truly unknown type still counts)", diag.UnsupportedEvents)
+	}
+
+	// End to end: a home whose transcripts carry only known-ignored auxiliary
+	// records alongside valid ones stays "ok", not "partial".
+	src := newTempCodexSource(t, map[string][]string{
+		"sessions/2026/01/02/rollout-2026-01-02T03-04-05Z-ignored-ok.jsonl": {
+			`{"timestamp":"2026-01-02T03:04:05Z","type":"session_meta","payload":{"id":"ignored-ok","model_provider":"openai","cwd":"[REDACTED_PATH]/proj"}}`,
+			`{"timestamp":"2026-01-02T03:04:06Z","type":"world_state","payload":{"state":"opaque"}}`,
+			`{"timestamp":"2026-01-02T03:04:07Z","type":"inter_agent_communication_metadata","payload":{"chatter":"opaque"}}`,
+			`{"timestamp":"2026-01-02T03:04:08Z","type":"event_msg","payload":{"type":"token_count","turn_id":"t1","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":110}}}}`,
+		},
+	})
+	if _, err := src.Overview(testContext(t), stats.PeriodQuery{Period: "all"}); err != nil {
+		t.Fatalf("Overview(all) failed: %v", err)
+	}
+	if info := src.Info(testContext(t)); info.Diagnostics.Status != "ok" {
+		t.Errorf("Diagnostics.Status = %q (reason %q), want ok despite ignored auxiliary records", info.Diagnostics.Status, info.Diagnostics.Reason)
 	}
 }
 

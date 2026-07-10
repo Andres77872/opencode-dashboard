@@ -25,11 +25,16 @@ import (
 )
 
 const (
-	// schemaVersion participates in the source fingerprint, so bumping it
-	// forces every existing cache through a full collect on first sync after
-	// upgrade. v4: finalized-only caches — rows at/after the hour-aligned
-	// cutoff are no longer mirrored; the first v4 sync prunes them.
-	schemaVersion          = 4
+	// dataVersion is the version of the cache's data semantics: how sources are
+	// normalized into rows, token accounting, message id synthesis. It
+	// participates in source fingerprints, and Open resets the consolidation
+	// state of any source cached under an older value so the next sync fully
+	// re-collects (see resetOutdatedDataVersions). Structural DDL changes never
+	// touch this constant — they go in migrations.go.
+	//
+	// v4: finalized-only caches. v5: per-thread Codex token accounting with
+	// fork/resume replay suppression (thread-scoped message ids).
+	dataVersion            = 5
 	busyTimeout            = 5000 * time.Millisecond
 	DefaultSyncSafetyDelay = 6 * time.Hour
 )
@@ -217,7 +222,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 
 	store := &Store{db: db, path: path, logger: slog.New(slog.DiscardHandler), writeSem: make(chan struct{}, 1)}
-	if err := store.ensureSchema(ctx); err != nil {
+	if err := store.migrate(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w (delete the cache file or start with --rebuild-cache to rebuild it from sources)", err)
+	}
+	if err := store.resetOutdatedDataVersions(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -257,56 +266,6 @@ func buildDSN(path string) string {
 		"_pragma=foreign_keys(1)",
 	}
 	return path + "?" + strings.Join(params, "&")
-}
-
-func (s *Store) ensureSchema(ctx context.Context) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer rollback(tx)
-
-	if _, err := tx.ExecContext(ctx, schemaSQL); err != nil {
-		return fmt.Errorf("create cache schema: %w", err)
-	}
-	if err := ensureSourceStateColumn(ctx, tx, "last_safe_cutoff_ms", "last_safe_cutoff_ms INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := ensureSourceStateColumn(ctx, tx, "fresh_through_ms", "fresh_through_ms INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO schema_migrations(version, applied_at_ms) VALUES(?, ?)`, schemaVersion, time.Now().UTC().UnixMilli()); err != nil {
-		return fmt.Errorf("record cache schema version: %w", err)
-	}
-	return tx.Commit()
-}
-
-func ensureSourceStateColumn(ctx context.Context, tx *sql.Tx, column, ddl string) error {
-	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(source_state)`)
-	if err != nil {
-		return fmt.Errorf("inspect source_state schema: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notNull int
-		var defaultValue any
-		var pk int
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
-			return fmt.Errorf("scan source_state schema: %w", err)
-		}
-		if name == column {
-			return rows.Err()
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate source_state schema: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `ALTER TABLE source_state ADD COLUMN `+ddl); err != nil {
-		return fmt.Errorf("add source_state.%s: %w", column, err)
-	}
-	return nil
 }
 
 func (s *Store) SourceStatus(ctx context.Context, sourceID string) (SourceStatus, bool, error) {
@@ -742,7 +701,6 @@ func deleteSourceRows(ctx context.Context, tx *sql.Tx, sourceID string) error {
 		"message_index",
 		"sessions",
 		"projects",
-		"source_files",
 	}
 	for _, table := range tables {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE source_id = ?", sourceID); err != nil {
@@ -773,10 +731,10 @@ func insertSourceState(ctx context.Context, tx *sql.Tx, info source.SourceInfo, 
 		INSERT OR REPLACE INTO source_state (
 			source_id, label, kind, path, path_source, available, diagnostics_json,
 			cost_policy_json, privacy_json, source_info_json, fingerprint, status,
-			reason, last_synced_ms, last_safe_cutoff_ms, fresh_through_ms
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			reason, last_synced_ms, last_safe_cutoff_ms, fresh_through_ms, data_version
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, string(info.ID), info.Label, info.Kind, info.Path, info.PathSource, boolInt(info.Available),
-		string(diagJSON), string(costJSON), string(privacyJSON), string(infoJSON), fp, status, nullEmpty(reason), time.Now().UTC().UnixMilli(), timeToMillis(safeCutoff), timeToMillis(freshThrough))
+		string(diagJSON), string(costJSON), string(privacyJSON), string(infoJSON), fp, status, nullEmpty(reason), time.Now().UTC().UnixMilli(), timeToMillis(safeCutoff), timeToMillis(freshThrough), dataVersion)
 	if err != nil {
 		return fmt.Errorf("insert source state: %w", err)
 	}

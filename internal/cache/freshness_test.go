@@ -236,8 +236,15 @@ func TestOpenMigratesLegacySourceState(t *testing.T) {
 	if !ok {
 		t.Fatalf("legacy source_state row missing after migration")
 	}
-	if status.LastSafeCutoff != 123 {
-		t.Fatalf("LastSafeCutoff = %d, want 123 preserved", status.LastSafeCutoff)
+	// Legacy rows predate data_version, so their consolidation state is reset:
+	// rows collected under old data semantics must be fully re-collected (a
+	// cleared fingerprint triggers the sync, a zero cutoff makes it collect
+	// from the beginning of time).
+	if status.Fingerprint != "" {
+		t.Fatalf("Fingerprint = %q, want cleared for legacy data version", status.Fingerprint)
+	}
+	if status.LastSafeCutoff != 0 {
+		t.Fatalf("LastSafeCutoff = %d, want 0 reset for legacy data version", status.LastSafeCutoff)
 	}
 	if status.FreshThrough != 0 {
 		t.Fatalf("FreshThrough = %d, want 0 for legacy rows (forces a heal collect)", status.FreshThrough)

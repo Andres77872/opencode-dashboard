@@ -21,6 +21,17 @@ type snapshot struct {
 	sessionMap  map[string]*sessionRecord
 	messageMap  map[string]*messageRecord
 	ordered     []*messageRecord
+	// seenUsage tracks every cumulative total_token_usage vector observed per
+	// logical session. Forked/resumed rollout files replay the parent thread's
+	// token_count ladder verbatim (with fresh timestamps); a vector that was
+	// already observed is such a replay and must only seed the new thread's
+	// baseline, never produce usage again. tokenSnapshot must stay comparable
+	// (fixed-size value type) for this map key.
+	seenUsage map[string]map[tokenSnapshot]struct{}
+	// seenUserText tracks user prompt texts per logical session for the same
+	// reason: some fork replays re-emit the parent's user_message events, and
+	// only a prompt never seen before marks the derived thread's own activity.
+	seenUserText map[string]map[string]struct{}
 }
 
 type projectRecord struct {
@@ -51,28 +62,48 @@ type messageRecord struct {
 	seenTools        map[string]bool
 }
 
-type sessionState struct {
-	id            string
-	provider      string
-	model         string
-	projectID     string
-	projectName   string
-	directory     string
-	turnID        string
-	requestSeq    int
-	userSeq       int
-	pending       *messageRecord
-	tokenMax      tokenSnapshot
-	fileSessionID string
+// threadState is the accounting state of one rollout file. A rollout file is a
+// single thread's append-only event stream with its own session-cumulative
+// token counter, so token deltas must be computed per file: forked threads run
+// parallel divergent counters under one logical session id, and mixing them in
+// one state would collapse their usage to the envelope maximum.
+type threadState struct {
+	threadID    string // the file's own thread id (first session_meta in file order)
+	sessionID   string // logical session the thread belongs to (parent for forks)
+	metaLine    int    // line of the thread's own session_meta
+	provider    string
+	model       string
+	projectID   string
+	projectName string
+	directory   string
+	turnID      string
+	requestSeq  int
+	userSeq     int
+	// turnSeqs preserves each turn's row counters across revisits: transcripts
+	// can return to an earlier turn id, and restarting its counters would
+	// synthesize duplicate message ids (which the cache's primary key would
+	// then silently collapse).
+	turnSeqs map[string]turnSeq
+	pending  *messageRecord
+	tokenMax tokenSnapshot
+	// replay marks a derived (forked/resumed) thread that is still inside the
+	// replayed copy of its parent's history. Replayed content must not become
+	// rows; replayed token_counts only advance tokenMax to the fork baseline.
+	// Replay ends at the thread's first own signal: a user prompt or a
+	// token_count whose cumulative vector was never seen in the session.
+	replay     bool
+	isSubagent bool
 }
 
 func normalizeRecords(home string, records []codexRecord, pricing pricingSnapshot, diag source.SourceDiagnostics) *snapshot {
 	snap := &snapshot{
-		home:       home,
-		projectMap: make(map[string]*projectRecord),
-		sessionMap: make(map[string]*sessionRecord),
-		messageMap: make(map[string]*messageRecord),
-		ordered:    make([]*messageRecord, 0),
+		home:         home,
+		projectMap:   make(map[string]*projectRecord),
+		sessionMap:   make(map[string]*sessionRecord),
+		messageMap:   make(map[string]*messageRecord),
+		ordered:      make([]*messageRecord, 0),
+		seenUsage:    make(map[string]map[tokenSnapshot]struct{}),
+		seenUserText: make(map[string]map[string]struct{}),
 	}
 	sort.SliceStable(records, func(i, j int) bool {
 		if records[i].Timestamp.Equal(records[j].Timestamp) {
@@ -90,36 +121,47 @@ func normalizeRecords(home string, records []codexRecord, pricing pricingSnapsho
 		return records[i].Timestamp.Before(records[j].Timestamp)
 	})
 
-	fileSessionIDs := sessionIDsByFile(records)
-	states := make(map[string]*sessionState)
+	threads := fileThreadsByPath(records)
+	states := make(map[string]*threadState)
 	seenRecords := make(map[string]struct{}, len(records))
 	for _, record := range records {
-		key := stableRecordDedupeKey(record, fileSessionIDs[record.File.Path])
+		info := threadForFile(threads, record.File)
+		key := stableRecordDedupeKey(record, info.sessionID)
 		if _, exists := seenRecords[key]; exists {
 			continue
 		}
 		seenRecords[key] = struct{}{}
 
-		sessionID := recordSessionID(record, fileSessionIDs)
-		state := states[sessionID]
+		state := states[record.File.Path]
 		if state == nil {
-			state = &sessionState{id: sessionID, fileSessionID: fileSessionIDs[record.File.Path]}
-			states[sessionID] = state
+			state = &threadState{
+				threadID:   info.threadID,
+				sessionID:  info.sessionID,
+				metaLine:   info.metaLine,
+				replay:     info.derived,
+				isSubagent: info.isSubagent,
+			}
+			states[record.File.Path] = state
 		}
 		timestamp := recordTimestamp(record)
 
 		switch {
 		case record.SessionMeta != nil:
-			state.id = nonEmpty(record.SessionMeta.ID, state.id)
-			state.provider = nonEmpty(record.SessionMeta.ModelProvider, state.provider)
-			if record.SessionMeta.CWD != "" {
+			// The thread's own meta binds provider/cwd. Replayed parent metas
+			// (forks) and repeated resume metas only fill gaps and never rebind
+			// the thread's identity.
+			own := record.Line == state.metaLine
+			if record.SessionMeta.ModelProvider != "" && (own || state.provider == "") {
+				state.provider = record.SessionMeta.ModelProvider
+			}
+			if record.SessionMeta.CWD != "" && (own || state.directory == "") {
 				state.directory = redactDisplayPath(record.SessionMeta.CWD)
 				state.projectID, state.projectName = projectFromPath(record.SessionMeta.CWD)
 			} else if state.projectID == "" {
 				state.projectID, state.projectName = projectFromPath(state.directory)
 			}
-			snap.ensureSession(state.id, snap.ensureProject(state.projectID, state.projectName, state.directory), state.directory)
-			updateSessionTimes(snap.sessionMap[state.id], timestamp)
+			snap.ensureSession(state.sessionID, snap.ensureProject(state.projectID, state.projectName, state.directory), state.directory)
+			updateSessionTimes(snap.sessionMap[state.sessionID], timestamp)
 
 		case record.TurnContext != nil:
 			snap.syncTurn(state, record.TurnContext.TurnID)
@@ -133,8 +175,8 @@ func normalizeRecords(home string, records []codexRecord, pricing pricingSnapsho
 				state.directory = redactDisplayPath(record.TurnContext.CWD)
 				state.projectID, state.projectName = projectFromPath(record.TurnContext.CWD)
 			}
-			snap.ensureSession(state.id, snap.ensureProject(state.projectID, state.projectName, state.directory), state.directory)
-			updateSessionTimes(snap.sessionMap[state.id], timestamp)
+			snap.ensureSession(state.sessionID, snap.ensureProject(state.projectID, state.projectName, state.directory), state.directory)
+			updateSessionTimes(snap.sessionMap[state.sessionID], timestamp)
 
 		case record.Event != nil:
 			snap.applyEvent(state, record.Event, timestamp, pricing)
@@ -145,11 +187,24 @@ func normalizeRecords(home string, records []codexRecord, pricing pricingSnapsho
 		case record.Compacted:
 			// Compaction records are metadata only. They must not create rows or
 			// replay developer/user/assistant content into details.
-			if session := snap.sessionMap[state.id]; session != nil {
+			if session := snap.sessionMap[state.sessionID]; session != nil {
 				updateSessionTimes(session, timestamp)
 			}
 		}
 	}
+
+	// Trailing assistant content that never received a token_count still
+	// surfaces as its own row (unless the thread was still replaying parent
+	// history). Deterministic order: iterate states by file path.
+	for _, path := range sortedKeys(states) {
+		snap.flushPending(states[path])
+	}
+	sort.SliceStable(snap.ordered, func(i, j int) bool {
+		if snap.ordered[i].Entry.TimeCreated.Equal(snap.ordered[j].Entry.TimeCreated) {
+			return snap.ordered[i].Entry.ID < snap.ordered[j].Entry.ID
+		}
+		return snap.ordered[i].Entry.TimeCreated.Before(snap.ordered[j].Entry.TimeCreated)
+	})
 
 	for _, msg := range snap.ordered {
 		msg.recomputeCost(pricing)
@@ -167,27 +222,55 @@ func normalizeRecords(home string, records []codexRecord, pricing pricingSnapsho
 	return snap
 }
 
-func sessionIDsByFile(records []codexRecord) map[string]string {
-	ids := make(map[string]string)
-	for _, record := range records {
-		if record.SessionMeta != nil && record.SessionMeta.ID != "" {
-			ids[record.File.Path] = record.SessionMeta.ID
-		}
-	}
-	return ids
+// fileThread is the identity of one rollout file resolved from its first
+// session_meta in file order: that record is always the thread's own meta,
+// while later metas are fork replays or resume repetitions.
+type fileThread struct {
+	threadID   string
+	sessionID  string
+	metaLine   int
+	derived    bool
+	isSubagent bool
 }
 
-func recordSessionID(record codexRecord, fileIDs map[string]string) string {
-	if record.SessionMeta != nil && record.SessionMeta.ID != "" {
-		return record.SessionMeta.ID
+func fileThreadsByPath(records []codexRecord) map[string]fileThread {
+	threads := make(map[string]fileThread)
+	for _, record := range records {
+		meta := record.SessionMeta
+		if meta == nil || meta.ID == "" {
+			continue
+		}
+		if existing, ok := threads[record.File.Path]; ok && existing.metaLine <= record.Line {
+			continue
+		}
+		sessionID := meta.SessionID
+		if sessionID == "" {
+			sessionID = meta.ID
+		}
+		threads[record.File.Path] = fileThread{
+			threadID:  meta.ID,
+			sessionID: sessionID,
+			metaLine:  record.Line,
+			// A derived thread starts with a replayed copy of its parent's
+			// history: forks say so explicitly; resumes carry the original
+			// session id under a fresh thread id. Sub-agent threads have their
+			// own session (session_id empty) and start fresh.
+			derived:    meta.ForkedFromID != "" || (meta.SessionID != "" && meta.SessionID != meta.ID),
+			isSubagent: meta.AgentRole != "",
+		}
 	}
-	if id := fileIDs[record.File.Path]; id != "" {
-		return id
+	return threads
+}
+
+func threadForFile(threads map[string]fileThread, file transcriptFile) fileThread {
+	if info, ok := threads[file.Path]; ok {
+		return info
 	}
-	if record.File.SessionID != "" {
-		return record.File.SessionID
+	id := file.SessionID
+	if id == "" {
+		id = "unknown-session"
 	}
-	return "unknown-session"
+	return fileThread{threadID: id, sessionID: id}
 }
 
 func recordTimestamp(record codexRecord) time.Time {
@@ -200,56 +283,129 @@ func recordTimestamp(record codexRecord) time.Time {
 	return time.Unix(0, 0).UTC()
 }
 
-func (s *snapshot) applyEvent(state *sessionState, event *eventMsgRecord, timestamp time.Time, pricing pricingSnapshot) {
+func (s *snapshot) applyEvent(state *threadState, event *eventMsgRecord, timestamp time.Time, pricing pricingSnapshot) {
 	s.syncTurn(state, event.TurnID)
 	switch event.PayloadType {
 	case "task_started":
 		// Marks the turn; the user prompt (user_message) and assistant API requests
-		// (token_count) create the rows.
-		s.ensureSession(state.id, s.ensureProject(state.projectID, state.projectName, state.directory), state.directory)
+		// (token_count) create the rows. Fork replays also re-emit task_started, so
+		// it must not end replay mode.
+		s.ensureSession(state.sessionID, s.ensureProject(state.projectID, state.projectName, state.directory), state.directory)
 	case "user_message":
-		// A new user prompt closes any open assistant request and starts its own row.
+		// A new user prompt closes any open assistant request and starts its own
+		// row. Fork replays can re-emit the parent's user_message events: while
+		// replaying, a prompt text already seen in the session is such a copy
+		// and stays suppressed; an unseen prompt is the thread's own activity
+		// and ends replay mode.
+		seenText := s.seenUserTextFor(state.sessionID)
+		if state.replay {
+			if _, replayed := seenText[event.Text]; replayed {
+				s.discardPending(state)
+				break
+			}
+			state.replay = false
+		}
 		s.flushPending(state)
-		msg := s.newMessage(state, "user", timestamp)
+		msg := s.buildMessage(state, "user", timestamp)
 		if event.Text != "" {
 			msg.TextParts = append(msg.TextParts, redactAndTruncateMessagePart("text", event.Text))
 		}
+		s.registerMessage(state, msg)
+		seenText[event.Text] = struct{}{}
 		state.userSeq++
 	case "agent_message":
 		// Assistant mirrors are intentionally ignored when response_item.message is
 		// available, preventing duplicate assistant text and row counts.
 	case "token_count":
-		// Each token_count closes one model API request. The per-request usage is the
-		// delta of the session-cumulative total_token_usage (which clamps spikes and
-		// regressions and, for well-formed transcripts, equals last_token_usage). Fall
-		// back to last_token_usage only when no running total is present.
-		var usage tokenSnapshot
-		hasUsage := false
-		if event.HasTotalUsage {
-			usage = positiveDelta(state.tokenMax, event.TotalUsage)
-			state.tokenMax = maxSnapshot(state.tokenMax, event.TotalUsage)
-			hasUsage = true
-		} else if event.HasLastUsage {
-			usage = event.LastUsage
-			hasUsage = true
-		}
-		s.closeRequest(state, timestamp, usage, hasUsage)
-	case "patch_apply_end", "web_search_end":
+		s.applyTokenCount(state, event, timestamp)
+	case "patch_apply_end", "web_search_end", "mcp_tool_call_end":
 		if event.CallID != "" && state.pending != nil {
 			state.pending.applyToolStatus(event.CallID, event.Status, timestamp)
 		}
 	case "task_complete":
 		// Trailing assistant content with no token_count stays as its own row.
 		s.flushPending(state)
+	case "turn_aborted":
+		// An aborted turn never gets a token_count; surface whatever content
+		// arrived (unless it was replayed history) and keep ids advancing.
+		s.flushPending(state)
 	case "context_compacted":
 		// Metadata only.
 	}
-	if session := s.sessionMap[state.id]; session != nil {
+	if session := s.sessionMap[state.sessionID]; session != nil {
 		updateSessionTimes(session, timestamp)
 	}
 }
 
-func (s *snapshot) applyResponse(state *sessionState, response *responseItemRecord, timestamp time.Time, pricing pricingSnapshot) {
+// applyTokenCount closes one model API request. The per-request usage is the
+// delta of the thread-cumulative total_token_usage (which clamps spikes and
+// regressions and, for well-formed transcripts, equals last_token_usage). Fall
+// back to last_token_usage only when no running total is present.
+//
+// Derived (forked/resumed) threads replay their parent's token_count ladder
+// first: while replaying, a cumulative vector already seen in the logical
+// session only advances this thread's baseline, and the first unseen vector is
+// the thread's own first request, ending replay mode.
+func (s *snapshot) applyTokenCount(state *threadState, event *eventMsgRecord, timestamp time.Time) {
+	switch {
+	case event.HasTotalUsage:
+		seen := s.seenUsageFor(state.sessionID)
+		if state.replay {
+			if _, replayed := seen[event.TotalUsage]; replayed {
+				state.tokenMax = maxSnapshot(state.tokenMax, event.TotalUsage)
+				s.discardPending(state)
+				return
+			}
+			state.replay = false
+		}
+		usage := positiveDelta(state.tokenMax, event.TotalUsage)
+		state.tokenMax = maxSnapshot(state.tokenMax, event.TotalUsage)
+		seen[event.TotalUsage] = struct{}{}
+		s.closeRequest(state, timestamp, usage, true, requestRawInput(event, usage))
+	case event.HasLastUsage:
+		// Advance the running total too, so a later cumulative vector that
+		// already includes this request does not count it twice.
+		state.tokenMax = addSnapshot(state.tokenMax, event.LastUsage)
+		if state.replay {
+			s.discardPending(state)
+			return
+		}
+		s.closeRequest(state, timestamp, event.LastUsage, true, event.LastUsage.Input)
+	default:
+		s.closeRequest(state, timestamp, tokenSnapshot{}, false, 0)
+	}
+}
+
+// requestRawInput is the raw (cached-inclusive) prompt size of one API request,
+// the signal long-context pricing thresholds compare against. last_token_usage
+// reports it directly; the cumulative delta only approximates it when events
+// were merged by clamping.
+func requestRawInput(event *eventMsgRecord, usage tokenSnapshot) int64 {
+	if event.HasLastUsage && event.LastUsage.Input > 0 {
+		return event.LastUsage.Input
+	}
+	return usage.Input
+}
+
+func (s *snapshot) seenUsageFor(sessionID string) map[tokenSnapshot]struct{} {
+	seen := s.seenUsage[sessionID]
+	if seen == nil {
+		seen = make(map[tokenSnapshot]struct{})
+		s.seenUsage[sessionID] = seen
+	}
+	return seen
+}
+
+func (s *snapshot) seenUserTextFor(sessionID string) map[string]struct{} {
+	seen := s.seenUserText[sessionID]
+	if seen == nil {
+		seen = make(map[string]struct{})
+		s.seenUserText[sessionID] = seen
+	}
+	return seen
+}
+
+func (s *snapshot) applyResponse(state *threadState, response *responseItemRecord, timestamp time.Time, pricing pricingSnapshot) {
 	s.syncTurn(state, response.TurnID)
 	switch response.ItemType {
 	case "message":
@@ -280,48 +436,63 @@ func (s *snapshot) applyResponse(state *sessionState, response *responseItemReco
 			state.pending.applyToolOutput(response, timestamp)
 		}
 	}
-	if session := s.sessionMap[state.id]; session != nil {
+	if session := s.sessionMap[state.sessionID]; session != nil {
 		updateSessionTimes(session, timestamp)
 	}
 }
 
-// syncTurn advances the session to a new turn, flushing any open assistant request
-// and resetting the per-turn row counters so message IDs stay unique and stable.
-func (s *snapshot) syncTurn(state *sessionState, turnID string) {
+type turnSeq struct {
+	request int
+	user    int
+}
+
+// syncTurn advances the thread to a new turn, flushing any open assistant
+// request and swapping in that turn's row counters. A freshly seen turn starts
+// at zero; a revisited turn resumes where it left off so message ids stay
+// unique as well as stable.
+func (s *snapshot) syncTurn(state *threadState, turnID string) {
 	if turnID == "" || turnID == state.turnID {
 		return
 	}
 	s.flushPending(state)
+	if state.turnSeqs == nil {
+		state.turnSeqs = make(map[string]turnSeq)
+	}
+	state.turnSeqs[state.turnID] = turnSeq{request: state.requestSeq, user: state.userSeq}
+	seq := state.turnSeqs[turnID]
 	state.turnID = turnID
-	state.requestSeq = 0
-	state.userSeq = 0
+	state.requestSeq = seq.request
+	state.userSeq = seq.user
 }
 
-// newMessage creates and registers one dashboard row (a user prompt or an assistant
-// API request). Cost is left missing here and computed once at the end.
-func (s *snapshot) newMessage(state *sessionState, role string, timestamp time.Time) *messageRecord {
+// buildMessage creates one dashboard row (a user prompt or an assistant API
+// request) without registering it; registration happens on emit so replayed
+// content in derived threads can be discarded. Cost is left missing here and
+// computed once at the end.
+func (s *snapshot) buildMessage(state *threadState, role string, timestamp time.Time) *messageRecord {
 	if state.projectID == "" {
 		state.projectID, state.projectName = projectFromPath(state.directory)
 	}
 	project := s.ensureProject(state.projectID, state.projectName, state.directory)
-	session := s.ensureSession(state.id, project, state.directory)
+	s.ensureSession(state.sessionID, project, state.directory)
 	turnID := state.turnID
 	if turnID == "" {
 		turnID = "turn"
 	}
 	var id string
 	if role == "user" {
-		id = synthesizeRequestID(state.id, turnID, "u", state.userSeq)
+		id = synthesizeRequestID(state.threadID, turnID, "u", state.userSeq)
 	} else {
-		id = synthesizeRequestID(state.id, turnID, "r", state.requestSeq)
+		id = synthesizeRequestID(state.threadID, turnID, "r", state.requestSeq)
 	}
 	msg := &messageRecord{
 		Entry: stats.MessageEntry{
 			SourceID:    codexSourceID,
 			ID:          id,
-			SessionID:   state.id,
+			SessionID:   state.sessionID,
 			Role:        role,
 			TimeCreated: timestamp.UTC(),
+			IsSubagent:  state.isSubagent,
 		},
 		projectID:     project.ID,
 		seenAssistant: map[string]bool{},
@@ -331,19 +502,23 @@ func (s *snapshot) newMessage(state *sessionState, role string, timestamp time.T
 		msg.Entry.ModelID = state.model
 		msg.Entry.ProviderID = state.provider
 	}
-	s.messageMap[id] = msg
-	s.ordered = append(s.ordered, msg)
-	session.Messages = append(session.Messages, msg)
-	updateSessionTimes(session, timestamp)
 	return msg
 }
 
+func (s *snapshot) registerMessage(state *threadState, msg *messageRecord) {
+	session := s.ensureSession(state.sessionID, s.ensureProject(state.projectID, state.projectName, state.directory), state.directory)
+	s.messageMap[msg.Entry.ID] = msg
+	s.ordered = append(s.ordered, msg)
+	session.Messages = append(session.Messages, msg)
+	updateSessionTimes(session, msg.Entry.TimeCreated)
+}
+
 // ensurePending returns the in-progress assistant API-request row, creating it on
-// first content. The row is registered immediately, so trailing content without a
-// token_count still surfaces (with missing cost).
-func (s *snapshot) ensurePending(state *sessionState, timestamp time.Time) *messageRecord {
+// first content. The row is registered when it closes or flushes, so trailing
+// content without a token_count still surfaces (with missing cost).
+func (s *snapshot) ensurePending(state *threadState, timestamp time.Time) *messageRecord {
 	if state.pending == nil {
-		state.pending = s.newMessage(state, "assistant", timestamp)
+		state.pending = s.buildMessage(state, "assistant", timestamp)
 	}
 	return state.pending
 }
@@ -351,16 +526,19 @@ func (s *snapshot) ensurePending(state *sessionState, timestamp time.Time) *mess
 // closeRequest finalizes one API request when its token_count arrives, attaching the
 // per-request usage. A token_count with usage but no buffered content still yields a
 // usage-only assistant row.
-func (s *snapshot) closeRequest(state *sessionState, timestamp time.Time, usage tokenSnapshot, hasUsage bool) {
+func (s *snapshot) closeRequest(state *threadState, timestamp time.Time, usage tokenSnapshot, hasUsage bool, rawInput int64) {
 	req := state.pending
 	if req == nil {
 		if !hasUsage || usageEmpty(usage) {
 			return
 		}
-		req = s.newMessage(state, "assistant", timestamp)
+		req = s.buildMessage(state, "assistant", timestamp)
 	}
 	if hasUsage {
 		req.setTokens(usage)
+		if rawInput > 0 {
+			req.maxInputSnapshot = rawInput
+		}
 	}
 	if req.Entry.ModelID == "" {
 		req.Entry.ModelID = state.model
@@ -369,18 +547,34 @@ func (s *snapshot) closeRequest(state *sessionState, timestamp time.Time, usage 
 		req.Entry.ProviderID = state.provider
 	}
 	req.Entry.Role = "assistant"
+	s.registerMessage(state, req)
 	state.pending = nil
 	state.requestSeq++
 }
 
-// flushPending releases an assistant request that never received a token_count (e.g.
-// trailing content at task_complete). The row is already registered; this just clears
-// the buffer and advances the counter so the next request id stays unique.
-func (s *snapshot) flushPending(state *sessionState) {
-	if state.pending != nil {
-		state.pending = nil
-		state.requestSeq++
+// flushPending releases an assistant request that never received a token_count
+// (e.g. trailing content at task_complete), registering it as a content-only row.
+// While a derived thread is replaying parent history the buffered content is a
+// replayed copy and is discarded instead. Either way the counter advances so the
+// next request id stays unique.
+func (s *snapshot) flushPending(state *threadState) {
+	if state.pending == nil {
+		return
 	}
+	if !state.replay {
+		s.registerMessage(state, state.pending)
+	}
+	state.pending = nil
+	state.requestSeq++
+}
+
+// discardPending drops a replayed pending row without registering it.
+func (s *snapshot) discardPending(state *threadState) {
+	if state.pending == nil {
+		return
+	}
+	state.pending = nil
+	state.requestSeq++
 }
 
 func usageEmpty(u tokenSnapshot) bool {
@@ -507,6 +701,16 @@ func positiveDelta(previous, current tokenSnapshot) tokenSnapshot {
 		Output:    positive(current.Output - previous.Output),
 		Reasoning: positive(current.Reasoning - previous.Reasoning),
 		Total:     positive(current.Total - previous.Total),
+	}
+}
+
+func addSnapshot(a, b tokenSnapshot) tokenSnapshot {
+	return tokenSnapshot{
+		Input:     a.Input + b.Input,
+		Cached:    a.Cached + b.Cached,
+		Output:    a.Output + b.Output,
+		Reasoning: a.Reasoning + b.Reasoning,
+		Total:     a.Total + b.Total,
 	}
 }
 

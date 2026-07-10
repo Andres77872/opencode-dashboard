@@ -14,6 +14,15 @@ import (
 type parseDiagnostics struct {
 	MalformedLines    int64
 	UnsupportedEvents int64
+	IgnoredEvents     int64
+}
+
+// ignoredTopLevelTypes are record families the Codex CLI writes but that carry
+// no usage, message, or tool signal for the dashboard (multi-agent world state,
+// inter-agent chatter). They are skipped without flagging the source "partial".
+var ignoredTopLevelTypes = map[string]bool{
+	"world_state":                        true,
+	"inter_agent_communication_metadata": true,
 }
 
 type tokenSnapshot struct {
@@ -38,12 +47,16 @@ type codexRecord struct {
 }
 
 type sessionMetaRecord struct {
-	ID            string
-	CLIVersion    string
-	CWD           string
-	Source        string
-	ModelProvider string
-	ThreadSource  string
+	ID             string
+	SessionID      string
+	ForkedFromID   string
+	ParentThreadID string
+	AgentRole      string
+	CLIVersion     string
+	CWD            string
+	Source         string
+	ModelProvider  string
+	ThreadSource   string
 }
 
 type turnContextRecord struct {
@@ -104,11 +117,14 @@ func parseTranscriptFile(ctx context.Context, file transcriptFile) ([]codexRecor
 		if line != "" {
 			lineNo++
 			record, ok, malformed := parseLine(file, lineNo, line)
-			if malformed {
+			switch {
+			case malformed:
 				diag.MalformedLines++
-			} else if !ok {
+			case !ok && ignoredTopLevelTypes[record.TopType]:
+				diag.IgnoredEvents++
+			case !ok:
 				diag.UnsupportedEvents++
-			} else {
+			default:
 				records = append(records, record)
 			}
 		}
@@ -150,12 +166,16 @@ func normalizeRawRecord(file transcriptFile, lineNo int, raw map[string]any) (co
 	switch topType {
 	case "session_meta":
 		record.SessionMeta = &sessionMetaRecord{
-			ID:            firstString(payload, "id", "session_id"),
-			CLIVersion:    firstString(payload, "cli_version", "cliVersion"),
-			CWD:           firstString(payload, "cwd"),
-			Source:        firstString(payload, "source"),
-			ModelProvider: firstString(payload, "model_provider", "modelProvider"),
-			ThreadSource:  firstString(payload, "thread_source", "threadSource"),
+			ID:             firstString(payload, "id", "session_id"),
+			SessionID:      firstString(payload, "session_id", "sessionId"),
+			ForkedFromID:   firstString(payload, "forked_from_id", "forkedFromId"),
+			ParentThreadID: firstString(payload, "parent_thread_id", "parentThreadId"),
+			AgentRole:      firstString(payload, "agent_role", "agentRole"),
+			CLIVersion:     firstString(payload, "cli_version", "cliVersion"),
+			CWD:            firstString(payload, "cwd"),
+			Source:         firstString(payload, "source"),
+			ModelProvider:  firstString(payload, "model_provider", "modelProvider"),
+			ThreadSource:   firstString(payload, "thread_source", "threadSource"),
 		}
 	case "turn_context":
 		record.TurnContext = &turnContextRecord{
@@ -175,7 +195,9 @@ func normalizeRawRecord(file transcriptFile, lineNo int, raw map[string]any) (co
 	case "compacted":
 		record.Compacted = true
 	default:
-		return codexRecord{}, false
+		// Return the envelope (type/line/timestamp only, never the payload) so
+		// the caller can tell known-ignored families from unknown ones.
+		return record, false
 	}
 	return record, true
 }
