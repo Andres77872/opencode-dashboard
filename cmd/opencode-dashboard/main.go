@@ -25,6 +25,7 @@ import (
 
 	usagecache "opencode-dashboard/internal/cache"
 	"opencode-dashboard/internal/config"
+	"opencode-dashboard/internal/quota"
 	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/source/claudecode"
 	"opencode-dashboard/internal/source/codex"
@@ -62,6 +63,8 @@ func run(args []string) error {
 		return cmdUninstall(args[1:])
 	case "update":
 		return cmdUpdate(args[1:])
+	case "claude-statusline":
+		return cmdClaudeStatusline(args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -84,6 +87,8 @@ Commands:
   version    Print version and build metadata
   uninstall  Remove dashboard-owned local files
   update     Update to the latest release (or a specific version)
+  claude-statusline  Claude Code statusline command that records Pro/Max
+             rate limits for the dashboard quota view
 
 Global help:
   opencode-dashboard help
@@ -128,7 +133,12 @@ Update flags:
   --check        Report current and latest versions, then exit (no install)
   --version <v>  Install a specific version instead of the latest
   --no-checksum  Skip release checksum verification in the installer
-  --force        Reinstall even if already up to date`)
+  --force        Reinstall even if already up to date
+
+Claude statusline flags:
+  --install      Write the statusLine entry into ~/.claude/settings.json
+  --force        With --install, replace an existing statusLine config
+  --file <path>  Rate-limit snapshot output path (default: dashboard data dir)`)
 }
 
 func cmdWeb(args []string) error {
@@ -206,8 +216,14 @@ func cmdWeb(args []string) error {
 	defer cacheRuntime.Close()
 	defer registry.Close()
 
+	quotaService := quota.NewService(quota.Options{
+		CodexHome:          codexSelection.Path,
+		ClaudeSnapshotPath: config.DefaultClaudeRateLimitsPath(),
+		MiniMaxAuthPath:    config.DefaultOpenCodeAuthPath(),
+	})
+
 	addr := web.DefaultHost + ":" + strconv.Itoa(*port)
-	server := web.NewServerWithCache(addr, registry, logger, cacheRuntime)
+	server := web.NewServerWithServices(addr, registry, logger, cacheRuntime, quotaService)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)
@@ -234,6 +250,13 @@ func cmdWeb(args []string) error {
 	}
 	if selectedSource == source.SourceCodex || *codexHome != "" || os.Getenv(config.EnvCodexHome) != "" {
 		fmt.Printf("codex:     %s (%s)\n", codexSelection.Path, codexSelection.Source)
+	}
+	if _, err := os.Stat(config.DefaultClaudeRateLimitsPath()); os.IsNotExist(err) {
+		if claudeStatuslineInstalled(claudeSelection.Path) {
+			fmt.Println("claude quota: statusline configured — data appears after the next Claude Code response")
+		} else {
+			fmt.Println(`claude quota: not tracking — run "opencode-dashboard claude-statusline --install" (Pro/Max)`)
+		}
 	}
 	if web.HasAssets() {
 		fmt.Println("frontend:   embedded assets")

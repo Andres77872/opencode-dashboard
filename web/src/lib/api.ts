@@ -12,6 +12,7 @@ import type {
   OverviewStats,
   ProjectDetail,
   ProjectStats,
+  QuotasResponse,
   SessionDetail,
   SessionList,
   SourceID,
@@ -262,4 +263,8 @@ export function getMessages(period: string, page: number, limit: number, sort?: 
 
 export function getMessageDetail(id: string, signal?: AbortSignal, sourceId?: SourceID) {
   return request<MessageDetail>(buildDetailUrl(`/api/v1/messages/${encodeURIComponent(id)}`, sourceId), { signal })
+}
+
+export function getQuotas(signal?: AbortSignal) {
+  return request<QuotasResponse>('/api/v1/quotas', { signal })
 }

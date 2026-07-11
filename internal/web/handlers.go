@@ -15,6 +15,7 @@ import (
 type Handlers struct {
 	registry *source.Registry
 	cache    CacheManager
+	quotas   QuotaService
 }
 
 func NewHandlers(registry *source.Registry) *Handlers {
@@ -22,7 +23,11 @@ func NewHandlers(registry *source.Registry) *Handlers {
 }
 
 func NewHandlersWithCache(registry *source.Registry, cache CacheManager) *Handlers {
-	return &Handlers{registry: registry, cache: cache}
+	return NewHandlersWithServices(registry, cache, nil)
+}
+
+func NewHandlersWithServices(registry *source.Registry, cache CacheManager, quotas QuotaService) *Handlers {
+	return &Handlers{registry: registry, cache: cache, quotas: quotas}
 }
 
 func (h *Handlers) Sources(w http.ResponseWriter, r *http.Request) {

@@ -27,6 +27,7 @@ import {
   type StackedBarKey,
 } from '../components/vael'
 import { useDashboardContext } from '../components/layout/dashboard-context'
+import { QuotasSection } from '../components/quotas/quotas-detail'
 import { useOverviewAll } from '../lib/use-overview-all'
 import { usePeriodControls } from '../lib/use-period-controls'
 import { getAvgTokenTotal, getTokenBreakdownItems, getTokenTotal, type TokenBreakdownItem } from '../lib/token-breakdown'
@@ -205,6 +206,9 @@ export function OverviewView() {
         <StatCard label="Messages" value={formatInteger(data.total.messages)} hint={`${data.messages_per_session.toFixed(1)} / session`} spark={messageSpark} sparkLabels={sparkLabels} sparkFmt={formatCompactInteger} />
         <StatCard label="Sources active" value={`${activeSources} / ${data.sources.length}`} hint="with activity in range" />
       </div>
+
+      {/* Provider quotas — live subscription usage, independent of the period filter */}
+      <QuotasSection />
 
       {/* Usage — one metric toggle drives both the trend chart and the donut */}
       <div>

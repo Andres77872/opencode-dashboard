@@ -441,3 +441,30 @@ export interface ApiErrorResponse {
   message: string
   code: number
 }
+
+export type QuotaProviderID = 'codex' | 'claude_code' | 'minimax'
+
+export type QuotaStatus = 'ok' | 'stale' | 'unavailable'
+
+export interface QuotaWindow {
+  id: '5h' | 'weekly' | string
+  used_percent: number
+  resets_at?: number // epoch seconds
+  window_minutes?: number
+}
+
+export interface ProviderQuota {
+  provider: QuotaProviderID
+  label: string
+  plan?: string
+  windows?: QuotaWindow[]
+  as_of_ms?: number
+  status: QuotaStatus
+  reason?: string
+  help?: string
+}
+
+export interface QuotasResponse {
+  providers: ProviderQuota[]
+  fetched_at_ms: number
+}

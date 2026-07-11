@@ -7,6 +7,7 @@ import { navItems } from './nav-items'
 import { Icon } from '../vael/icon'
 import { useDashboardContext } from './dashboard-context'
 import { useSidebar } from './sidebar-context'
+import { QuotaSection } from './quota-section'
 import { formatRelativeTime } from '../../lib/format'
 
 // Global filters that follow the user between views; view-specific params are dropped.
@@ -125,6 +126,7 @@ export function Sidebar() {
       >
         <BrandRow />
         <NavList search={search} />
+        <QuotaSection />
         <StatusFooter />
       </aside>
 
@@ -149,6 +151,7 @@ export function Sidebar() {
           >
             <BrandRow />
             <NavList search={search} onNavigate={closeMobile} />
+            <QuotaSection />
             <StatusFooter />
           </aside>
         </div>

@@ -34,6 +34,10 @@ func NewServer(addr string, registry *source.Registry, logger *slog.Logger) *htt
 }
 
 func NewServerWithCache(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager) *http.Server {
+	return NewServerWithServices(addr, registry, logger, cache, nil)
+}
+
+func NewServerWithServices(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager, quotas QuotaService) *http.Server {
 	if addr == "" {
 		addr = defaultAddr
 	}
@@ -47,7 +51,7 @@ func NewServerWithCache(addr string, registry *source.Registry, logger *slog.Log
 	srv := &Server{
 		Addr:     addr,
 		Registry: registry,
-		handlers: NewHandlersWithCache(registry, cache),
+		handlers: NewHandlersWithServices(registry, cache, quotas),
 		mux:      http.NewServeMux(),
 	}
 
@@ -85,6 +89,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/config", s.handlers.Config)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/cache", s.handlers.CacheStatus)
 	s.mux.HandleFunc("POST "+apiV1Prefix+"/cache/sync", s.handlers.CacheSync)
+	s.mux.HandleFunc("GET "+apiV1Prefix+"/quotas", s.handlers.Quotas)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/version", s.handlers.Version)
 	s.mux.HandleFunc("GET /health", s.healthHandler)
 }

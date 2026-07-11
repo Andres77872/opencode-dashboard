@@ -12,6 +12,7 @@ const (
 	EnvCacheDBPath     = "OPENCODE_DASHBOARD_CACHE_DB"
 	EnvClaudeConfigDir = "CLAUDE_CONFIG_DIR"
 	EnvCodexHome       = "OPENCODE_DASHBOARD_CODEX_HOME"
+	EnvMiniMaxAPIKey   = "OPENCODE_DASHBOARD_MINIMAX_API_KEY"
 
 	AppName          = "opencode"
 	DashboardAppName = "opencode-dashboard"
@@ -140,6 +141,19 @@ func DefaultDBPath() string {
 
 func DefaultCacheDBPath() string {
 	return filepath.Join(XDGDataHome(), DashboardAppName, "usage-cache.sqlite")
+}
+
+// DefaultClaudeRateLimitsPath is where the claude-statusline subcommand
+// persists the latest Claude rate-limit snapshot for the dashboard to read.
+// It lives next to the cache DB so `uninstall` removes it too.
+func DefaultClaudeRateLimitsPath() string {
+	return filepath.Join(XDGDataHome(), DashboardAppName, "claude-rate-limits.json")
+}
+
+// DefaultOpenCodeAuthPath is opencode's credential store, the fallback source
+// for the MiniMax coding-plan API key when EnvMiniMaxAPIKey is unset.
+func DefaultOpenCodeAuthPath() string {
+	return filepath.Join(XDGDataHome(), AppName, "auth.json")
 }
 
 func ResolveCacheDB(flagDB string) PathSelection {

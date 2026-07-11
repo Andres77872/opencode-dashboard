@@ -45,6 +45,36 @@ The Overview deliberately does **not** present a single combined cost number. Op
 - **Plaintext transcripts** — Claude Code and Codex JSONL transcripts are local plaintext and may contain prompts, tool output, file paths, patches, and secrets.
 - **Redaction** — config previews (`/api/v1/config`) redact obvious secrets before display.
 
+## Quota tracking
+
+Besides historical usage, the dashboard shows the **remaining subscription quota** for the provider accounts on the machine — a compact strip in the sidebar and detailed cards on the Overview page, served by `GET /api/v1/quotas`. Each provider reports its session window and weekly window as used-percent with reset times. Collection uses **official surfaces only** — no reverse-engineered private endpoints:
+
+| Provider | Setup | How the data is obtained |
+|----------|-------|--------------------------|
+| Codex | automatic | The Codex CLI records `rate_limits` snapshots in its own rollout files under `~/.codex/sessions`; the dashboard reads the newest one. No network, no credentials. |
+| Claude Code | one command (below) | Claude Code's [documented statusline integration](https://code.claude.com/docs/en/statusline) pipes JSON including `rate_limits` to a configured statusline command. Pro/Max plans only. |
+| MiniMax | API key | MiniMax's documented `token_plan/remains` endpoint, called with the key from `OPENCODE_DASHBOARD_MINIMAX_API_KEY` or, as a fallback, opencode's auth store (`~/.local/share/opencode/auth.json`, entry `minimax-coding-plan`). |
+
+### Claude setup on a new machine
+
+With the binary on `PATH` and Claude Code signed in (Pro/Max), run once:
+
+```bash
+opencode-dashboard claude-statusline --install
+```
+
+This writes the statusline entry into `~/.claude/settings.json`, preserving your other settings:
+
+```json
+{ "statusLine": { "type": "command", "command": "opencode-dashboard claude-statusline" } }
+```
+
+If a different statusline is already configured, the command refuses; re-run with `--force` to replace it. Then use Claude Code once — after the first response of a session, Claude Code starts invoking the command, which records the quota snapshot for the dashboard **and** renders a useful statusline (e.g. `Fable 5 · 5h 33% · wk 31%`).
+
+### Freshness
+
+Codex and Claude quota only refresh while their CLI is running; the dashboard marks snapshots older than 15 minutes with a *stale* badge instead of hiding them. The Claude snapshot lives at `~/.local/share/opencode-dashboard/claude-rate-limits.json` — dashboard-owned, removed by `opencode-dashboard uninstall`. `opencode-dashboard web` prints a one-line hint at startup if Claude quota tracking is not set up yet.
+
 ## Prerequisites
 
 | Requirement | Version | Notes |
@@ -214,6 +244,7 @@ Pick a range with `T` in the TUI or the period picker in the web UI; the web UI 
 | `opencode-dashboard update --check` | Report current vs latest, install nothing |
 | `opencode-dashboard uninstall --dry-run` | Preview removal without deleting |
 | `opencode-dashboard uninstall --force` | Skip the confirmation prompt |
+| `opencode-dashboard claude-statusline --install` | Configure Claude Code's statusline to record Pro/Max rate limits for the [quota view](#quota-tracking) |
 
 ## Uninstall
 
@@ -260,6 +291,7 @@ The web command also serves a JSON API under `/api/v1`. Most endpoints accept a 
 | `GET /api/v1/messages` | Paginated message list | `page`, `limit` (≤100), `sort`, period |
 | `GET /api/v1/messages/{id}` | Message detail | `source` |
 | `GET /api/v1/config` | Source configuration preview (redacted) | `source` |
+| `GET /api/v1/quotas` | Live provider quota (Codex / Claude Code / MiniMax) | — |
 | `GET /api/v1/version` | Build info | — |
 | `GET /health` | Health check | — |
 
