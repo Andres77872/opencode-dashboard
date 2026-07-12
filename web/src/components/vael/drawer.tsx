@@ -14,6 +14,7 @@ export interface DrawerProps {
   children: ReactNode
 }
 
+/** Right-side slide-over panel with scrim, header, and scrollable body; Escape or scrim click closes. @category Overlays */
 export function Drawer({ open, onClose, title, subtitle, width = 560, children }: DrawerProps) {
   useEffect(() => {
     if (!open) return

@@ -43,6 +43,7 @@ export interface AreaChartProps {
   fillFirst?: boolean
 }
 
+/** Multi-series line/area chart with y-axis grid, hover crosshair, and tooltip. Pure SVG. @category Charts */
 export function AreaChart({ labels = [], series = [], width = 600, height = 220, yFormat = (v) => String(v), fillFirst = true }: AreaChartProps) {
   const [hi, setHi] = useState(-1)
   const padL = 48
@@ -166,6 +167,7 @@ export interface StackedBarsProps {
   showTotal?: boolean
 }
 
+/** Per-day stacked bars (one segment per source) with total trend line and hover breakdown tooltip. @category Charts */
 export function StackedBars({ days = [], keys = [], width = 600, height = 220, valueFmt = (v) => String(v), label, showTotal = true }: StackedBarsProps) {
   const [hi, setHi] = useState(-1)
   const padL = 48
@@ -320,6 +322,7 @@ export interface DonutProps {
   onHoverIndex?: (i: number | null) => void
 }
 
+/** Share-of-total donut with center stat, hover tooltip, and optional external legend cross-highlight. @category Charts */
 export function Donut({ segments = [], size = 150, thickness = 16, centerTop = '', centerBottom = '', activeIndex, onHoverIndex }: DonutProps) {
   const [hovInternal, setHovInternal] = useState<number | null>(null)
   const total = segments.reduce((s, x) => s + x.value, 0) || 1
@@ -422,6 +425,7 @@ export function Donut({ segments = [], size = 150, thickness = 16, centerTop = '
   )
 }
 
+/** Progress ring showing percent-of-budget with a centered mono percentage. @category Charts */
 export function BudgetRing({ pct = 0, size = 132, thickness = 12, tone = 'var(--accent)', label = '' }: { pct?: number; size?: number; thickness?: number; tone?: string; label?: string }) {
   const r = (size - thickness) / 2
   const c = 2 * Math.PI * r
@@ -445,6 +449,7 @@ export interface HeatmapCell {
   value: number
 }
 
+/** Single-row intensity strip — one cell per bucket, shaded by value. @category Charts */
 export function Heatmap({ cells = [], color = 'var(--cat-1)' }: { cells: HeatmapCell[]; color?: string }) {
   const max = Math.max(1, ...cells.map((d) => d.value))
   return (

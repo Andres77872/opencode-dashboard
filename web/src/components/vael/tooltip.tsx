@@ -10,6 +10,7 @@ export interface TooltipProps {
   side?: TooltipSide
 }
 
+/** Minimal hover tooltip (mono text) anchored above or below its child. @category Overlays */
 export function Tooltip({ content, children, side = 'top' }: TooltipProps) {
   const [show, setShow] = useState(false)
   const pos: CSSProperties =

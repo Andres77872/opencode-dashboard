@@ -15,6 +15,7 @@ export interface DeltaChipProps {
   mono?: boolean
 }
 
+/** Signed change indicator (↑ ↓ →) in mono numerals, tinted by direction or an explicit tone. @category Atoms */
 export function DeltaChip({ value, dir = 'flat', tone, mono = true }: DeltaChipProps) {
   const colors: Record<DeltaTone, string> = {
     pos: 'var(--success)',
@@ -48,6 +49,7 @@ export interface BadgeProps {
   solid?: boolean
 }
 
+/** Small pill label with neutral/accent/success/warning/danger tones, optional status dot and solid fill. @category Atoms */
 export function Badge({ children, tone = 'neutral', dot = false, solid = false }: BadgeProps) {
   const tones: Record<BadgeTone, { fg: string; soft: string; solid: string }> = {
     neutral: { fg: 'var(--fg-secondary)', soft: 'var(--ink-700)', solid: 'var(--ink-600)' },
@@ -85,6 +87,7 @@ export interface VendorChipProps {
   size?: number
 }
 
+/** Source/vendor identity chip — brand-colored monogram square plus optional name (opencode, claude_code, codex). @category Atoms */
 export function VendorChip({ id, label = true, size = 22 }: VendorChipProps) {
   const v = vendorMeta(id)
   return (
@@ -116,6 +119,7 @@ export interface AvatarProps {
   tone?: string
 }
 
+/** Round initials avatar tinted from a categorical token. @category Atoms */
 export function Avatar({ initials = 'AV', size = 28, tone = 'var(--cat-3)' }: AvatarProps) {
   return (
     <span
@@ -143,6 +147,7 @@ export interface LegendItem {
   value?: string | number
 }
 
+/** Chart legend — color swatch + label rows, with optional mono values. @category Atoms */
 export function Legend({ items = [] }: { items: LegendItem[] }) {
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px' }}>
@@ -164,6 +169,7 @@ export interface SourceStackItem {
   value: number
 }
 
+/** Thin horizontal share bar splitting a total across sources by color. @category Atoms */
 export function SourceStack({ sources = [], width = 120, height = 7, showTrack = true }: { sources: SourceStackItem[]; width?: number | string; height?: number; showTrack?: boolean }) {
   const total = sources.reduce((s, x) => s + x.value, 0) || 1
   return (
@@ -196,6 +202,7 @@ export interface BarRowProps {
   onClick?: () => void
 }
 
+/** Label + mono value + proportional bar row, for top-N breakdown lists. @category Atoms */
 export function BarRow({ label, value, max, rawValue, color = 'var(--accent)', sub, onClick }: BarRowProps) {
   return (
     <div
@@ -224,7 +231,7 @@ export interface RSparkProps {
   fmt?: (v: number) => string
 }
 
-/* responsive full-width sparkline strip (non-scaling stroke) */
+/** Responsive full-width sparkline strip (non-scaling stroke); labels enable a hover crosshair + tooltip. @category Atoms */
 export function RSpark({ data = [], tone = 'var(--accent)', height = 30, labels, fmt }: RSparkProps) {
   // useId delimiters (« » / :) are not safe inside url(#...) refs
   const gid = `rs${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
@@ -307,6 +314,7 @@ export function RSpark({ data = [], tone = 'var(--accent)', height = 30, labels,
   )
 }
 
+/** Fixed-size inline sparkline with gradient fill and end dot, for table cells. @category Atoms */
 export function Sparkline({ data = [], width = 96, height = 28, tone = 'var(--accent)', fill = true }: { data: number[]; width?: number; height?: number; tone?: string; fill?: boolean }) {
   if (!data.length) return <svg width={width} height={height} />
   const min = Math.min(...data)

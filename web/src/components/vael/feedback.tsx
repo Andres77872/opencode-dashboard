@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from 'react'
 import { Icon, type IconName } from './icon'
 import { Button } from './controls'
 
+/** Pulsing placeholder block shown while content loads. @category Feedback */
 export function Skeleton({ width = '100%', height = 14, radius = 'var(--radius-sm)', style }: { width?: number | string; height?: number | string; radius?: string; style?: CSSProperties }) {
   return (
     <span
@@ -26,6 +27,7 @@ export interface EmptyStateProps {
   action?: ReactNode
 }
 
+/** Centered empty-state block — icon tile, title, description, optional action. @category Feedback */
 export function EmptyState({ icon = 'info', title, description, action }: EmptyStateProps) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', gap: 10, padding: '48px 24px' }}>
@@ -45,6 +47,7 @@ export interface ErrorStateProps {
   onRetry?: () => void
 }
 
+/** Centered error block with danger icon, mono error message, and optional retry button. @category Feedback */
 export function ErrorState({ title = 'Something went wrong', message, onRetry }: ErrorStateProps) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', gap: 10, padding: '40px 24px' }}>
@@ -64,6 +67,7 @@ export function ErrorState({ title = 'Something went wrong', message, onRetry }:
 
 /** Inline notice banner (warnings / source diagnostics). */
 export type NoticeTone = 'info' | 'warning' | 'danger' | 'success'
+/** Inline notice banner for warnings and source diagnostics, in info/warning/danger/success tones. @category Feedback */
 export function Notice({ tone = 'info', icon, title, children }: { tone?: NoticeTone; icon?: IconName; title?: ReactNode; children?: ReactNode }) {
   const map: Record<NoticeTone, { fg: string; soft: string }> = {
     info: { fg: 'var(--blue-300)', soft: 'var(--accent-soft)' },

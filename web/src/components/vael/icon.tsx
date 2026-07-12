@@ -68,6 +68,7 @@ interface IconProps {
   style?: CSSProperties
 }
 
+/** Inline stroke icon from the Vael Lucide-style path set (see IconName for the full set). @category Icons */
 export function Icon({ name, size = 18, stroke = 1.75, color = 'currentColor', fill = 'none', style }: IconProps) {
   return (
     <svg

@@ -13,6 +13,7 @@ export interface CardProps {
   bodyStyle?: CSSProperties
 }
 
+/** Surface container with optional header (eyebrow/title/subtitle/action) and padded body. @category Cards */
 export function Card({ title, subtitle, action, children, pad = 16, style, bodyStyle, eyebrow }: CardProps) {
   return (
     <section
@@ -68,6 +69,7 @@ export interface StatCardProps {
   title?: string
 }
 
+/** KPI tile — uppercase label, big mono value, optional delta chip, hint, and sparkline; accent adds a glow. @category Cards */
 export function StatCard({ label, value, unit, delta, spark, sparkTone = 'var(--accent)', sparkLabels, sparkFmt, hint, accent = false, title }: StatCardProps) {
   return (
     <div
@@ -103,6 +105,7 @@ export function StatCard({ label, value, unit, delta, spark, sparkTone = 'var(--
   )
 }
 
+/** Section heading with optional muted sub-note, for grouping cards on a view. @category Cards */
 export function SectionTitle({ children, sub }: { children: ReactNode; sub?: ReactNode }) {
   return (
     <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 12 }}>

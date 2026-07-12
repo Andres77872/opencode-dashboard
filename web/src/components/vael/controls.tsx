@@ -18,6 +18,7 @@ export interface ButtonProps {
   type?: 'button' | 'submit'
 }
 
+/** Push button in primary/secondary/ghost variants, sm/md sizes, with optional leading icon. @category Controls */
 export function Button({ children, variant = 'secondary', size = 'md', iconLeft, onClick, disabled, title, type = 'button' }: ButtonProps) {
   const pal = {
     primary: { bg: 'var(--accent)', fg: 'var(--fg-on-accent)', bd: 'transparent' },
@@ -64,6 +65,7 @@ export interface IconButtonProps {
   disabled?: boolean
 }
 
+/** Square icon-only button with hover/active states and an optional spinning state for refresh actions. @category Controls */
 export function IconButton({ name, label, active, onClick, size = 32, spinning, disabled }: IconButtonProps) {
   const [h, setH] = useState(false)
   return (
@@ -104,6 +106,7 @@ export interface SegmentedControlProps<V extends string> {
   size?: ControlSize
 }
 
+/** Inline segmented switch for small exclusive option sets (metric, granularity). @category Controls */
 export function SegmentedControl<V extends string>({ options, value, onChange, size = 'md' }: SegmentedControlProps<V>) {
   const h = size === 'sm' ? 28 : 32
   return (
@@ -160,6 +163,7 @@ export interface PopoverProps {
   closeOnClick?: boolean
 }
 
+/** Anchored dropdown surface — render-prop trigger toggles a floating panel; closes on outside click. @category Controls */
 export function Popover({ trigger, children, align = 'left', width, closeOnClick = true }: PopoverProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -204,6 +208,7 @@ export interface MenuItemProps {
   onClick?: () => void
 }
 
+/** Row inside a Popover/Select menu — optional color swatch, selected check. @category Controls */
 export function MenuItem({ children, selected, color, onClick }: MenuItemProps) {
   return (
     <div
@@ -251,6 +256,7 @@ export interface SelectProps<V extends string> {
   width?: number
 }
 
+/** Dropdown select built on Popover + MenuItem, with optional leading icon and label prefix. @category Controls */
 export function Select<V extends string>({ label, icon, value, options, onChange, width }: SelectProps<V>) {
   const current = options.find((o) => (typeof o === 'string' ? o : o.value) === value)
   const curLabel = current ? (typeof current === 'string' ? current : current.label) : value

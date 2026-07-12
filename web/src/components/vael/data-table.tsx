@@ -33,6 +33,7 @@ export interface DataTableProps<T> {
   rowKey?: (row: T, index: number) => string | number
 }
 
+/** Generic data table — column defs with custom renderers, sortable sticky header, hover + clickable rows, dense mode. @category Data */
 export function DataTable<T>({ columns, rows, sort, onSort, onRowClick, dense, rowKey = (_r, i) => i }: DataTableProps<T>) {
   const [hover, setHover] = useState(-1)
   const rh = dense ? 38 : 44

@@ -1,0 +1,108 @@
+{
+  "projectId": "ce97e376-625d-4f37-8495-e7ef61f3d1fc",
+  "shape": "package",
+  "pkg": "web",
+  "globalName": "Vael",
+  "entry": "web/src/components/vael/index.ts",
+  "srcDir": "src/components/vael",
+  "cssEntry": ".ds-css/vael.css",
+  "buildCmd": "cd web && mkdir -p .ds-css && { cat src/styles/tokens/colors.css src/styles/tokens/typography.css src/styles/tokens/spacing.css src/styles/tokens/effects.css src/styles/tokens/base.css; grep -v '^@import' src/index.css; } > .ds-css/vael.css",
+  "extraFonts": [
+    "node_modules/@fontsource/hanken-grotesk/400.css",
+    "node_modules/@fontsource/hanken-grotesk/500.css",
+    "node_modules/@fontsource/hanken-grotesk/600.css",
+    "node_modules/@fontsource/hanken-grotesk/700.css",
+    "node_modules/@fontsource/hanken-grotesk/800.css",
+    "node_modules/@fontsource/jetbrains-mono/400.css",
+    "node_modules/@fontsource/jetbrains-mono/500.css",
+    "node_modules/@fontsource/jetbrains-mono/600.css",
+    "node_modules/@fontsource/jetbrains-mono/700.css"
+  ],
+  "componentSrcMap": {
+    "DeltaChip": "src/components/vael/atoms.tsx",
+    "Badge": "src/components/vael/atoms.tsx",
+    "VendorChip": "src/components/vael/atoms.tsx",
+    "Avatar": "src/components/vael/atoms.tsx",
+    "Legend": "src/components/vael/atoms.tsx",
+    "SourceStack": "src/components/vael/atoms.tsx",
+    "BarRow": "src/components/vael/atoms.tsx",
+    "Sparkline": "src/components/vael/atoms.tsx",
+    "RSpark": "src/components/vael/atoms.tsx",
+    "StatCard": "src/components/vael/card.tsx",
+    "SectionTitle": "src/components/vael/card.tsx",
+    "Button": "src/components/vael/controls.tsx",
+    "IconButton": "src/components/vael/controls.tsx",
+    "SegmentedControl": "src/components/vael/controls.tsx",
+    "Popover": "src/components/vael/controls.tsx",
+    "MenuItem": "src/components/vael/controls.tsx",
+    "Select": "src/components/vael/controls.tsx",
+    "AreaChart": "src/components/vael/charts.tsx",
+    "StackedBars": "src/components/vael/charts.tsx",
+    "Donut": "src/components/vael/charts.tsx",
+    "BudgetRing": "src/components/vael/charts.tsx",
+    "Heatmap": "src/components/vael/charts.tsx",
+    "Skeleton": "src/components/vael/feedback.tsx",
+    "EmptyState": "src/components/vael/feedback.tsx",
+    "ErrorState": "src/components/vael/feedback.tsx",
+    "Notice": "src/components/vael/feedback.tsx"
+  },
+  "dtsPropsFor": {
+    "Icon": "name: 'dashboard' | 'line-chart' | 'bar-chart' | 'folder' | 'wrench' | 'clock' | 'settings' | 'search' | 'download' | 'chevron-down' | 'chevron-right' | 'chevron-left' | 'arrow-up' | 'arrow-down' | 'arrow-up-right' | 'arrow-down-right' | 'dollar' | 'cpu' | 'zap' | 'git-branch' | 'message-square' | 'hash' | 'filter' | 'more-horizontal' | 'check' | 'x' | 'terminal' | 'trending-up' | 'trending-down' | 'alert-triangle' | 'plus' | 'database' | 'bell' | 'calendar' | 'file-text' | 'pencil' | 'file-plus' | 'globe' | 'activity' | 'sliders' | 'refresh' | 'external-link' | 'info' | 'circle' | 'dot' | 'layers' | 'users' | 'credit-card' | 'play' | 'key' | 'copy' | 'menu'; size?: number; stroke?: number; color?: string; fill?: string; style?: React.CSSProperties;",
+    "IconButton": "name: 'dashboard' | 'line-chart' | 'bar-chart' | 'folder' | 'wrench' | 'clock' | 'settings' | 'search' | 'download' | 'chevron-down' | 'chevron-right' | 'chevron-left' | 'arrow-up' | 'arrow-down' | 'arrow-up-right' | 'arrow-down-right' | 'dollar' | 'cpu' | 'zap' | 'git-branch' | 'message-square' | 'hash' | 'filter' | 'more-horizontal' | 'check' | 'x' | 'terminal' | 'trending-up' | 'trending-down' | 'alert-triangle' | 'plus' | 'database' | 'bell' | 'calendar' | 'file-text' | 'pencil' | 'file-plus' | 'globe' | 'activity' | 'sliders' | 'refresh' | 'external-link' | 'info' | 'circle' | 'dot' | 'layers' | 'users' | 'credit-card' | 'play' | 'key' | 'copy' | 'menu'; label: string; active?: boolean; onClick?: () => void; size?: number; spinning?: boolean; disabled?: boolean;",
+    "Button": "children?: React.ReactNode; variant?: 'primary' | 'secondary' | 'ghost'; size?: 'sm' | 'md'; iconLeft?: 'dashboard' | 'line-chart' | 'bar-chart' | 'folder' | 'wrench' | 'clock' | 'settings' | 'search' | 'download' | 'chevron-down' | 'chevron-right' | 'chevron-left' | 'arrow-up' | 'arrow-down' | 'arrow-up-right' | 'arrow-down-right' | 'dollar' | 'cpu' | 'zap' | 'git-branch' | 'message-square' | 'hash' | 'filter' | 'more-horizontal' | 'check' | 'x' | 'terminal' | 'trending-up' | 'trending-down' | 'alert-triangle' | 'plus' | 'database' | 'bell' | 'calendar' | 'file-text' | 'pencil' | 'file-plus' | 'globe' | 'activity' | 'sliders' | 'refresh' | 'external-link' | 'info' | 'circle' | 'dot' | 'layers' | 'users' | 'credit-card' | 'play' | 'key' | 'copy' | 'menu'; onClick?: () => void; disabled?: boolean; title?: string; type?: 'button' | 'submit';",
+    "Select": "label?: React.ReactNode; icon?: 'dashboard' | 'line-chart' | 'bar-chart' | 'folder' | 'wrench' | 'clock' | 'settings' | 'search' | 'download' | 'chevron-down' | 'chevron-right' | 'chevron-left' | 'arrow-up' | 'arrow-down' | 'arrow-up-right' | 'arrow-down-right' | 'dollar' | 'cpu' | 'zap' | 'git-branch' | 'message-square' | 'hash' | 'filter' | 'more-horizontal' | 'check' | 'x' | 'terminal' | 'trending-up' | 'trending-down' | 'alert-triangle' | 'plus' | 'database' | 'bell' | 'calendar' | 'file-text' | 'pencil' | 'file-plus' | 'globe' | 'activity' | 'sliders' | 'refresh' | 'external-link' | 'info' | 'circle' | 'dot' | 'layers' | 'users' | 'credit-card' | 'play' | 'key' | 'copy' | 'menu'; value: string; options: Array<string | { value: string; label: React.ReactNode; color?: string; disabled?: boolean }>; onChange?: (value: string) => void; width?: number;",
+    "SegmentedControl": "options: Array<string | { value: string; label: React.ReactNode }>; value: string; onChange?: (value: string) => void; size?: 'sm' | 'md';",
+    "Tabs": "tabs: Array<{ value: string; label: React.ReactNode; count?: React.ReactNode }>; value: string; onChange: (value: string) => void;",
+    "DataTable": "columns: Array<{ key: string; header: React.ReactNode; numeric?: boolean; align?: 'left' | 'right' | 'center'; width?: number | string; sortable?: boolean; muted?: boolean; wrap?: boolean; render?: (row: any, index: number) => React.ReactNode }>; rows: any[]; sort?: { key: string; dir: 'asc' | 'desc' } | null; onSort?: (key: string) => void; onRowClick?: (row: any, index: number) => void; dense?: boolean; rowKey?: (row: any, index: number) => string | number;",
+    "Popover": "trigger: (open: boolean, toggle: () => void) => React.ReactNode; children: React.ReactNode; align?: 'left' | 'right'; width?: number; closeOnClick?: boolean;",
+    "Legend": "items: Array<{ label: string; color: string; value?: string | number }>;",
+    "SourceStack": "sources: Array<{ id: string; label?: string; color: string; value: number }>; width?: number | string; height?: number; showTrack?: boolean;",
+    "AreaChart": "labels: string[]; series: Array<{ name: string; color: string; data: number[]; fmt?: (v: number) => string }>; width?: number; height?: number; yFormat?: (v: number) => string; fillFirst?: boolean;",
+    "StackedBars": "days: Array<{ key: string; wd?: string; per: Record<string, number> }>; keys: Array<{ id: string; short: string; color: string }>; width?: number; height?: number; valueFmt?: (v: number) => string; label?: string; showTotal?: boolean;",
+    "Donut": "segments: Array<{ value: number; color: string; label?: string; sub?: string; valueText?: string; shareText?: string }>; size?: number; thickness?: number; centerTop?: string; centerBottom?: string; activeIndex?: number | null; onHoverIndex?: (i: number | null) => void;",
+    "Heatmap": "cells: Array<{ key: string; value: number }>; color?: string;",
+    "StatCard": "label: React.ReactNode; value: React.ReactNode; unit?: React.ReactNode; delta?: { value: string; dir?: 'up' | 'down' | 'flat'; tone?: 'pos' | 'neg' | 'neutral'; mono?: boolean }; spark?: number[]; sparkTone?: string; sparkLabels?: string[]; sparkFmt?: (v: number) => string; hint?: React.ReactNode; accent?: boolean; title?: string;",
+    "Card": "title?: React.ReactNode; subtitle?: React.ReactNode; action?: React.ReactNode; eyebrow?: React.ReactNode; children?: React.ReactNode; pad?: number; style?: React.CSSProperties; bodyStyle?: React.CSSProperties;",
+    "Skeleton": "width?: number | string; height?: number | string; radius?: string; style?: React.CSSProperties;",
+    "EmptyState": "icon?: 'dashboard' | 'line-chart' | 'bar-chart' | 'folder' | 'wrench' | 'clock' | 'settings' | 'search' | 'download' | 'chevron-down' | 'chevron-right' | 'chevron-left' | 'arrow-up' | 'arrow-down' | 'arrow-up-right' | 'arrow-down-right' | 'dollar' | 'cpu' | 'zap' | 'git-branch' | 'message-square' | 'hash' | 'filter' | 'more-horizontal' | 'check' | 'x' | 'terminal' | 'trending-up' | 'trending-down' | 'alert-triangle' | 'plus' | 'database' | 'bell' | 'calendar' | 'file-text' | 'pencil' | 'file-plus' | 'globe' | 'activity' | 'sliders' | 'refresh' | 'external-link' | 'info' | 'circle' | 'dot' | 'layers' | 'users' | 'credit-card' | 'play' | 'key' | 'copy' | 'menu'; title: React.ReactNode; description?: React.ReactNode; action?: React.ReactNode;",
+    "Notice": "tone?: 'info' | 'warning' | 'danger' | 'success'; icon?: 'dashboard' | 'line-chart' | 'bar-chart' | 'folder' | 'wrench' | 'clock' | 'settings' | 'search' | 'download' | 'chevron-down' | 'chevron-right' | 'chevron-left' | 'arrow-up' | 'arrow-down' | 'arrow-up-right' | 'arrow-down-right' | 'dollar' | 'cpu' | 'zap' | 'git-branch' | 'message-square' | 'hash' | 'filter' | 'more-horizontal' | 'check' | 'x' | 'terminal' | 'trending-up' | 'trending-down' | 'alert-triangle' | 'plus' | 'database' | 'bell' | 'calendar' | 'file-text' | 'pencil' | 'file-plus' | 'globe' | 'activity' | 'sliders' | 'refresh' | 'external-link' | 'info' | 'circle' | 'dot' | 'layers' | 'users' | 'credit-card' | 'play' | 'key' | 'copy' | 'menu'; title?: React.ReactNode; children?: React.ReactNode;"
+  },
+  "overrides": {
+    "Drawer": {
+      "cardMode": "single",
+      "primaryStory": "Open",
+      "viewport": "1000x640"
+    },
+    "Card": {
+      "cardMode": "column"
+    },
+    "StatCard": {
+      "cardMode": "column"
+    },
+    "AreaChart": {
+      "cardMode": "column"
+    },
+    "BudgetRing": {
+      "cardMode": "column"
+    },
+    "Donut": {
+      "cardMode": "column"
+    },
+    "Heatmap": {
+      "cardMode": "column"
+    },
+    "StackedBars": {
+      "cardMode": "column"
+    },
+    "DataTable": {
+      "cardMode": "column"
+    },
+    "ErrorState": {
+      "cardMode": "column"
+    },
+    "Skeleton": {
+      "cardMode": "column"
+    }
+  },
+  "readmeHeader": ".design-sync/conventions.md"
+}

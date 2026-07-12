@@ -13,6 +13,7 @@ export interface TabsProps<V extends string> {
   onChange: (value: V) => void
 }
 
+/** Underline tabs with optional mono count badges, for switching detail sections. @category Navigation */
 export function Tabs<V extends string>({ tabs, value, onChange }: TabsProps<V>) {
   return (
     <div style={{ display: 'flex', gap: 2, borderBottom: '1px solid var(--border-default)' }}>
