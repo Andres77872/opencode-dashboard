@@ -208,31 +208,85 @@ func TestFirstSyncPrunesLegacyUnfinalizedRows(t *testing.T) {
 	assertCachedMessageCount(t, store, 1)
 }
 
-func TestShortCircuitAdvancesWatermarksWithoutCollect(t *testing.T) {
+// An unchanged fingerprint with a *stationary* cutoff means there is genuinely
+// nothing to do: no new raw data, and no previously-skipped rows newly falling
+// behind the finality boundary. That is the only case the fast path may skip a
+// collect.
+func TestShortCircuitSkipsCollectWhenCutoffUnchanged(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	cutoff := base.Add(-6 * time.Hour)
 	src := &syncFakeSource{messages: []stats.MessageEntry{testMessage("only", base.Add(-8*time.Hour), 0.01)}}
 	store := newTestStore(t)
 
-	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{Cutoff: base.Add(-6 * time.Hour)}); err != nil {
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{Cutoff: cutoff}); err != nil {
 		t.Fatalf("first SyncSourceWithOptions() failed: %v", err)
 	}
 	collected := src.messagesCalls
 
-	// Raw unchanged: the second sync must not re-collect, only advance watermarks.
-	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{Cutoff: base.Add(-5 * time.Hour)}); err != nil {
+	// Raw unchanged and the cutoff has not moved: no re-collect.
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{Cutoff: cutoff}); err != nil {
 		t.Fatalf("second SyncSourceWithOptions() failed: %v", err)
 	}
 	if src.messagesCalls != collected {
-		t.Fatalf("messages collected again (%d calls, was %d) despite unchanged fingerprint", src.messagesCalls, collected)
+		t.Fatalf("messages collected again (%d calls, was %d) despite unchanged fingerprint and cutoff", src.messagesCalls, collected)
 	}
 	status, _, err := store.SourceStatus(ctx, syncFakeSourceID)
 	if err != nil {
 		t.Fatalf("SourceStatus() failed: %v", err)
 	}
-	want := base.Add(-5 * time.Hour).UnixMilli()
+	want := cutoff.UnixMilli()
 	if status.LastSafeCutoff != want || status.FreshThrough != want {
-		t.Fatalf("watermarks = %d/%d, want both advanced to %d", status.LastSafeCutoff, status.FreshThrough, want)
+		t.Fatalf("watermarks = %d/%d, want both at %d", status.LastSafeCutoff, status.FreshThrough, want)
+	}
+}
+
+// Regression: an unchanged fingerprint must NOT let the watermark jump over rows
+// that the previous sync skipped as "recent" and therefore never wrote.
+//
+// The fingerprint is file stat only, so it stays identical whenever the user
+// simply stopped working — which is exactly when the previous run's recent
+// window is still un-consolidated. Advancing the finality boundary past those
+// rows without collecting them makes reads serve the cache for that span while
+// the rows are absent from it: they vanish from every view until a rebuild.
+func TestUnchangedFingerprintStillConsolidatesSkippedRecentWindow(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+
+	// "final" is behind the first cutoff and gets written. "recent" sits inside
+	// the first run's recent window: skipped, not written, served live for now.
+	src := &syncFakeSource{messages: []stats.MessageEntry{
+		testMessage("final", base.Add(-8*time.Hour), 0.01),
+		testMessage("recent", base.Add(-5*time.Hour), 0.02),
+	}}
+	store := newTestStore(t)
+
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{
+		Mode:   SyncModeIncremental,
+		Cutoff: base.Add(-6 * time.Hour),
+	}); err != nil {
+		t.Fatalf("first SyncSourceWithOptions() failed: %v", err)
+	}
+	assertCachedMessageCount(t, store, 1)
+
+	// The user has been idle, so the raw files — and thus the fingerprint — are
+	// untouched. But the cutoff has rolled forward past "recent", so this sync
+	// must consolidate it rather than short-circuit over it.
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{
+		Mode:   SyncModeIncremental,
+		Cutoff: base.Add(-3 * time.Hour),
+	}); err != nil {
+		t.Fatalf("second SyncSourceWithOptions() failed: %v", err)
+	}
+
+	assertCachedMessageCount(t, store, 2)
+
+	status, _, err := store.SourceStatus(ctx, syncFakeSourceID)
+	if err != nil {
+		t.Fatalf("SourceStatus() failed: %v", err)
+	}
+	if want := base.Add(-3 * time.Hour).UnixMilli(); status.LastSafeCutoff != want {
+		t.Fatalf("LastSafeCutoff = %d, want advanced to %d", status.LastSafeCutoff, want)
 	}
 }
 

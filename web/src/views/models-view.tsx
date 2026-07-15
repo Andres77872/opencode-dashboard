@@ -10,6 +10,8 @@ import {
   DataTable,
   VendorChip,
   Badge,
+  Button,
+  SearchInput,
   SegmentedControl,
   Skeleton,
   ErrorState,
@@ -19,7 +21,7 @@ import {
   type SortSpec,
 } from '../components/vael'
 import { useDashboardContext } from '../components/layout/dashboard-context'
-import { usePeriodControls } from '../lib/use-period-controls'
+import { usePeriodControls, useResetOnChange } from '../lib/use-period-controls'
 import { usePeriodResource } from '../lib/use-period-resource'
 import { getModels } from '../lib/api'
 import {
@@ -95,18 +97,29 @@ const DEFAULT_SORT_DIR: Record<SortKey, 'asc' | 'desc'> = {
 
 const DEFAULT_SORT: SortState<SortKey> = { key: 'cost', direction: 'desc' }
 
+/**
+ * Orders two rows for `key`.
+ *
+ * INVARIANT: the order returned here must match DEFAULT_SORT_DIR[key], because
+ * the caller multiplies by +1 exactly when the active direction equals that
+ * default (and by -1 otherwise). A comparator that disagrees with its own
+ * default renders both directions inverted relative to the header arrow — which
+ * is what `avgCostPerMessage` (default 'asc') did while comparing descending.
+ */
 function compareRows(key: SortKey, a: ModelRow, b: ModelRow): number {
   switch (key) {
+    // ascending — matches DEFAULT_SORT_DIR 'asc'
     case 'model':
       return modelLabel(a).localeCompare(modelLabel(b))
+    case 'avgCostPerMessage':
+      return a.avgCostPerMessage - b.avgCostPerMessage
+    // descending — matches DEFAULT_SORT_DIR 'desc'
     case 'sessions':
       return b.sessions - a.sessions
     case 'messages':
       return b.messages - a.messages
     case 'tokens':
       return b.totalTokens - a.totalTokens
-    case 'avgCostPerMessage':
-      return b.avgCostPerMessage - a.avgCostPerMessage
     case 'share':
       return b.metricShare - a.metricShare
     case 'cost':
@@ -129,12 +142,15 @@ export function ModelsView() {
   const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
   const [metric, setMetric] = useState<ModelsMetric>('cost')
+  const [filter, setFilter] = useState('')
 
-  const { cacheKey } = usePeriodControls({
-    onChange: () => {
-      setSortState(null)
-      setMetric('cost')
-    },
+  const { cacheKey } = usePeriodControls()
+  // Sort, metric, and filter describe a result set that no longer exists once the
+  // period or source changes, so drop them.
+  useResetOnChange(`${cacheKey}::${selectedSourceId}`, () => {
+    setSortState(null)
+    setMetric('cost')
+    setFilter('')
   })
   const { data, loading, error } = usePeriodResource(getModels, cacheKey)
   const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
@@ -198,6 +214,18 @@ export function ModelsView() {
       advancedRow,
     }
   }, [data, sortState, metric])
+
+  // Matches the TUI's `/` filter, which matches on model *or* provider. Narrows
+  // the table only: the leader cards, KPIs, and per-row shares stay relative to
+  // every model in the range.
+  const visibleRows = useMemo(() => {
+    const rows = summary?.rows ?? []
+    const needle = filter.trim().toLowerCase()
+    if (!needle) return rows
+    return rows.filter(
+      (row) => modelLabel(row).toLowerCase().includes(needle) || providerLabel(row).toLowerCase().includes(needle),
+    )
+  }, [summary?.rows, filter])
 
   const sortSpec: SortSpec | null = useMemo(() => {
     const s = sortState ?? DEFAULT_SORT
@@ -398,17 +426,27 @@ export function ModelsView() {
             action={
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                 <Badge>{meta.shareLabel}</Badge>
+                <SearchInput value={filter} onChange={setFilter} placeholder="Filter models…" label="Filter models" width={200} />
                 <SegmentedControl size="sm" options={METRIC_OPTS} value={metric} onChange={handleMetricChange} />
               </span>
             }
           >
-            <DataTable
-              columns={cols}
-              rows={summary.rows}
-              sort={sortSpec}
-              onSort={handleSort}
-              rowKey={(m) => `${m.provider_id}:${m.model_id}`}
-            />
+            {visibleRows.length === 0 ? (
+              <EmptyState
+                icon="search"
+                title="No models match this filter"
+                description={`No model or provider name contains “${filter.trim()}”.`}
+                action={<Button size="sm" variant="secondary" onClick={() => setFilter('')}>Clear filter</Button>}
+              />
+            ) : (
+              <DataTable
+                columns={cols}
+                rows={visibleRows}
+                sort={sortSpec}
+                onSort={handleSort}
+                rowKey={(m) => `${m.provider_id}:${m.model_id}`}
+              />
+            )}
           </Card>
 
           {/* Advanced disclosure — only when avg-token stats are present */}

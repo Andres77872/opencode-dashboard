@@ -1,10 +1,13 @@
 package codex
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -185,6 +188,14 @@ func (s *Source) Sessions(ctx context.Context, query stats.SessionQuery) (stats.
 	return snap.sessions(query)
 }
 func (s *Source) SessionByID(ctx context.Context, id string) (*stats.SessionDetail, error) {
+	// A session id maps to one or more rollout files (root plus any resumes);
+	// parse only those instead of the whole corpus. Fall back to the full
+	// snapshot only when no file matches the id.
+	if snap, matched, err := s.loadThreadSnapshot(ctx, id, true); err != nil {
+		return nil, err
+	} else if matched {
+		return snap.sessionByID(id), nil
+	}
 	snap, err := s.loadSnapshot(ctx)
 	if err != nil {
 		return nil, err
@@ -210,6 +221,21 @@ func (s *Source) MessageByID(ctx context.Context, id string) (*stats.MessageDeta
 		}
 	}
 	s.mu.Unlock()
+
+	// Resolve by the message's own thread: parse just that thread's file(s)
+	// rather than the entire corpus, which is what keeps this lookup under the
+	// scan timeout on large Codex homes. A matched-but-absent id is a genuine
+	// miss (nil detail -> 404), not a reason to fall back to a full parse.
+	if threadID, ok := threadIDFromMessageID(id); ok {
+		snap, matched, err := s.loadThreadSnapshot(ctx, threadID, false)
+		if err != nil {
+			return nil, err
+		}
+		if matched {
+			return snap.messageByID(id), nil
+		}
+	}
+
 	snap, err := s.loadSnapshot(ctx)
 	if err != nil {
 		return nil, err
@@ -470,6 +496,185 @@ func (s *Source) loadBoundedSnapshot(ctx context.Context, from time.Time) (*snap
 	s.boundedLoadedAt = time.Now()
 	s.mu.Unlock()
 	return snap, nil
+}
+
+// fileThreadMeta is the lightweight identity of one rollout file, recovered from
+// its leading session_meta record without parsing the whole transcript.
+type fileThreadMeta struct {
+	file         transcriptFile
+	threadID     string // session_meta.id — the file's own thread id
+	sessionID    string // logical session id (session_id, falling back to id)
+	forkedFromID string
+	parentID     string // parent_thread_id
+}
+
+// readThreadMeta reads only the first session_meta record of a rollout file.
+// It is always at (or very near) the head of the file, so this is a cheap read
+// even for multi-hundred-MB transcripts. Returns false if no usable meta is
+// found before the scan cap or the file cannot be read.
+func readThreadMeta(ctx context.Context, file transcriptFile) (fileThreadMeta, bool) {
+	fh, err := os.Open(file.Path)
+	if err != nil {
+		return fileThreadMeta{}, false
+	}
+	defer fh.Close()
+
+	reader := bufio.NewReaderSize(fh, 128*1024)
+	// session_meta is the first record in practice; cap the scan so a malformed
+	// or unexpected file never turns this into a full-file read.
+	for i := 0; i < 128; i++ {
+		if err := ctx.Err(); err != nil {
+			return fileThreadMeta{}, false
+		}
+		line, readErr := reader.ReadString('\n')
+		if line != "" && strings.Contains(line, "session_meta") {
+			record, ok, _ := parseLine(file, i+1, line)
+			if ok && record.SessionMeta != nil && record.SessionMeta.ID != "" {
+				meta := record.SessionMeta
+				sessionID := meta.SessionID
+				if sessionID == "" {
+					sessionID = meta.ID
+				}
+				return fileThreadMeta{
+					file:         file,
+					threadID:     meta.ID,
+					sessionID:    sessionID,
+					forkedFromID: meta.ForkedFromID,
+					parentID:     meta.ParentThreadID,
+				}, true
+			}
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	return fileThreadMeta{}, false
+}
+
+// scanThreadMetas builds the lightweight thread index by head-reading every
+// discovered file.
+func scanThreadMetas(ctx context.Context, files []transcriptFile) []fileThreadMeta {
+	metas := make([]fileThreadMeta, 0, len(files))
+	for _, file := range files {
+		if ctx.Err() != nil {
+			return metas
+		}
+		if meta, ok := readThreadMeta(ctx, file); ok {
+			metas = append(metas, meta)
+		}
+	}
+	return metas
+}
+
+// selectThreadFiles resolves the minimal set of transcript files needed to
+// answer a by-thread (message) or by-session lookup: the seed file(s) plus all
+// transitive ancestors (fork parents / resume roots) so replayed token ladders
+// and user prompts are recognized exactly as they would be in a full snapshot.
+// It never pulls in unrelated files, so the parse stays O(one conversation).
+func selectThreadFiles(metas []fileThreadMeta, allFiles []transcriptFile, id string, bySession bool) []transcriptFile {
+	byThread := make(map[string][]fileThreadMeta, len(metas))
+	bySessionID := make(map[string][]fileThreadMeta, len(metas))
+	for _, meta := range metas {
+		byThread[meta.threadID] = append(byThread[meta.threadID], meta)
+		bySessionID[meta.sessionID] = append(bySessionID[meta.sessionID], meta)
+	}
+
+	selected := make(map[string]transcriptFile)
+	queue := make([]string, 0)
+	addFile := func(meta fileThreadMeta) {
+		if _, ok := selected[meta.file.Path]; ok {
+			return
+		}
+		selected[meta.file.Path] = meta.file
+		if meta.forkedFromID != "" {
+			queue = append(queue, meta.forkedFromID)
+		}
+		if meta.parentID != "" {
+			queue = append(queue, meta.parentID)
+		}
+		if meta.sessionID != "" && meta.sessionID != meta.threadID {
+			queue = append(queue, meta.sessionID)
+		}
+	}
+
+	// Seed files: the thread that owns the message, or every thread (root +
+	// resumes) that shares the requested session id.
+	for _, meta := range byThread[id] {
+		addFile(meta)
+	}
+	if bySession {
+		for _, meta := range bySessionID[id] {
+			addFile(meta)
+		}
+	}
+
+	// Fallback: if the head-scan could not identify the file (unreadable meta),
+	// match the id as a filename substring. rolloutSessionID does not reliably
+	// yield the bare thread UUID for every filename format, but the UUID is
+	// present in the filename, so a substring match still finds it.
+	if len(selected) == 0 {
+		for _, file := range allFiles {
+			if strings.Contains(filepath.Base(file.Path), id) {
+				selected[file.Path] = file
+			}
+		}
+	}
+
+	// Transitively pull in ancestors. Terminates: each file is added at most
+	// once, and only a newly added file enqueues more parent ids.
+	for len(queue) > 0 {
+		parentID := queue[0]
+		queue = queue[1:]
+		for _, meta := range byThread[parentID] {
+			addFile(meta)
+		}
+		for _, meta := range bySessionID[parentID] {
+			addFile(meta)
+		}
+	}
+
+	files := make([]transcriptFile, 0, len(selected))
+	for _, file := range selected {
+		files = append(files, file)
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files
+}
+
+// loadThreadSnapshot parses only the transcript files belonging to one thread
+// (bySession=false, for a message lookup) or one logical session including its
+// resumes (bySession=true, for a session lookup), plus their ancestors. The
+// returned bool reports whether any matching file was found; callers fall back
+// to the full snapshot only when it is false (an id whose file is genuinely
+// unknown). This keeps single-message/single-session detail lookups bounded to
+// one conversation instead of the whole corpus, which is what makes them
+// survive the scan timeout on large Codex homes.
+func (s *Source) loadThreadSnapshot(ctx context.Context, id string, bySession bool) (*snapshot, bool, error) {
+	if s == nil {
+		return nil, false, source.UnavailableSourceError{ID: source.SourceCodex, Reason: "Codex source is not configured"}
+	}
+	if id == "" {
+		return nil, false, nil
+	}
+	ctx, cancel := s.contextWithTimeout(ctx)
+	defer cancel()
+
+	disc := discoverTranscripts(ctx, s.opts.CodexHome)
+	if !disc.available {
+		s.setLastDiagnostics(disc.diagnostics, false)
+		return nil, false, source.UnavailableSourceError{ID: source.SourceCodex, Reason: disc.diagnostics.Reason}
+	}
+
+	metas := scanThreadMetas(ctx, disc.files)
+	files := selectThreadFiles(metas, disc.files, id, bySession)
+	if len(files) == 0 {
+		return nil, false, nil
+	}
+	records, diag, err := s.parseFileRecords(ctx, files, disc.diagnostics)
+	if err != nil {
+		return nil, false, err
+	}
+	return normalizeRecords(s.opts.CodexHome, records, s.loadPricing(ctx), diag), true, nil
 }
 
 func (s *Source) contextWithTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

@@ -117,6 +117,24 @@ func loadProjectDetailCmd(src source.Source, id string, pq stats.PeriodQuery, pa
 	}
 }
 
+// dayMessagesPeriodQuery scopes the day-messages overlay to the day the user
+// selected in Daily.
+//
+// A YYYY-MM-DD date is an explicit single-day range, so it must go through
+// From/To. It used to be mapped to Period:"1d" — which always means *today* —
+// and the results were then filtered client-side down to `date`, so every past
+// day came back empty while Total/Page still described today's result set,
+// making the pagination footer lie. Scoping the query itself also means paging
+// works without any post-filtering.
+//
+// A non-date string (an hourly bucket key) is passed through as a period.
+func dayMessagesPeriodQuery(date string) stats.PeriodQuery {
+	if len(date) == 10 {
+		return stats.PeriodQuery{From: date, To: date}
+	}
+	return stats.PeriodQuery{Period: date}
+}
+
 func loadDayMessagesCmd(src source.Source, date string, page int) tea.Cmd {
 	return func() tea.Msg {
 		if src == nil {
@@ -125,23 +143,7 @@ func loadDayMessagesCmd(src source.Source, date string, page int) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		pq := stats.PeriodQuery{Period: date}
-		if len(date) == 10 {
-			pq = stats.PeriodQuery{Period: "1d"}
-		}
-		list, err := src.Messages(ctx, pq, page, 20, stats.DefaultMessageSort())
-		if err == nil && len(date) == 10 {
-			var filtered []stats.MessageEntry
-			for _, msg := range list.Messages {
-				if msg.TimeCreated.Format("2006-01-02") == date {
-					filtered = append(filtered, msg)
-				}
-			}
-			list.Messages = filtered
-			if filtered == nil {
-				list.Messages = []stats.MessageEntry{}
-			}
-		}
+		list, err := src.Messages(ctx, dayMessagesPeriodQuery(date), page, 20, stats.DefaultMessageSort())
 		return dayMessagesLoadedMsg{date: date, list: list, err: err}
 	}
 }

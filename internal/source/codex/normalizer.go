@@ -844,6 +844,19 @@ func synthesizeRequestID(sessionID, turnID, kind string, seq int) string {
 	return codexSourceID + ":" + safeID(sessionID) + ":" + safeID(turnID) + ":" + kind + strconv.Itoa(seq)
 }
 
+// threadIDFromMessageID reverses synthesizeRequestID enough to recover the
+// owning thread id, so a single message can be resolved by parsing only its
+// thread's transcript instead of the whole corpus. Ids are
+// codex:<threadID>:<turnID>:<kind><seq>; threadID/turnID are UUIDs (no colons),
+// so parts[1] is the thread id even if a later segment carried a colon.
+func threadIDFromMessageID(id string) (string, bool) {
+	parts := strings.Split(id, ":")
+	if len(parts) < 4 || parts[0] != codexSourceID || parts[1] == "" {
+		return "", false
+	}
+	return parts[1], true
+}
+
 func defaultCurrency(pricing pricingSnapshot) string {
 	if pricing.Currency != "" {
 		return pricing.Currency

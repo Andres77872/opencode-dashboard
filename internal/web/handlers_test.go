@@ -13,26 +13,32 @@ func TestParseIntQuery(t *testing.T) {
 		queryKey   string
 		queryValue string
 		defaultVal int
+		maxVal     int
 		expected   int
 	}{
-		{name: "empty query", queryKey: "page", queryValue: "", defaultVal: 1, expected: 1},
-		{name: "valid number", queryKey: "page", queryValue: "5", defaultVal: 1, expected: 5},
-		{name: "zero returns default", queryKey: "page", queryValue: "0", defaultVal: 1, expected: 1},
-		{name: "negative returns default", queryKey: "page", queryValue: "-5", defaultVal: 1, expected: 1},
-		{name: "non-numeric returns default", queryKey: "page", queryValue: "abc", defaultVal: 1, expected: 1},
-		{name: "large number", queryKey: "limit", queryValue: "100", defaultVal: 20, expected: 100},
-		{name: "URL encoded spaces", queryKey: "page", queryValue: "%205%20", defaultVal: 1, expected: 1},
-		{name: "float fails", queryKey: "page", queryValue: "5.5", defaultVal: 1, expected: 1},
+		{name: "empty query", queryKey: "page", queryValue: "", defaultVal: 1, maxVal: maxPageQuery, expected: 1},
+		{name: "valid number", queryKey: "page", queryValue: "5", defaultVal: 1, maxVal: maxPageQuery, expected: 5},
+		{name: "zero returns default", queryKey: "page", queryValue: "0", defaultVal: 1, maxVal: maxPageQuery, expected: 1},
+		{name: "negative returns default", queryKey: "page", queryValue: "-5", defaultVal: 1, maxVal: maxPageQuery, expected: 1},
+		{name: "non-numeric returns default", queryKey: "page", queryValue: "abc", defaultVal: 1, maxVal: maxPageQuery, expected: 1},
+		{name: "large number", queryKey: "limit", queryValue: "100", defaultVal: 20, maxVal: maxLimitQuery, expected: 100},
+		{name: "URL encoded spaces", queryKey: "page", queryValue: "%205%20", defaultVal: 1, maxVal: maxPageQuery, expected: 1},
+		{name: "float fails", queryKey: "page", queryValue: "5.5", defaultVal: 1, maxVal: maxPageQuery, expected: 1},
+		// Above the bound: clamp down rather than reject, so an oversized request
+		// still returns data. Crucially this keeps (page-1)*limit from overflowing.
+		{name: "limit above max clamps", queryKey: "limit", queryValue: "5000", defaultVal: 20, maxVal: maxLimitQuery, expected: maxLimitQuery},
+		{name: "page above max clamps", queryKey: "page", queryValue: "999999999", defaultVal: 1, maxVal: maxPageQuery, expected: maxPageQuery},
+		{name: "overflowing page clamps", queryKey: "page", queryValue: "184467440737095517", defaultVal: 1, maxVal: maxPageQuery, expected: maxPageQuery},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rawURL := "/?" + tt.queryKey + "=" + tt.queryValue
 			req := httptest.NewRequest(http.MethodGet, rawURL, nil)
-			result := parseIntQuery(req, tt.queryKey, tt.defaultVal)
+			result := parseIntQuery(req, tt.queryKey, tt.defaultVal, tt.maxVal)
 
 			if result != tt.expected {
-				t.Errorf("parseIntQuery(%q=%q, default=%d) = %d, want %d", tt.queryKey, tt.queryValue, tt.defaultVal, result, tt.expected)
+				t.Errorf("parseIntQuery(%q=%q, default=%d, max=%d) = %d, want %d", tt.queryKey, tt.queryValue, tt.defaultVal, tt.maxVal, result, tt.expected)
 			}
 		})
 	}
@@ -40,10 +46,22 @@ func TestParseIntQuery(t *testing.T) {
 
 func TestParseIntQueryMissingKey(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/?other=value", nil)
-	result := parseIntQuery(req, "page", 1)
+	result := parseIntQuery(req, "page", 1, maxPageQuery)
 
 	if result != 1 {
 		t.Errorf("parseIntQuery with missing key = %d, want 1", result)
+	}
+}
+
+// A page/limit pair that survives parseIntQuery must never make (page-1)*limit
+// overflow into a negative slice offset — that used to panic the merge layer.
+func TestParseIntQueryOffsetCannotOverflow(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/?page=184467440737095517&limit=99999", nil)
+	page := parseIntQuery(req, "page", 1, maxPageQuery)
+	limit := parseIntQuery(req, "limit", 50, maxLimitQuery)
+
+	if offset := (page - 1) * limit; offset < 0 {
+		t.Fatalf("offset overflowed: page=%d limit=%d offset=%d", page, limit, offset)
 	}
 }
 

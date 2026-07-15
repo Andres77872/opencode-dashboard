@@ -1,6 +1,7 @@
 package web
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ type Handlers struct {
 	registry *source.Registry
 	cache    CacheManager
 	quotas   QuotaService
+	logger   *slog.Logger
 }
 
 func NewHandlers(registry *source.Registry) *Handlers {
@@ -23,11 +25,14 @@ func NewHandlers(registry *source.Registry) *Handlers {
 }
 
 func NewHandlersWithCache(registry *source.Registry, cache CacheManager) *Handlers {
-	return NewHandlersWithServices(registry, cache, nil)
+	return NewHandlersWithServices(registry, cache, nil, nil)
 }
 
-func NewHandlersWithServices(registry *source.Registry, cache CacheManager, quotas QuotaService) *Handlers {
-	return &Handlers{registry: registry, cache: cache, quotas: quotas}
+func NewHandlersWithServices(registry *source.Registry, cache CacheManager, quotas QuotaService, logger *slog.Logger) *Handlers {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Handlers{registry: registry, cache: cache, quotas: quotas, logger: logger}
 }
 
 func (h *Handlers) Sources(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +86,7 @@ func (h *Handlers) OverviewAll(w http.ResponseWriter, r *http.Request) {
 	}
 	opts := source.AggregateOptions{
 		IncludeTrend: r.URL.Query().Get("trend") == "true",
-		TopN:         parseIntQuery(r, "top", 10),
+		TopN:         parseIntQuery(r, "top", 10, maxTopNQuery),
 	}
 	result, err := source.AggregateOverview(ctx, h.registry, pq, opts)
 	if err != nil {
@@ -243,8 +248,8 @@ func (h *Handlers) ProjectDetail(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w)
 		return
 	}
-	page := parseIntQuery(r, "page", 1)
-	limit := parseIntQuery(r, "limit", 10)
+	page := parseIntQuery(r, "page", 1, maxPageQuery)
+	limit := parseIntQuery(r, "limit", 10, maxLimitQuery)
 
 	result, err := selected.ProjectByID(ctx, id, pq, page, limit)
 	if err != nil {
@@ -272,11 +277,8 @@ func (h *Handlers) Sessions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	page := parseIntQuery(r, "page", 1)
-	limit := parseIntQuery(r, "limit", 20)
-	if limit > 100 {
-		limit = 100
-	}
+	page := parseIntQuery(r, "page", 1, maxPageQuery)
+	limit := parseIntQuery(r, "limit", 20, maxLimitQuery)
 	pq, apierr := parsePeriodQuery(r)
 	if apierr != nil {
 		apierr.Write(w)
@@ -293,7 +295,7 @@ func (h *Handlers) Sessions(w http.ResponseWriter, r *http.Request) {
 		PageSize:  limit,
 		Filter:    r.URL.Query().Get("filter"),
 		ProjectID: projectID,
-		Sort:      stats.SessionSortNewest,
+		Sort:      stats.ParseSessionSort(r.URL.Query().Get("sort")),
 		Period:    pq.Period,
 		From:      pq.From,
 		To:        pq.To,
@@ -330,6 +332,7 @@ func (h *Handlers) SessionByID(w http.ResponseWriter, r *http.Request) {
 			InternalError("database schema invalid").Write(w)
 			return
 		}
+		h.logger.Error("failed to get session", "id", id, "source", r.URL.Query().Get("source"), "err", err)
 		InternalError("failed to get session").Write(w)
 		return
 	}
@@ -369,7 +372,19 @@ func (h *Handlers) Version(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
-func parseIntQuery(r *http.Request, key string, defaultVal int) int {
+// Upper bounds for paging params. Without them `(page-1)*limit` overflows int
+// and the merge layer slices with a negative offset, panicking the handler.
+const (
+	maxPageQuery  = 100_000
+	maxLimitQuery = 100
+	maxTopNQuery  = 100
+)
+
+// parseIntQuery reads a positive integer query param, clamped to [1, maxVal].
+// Out-of-range, negative, and unparseable values fall back to defaultVal; values
+// above maxVal are clamped down rather than rejected, so a too-large ?limit=
+// still returns data instead of a 400.
+func parseIntQuery(r *http.Request, key string, defaultVal, maxVal int) int {
 	val := r.URL.Query().Get(key)
 	if val == "" {
 		return defaultVal
@@ -377,6 +392,9 @@ func parseIntQuery(r *http.Request, key string, defaultVal int) int {
 	n, err := strconv.Atoi(val)
 	if err != nil || n < 1 {
 		return defaultVal
+	}
+	if n > maxVal {
+		return maxVal
 	}
 	return n
 }
@@ -474,11 +492,8 @@ func (h *Handlers) Messages(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w)
 		return
 	}
-	page := parseIntQuery(r, "page", 1)
-	limit := parseIntQuery(r, "limit", 50)
-	if limit > 100 {
-		limit = 100
-	}
+	page := parseIntQuery(r, "page", 1, maxPageQuery)
+	limit := parseIntQuery(r, "limit", 50, maxLimitQuery)
 	sort := stats.ParseMessageSort(r.URL.Query().Get("sort"))
 
 	result, err := selected.Messages(ctx, pq, page, limit, sort)
@@ -515,6 +530,7 @@ func (h *Handlers) MessageByID(w http.ResponseWriter, r *http.Request) {
 			InternalError("database schema invalid").Write(w)
 			return
 		}
+		h.logger.Error("failed to get message", "id", id, "source", r.URL.Query().Get("source"), "err", err)
 		InternalError("failed to get message").Write(w)
 		return
 	}

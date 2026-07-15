@@ -1,8 +1,8 @@
 /* Detailed provider-quota cards for the Overview page: per provider, gauge
    rings for each window, reset times, plan and freshness badges, and setup
    guidance when a provider has no data source configured yet. */
-import { Badge, BudgetRing, Card, SectionTitle, Skeleton } from '../vael'
-import { useQuotas } from '../../lib/use-quotas'
+import { Badge, BudgetRing, Card, ErrorState, SectionTitle, Skeleton } from '../vael'
+import { refreshQuotas, useQuotas } from '../../lib/use-quotas'
 import { clampPercent, formatResetCountdown, providerMeta, quotaTone, windowLabel } from '../../lib/quotas'
 import { formatRelativeTime } from '../../lib/format'
 import type { ProviderQuota, QuotaWindow } from '../../types/api'
@@ -101,6 +101,21 @@ export function QuotasSection() {
       </div>
     )
   }
+  // A failed fetch must say so. Returning null here (as this did) silently
+  // removed the entire Quotas section from Overview, which is indistinguishable
+  // from "you have no quota providers configured".
+  if (!data && error) {
+    return (
+      <div>
+        <SectionTitle sub="Live subscription usage — not affected by the time range">Quotas</SectionTitle>
+        <Card>
+          <ErrorState title="Quotas failed to load" message={error} onRetry={refreshQuotas} />
+        </Card>
+      </div>
+    )
+  }
+
+  // Genuinely nothing to show: no provider is configured on this machine.
   if (!data || data.providers.length === 0) {
     return null
   }

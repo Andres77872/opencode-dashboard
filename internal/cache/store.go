@@ -378,7 +378,16 @@ func (s *Store) SyncSourceWithOptions(ctx context.Context, src source.Source, op
 
 	if opts.Mode == SyncModeIncremental {
 		report.Since = millisToTime(current.LastSafeCutoff)
-		if ok && current.Status == "ready" && fpReliable && current.Fingerprint == fp && current.FreshThrough > 0 {
+		// An unchanged fingerprint only proves no *new* raw data arrived — it says
+		// nothing about rows that arrived before the last sync and fell inside its
+		// recent window (>= that run's cutoff), which were skipped as un-finalized
+		// and never written. Advancing the watermark past them would move them
+		// behind the cache's finality boundary while they are absent from the
+		// cache, permanently hiding them from every view. So only short-circuit
+		// while the cutoff has not moved past what was actually consolidated;
+		// otherwise fall through and collect [LastSafeCutoff, cutoff).
+		cutoffAdvanced := cutoff.After(millisToTime(current.LastSafeCutoff))
+		if ok && current.Status == "ready" && fpReliable && current.Fingerprint == fp && current.FreshThrough > 0 && !cutoffAdvanced {
 			s.logger.Debug("cache sync: raw data unchanged, advancing watermarks", "source", info.ID, "cutoff", logTime(cutoff))
 			retErr = s.advanceWatermarks(ctx, info, fp, cutoff, cutoff)
 			return report, retErr

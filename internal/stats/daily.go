@@ -58,11 +58,16 @@ func Daily(ctx context.Context, db *store.Store, pq PeriodQuery, granularity ...
 		return DailyStats{}, err
 	}
 
+	// PeriodWindow.EndMs is exclusive in every mode; EndDate is not (presets set
+	// it to the inclusive last day, explicit from/to ranges to the exclusive end).
+	// Drive both the bucket loop and the SQL bound off EndMs so the two modes
+	// agree — and so an explicit range doesn't emit a trailing bucket holding the
+	// day *after* `to`.
 	startDate := pw.StartDate
-	endDate := pw.EndDate
+	lastDay := lastBucketDay(pw)
 
 	dayMap := make(map[string]DayStats)
-	for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
+	for d := startDate; !d.After(lastDay); d = d.AddDate(0, 0, 1) {
 		key := d.Format("2006-01-02")
 		dayMap[key] = DayStats{
 			Date:     key,
@@ -73,7 +78,7 @@ func Daily(ctx context.Context, db *store.Store, pq PeriodQuery, granularity ...
 		}
 	}
 
-	sessionCounts, err := querySessionCountsByDay(ctx, db, startDate, endDate)
+	sessionCounts, err := querySessionCountsByDay(ctx, db, pw.StartMs, pw.EndMs)
 	if err != nil {
 		return DailyStats{}, fmt.Errorf("query session counts: %w", err)
 	}
@@ -85,7 +90,7 @@ func Daily(ctx context.Context, db *store.Store, pq PeriodQuery, granularity ...
 		}
 	}
 
-	messageStats, err := queryMessageStatsByDay(ctx, db, startDate, endDate)
+	messageStats, err := queryMessageStatsByDay(ctx, db, pw.StartMs, pw.EndMs)
 	if err != nil {
 		return DailyStats{}, fmt.Errorf("query message stats: %w", err)
 	}
@@ -100,12 +105,20 @@ func Daily(ctx context.Context, db *store.Store, pq PeriodQuery, granularity ...
 	}
 
 	result := make([]DayStats, 0, len(dayMap))
-	for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
+	for d := startDate; !d.After(lastDay); d = d.AddDate(0, 0, 1) {
 		key := d.Format("2006-01-02")
 		result = append(result, dayMap[key])
 	}
 
 	return DailyStats{Days: result, Granularity: GranularityDay}, nil
+}
+
+// lastBucketDay returns the UTC midnight of the last day a window covers, given
+// that PeriodWindow.EndMs is an exclusive bound: it is the day containing the
+// final instant of the window.
+func lastBucketDay(pw PeriodWindow) time.Time {
+	end := time.UnixMilli(pw.EndMs).UTC().Add(-time.Millisecond)
+	return time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 func parsePeriod(period string) (int, error) {
@@ -159,16 +172,14 @@ type dayMessageStats struct {
 	Tokens   TokenStats
 }
 
-func querySessionCountsByDay(ctx context.Context, db *store.Store, startDate, endDate time.Time) (map[string]int64, error) {
+// startMs is inclusive, endMs exclusive.
+func querySessionCountsByDay(ctx context.Context, db *store.Store, startMs, endMs int64) (map[string]int64, error) {
 	query := `
 		SELECT DATE(time_created / 1000, 'unixepoch') as day, COUNT(*) as count
 		FROM session
 		WHERE time_created >= ? AND time_created < ?
 		GROUP BY day
 	`
-
-	startMs := startDate.UnixMilli()
-	endMs := endDate.AddDate(0, 0, 1).UnixMilli()
 
 	rows, err := db.DB().QueryContext(ctx, query, startMs, endMs)
 	if err != nil {
@@ -189,9 +200,10 @@ func querySessionCountsByDay(ctx context.Context, db *store.Store, startDate, en
 	return result, rows.Err()
 }
 
-func queryMessageStatsByDay(ctx context.Context, db *store.Store, startDate, endDate time.Time) (map[string]dayMessageStats, error) {
+// startMs is inclusive, endMs exclusive.
+func queryMessageStatsByDay(ctx context.Context, db *store.Store, startMs, endMs int64) (map[string]dayMessageStats, error) {
 	query := `
-		SELECT 
+		SELECT
 			DATE(m.time_created / 1000, 'unixepoch') as day,
 			COUNT(*) as message_count,
 			COALESCE(SUM(
@@ -240,9 +252,6 @@ func queryMessageStatsByDay(ctx context.Context, db *store.Store, startDate, end
 		WHERE m.time_created >= ? AND m.time_created < ?
 		GROUP BY day
 	`
-
-	startMs := startDate.UnixMilli()
-	endMs := endDate.AddDate(0, 0, 1).UnixMilli()
 
 	rows, err := db.DB().QueryContext(ctx, query, startMs, endMs)
 	if err != nil {

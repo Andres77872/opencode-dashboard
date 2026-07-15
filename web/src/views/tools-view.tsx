@@ -8,6 +8,10 @@ import {
   StatCard,
   DataTable,
   Badge,
+  BarRow,
+  Button,
+  EmptyState,
+  SearchInput,
   Skeleton,
   ErrorState,
   Notice,
@@ -78,6 +82,7 @@ export function ToolsView() {
   const { cacheKey } = usePeriodControls()
   const { data, loading, error } = usePeriodResource(getTools, cacheKey)
   const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
+  const [filter, setFilter] = useState('')
 
   const summary = useMemo(() => {
     if (!data) return null
@@ -85,7 +90,6 @@ export function ToolsView() {
     const totalInvocations = data.tools.reduce((a, t) => a + t.invocations, 0)
     const totalSuccesses = data.tools.reduce((a, t) => a + t.successes, 0)
     const totalFailures = data.tools.reduce((a, t) => a + t.failures, 0)
-    const maxInvocations = Math.max(1, ...data.tools.map((t) => t.invocations))
 
     const rows = data.tools.map<ToolRow>((tool) => ({
       ...tool,
@@ -108,7 +112,6 @@ export function ToolsView() {
     return {
       rows: sortedRows,
       usageLeader,
-      maxInvocations,
       totalInvocations,
       totalSuccesses,
       totalFailures,
@@ -116,6 +119,24 @@ export function ToolsView() {
       empty: rows.length === 0,
     }
   }, [data, sortState])
+
+  // The filter narrows the table only — the KPI cards and each row's share stay
+  // relative to every tool in the range, so a share doesn't silently rebase to
+  // the visible subset (matches the TUI's `/` filter).
+  const visibleRows = useMemo(() => {
+    const rows = summary?.rows ?? []
+    const needle = filter.trim().toLowerCase()
+    if (!needle) return rows
+    return rows.filter((row) => toolLabel(row).toLowerCase().includes(needle))
+  }, [summary?.rows, filter])
+
+  // "Most failed" leaders — the TUI surfaces these prominently and the web had
+  // no equivalent, so a tool that fails constantly was only visible by sorting.
+  const failureLeaders = useMemo(() => {
+    const failing = (summary?.rows ?? []).filter((row) => row.failures > 0)
+    if (failing.length === 0) return []
+    return [...failing].sort((a, b) => b.failures - a.failures).slice(0, 3)
+  }, [summary?.rows])
 
   // Only surface a source column if entries actually carry distinct sources.
   const distinctSources = useMemo(() => {
@@ -196,13 +217,17 @@ export function ToolsView() {
         key: 'share',
         header: 'Share',
         numeric: true,
+        sortable: true,
         width: 150,
         render: (row) => {
-          const pct = safeDivide(row.invocations, summary?.maxInvocations ?? 1) * 100
+          // The bar must use the same denominator as the number beside it —
+          // share of total invocations. It used to be drawn as a share of the
+          // *largest* tool, so the top row rendered a full bar labelled "40%".
+          const pct = row.share
           return (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
               <span style={{ width: 60, height: 6, borderRadius: 3, background: 'var(--ink-700)', overflow: 'hidden' }}>
-                <span style={{ display: 'block', width: `${Math.max(pct, row.invocations > 0 ? 4 : 0)}%`, height: '100%', background: 'var(--accent)' }} />
+                <span style={{ display: 'block', width: `${Math.min(100, Math.max(pct, row.invocations > 0 ? 4 : 0))}%`, height: '100%', background: 'var(--accent)' }} />
               </span>
               <span style={{ width: 34, textAlign: 'right' }}>{formatPercentage(row.share)}</span>
             </span>
@@ -211,7 +236,7 @@ export function ToolsView() {
       },
     ]
     return cols
-  }, [summary?.maxInvocations])
+  }, [])
 
   if (loading && !data) {
     return (
@@ -266,6 +291,22 @@ export function ToolsView() {
         />
       </div>
 
+      {!summary.empty && failureLeaders.length > 0 && (
+        <Card title="Most failed" subtitle="Tools with the most failed invocations in this range">
+          {failureLeaders.map((row) => (
+            <BarRow
+              key={`${row.source_id ?? ''}/${row.name}`}
+              label={toolLabel(row)}
+              value={`${formatInteger(row.failures)} failed`}
+              rawValue={row.failures}
+              max={failureLeaders[0].failures}
+              color="var(--danger)"
+              sub={`${formatPercentage(row.successRate)} success over ${formatCompactInteger(row.invocations)} runs`}
+            />
+          ))}
+        </Card>
+      )}
+
       {summary.empty ? (
         <Card>
           <Notice tone="info" title="No tool usage recorded">
@@ -273,14 +314,28 @@ export function ToolsView() {
           </Notice>
         </Card>
       ) : (
-        <Card title="Tool usage" subtitle="What your agents call, ranked by volume" pad={0}>
-          <DataTable
-            columns={columns}
-            rows={summary.rows}
-            sort={sortSpec}
-            onSort={handleSort}
-            rowKey={(row) => `${row.source_id ?? ''}/${row.name}`}
-          />
+        <Card
+          title="Tool usage"
+          subtitle="What your agents call, ranked by volume"
+          action={<SearchInput value={filter} onChange={setFilter} placeholder="Filter tools…" label="Filter tools" width={220} />}
+          pad={0}
+        >
+          {visibleRows.length === 0 ? (
+            <EmptyState
+              icon="search"
+              title="No tools match this filter"
+              description={`No tool name contains “${filter.trim()}”.`}
+              action={<Button size="sm" variant="secondary" onClick={() => setFilter('')}>Clear filter</Button>}
+            />
+          ) : (
+            <DataTable
+              columns={columns}
+              rows={visibleRows}
+              sort={sortSpec}
+              onSort={handleSort}
+              rowKey={(row) => `${row.source_id ?? ''}/${row.name}`}
+            />
+          )}
           {distinctSources && (
             <div style={{ padding: '10px 14px', font: '400 12px/1 var(--font-ui)', color: 'var(--fg-faint)' }}>
               Tools aggregated across multiple sources.

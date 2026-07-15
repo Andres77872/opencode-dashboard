@@ -3,13 +3,16 @@
    14d trend, branch name, or period-over-period delta, so those Vael mock columns
    are omitted. Token share is a real derived ratio (project tokens / total). */
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Card,
   StatCard,
   DataTable,
   VendorChip,
   Badge,
+  EmptyState,
   Icon,
+  SearchInput,
   Skeleton,
   ErrorState,
   Notice,
@@ -20,7 +23,7 @@ import {
 } from '../components/vael'
 import { Drawer } from '../components/vael'
 import { useDashboardContext } from '../components/layout/dashboard-context'
-import { usePeriodControls } from '../lib/use-period-controls'
+import { usePeriodControls, useResetOnChange } from '../lib/use-period-controls'
 import { usePeriodResource } from '../lib/use-period-resource'
 import { getProjects, getProjectDetail } from '../lib/api'
 import { getTokenTotal } from '../lib/token-breakdown'
@@ -83,13 +86,15 @@ export function ProjectsView() {
   const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
   const [selectedProject, setSelectedProject] = useState<{ sourceId: SourceID; projectId: string } | null>(null)
+  const [filter, setFilter] = useState('')
 
-  // Reset sort + drill-down when the period changes, mirroring other views.
-  const { cacheKey } = usePeriodControls({
-    onChange: () => {
-      setSortState(null)
-      setSelectedProject(null)
-    },
+  const { cacheKey } = usePeriodControls()
+  // Reset sort, filter, and the open drawer when the period changes — they all
+  // describe a result set that no longer exists.
+  useResetOnChange(cacheKey, () => {
+    setSortState(null)
+    setSelectedProject(null)
+    setFilter('')
   })
   const { data, loading, error } = usePeriodResource(getProjects, cacheKey)
 
@@ -125,6 +130,18 @@ export function ProjectsView() {
 
     return { rows: sortedRows, totalCost, totalSessions, totalMessages, totalTokens, empty: rows.length === 0 }
   }, [data, sortState])
+
+  // Matches the TUI's `/` filter, which matches on project name *or* id.
+  const visibleRows = useMemo(() => {
+    const rows = summary?.rows ?? []
+    const needle = filter.trim().toLowerCase()
+    if (!needle) return rows
+    return rows.filter(
+      (row) =>
+        getProjectLabel(row).toLowerCase().includes(needle) ||
+        (row.project_id ?? '').toLowerCase().includes(needle),
+    )
+  }, [summary?.rows, filter])
 
   const onSort = (key: string) => setSortState((s) => getNextSortState(s, key as SortKey, DEFAULT_SORT_DIRECTIONS[key as SortKey]))
 
@@ -252,16 +269,26 @@ export function ProjectsView() {
         <Card
           title="Project usage ranking"
           subtitle={`${summary.rows.length} projects · ${formatTokenCount(summary.totalTokens)} tokens · costs per source`}
+          action={<SearchInput value={filter} onChange={setFilter} placeholder="Filter projects…" label="Filter projects" width={220} />}
           pad={0}
         >
-          <DataTable
-            columns={columns}
-            rows={summary.rows}
-            sort={sortSpec}
-            onSort={onSort}
-            onRowClick={handleProjectSelect}
-            rowKey={(row) => row.project_id || getProjectLabel(row)}
-          />
+          {visibleRows.length === 0 ? (
+            <EmptyState
+              icon="search"
+              title="No projects match this filter"
+              description={`No project name or id contains “${filter.trim()}”.`}
+              action={<Button size="sm" variant="secondary" onClick={() => setFilter('')}>Clear filter</Button>}
+            />
+          ) : (
+            <DataTable
+              columns={columns}
+              rows={visibleRows}
+              sort={sortSpec}
+              onSort={onSort}
+              onRowClick={handleProjectSelect}
+              rowKey={(row) => row.project_id || getProjectLabel(row)}
+            />
+          )}
         </Card>
       )}
 
@@ -285,11 +312,29 @@ function getSessionProjectLabel(session: SessionEntry) {
 
 function ProjectDrilldownDrawer({ projectId, period, onClose }: { projectId: string | null; period: string; onClose: () => void }) {
   const { selectedSourceId, selectedSourceInfo } = useDashboardContext()
+  const navigate = useNavigate()
   const [detail, setDetail] = useState<ProjectDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [sessionPage, setSessionPage] = useState(1)
   const [requestNonce, setRequestNonce] = useState(0)
+
+  // Open a session from the drawer in the Sessions view, scoped to this project.
+  // Sessions already reads ?project_id= — until now nothing in the UI produced
+  // it, so that filter was unreachable and the drawer's rows were inert (the TUI
+  // has drilled project → session all along).
+  const openSession = (sessionId: string) => {
+    if (!projectId) return
+    // Name the source explicitly: this is a deep link, and the session id is only
+    // meaningful within the source it came from.
+    const params = new URLSearchParams({
+      project_id: projectId,
+      session: sessionId,
+      source: selectedSourceId,
+      page: '1',
+    })
+    navigate(`/sessions?${params.toString()}`)
+  }
 
   // Reset paging/detail when the target project changes.
   useEffect(() => {
@@ -392,7 +437,13 @@ function ProjectDrilldownDrawer({ projectId, period, onClose }: { projectId: str
           <Card title="Recent sessions" subtitle="Most recent first" pad={0}>
             {detail.recent_sessions && detail.recent_sessions.length > 0 ? (
               <>
-                <DataTable dense columns={sessionCols} rows={detail.recent_sessions} rowKey={(s) => s.id} />
+                <DataTable
+                  dense
+                  columns={sessionCols}
+                  rows={detail.recent_sessions}
+                  rowKey={(s) => s.id}
+                  onRowClick={(s) => openSession(s.id)}
+                />
                 {totalPages > 1 && (
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 14px', borderTop: '1px solid var(--border-subtle)' }}>
                     <span style={{ font: '400 12px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>

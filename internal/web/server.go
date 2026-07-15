@@ -51,7 +51,7 @@ func NewServerWithServices(addr string, registry *source.Registry, logger *slog.
 	srv := &Server{
 		Addr:     addr,
 		Registry: registry,
-		handlers: NewHandlersWithServices(registry, cache, quotas),
+		handlers: NewHandlersWithServices(registry, cache, quotas, logger),
 		mux:      http.NewServeMux(),
 	}
 
@@ -102,11 +102,16 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only local origins (the Vite dev server, the embedded SPA) may read this
+		// API. It is unauthenticated and serves project paths, session titles and
+		// config, so a wildcard would let any site the user happens to visit read
+		// their local usage data — and POST /cache/sync is a CORS-simple request.
+		// A non-local origin gets no Access-Control-Allow-Origin header at all,
+		// which makes the browser withhold the response from the caller.
 		origin := r.Header.Get("Origin")
 		if origin != "" && isLocalOrigin(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-		} else {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Vary", "Origin")
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")

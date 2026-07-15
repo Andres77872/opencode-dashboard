@@ -221,6 +221,21 @@ const (
 	SessionSortMessages SessionSortMode = "messages"
 )
 
+// ParseSessionSort maps a `sort` query value onto a SessionSortMode, falling
+// back to newest-first for empty or unrecognized input.
+func ParseSessionSort(s string) SessionSortMode {
+	switch SessionSortMode(strings.TrimSpace(s)) {
+	case SessionSortOldest:
+		return SessionSortOldest
+	case SessionSortCost:
+		return SessionSortCost
+	case SessionSortMessages:
+		return SessionSortMessages
+	default:
+		return SessionSortNewest
+	}
+}
+
 type SessionQuery struct {
 	Page      int
 	PageSize  int

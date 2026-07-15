@@ -302,6 +302,12 @@ export interface SessionList extends SourceTagged {
   page_size: number
 }
 
+/**
+ * Accepted values of `GET /api/v1/sessions?sort=`.
+ * Mirrors stats.SessionSortMode (internal/stats/types.go).
+ */
+export type SessionSortMode = 'newest' | 'oldest' | 'cost' | 'messages'
+
 export interface SessionMessage extends SourceTagged {
   id: string
   role: string

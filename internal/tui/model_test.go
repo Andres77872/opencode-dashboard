@@ -2715,3 +2715,30 @@ func TestConfigSectionDetailRender(t *testing.T) {
 		t.Error("section detail should show back navigation hint")
 	}
 }
+
+// Regression: drilling from Daily into a past day used to map the date to
+// Period:"1d" — i.e. *today* — then filter those results down to the requested
+// date, so every day except today rendered an empty overlay while the footer
+// still showed today's page count. The date must scope the query itself.
+func TestDayMessagesPeriodQueryScopesToSelectedDay(t *testing.T) {
+	got := dayMessagesPeriodQuery("2026-06-10")
+
+	if got.Period != "" {
+		t.Errorf("Period = %q, want empty: a calendar date must not be sent as a period preset", got.Period)
+	}
+	if got.From != "2026-06-10" || got.To != "2026-06-10" {
+		t.Errorf("From/To = %q/%q, want 2026-06-10/2026-06-10", got.From, got.To)
+	}
+}
+
+// Hourly buckets are not YYYY-MM-DD and still travel as a period string.
+func TestDayMessagesPeriodQueryPassesThroughNonDates(t *testing.T) {
+	got := dayMessagesPeriodQuery("1d")
+
+	if got.Period != "1d" {
+		t.Errorf("Period = %q, want 1d", got.Period)
+	}
+	if got.From != "" || got.To != "" {
+		t.Errorf("From/To = %q/%q, want both empty", got.From, got.To)
+	}
+}

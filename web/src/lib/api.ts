@@ -15,6 +15,7 @@ import type {
   QuotasResponse,
   SessionDetail,
   SessionList,
+  SessionSortMode,
   SourceID,
   SourceListResponse,
   ToolStats,
@@ -206,6 +207,7 @@ export function getSessionsWithFilter(
   projectId?: string,
   signal?: AbortSignal,
   sourceId?: SourceID,
+  sort?: SessionSortMode,
 ) {
   const extraParams: Record<string, string> = {
     page: String(page),
@@ -218,6 +220,12 @@ export function getSessionsWithFilter(
 
   if (projectId) {
     extraParams.project_id = projectId
+  }
+
+  // Sorting is server-side: the endpoint pages the result set, so ordering only
+  // the current page's rows would be wrong.
+  if (sort) {
+    extraParams.sort = sort
   }
 
   return request<SessionList>(buildUrl('/api/v1/sessions', period, extraParams, sourceId), { signal })

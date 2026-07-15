@@ -8,58 +8,52 @@ import (
 
 func TestCORSMiddleware(t *testing.T) {
 	tests := []struct {
-		name         string
-		origin       string
-		wantOrigin   string
-		wantAllowAll bool
+		name       string
+		origin     string
+		wantOrigin string
 	}{
 		{
-			name:         "localhost with Vite port",
-			origin:       "http://localhost:7451",
-			wantOrigin:   "http://localhost:7451",
-			wantAllowAll: false,
+			name:       "localhost with Vite port",
+			origin:     "http://localhost:7451",
+			wantOrigin: "http://localhost:7451",
 		},
 		{
-			name:         "127.0.0.1 with Vite port",
-			origin:       "http://127.0.0.1:7451",
-			wantOrigin:   "http://127.0.0.1:7451",
-			wantAllowAll: false,
+			name:       "127.0.0.1 with Vite port",
+			origin:     "http://127.0.0.1:7451",
+			wantOrigin: "http://127.0.0.1:7451",
 		},
 		{
-			name:         "localhost with port 3000",
-			origin:       "http://localhost:3000",
-			wantOrigin:   "http://localhost:3000",
-			wantAllowAll: false,
+			name:       "localhost with port 3000",
+			origin:     "http://localhost:3000",
+			wantOrigin: "http://localhost:3000",
 		},
 		{
-			name:         "localhost with backend port 7450",
-			origin:       "http://localhost:7450",
-			wantOrigin:   "http://localhost:7450",
-			wantAllowAll: false,
+			name:       "localhost with backend port 7450",
+			origin:     "http://localhost:7450",
+			wantOrigin: "http://localhost:7450",
 		},
 		{
-			name:         "localhost with any port",
-			origin:       "http://localhost:9000",
-			wantOrigin:   "http://localhost:9000",
-			wantAllowAll: false,
+			name:       "localhost with any port",
+			origin:     "http://localhost:9000",
+			wantOrigin: "http://localhost:9000",
 		},
 		{
-			name:         "no origin header",
-			origin:       "",
-			wantOrigin:   "",
-			wantAllowAll: true,
+			name:       "no origin header gets no CORS grant",
+			origin:     "",
+			wantOrigin: "",
 		},
 		{
-			name:         "external origin falls back to wildcard",
-			origin:       "https://example.com",
-			wantOrigin:   "",
-			wantAllowAll: true,
+			// The API is unauthenticated and serves local project paths, session
+			// titles and config. A wildcard here would let any site the user visits
+			// read it, so a non-local origin must get no grant at all.
+			name:       "external origin gets no CORS grant",
+			origin:     "https://example.com",
+			wantOrigin: "",
 		},
 		{
-			name:         "IPv6 localhost",
-			origin:       "http://[::1]:7451",
-			wantOrigin:   "http://[::1]:7451",
-			wantAllowAll: false,
+			name:       "IPv6 localhost",
+			origin:     "http://[::1]:7451",
+			wantOrigin: "http://[::1]:7451",
 		},
 	}
 
@@ -79,14 +73,11 @@ func TestCORSMiddleware(t *testing.T) {
 			corsMiddleware(handler).ServeHTTP(w, req)
 
 			gotOrigin := w.Header().Get("Access-Control-Allow-Origin")
-			if tt.wantAllowAll {
-				if gotOrigin != "*" {
-					t.Errorf("Access-Control-Allow-Origin = %q, want %q", gotOrigin, "*")
-				}
-			} else {
-				if gotOrigin != tt.wantOrigin {
-					t.Errorf("Access-Control-Allow-Origin = %q, want %q", gotOrigin, tt.wantOrigin)
-				}
+			if gotOrigin != tt.wantOrigin {
+				t.Errorf("Access-Control-Allow-Origin = %q, want %q", gotOrigin, tt.wantOrigin)
+			}
+			if gotOrigin == "*" {
+				t.Error("Access-Control-Allow-Origin must never be a wildcard: the API is unauthenticated")
 			}
 
 			if w.Header().Get("Access-Control-Allow-Methods") != "GET, POST, OPTIONS" {

@@ -1,7 +1,8 @@
 /* Compact provider-quota strip for the sidebar: per provider, used% bars for
    the session and weekly windows with reset countdowns. Detailed view lives on
    the Overview page (QuotasSection). */
-import { useQuotas } from '../../lib/use-quotas'
+import { Icon } from '../vael'
+import { refreshQuotas, useQuotas } from '../../lib/use-quotas'
 import { clampPercent, formatResetCountdown, providerMeta, quotaTone, windowLabel } from '../../lib/quotas'
 import { formatRelativeTime } from '../../lib/format'
 import type { ProviderQuota, QuotaWindow } from '../../types/api'
@@ -54,15 +55,58 @@ function ProviderRow({ quota, now }: { quota: ProviderQuota; now: number }) {
   )
 }
 
+const stripStyle = { padding: '4px 10px 8px', borderTop: '1px solid var(--border-subtle)' } as const
+const stripHeadingStyle = {
+  font: '600 10px/1 var(--font-ui)',
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+  color: 'var(--fg-faint)',
+  padding: '8px 11px 4px',
+} as const
+
 export function QuotaSection() {
-  const { data } = useQuotas()
+  const { data, error } = useQuotas()
+
+  // Say when the fetch failed rather than quietly dropping the strip — an empty
+  // sidebar otherwise reads as "no quota providers configured".
+  if (!data && error) {
+    return (
+      <div style={stripStyle}>
+        <div style={stripHeadingStyle}>Quotas</div>
+        <button
+          type="button"
+          onClick={refreshQuotas}
+          title={error}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            width: '100%',
+            padding: '6px 11px',
+            background: 'transparent',
+            border: 'none',
+            borderRadius: 'var(--radius-md)',
+            color: 'var(--danger)',
+            font: '500 11px/1.3 var(--font-ui)',
+            textAlign: 'left',
+            cursor: 'pointer',
+          }}
+        >
+          <Icon name="alert-triangle" size={13} />
+          Unavailable — retry
+        </button>
+      </div>
+    )
+  }
+
   if (!data || data.providers.length === 0) {
     return null
   }
+
   const now = data.fetched_at_ms
   return (
-    <div style={{ padding: '4px 10px 8px', borderTop: '1px solid var(--border-subtle)' }}>
-      <div style={{ font: '600 10px/1 var(--font-ui)', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--fg-faint)', padding: '8px 11px 4px' }}>Quotas</div>
+    <div style={stripStyle}>
+      <div style={stripHeadingStyle}>Quotas</div>
       {data.providers.map((quota) => (
         <ProviderRow key={quota.provider} quota={quota} now={now} />
       ))}

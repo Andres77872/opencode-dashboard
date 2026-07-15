@@ -90,7 +90,11 @@ export function TopBar() {
         : `Database cache for ${cacheTargetLabel}`
 
   const handleCacheSync = async (mode: CacheSyncMode) => {
-    if (!cacheEnabled || syncRunning) return
+    if (syncRunning) return
+    // Block only when we know the cache is off. If the status fetch failed we
+    // have no idea, so let the attempt through — the server answers definitively,
+    // and the panel is otherwise a dead end after a failed status fetch.
+    if (cacheStatus && !cacheEnabled) return
     if (mode === 'rebuild') {
       const confirmed = window.confirm(`Clear cached database metrics for ${cacheTargetLabel} and rebuild from eligible source data?`)
       if (!confirmed) return
@@ -149,7 +153,11 @@ export function TopBar() {
           <span className="hidden sm:inline">Last refresh </span>
           {isRefreshing ? 'refreshing...' : formatRelativeTime(lastUpdatedAt)}
         </span>
-        {cacheEnabled && cacheVisible && (
+        {/* Show the control whenever the cache is usable OR the status fetch
+            itself failed. Gating purely on cacheEnabled hid every /api/v1/cache
+            failure: a failed fetch leaves cacheStatus null, so `enabled` is
+            false and the only surface that renders cacheError never mounted. */}
+        {((cacheEnabled && cacheVisible) || (!cacheStatus && cacheError)) && (
           <Popover
             align="right"
             width={420}

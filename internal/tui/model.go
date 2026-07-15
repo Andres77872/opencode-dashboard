@@ -932,8 +932,11 @@ func (m *model) renderFooter() string {
 	}
 	if m.dayMessages.visible && !m.messageDetail.visible {
 		pageInfo := fmt.Sprintf("page %d", m.dayMessages.page)
-		if m.dayMessages.messages.Total > 0 {
-			pageInfo = fmt.Sprintf("page %d/%d", m.dayMessages.page, (m.dayMessages.messages.Total/int64(m.dayMessages.messages.PageSize))+1)
+		if pageSize := int64(m.dayMessages.messages.PageSize); m.dayMessages.messages.Total > 0 && pageSize > 0 {
+			// Ceiling division: plain Total/PageSize+1 claims an extra page whenever
+			// the total divides evenly (20 rows at 20/page reported "page 1/2").
+			totalPages := max(int((m.dayMessages.messages.Total+pageSize-1)/pageSize), 1)
+			pageInfo = fmt.Sprintf("page %d/%d", m.dayMessages.page, totalPages)
 		}
 		contextKeys = fmt.Sprintf("DAY MESSAGES • %s • j/k move • n/p pages • Enter detail • Esc close", pageInfo)
 	}

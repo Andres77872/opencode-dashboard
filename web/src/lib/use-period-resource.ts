@@ -6,6 +6,16 @@ import type { SourceID } from '../types/api.ts'
 export interface UsePeriodResourceOptions {
   /** When false, always fetch even if the period is already cached. Default: true. */
   cachePeriods?: boolean
+  /**
+   * Extra query dimensions beyond period + source (e.g. page, filter, projectId).
+   * A change here re-runs the fetch. Without this, a resource with extra
+   * dimensions has no way to re-trigger — its `fetcher` is deliberately not an
+   * effect dep — and would have to bump the app-wide refresh nonce instead,
+   * which cache-busts every other mounted resource on every page turn.
+   *
+   * Values must be JSON-serializable; they are compared by value, not identity.
+   */
+  deps?: readonly unknown[]
 }
 
 export interface UsePeriodResourceResult<T> {
@@ -53,7 +63,9 @@ export function usePeriodResource<T>(
     setLastUpdatedAt,
     setRefreshing,
   } = useDashboardContext()
-  const { cachePeriods = true } = options ?? {}
+  const { cachePeriods = true, deps } = options ?? {}
+  // Compared by value: callers pass a fresh array literal every render.
+  const depsKey = JSON.stringify(deps ?? [])
 
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)
@@ -122,7 +134,16 @@ export function usePeriodResource<T>(
       return
     }
 
-    if (!cachePeriods || lastCacheKeyRef.current !== cacheKey) {
+    // Blank the rows only when the *scope* changed (period or source): showing
+    // one source's rows under another's label would be wrong.
+    //
+    // When merely a `deps` dimension changed (a page turn, a filter keystroke),
+    // keep the previous rows on screen while the next set loads. Nulling them
+    // here would drop the view back to its first-load skeleton — which unmounts
+    // the whole page including the search input, losing focus and the caret
+    // mid-typing on every debounced keystroke.
+    const scopeChanged = lastCacheKeyRef.current !== cacheKey
+    if (scopeChanged) {
       setData(cachePeriods ? (cacheRef.current.get(cacheKey) ?? null) : null)
       lastCacheKeyRef.current = cacheKey
     }
@@ -153,7 +174,12 @@ export function usePeriodResource<T>(
 
         if (controller.signal.aborted || !mountedRef.current) return
 
-        cacheRef.current.set(cacheKey, next)
+        // The cache is keyed by source+period only, so a result that also depends
+        // on `deps` (page, filter, …) must never enter it — it would be replayed
+        // for a different page. Those resources set cachePeriods: false.
+        if (cachePeriods) {
+          cacheRef.current.set(cacheKey, next)
+        }
         lastRefreshNonceRef.current = refreshNonce
         setData(next)
         setLastUpdatedAt(new Date())
@@ -173,9 +199,11 @@ export function usePeriodResource<T>(
     return () => {
       controller.abort()
     }
-    // Period, source, availability, and refreshNonce are the reactive inputs
+    // Period, source, availability, refreshNonce, and the caller's extra query
+    // dimensions (depsKey) are the reactive inputs. `fetcher` is deliberately
+    // excluded — callers pass an inline closure that reads the latest dimensions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period, refreshNonce, selectedSourceId, sourceAvailable, sourceMetadataLoading, sourceStateError?.message])
+  }, [period, refreshNonce, selectedSourceId, sourceAvailable, sourceMetadataLoading, sourceStateError?.message, depsKey])
 
   const prefetch = useCallback(
     (p: string) => {

@@ -80,3 +80,60 @@ test('source-scoped period cache keys isolate OpenCode Claude and Codex payloads
   assert.notEqual(getSourceScopedCacheKey('opencode', '7d'), getSourceScopedCacheKey('codex', '7d'))
   assert.notEqual(getSourceScopedCacheKey('claude_code', '7d'), getSourceScopedCacheKey('codex', '7d'))
 })
+
+// A source can vanish between runs — e.g. the backend is restarted without
+// --codex-home, so /sources no longer lists Codex. The persisted preference for
+// it must not win, or every view is pinned to a permanent "unavailable" error
+// with nothing in the URL to explain why.
+test('a stored source that the backend no longer registers falls back to the startup source', () => {
+  const withoutCodex: SourceListResponse = {
+    default_source_id: 'opencode',
+    startup_source_id: 'opencode',
+    sources: [
+      {
+        id: 'opencode',
+        label: 'OpenCode',
+        kind: 'sqlite',
+        available: true,
+        default: true,
+        read_only: true,
+        local_only: true,
+        capabilities: [],
+      },
+    ],
+  }
+
+  assert.equal(resolveRequestedSourceId(null, withoutCodex, 'codex'), 'opencode')
+})
+
+test('a stored source that the backend still registers is honored', () => {
+  assert.equal(resolveRequestedSourceId(null, sourceList('opencode'), 'codex'), 'codex')
+})
+
+// An explicit ?source= is the user naming it, so it still wins and gets a
+// diagnostic — we must not silently serve another source's numbers under it.
+test('an explicit unregistered ?source= still wins over the startup fallback', () => {
+  const withoutCodex: SourceListResponse = {
+    default_source_id: 'opencode',
+    startup_source_id: 'opencode',
+    sources: [
+      {
+        id: 'opencode',
+        label: 'OpenCode',
+        kind: 'sqlite',
+        available: true,
+        default: true,
+        read_only: true,
+        local_only: true,
+        capabilities: [],
+      },
+    ],
+  }
+
+  assert.equal(resolveRequestedSourceId('codex', withoutCodex, null), 'codex')
+})
+
+// Metadata not yet loaded must not be mistaken for "the source is gone".
+test('a stored source survives while source metadata is still loading', () => {
+  assert.equal(resolveRequestedSourceId(null, null, 'codex'), 'codex')
+})

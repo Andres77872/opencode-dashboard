@@ -1,14 +1,37 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { applyPeriodToUrl, serializeCustomPeriod, usePeriodState, type PeriodState } from './use-period-state'
 import { setStoredPeriod } from './persisted-prefs.ts'
 import type { CustomPeriod, DailyPeriod, PeriodMode } from '../types/api'
 
 export interface UsePeriodControlsOptions {
-  /** Fired before any URL change so a view can reset local state (sort/page/selection). */
-  onChange?: () => void
   /** Extra mutation applied to the URL params atomically with the period write (e.g. page=1). */
   mutateUrl?: (params: URLSearchParams) => void
+}
+
+/**
+ * Runs `reset` whenever `key` changes (skipping the first render).
+ *
+ * Views use this to drop local state — sort, metric, an open drawer — that no
+ * longer makes sense once the period or source changed.
+ *
+ * This replaces an `onChange` callback on usePeriodControls, which could never
+ * fire: onChange is only invoked from the period picker's own handlers, and the
+ * picker is rendered solely by FilterBar (from its own usePeriodControls
+ * instance). A view that passed onChange but didn't render a picker — every view
+ * that passed it — was registering a callback nothing could call.
+ */
+export function useResetOnChange(key: string, reset: () => void) {
+  const previousRef = useRef(key)
+
+  useEffect(() => {
+    if (previousRef.current === key) return
+    previousRef.current = key
+    reset()
+    // `reset` is a fresh closure every render, so listing it would re-run this on
+    // every render. The key comparison is what gates the call.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
 }
 
 export interface PeriodPickerProps {
@@ -34,7 +57,7 @@ export interface PeriodControls {
  * serializeCustomPeriod verbatim, so the URL and cache-key contract is unchanged.
  */
 export function usePeriodControls(options: UsePeriodControlsOptions = {}): PeriodControls {
-  const { onChange, mutateUrl } = options
+  const { mutateUrl } = options
   const [, setSearchParams] = useSearchParams()
   const state = usePeriodState()
 
@@ -45,7 +68,6 @@ export function usePeriodControls(options: UsePeriodControlsOptions = {}): Perio
 
   const onPresetChange = useCallback(
     (preset: DailyPeriod) => {
-      onChange?.()
       setStoredPeriod({ period: preset })
       setSearchParams((previous) => {
         const next = applyPeriodToUrl(previous, { mode: 'preset', preset })
@@ -53,12 +75,11 @@ export function usePeriodControls(options: UsePeriodControlsOptions = {}): Perio
         return next
       })
     },
-    [onChange, mutateUrl, setSearchParams],
+    [mutateUrl, setSearchParams],
   )
 
   const onCustomRangeChange = useCallback(
     (range: CustomPeriod) => {
-      onChange?.()
       setStoredPeriod({ from: range.from, to: range.to })
       setSearchParams((previous) => {
         const next = applyPeriodToUrl(previous, { mode: 'custom', customRange: range })
@@ -66,7 +87,7 @@ export function usePeriodControls(options: UsePeriodControlsOptions = {}): Perio
         return next
       })
     },
-    [onChange, mutateUrl, setSearchParams],
+    [mutateUrl, setSearchParams],
   )
 
   return {

@@ -303,3 +303,75 @@ export function Select<V extends string>({ label, icon, value, options, onChange
     </Popover>
   )
 }
+
+export interface SearchInputProps {
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+  /** Accessible name. Defaults to the placeholder. */
+  label?: string
+  width?: number | string
+}
+
+/**
+ * Text filter for a table. Client-side by convention: it narrows rows the view
+ * already holds, which is why it carries no debounce (compare the Sessions
+ * search box, which hits the paginated API and therefore does).
+ *
+ * @category Controls
+ */
+export function SearchInput({ value, onChange, placeholder = 'Filter…', label, width = 260 }: SearchInputProps) {
+  return (
+    <div style={{ position: 'relative', flex: `0 1 ${typeof width === 'number' ? `${width}px` : width}`, minWidth: 180 }}>
+      <span
+        aria-hidden
+        style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', color: 'var(--fg-faint)', pointerEvents: 'none' }}
+      >
+        <Icon name="search" size={15} />
+      </span>
+      <input
+        type="text"
+        aria-label={label ?? placeholder}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          width: '100%',
+          height: 36,
+          padding: value ? '0 32px 0 34px' : '0 12px 0 34px',
+          background: 'var(--ink-800)',
+          border: '1px solid var(--border-default)',
+          borderRadius: 'var(--radius-md)',
+          color: 'var(--fg-primary)',
+          font: '400 13px/1 var(--font-ui)',
+          outline: 'none',
+        }}
+      />
+      {value && (
+        <button
+          type="button"
+          aria-label="Clear filter"
+          onClick={() => onChange('')}
+          style={{
+            position: 'absolute',
+            right: 8,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 20,
+            height: 20,
+            background: 'transparent',
+            border: 'none',
+            borderRadius: 'var(--radius-sm)',
+            color: 'var(--fg-faint)',
+            cursor: 'pointer',
+          }}
+        >
+          <Icon name="x" size={13} />
+        </button>
+      )}
+    </div>
+  )
+}

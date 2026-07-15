@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"opencode-dashboard/internal/stats"
 )
@@ -483,4 +485,64 @@ func (s *registryFakeSource) Config(context.Context) (stats.ConfigView, error) {
 func (s *registryFakeSource) Close() error {
 	s.closeCalls++
 	return s.closeErr
+}
+
+// Regression: Resolve and List hold r.mu.RLock and used to call the exported
+// DefaultID/StartupID, which take r.mu.RLock again. sync.RWMutex forbids
+// recursive read locking — once a writer is pending, the inner RLock blocks
+// behind it while the outer one is still held, so the reader and the writer
+// deadlock and every later registry access hangs with them.
+//
+// The background cache sync calls Register (a writer) while the SPA is issuing
+// requests (readers), so this was reachable in a normal startup. Run with -race.
+func TestRegistryConcurrentReadersAndWriterDoNotDeadlock(t *testing.T) {
+	registry := NewRegistry(SourceOpenCode)
+	if err := registry.Register(newRegistryFakeSource(SourceOpenCode, true)); err != nil {
+		t.Fatalf("Register() failed: %v", err)
+	}
+
+	ctx := context.Background()
+	const iterations = 500
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var wg sync.WaitGroup
+
+		// Readers: both recursive-lock paths.
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for n := 0; n < iterations; n++ {
+					registry.List(ctx)
+					if _, err := registry.Resolve(""); err != nil {
+						t.Errorf("Resolve(\"\") failed: %v", err)
+						return
+					}
+				}
+			}()
+		}
+
+		// Writer: re-registering a source is what the cache sync job does once a
+		// source finishes consolidating.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for n := 0; n < iterations; n++ {
+				if err := registry.Register(newRegistryFakeSource(SourceOpenCode, true)); err != nil {
+					t.Errorf("Register() failed: %v", err)
+					return
+				}
+			}
+		}()
+
+		wg.Wait()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("registry deadlocked: readers and a concurrent writer failed to make progress")
+	}
 }

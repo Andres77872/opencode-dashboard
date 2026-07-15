@@ -36,8 +36,24 @@ beforeEach(() => {
   globalThis.localStorage.clear()
 })
 
+// The backend always reports the sources it knows about (unavailable ones
+// included), and resolveRequestedSourceId only honors a stored preference for a
+// source that is still listed — so these fixtures must actually list them.
 function sourceList(startupSourceId: SourceListResponse['startup_source_id']): SourceListResponse {
-  return { default_source_id: 'opencode', startup_source_id: startupSourceId, sources: [] }
+  return {
+    default_source_id: 'opencode',
+    startup_source_id: startupSourceId,
+    sources: (['opencode', 'claude_code', 'codex'] as const).map((id) => ({
+      id,
+      label: id,
+      kind: id === 'opencode' ? ('sqlite' as const) : ('jsonl' as const),
+      available: true,
+      default: id === 'opencode',
+      read_only: true,
+      local_only: true,
+      capabilities: [],
+    })),
+  }
 }
 
 test('source id round-trips and rejects unknown values', () => {

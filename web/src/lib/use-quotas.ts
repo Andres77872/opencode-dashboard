@@ -67,6 +67,11 @@ function getSnapshot(): QuotasState {
   return state
 }
 
+/** Re-fetch quotas now — backs the retry action on the quota error states. */
+export function refreshQuotas() {
+  void refresh()
+}
+
 export function useQuotas(): QuotasState {
   const { refreshNonce } = useDashboardContext()
   const snapshot = useSyncExternalStore(subscribe, getSnapshot)

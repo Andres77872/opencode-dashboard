@@ -30,10 +30,12 @@ export {
   Popover,
   MenuItem,
   Select,
+  SearchInput,
   type ButtonVariant,
   type ControlSize,
   type SegmentedOption,
   type SelectOption,
+  type SearchInputProps,
 } from './controls'
 
 export { DataTable, type Column, type SortSpec, type SortDir } from './data-table'

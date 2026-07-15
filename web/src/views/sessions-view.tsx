@@ -19,6 +19,7 @@ import {
   ErrorState,
   Notice,
   type Column,
+  type SortSpec,
 } from '../components/vael'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { getSessionDetail, getSessionsWithFilter } from '../lib/api'
@@ -45,6 +46,45 @@ import type {
 
 const PAGE_SIZE = 12
 const SEARCH_DEBOUNCE_MS = 300
+
+/**
+ * Sorting is server-side (`GET /api/v1/sessions?sort=`), because the API pages
+ * the result set — sorting only the twelve rows on screen would be a lie.
+ *
+ * The backend orders by cost and by message count in one direction only, so
+ * those columns are single-direction here. Offering a toggle whose ascending
+ * arrow the server ignores would render the same inverted-indicator bug the
+ * Models table had.
+ */
+const SESSION_SORTS = ['newest', 'oldest', 'cost', 'messages'] as const
+type SessionSort = (typeof SESSION_SORTS)[number]
+const DEFAULT_SESSION_SORT: SessionSort = 'newest'
+
+function parseSessionSort(value: string | null): SessionSort {
+  return SESSION_SORTS.includes(value as SessionSort) ? (value as SessionSort) : DEFAULT_SESSION_SORT
+}
+
+/** The column + arrow direction each backend sort mode corresponds to. */
+const SORT_INDICATOR: Record<SessionSort, SortSpec> = {
+  newest: { key: 'started', dir: 'desc' },
+  oldest: { key: 'started', dir: 'asc' },
+  cost: { key: 'cost', dir: 'desc' },
+  messages: { key: 'messages', dir: 'desc' },
+}
+
+/** Clicking a header: Started toggles newest/oldest; cost and messages are one-way. */
+function nextSessionSort(current: SessionSort, columnKey: string): SessionSort {
+  switch (columnKey) {
+    case 'started':
+      return current === 'newest' ? 'oldest' : 'newest'
+    case 'cost':
+      return 'cost'
+    case 'messages':
+      return 'messages'
+    default:
+      return current
+  }
+}
 
 function getSessionLabel(session: Pick<SessionEntry, 'title'>) {
   return session.title || 'Untitled session'
@@ -81,9 +121,24 @@ export function SessionsView() {
   const rawFilter = searchParams.get('filter') ?? ''
   const projectId = searchParams.get('project_id') ?? undefined
   const selectedSessionId = searchParams.get('session')
+  const sort = parseSessionSort(searchParams.get('sort'))
 
   const pageFromUrl = parseInt(searchParams.get('page') ?? '1', 10)
   const page = isNaN(pageFromUrl) || pageFromUrl < 1 ? 1 : pageFromUrl
+
+  // Sorting reorders the whole result set, so the current page number is
+  // meaningless afterwards — go back to the first page.
+  const handleSort = (columnKey: string) => {
+    const next = nextSessionSort(sort, columnKey)
+    if (next === sort) return
+    setSearchParams((prev) => {
+      const n = new URLSearchParams(prev)
+      n.set('page', '1')
+      if (next === DEFAULT_SESSION_SORT) n.delete('sort')
+      else n.set('sort', next)
+      return n
+    })
+  }
 
   // ── Reset list + close detail when the source changes ──
   const previousSourceRef = useRef(selectedSourceId)
@@ -101,14 +156,19 @@ export function SessionsView() {
     )
   }, [selectedSourceId, setSearchParams])
 
-  // Normalize URL params on mount
+  // Normalize URL params on mount. `replace` matters: pushing a history entry
+  // here means arriving from another view and pressing Back lands you right back
+  // on /sessions (minus the ?page=1), so Back has to be pressed twice to leave.
   useEffect(() => {
     if (!searchParams.has('page')) {
-      setSearchParams((prev) => {
-        const n = new URLSearchParams(prev)
-        n.set('page', '1')
-        return n
-      })
+      setSearchParams(
+        (prev) => {
+          const n = new URLSearchParams(prev)
+          n.set('page', '1')
+          return n
+        },
+        { replace: true },
+      )
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -136,27 +196,22 @@ export function SessionsView() {
     })
 
   // ── Sessions list via usePeriodResource ──
-  // Sessions has extra query dimensions (page, filter, projectId) beyond period.
-  // cachePeriods: false + a stable fetcher reading latest values via ref; a version
-  // string triggers requestRefresh when those dimensions change.
-  const sessionQueryRef = useRef({ page, filter: rawFilter, projectId })
-  sessionQueryRef.current = { page, filter: rawFilter, projectId }
+  // Sessions has extra query dimensions (page, filter, projectId, sort) beyond
+  // period, so it declares them as `deps`: the hook re-fetches when they change
+  // and keeps the current rows on screen meanwhile. (It used to bump the app-wide
+  // refresh nonce instead, which forced a no-cache refetch of every other mounted
+  // resource on every page turn, and blanked this view back to its first-load
+  // skeleton — unmounting the search input and dropping focus mid-typing.)
+  const fetcher = useCallback(
+    (p: string, signal?: AbortSignal, sourceId?: SourceID) =>
+      getSessionsWithFilter(page, PAGE_SIZE, p, rawFilter || undefined, projectId, signal, sourceId, sort),
+    [page, rawFilter, projectId, sort],
+  )
 
-  const fetcher = useCallback((p: string, signal?: AbortSignal, sourceId?: SourceID) => {
-    const q = sessionQueryRef.current
-    return getSessionsWithFilter(q.page, PAGE_SIZE, p, q.filter || undefined, q.projectId, signal, sourceId)
-  }, [])
-
-  const { data, loading, error } = usePeriodResource<SessionList>(fetcher, cacheKey, { cachePeriods: false })
-
-  const sessionVersion = `${page}:${rawFilter}:${projectId ?? ''}`
-  const lastVersionRef = useRef(sessionVersion)
-  useEffect(() => {
-    if (sessionVersion !== lastVersionRef.current) {
-      lastVersionRef.current = sessionVersion
-      requestRefresh()
-    }
-  }, [sessionVersion, requestRefresh])
+  const { data, loading, error } = usePeriodResource<SessionList>(fetcher, cacheKey, {
+    cachePeriods: false,
+    deps: [page, rawFilter, projectId ?? '', sort],
+  })
 
   // ── Search/filter with 300ms debounce ──
   const [searchText, setSearchText] = useState(rawFilter)
@@ -176,6 +231,24 @@ export function SessionsView() {
     }, SEARCH_DEBOUNCE_MS)
   }
   useEffect(() => () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current) }, [])
+
+  // A bookmarked or shared ?page= can point past the end of the result set (the
+  // range shrank, or the link was hand-edited). The backend answers with an empty
+  // page, which renders the "no sessions" empty state — and that state has no
+  // pagination controls, so there is no way back to page 1 short of editing the
+  // URL. Snap back to the last real page instead.
+  const totalPages = data ? Math.max(1, Math.ceil(data.total / data.page_size)) : null
+  useEffect(() => {
+    if (totalPages === null || page <= totalPages) return
+    setSearchParams(
+      (prev) => {
+        const n = new URLSearchParams(prev)
+        n.set('page', String(totalPages))
+        return n
+      },
+      { replace: true },
+    )
+  }, [page, totalPages, setSearchParams])
 
   // ── Page summary ──
   const summary = useMemo(() => {
@@ -271,6 +344,7 @@ export function SessionsView() {
     {
       key: 'started',
       header: 'Started',
+      sortable: true,
       render: (s) => (
         <span title={formatDateTime(s.time_created)} style={{ color: 'var(--fg-muted)', font: '400 12px/1 var(--font-mono)' }}>
           {formatRelativeTime(new Date(s.time_created))}
@@ -286,12 +360,14 @@ export function SessionsView() {
     {
       key: 'messages',
       header: 'Messages',
+      sortable: true,
       numeric: true,
       render: (s) => formatCompactInteger(s.message_count),
     },
     {
       key: 'cost',
       header: 'Est. cost',
+      sortable: true,
       numeric: true,
       render: (s) => formatCompactCurrencyWithProvenance(s.cost, s.cost_status ?? data?.cost_status, s.cost_provenance ?? data?.cost_provenance),
     },
@@ -384,6 +460,8 @@ export function SessionsView() {
             columns={columns}
             rows={data?.sessions ?? []}
             rowKey={(s) => s.id}
+            sort={SORT_INDICATOR[sort]}
+            onSort={handleSort}
             onRowClick={(s) => openSession(s.id)}
           />
           {summary && (

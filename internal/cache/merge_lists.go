@@ -8,6 +8,39 @@ import (
 	"opencode-dashboard/internal/stats"
 )
 
+// pageOffset converts a 1-based page into a slice offset, never negative.
+// A hostile or absurd `page` makes (page-1)*limit overflow int and wrap
+// negative; slicing on that panics, so clamp it here as well as at the HTTP
+// boundary. An overflowed page simply reads as "past the end".
+func pageOffset(page, limit int) int {
+	if page < 1 || limit < 1 {
+		return 0
+	}
+	offset := (page - 1) * limit
+	if offset < 0 {
+		return maxPageOffset
+	}
+	return offset
+}
+
+// maxPageOffset stands in for an overflowed offset: far past any real result
+// set, so the page comes back empty instead of panicking.
+const maxPageOffset = 1 << 40
+
+// pageBounds returns the [lo, hi) slice bounds for a 1-based page over n rows,
+// clamped into [0, n] at both ends.
+func pageBounds(page, pageSize, n int) (int, int) {
+	lo := pageOffset(page, pageSize)
+	if lo > n {
+		lo = n
+	}
+	hi := lo + pageSize
+	if hi > n || hi < lo {
+		hi = n
+	}
+	return lo, hi
+}
+
 // messageLess replicates messageOrderBy semantics in Go, including the
 // message_id ASC tiebreak that applies in both directions.
 func messageLess(a, b stats.MessageEntry, sortSpec stats.MessageSort) bool {
@@ -74,7 +107,7 @@ func (s *CachedSource) mergeMessages(ctx context.Context, sp splitWindows, page,
 	sort.SliceStable(gapSorted, func(i, j int) bool { return messageLess(gapSorted[i], gapSorted[j], sortSpec) })
 
 	total := cacheTotal + int64(len(gapSorted))
-	offset := (page - 1) * limit
+	offset := pageOffset(page, limit)
 	var pageRows []stats.MessageEntry
 
 	timeSort := sortSpec.Field == stats.MessageSortTime || sortSpec.Field == ""
@@ -223,7 +256,11 @@ func (s *CachedSource) mergeSessions(ctx context.Context, sp splitWindows, query
 		gapIDs = append(gapIDs, entry.ID)
 		keep[entry.ID] = true
 	}
-	cacheTotal, ranked, byID, err := s.store.sessionWindowRows(ctx, sourceID, cacheQuery, query.Page*query.PageSize, gapIDs)
+	// Rank enough cached rows to cover the requested page. Computed via
+	// pageOffset so an overflowing page can't wrap to <= 0, which would drop the
+	// SQL LIMIT entirely and pull the whole table into memory.
+	rankLimit := pageOffset(query.Page, query.PageSize) + query.PageSize
+	cacheTotal, ranked, byID, err := s.store.sessionWindowRows(ctx, sourceID, cacheQuery, rankLimit, gapIDs)
 	if err != nil {
 		return stats.SessionList{}, err
 	}
@@ -289,14 +326,7 @@ func (s *CachedSource) mergeSessions(ctx context.Context, sp splitWindows, query
 		merged = append(merged, entry)
 	}
 	sort.SliceStable(merged, func(i, j int) bool { return sessionLess(merged[i], merged[j], query.Sort) })
-	lo := (query.Page - 1) * query.PageSize
-	hi := lo + query.PageSize
-	if lo > len(merged) {
-		lo = len(merged)
-	}
-	if hi > len(merged) {
-		hi = len(merged)
-	}
+	lo, hi := pageBounds(query.Page, query.PageSize, len(merged))
 	pageRows := merged[lo:hi]
 	if pageRows == nil {
 		pageRows = []stats.SessionEntry{}
@@ -441,14 +471,7 @@ func (s *CachedSource) mergeProjectDetail(ctx context.Context, sp splitWindows, 
 		}
 		return merged[i].ID < merged[j].ID
 	})
-	lo := (page - 1) * limit
-	hi := lo + limit
-	if lo > len(merged) {
-		lo = len(merged)
-	}
-	if hi > len(merged) {
-		hi = len(merged)
-	}
+	lo, hi := pageBounds(page, limit, len(merged))
 	pageRows := merged[lo:hi]
 	if pageRows == nil {
 		pageRows = []stats.SessionEntry{}

@@ -41,6 +41,13 @@ func (r *Registry) DefaultID() SourceID {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.defaultIDLocked()
+}
+
+// defaultIDLocked reads defaultID with r.mu already held. Callers that already
+// hold the lock must use this: sync.RWMutex forbids recursive read locking, so
+// re-entering RLock while a writer is pending deadlocks the whole registry.
+func (r *Registry) defaultIDLocked() SourceID {
 	if r.defaultID == "" {
 		return SourceOpenCode
 	}
@@ -53,6 +60,11 @@ func (r *Registry) StartupID() SourceID {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.startupIDLocked()
+}
+
+// startupIDLocked reads startupID with r.mu already held. See defaultIDLocked.
+func (r *Registry) startupIDLocked() SourceID {
 	if r.startupID != "" {
 		return r.startupID
 	}
@@ -107,7 +119,7 @@ func (r *Registry) Resolve(selectedID string) (Source, error) {
 		// Omitted/empty source parameters intentionally resolve to the API
 		// compatibility default, not the startup-selected source. The web client
 		// sends an explicit source param when startup fallback and default differ.
-		id = string(r.DefaultID())
+		id = string(r.defaultIDLocked())
 	}
 	if id == "both" {
 		return nil, UnsupportedSourceError{ID: id, Reason: "v1 supports one selected source at a time"}
@@ -141,8 +153,8 @@ func (r *Registry) List(ctx context.Context) []SourceInfo {
 		if entry.source != nil {
 			info = entry.source.Info(ctx)
 		}
-		info.Default = id == r.DefaultID()
-		info.Selected = id == r.StartupID()
+		info.Default = id == r.defaultIDLocked()
+		info.Selected = id == r.startupIDLocked()
 		infos = append(infos, info)
 	}
 	return infos

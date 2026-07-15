@@ -49,7 +49,22 @@ export function DataTable<T>({ columns, rows, sort, onSort, onRowClick, dense, r
               return (
                 <th
                   key={c.key}
+                  scope="col"
+                  // Sorting was mouse-only and silent to assistive tech: a bare
+                  // <th onClick> with no role, no tab stop, and no aria-sort.
+                  aria-sort={sortable ? (active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none') : undefined}
                   onClick={sortable ? () => onSort!(c.key) : undefined}
+                  onKeyDown={
+                    sortable
+                      ? (e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            onSort!(c.key)
+                          }
+                        }
+                      : undefined
+                  }
+                  tabIndex={sortable ? 0 : undefined}
                   style={{
                     position: 'sticky',
                     top: 0,
@@ -84,6 +99,24 @@ export function DataTable<T>({ columns, rows, sort, onSort, onRowClick, dense, r
               onMouseEnter={() => setHover(i)}
               onMouseLeave={() => setHover(-1)}
               onClick={onRowClick ? () => onRowClick(r, i) : undefined}
+              // Drill-downs (session detail, project drawer, message drawer) hung
+              // off a click handler with no tab stop, so they were unreachable by
+              // keyboard entirely. Focus doubles as the hover highlight so the
+              // active row is visible while tabbing.
+              onKeyDown={
+                onRowClick
+                  ? (e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        onRowClick(r, i)
+                      }
+                    }
+                  : undefined
+              }
+              onFocus={onRowClick ? () => setHover(i) : undefined}
+              onBlur={onRowClick ? () => setHover(-1) : undefined}
+              tabIndex={onRowClick ? 0 : undefined}
+              role={onRowClick ? 'button' : undefined}
               style={{ background: hover === i ? 'var(--ink-750)' : 'transparent', cursor: onRowClick ? 'pointer' : 'default', transition: 'background var(--dur-fast)' }}
             >
               {columns.map((c) => {
