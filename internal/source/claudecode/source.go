@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -262,13 +263,20 @@ func (s *Source) Config(ctx context.Context) (stats.ConfigView, error) {
 	if err != nil {
 		return view, fmt.Errorf("read Claude settings: %w", err)
 	}
+	view.Exists = true
+	view.Format = stats.ConfigFormatJSON
 	redacted, changed, err := redactJSONDocument(content)
 	if err != nil {
-		return view, err
+		// No Raw on parse failure: without a structural redaction result
+		// there is nothing guaranteed-safe to ship.
+		view.ParseError = sanitizeConfigParseError(err)
+		return view, nil
 	}
-	view.Exists = true
 	view.Content = redacted
 	view.Redacted = changed
+	if encoded, encodeErr := json.MarshalIndent(redacted, "", "  "); encodeErr == nil {
+		view.Raw = string(encoded)
+	}
 	return view, nil
 }
 

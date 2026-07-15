@@ -1,11 +1,13 @@
 package stats
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"opencode-dashboard/internal/store"
@@ -52,18 +54,42 @@ func Config(ctx context.Context, _ *store.Store) (ConfigView, error) {
 		return view, fmt.Errorf("failed to read config file: %w", err)
 	}
 
+	view.Exists = true
+	view.Format = ConfigFormatJSON
+
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
 	var raw map[string]any
-	if err := json.Unmarshal(content, &raw); err != nil {
-		return view, fmt.Errorf("failed to parse config JSON: %w", err)
+	if err := decoder.Decode(&raw); err != nil {
+		view.ParseError = sanitizeConfigParseError(err)
+		return view, nil
 	}
 
 	redacted := redactSensitive(raw)
 
-	view.Exists = true
 	view.Content = redacted
+	if encoded, encodeErr := json.MarshalIndent(redacted, "", "  "); encodeErr == nil {
+		view.Raw = string(encoded)
+	}
 
 	return view, nil
 }
+
+// sanitizeConfigParseError caps and scrubs a JSON parse error before it is
+// exposed in a ConfigView (decoder errors may quote fragments of the file).
+func sanitizeConfigParseError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ReplaceAll(err.Error(), "\n", " ")
+	msg = longQuotedSpanPattern.ReplaceAllString(msg, `"…"`)
+	if len(msg) > 300 {
+		msg = msg[:300] + "…"
+	}
+	return msg
+}
+
+var longQuotedSpanPattern = regexp.MustCompile(`"[^"]{12,}"|'[^']{12,}'`)
 
 func xdgConfigPath() string {
 	xdgConfig := os.Getenv("XDG_CONFIG_HOME")

@@ -1,6 +1,7 @@
-import { formatInteger } from './format'
-import type { ConfigStats } from '../types/api'
+import { formatInteger } from './format.ts'
+import type { ConfigStats } from '../types/api.ts'
 import type {
+  ConfigDocument,
   ConfigInsights,
   ConfigJsonObject,
   ConfigJsonPrimitive,
@@ -9,9 +10,14 @@ import type {
   ConfigSectionProjection,
   ConfigSummary,
   ParsedConfigState,
-} from '../types/config'
+} from '../types/config.ts'
 
 export const REDACTED_VALUE = '[REDACTED]'
+
+export const REDACTED_PATH_MARKER = '[REDACTED_PATH]'
+
+/** Pseudo section key for the "All sections" navigator entry. */
+export const ALL_SECTIONS = '__all__'
 
 export const EMPTY_CONFIG_INSIGHTS: ConfigInsights = {
   leafValues: 0,
@@ -28,7 +34,60 @@ export function isPrimitive(value: ConfigJsonValue): value is ConfigJsonPrimitiv
 }
 
 export function isRedactedValue(value: ConfigJsonValue) {
-  return typeof value === 'string' && value === REDACTED_VALUE
+  return (
+    typeof value === 'string' && (value === REDACTED_VALUE || value.includes(REDACTED_PATH_MARKER))
+  )
+}
+
+/**
+ * Legacy shim: old API returned `content` as a JSON-encoded string; normalize
+ * to an object when possible.
+ */
+export function normalizeConfigStats(raw: ConfigStats | null): ConfigStats | null {
+  if (!raw) {
+    return null
+  }
+  if (raw.content && typeof raw.content === 'string') {
+    try {
+      return { ...raw, content: JSON.parse(raw.content) as Record<string, unknown> }
+    } catch {
+      return raw
+    }
+  }
+  return raw
+}
+
+/**
+ * Format-aware projection of the payload. Single degradation point for legacy
+ * backends: format defaults to json and raw is synthesized from content.
+ */
+export function resolveConfigDocument(data: ConfigStats | null): ConfigDocument | null {
+  if (!data) {
+    return null
+  }
+  const hasStructured = Boolean(data.content) && typeof data.content === 'object'
+  let raw = typeof data.raw === 'string' ? data.raw : ''
+  let rawSynthesized = false
+  if (!raw && hasStructured) {
+    raw = JSON.stringify(data.content, null, 2)
+    rawSynthesized = true
+  }
+  return {
+    format: data.format ?? 'json',
+    raw,
+    rawSynthesized,
+    parseError: data.parse_error ?? null,
+    hasStructured,
+  }
+}
+
+/** Short primitive arrays render as chips; anything longer gets indexed rows. */
+export function isChipArray(value: ConfigJsonValue[]): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= 12 &&
+    value.every((item) => isPrimitive(item) && formatPrimitiveValue(item).length <= 40)
+  )
 }
 
 export function titleizeKey(key: string) {
@@ -131,12 +190,18 @@ export function collectInsights(value: ConfigJsonValue): ConfigInsights {
   )
 }
 
-export function parseConfigContent(content?: Record<string, unknown>): ParsedConfigState {
+export function parseConfigContent(
+  content?: Record<string, unknown>,
+  parseError?: string | null,
+): ParsedConfigState {
+  if (parseError) {
+    return { parsed: null, parseError }
+  }
+
+  // Missing structured content is not an error by itself: source-only
+  // payloads (parse failures upstream, raw-only formats) are still viewable.
   if (!content) {
-    return {
-      parsed: null,
-      parseError: 'The API did not return a config payload to inspect.',
-    }
+    return { parsed: null, parseError: null }
   }
 
   return {
@@ -202,19 +267,22 @@ export function serializeConfigValue(value: ConfigJsonValue) {
   return isPrimitive(value) ? formatPrimitiveValue(value) : JSON.stringify(value, null, 2)
 }
 
-export function buildConfigSummary(data: ConfigStats | null): ConfigSummary | null {
+export function buildConfigSummary(
+  data: ConfigStats | null,
+  doc?: ConfigDocument | null,
+): ConfigSummary | null {
   if (!data) {
     return null
   }
 
-  const parsedState = parseConfigContent(data.content)
+  const parsedState = parseConfigContent(data.content, doc?.parseError ?? data.parse_error ?? null)
   const sections = getSections(parsedState.parsed)
 
   return {
     sections,
     insights: parsedState.parsed ? collectInsights(parsedState.parsed) : EMPTY_CONFIG_INSIGHTS,
     parseError: parsedState.parseError,
-    emptyObject: data.exists && sections.length === 0,
+    emptyObject: data.exists && sections.length === 0 && !parsedState.parseError,
   }
 }
 

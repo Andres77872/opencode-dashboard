@@ -409,12 +409,22 @@ type SessionDetail struct {
 	CostProvenance *CostProvenance  `json:"cost_provenance,omitempty"`
 }
 
+// Config format identifiers reported in ConfigView.Format.
+const (
+	ConfigFormatJSON = "json"
+	ConfigFormatTOML = "toml"
+	ConfigFormatYAML = "yaml"
+)
+
 type ConfigView struct {
-	SourceID string         `json:"source_id,omitempty"`
-	Path     string         `json:"path"`
-	Exists   bool           `json:"exists"`
-	Content  map[string]any `json:"content,omitempty"`
-	Redacted bool           `json:"redacted,omitempty"`
+	SourceID   string         `json:"source_id,omitempty"`
+	Path       string         `json:"path"`
+	Exists     bool           `json:"exists"`
+	Format     string         `json:"format,omitempty"`
+	Content    map[string]any `json:"content,omitempty"`
+	Raw        string         `json:"raw,omitempty"`
+	ParseError string         `json:"parse_error,omitempty"`
+	Redacted   bool           `json:"redacted,omitempty"`
 }
 
 type DateRange struct {

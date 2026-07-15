@@ -250,26 +250,30 @@ func (s *Source) Config(ctx context.Context) (stats.ConfigView, error) {
 	if err := ctx.Err(); err != nil {
 		return stats.ConfigView{}, err
 	}
-	path := filepath.Join(s.opts.CodexHome, "config.toml")
-	view := stats.ConfigView{SourceID: codexSourceID, Path: path}
-	info, err := os.Stat(path)
+	path, format, exists, err := detectConfigFile(s.opts.CodexHome)
+	view := stats.ConfigView{SourceID: codexSourceID, Path: path, Format: format}
 	if err != nil {
-		if os.IsNotExist(err) {
-			return view, nil
-		}
 		return view, fmt.Errorf("access Codex config: %w", err)
 	}
-	if info.IsDir() {
+	if !exists {
 		return view, nil
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return view, fmt.Errorf("read Codex config: %w", err)
 	}
-	redacted, changed := redactConfigTOML(content)
+	raw, rawChanged := redactConfigLines(format, content)
 	view.Exists = true
-	view.Content = redacted
-	view.Redacted = changed
+	view.Raw = raw
+	parsed, parseErr := parseConfigDocument(format, content)
+	if parseErr != nil {
+		view.ParseError = sanitizeParseError(parseErr)
+		view.Redacted = rawChanged
+		return view, nil
+	}
+	redactedMap, mapChanged := redactConfigMap(parsed)
+	view.Content = redactedMap
+	view.Redacted = rawChanged || mapChanged
 	return view, nil
 }
 

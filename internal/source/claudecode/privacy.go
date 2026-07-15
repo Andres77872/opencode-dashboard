@@ -3,6 +3,7 @@ package claudecode
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"opencode-dashboard/internal/stats"
@@ -13,6 +14,22 @@ const (
 	toolTextMaxBytes    = 2000
 	redactedValue       = "[REDACTED]"
 )
+
+// sanitizeConfigParseError caps and scrubs a JSON parse error before it is
+// exposed in a ConfigView (decoder errors may quote fragments of the file).
+func sanitizeConfigParseError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ReplaceAll(err.Error(), "\n", " ")
+	msg = longQuotedSpanPattern.ReplaceAllString(msg, `"…"`)
+	if len(msg) > 300 {
+		msg = msg[:300] + "…"
+	}
+	return msg
+}
+
+var longQuotedSpanPattern = regexp.MustCompile(`"[^"]{12,}"|'[^']{12,}'`)
 
 func redactJSONDocument(content []byte) (map[string]any, bool, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(content)))

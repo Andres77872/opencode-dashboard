@@ -1,7 +1,25 @@
-[model]
-default = "gpt-5.5"
+# synthetic codex config — comments must survive into the redacted raw text
+model = "gpt-5.5"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[model_providers.openai]
+name = "OpenAI"
+base_url = "https://api.openai.com/v1"
+env_key = "OPENAI_API_KEY"
+api_key = "SYNTHETIC_CONFIG_SECRET_MUST_NOT_LEAK"
+env = { OPENAI_API_KEY = "SYNTHETIC_ENV_SECRET_MUST_NOT_LEAK" }
+query_params = { api-version = "2025-04-01" }
+
+[profiles.fast]
+model = "gpt-5.5-mini"
+model_provider = "openai"
 
 [profile.synthetic]
 api_key = "SYNTHETIC_CONFIG_SECRET_MUST_NOT_LEAK"
 project_root = "[REDACTED_PATH]/privacy-project"
 custom_header = "SYNTHETIC_HEADER_SECRET_MUST_NOT_LEAK"
+
+[history]
+persistence = "save-all"
+notify = ["echo", "done"]

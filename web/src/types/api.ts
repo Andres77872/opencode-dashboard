@@ -276,11 +276,19 @@ export interface ProjectDetail extends SourceTagged {
   total_sessions: number
 }
 
+export type ConfigFormat = 'json' | 'toml' | 'yaml'
+
 export interface ConfigStats {
   source_id?: SourceID
   path: string
   exists: boolean
+  /** Detected on-disk format of the config file. Absent on legacy payloads. */
+  format?: ConfigFormat
   content?: Record<string, unknown>
+  /** Redacted original file text (preserves formatting/comments). */
+  raw?: string
+  /** Set when the file exists but structured parsing failed. */
+  parse_error?: string
   redacted?: boolean
 }
 
