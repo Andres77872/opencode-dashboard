@@ -13,6 +13,7 @@ import {
 import { createPortal } from 'react-dom'
 import { useLocation } from 'react-router-dom'
 import { Icon } from '../vael/icon'
+import { Markdown } from './markdown'
 import { useDashboardContext } from '../layout/dashboard-context'
 import { getAssistantStatus, streamAssistantChat } from '../../lib/api'
 import {
@@ -192,9 +193,12 @@ function MessageRow({ message }: { message: DisplayMessage }) {
         {message.streaming && <span className="analytics-assistant-stream-label">Live</span>}
       </div>
       {hasContent && (
-        <div className="analytics-assistant-message-content">
-          {message.content}
-          {message.streaming && <span className="analytics-assistant-stream-cursor" aria-hidden="true" />}
+        <div className={`analytics-assistant-message-content${assistant ? ' markdown' : ''}`}>
+          {assistant ? (
+            <Markdown content={message.content} streaming={message.streaming} />
+          ) : (
+            message.content
+          )}
         </div>
       )}
       {assistant && message.toolActivities && message.toolActivities.length > 0 && (

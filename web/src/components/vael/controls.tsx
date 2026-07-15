@@ -20,11 +20,13 @@ export interface ButtonProps {
 
 /** Push button in primary/secondary/ghost variants, sm/md sizes, with optional leading icon. @category Controls */
 export function Button({ children, variant = 'secondary', size = 'md', iconLeft, onClick, disabled, title, type = 'button' }: ButtonProps) {
+  const [hover, setHover] = useState(false)
   const pal = {
-    primary: { bg: 'var(--accent)', fg: 'var(--fg-on-accent)', bd: 'transparent' },
-    secondary: { bg: 'var(--ink-750)', fg: 'var(--fg-primary)', bd: 'var(--border-default)' },
-    ghost: { bg: 'transparent', fg: 'var(--fg-secondary)', bd: 'transparent' },
+    primary: { bg: 'var(--accent)', bgHover: 'var(--accent-hover)', fg: 'var(--fg-on-accent)', bd: 'transparent', bdHover: 'transparent' },
+    secondary: { bg: 'var(--ink-750)', bgHover: 'var(--ink-700)', fg: 'var(--fg-primary)', bd: 'var(--border-default)', bdHover: 'var(--border-strong)' },
+    ghost: { bg: 'transparent', bgHover: 'var(--ink-750)', fg: 'var(--fg-secondary)', bd: 'transparent', bdHover: 'transparent' },
   }[variant]
+  const active = hover && !disabled
   const h = size === 'sm' ? 28 : 32
   return (
     <button
@@ -32,6 +34,8 @@ export function Button({ children, variant = 'secondary', size = 'md', iconLeft,
       onClick={onClick}
       disabled={disabled}
       title={title}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -39,14 +43,15 @@ export function Button({ children, variant = 'secondary', size = 'md', iconLeft,
         height: h,
         padding: size === 'sm' ? '0 10px' : '0 13px',
         font: '600 13px/1 var(--font-ui)',
-        color: pal.fg,
-        background: pal.bg,
-        border: `1px solid ${pal.bd}`,
+        color: active && variant === 'ghost' ? 'var(--fg-primary)' : pal.fg,
+        background: active ? pal.bgHover : pal.bg,
+        border: `1px solid ${active ? pal.bdHover : pal.bd}`,
         borderRadius: 'var(--radius-md)',
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.5 : 1,
         whiteSpace: 'nowrap',
         flexShrink: 0,
+        transition: 'background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast)',
       }}
     >
       {iconLeft && <Icon name={iconLeft} size={15} />}
@@ -321,11 +326,12 @@ export interface SearchInputProps {
  * @category Controls
  */
 export function SearchInput({ value, onChange, placeholder = 'Filter…', label, width = 260 }: SearchInputProps) {
+  const [focused, setFocused] = useState(false)
   return (
     <div style={{ position: 'relative', flex: `0 1 ${typeof width === 'number' ? `${width}px` : width}`, minWidth: 180 }}>
       <span
         aria-hidden
-        style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', color: 'var(--fg-faint)', pointerEvents: 'none' }}
+        style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', color: focused ? 'var(--fg-muted)' : 'var(--fg-faint)', pointerEvents: 'none', transition: 'color var(--dur-fast)' }}
       >
         <Icon name="search" size={15} />
       </span>
@@ -335,16 +341,20 @@ export function SearchInput({ value, onChange, placeholder = 'Filter…', label,
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         style={{
           width: '100%',
           height: 36,
           padding: value ? '0 32px 0 34px' : '0 12px 0 34px',
           background: 'var(--ink-800)',
-          border: '1px solid var(--border-default)',
+          border: `1px solid ${focused ? 'var(--border-accent)' : 'var(--border-default)'}`,
           borderRadius: 'var(--radius-md)',
           color: 'var(--fg-primary)',
           font: '400 13px/1 var(--font-ui)',
           outline: 'none',
+          boxShadow: focused ? '0 0 0 3px var(--accent-soft)' : 'none',
+          transition: 'border-color var(--dur-fast), box-shadow var(--dur-fast)',
         }}
       />
       {value && (

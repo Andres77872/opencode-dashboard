@@ -472,12 +472,14 @@ body {
 }
 
 .analytics-assistant-message.user {
+  max-width: 88%;
   align-self: flex-end;
   align-items: flex-end;
 }
 
 .analytics-assistant-message.assistant {
-  align-self: flex-start;
+  max-width: 100%;
+  align-self: stretch;
 }
 
 .analytics-assistant-message-meta {
@@ -513,17 +515,200 @@ body {
   color: var(--fg-secondary);
   background: var(--ink-750);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) var(--radius-xs);
   font: 400 13px/1.55 var(--font-ui);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.analytics-assistant-message-content.markdown {
+  white-space: normal;
 }
 
 .analytics-assistant-message.user .analytics-assistant-message-content {
   color: var(--fg-primary);
   background: var(--accent-soft);
   border-color: var(--border-accent);
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-xs) var(--radius-lg);
 }
+
+/* ---- Markdown rendering inside assistant responses --------------------- */
+.analytics-assistant-md {
+  display: flow-root;
+}
+
+.analytics-assistant-md > :first-child {
+  margin-top: 0;
+}
+
+.analytics-assistant-md > :last-child {
+  margin-bottom: 0;
+}
+
+.analytics-assistant-md .md-p {
+  margin: 0 0 9px;
+}
+
+.analytics-assistant-md .md-h {
+  margin: 15px 0 7px;
+  color: var(--fg-primary);
+  font-family: var(--font-ui);
+  line-height: 1.3;
+}
+
+.analytics-assistant-md .md-h1 { font-size: 16px; font-weight: 700; letter-spacing: -0.005em; }
+.analytics-assistant-md .md-h2 { font-size: 15px; font-weight: 700; }
+.analytics-assistant-md .md-h3 { font-size: 13.5px; font-weight: 700; }
+.analytics-assistant-md .md-h4,
+.analytics-assistant-md .md-h5,
+.analytics-assistant-md .md-h6 {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fg-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.analytics-assistant-md strong { color: var(--fg-primary); font-weight: 700; }
+/* The app disables font-synthesis and ships only upright faces, so re-enable
+   synthetic obliquing here or emphasis would be visually indistinguishable. */
+.analytics-assistant-md em { font-style: italic; font-synthesis: style; }
+.analytics-assistant-md del { color: var(--fg-muted); text-decoration-color: var(--fg-faint); }
+
+.analytics-assistant-md a {
+  color: var(--blue-300);
+  text-decoration: underline;
+  text-decoration-color: var(--border-accent);
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.analytics-assistant-md a:hover { color: var(--blue-400); text-decoration-color: currentColor; }
+
+.analytics-assistant-md .md-inline-code {
+  padding: 1px 5px;
+  color: var(--fg-primary);
+  background: var(--ink-900);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  font: 500 12px/1.4 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.analytics-assistant-md .md-list {
+  margin: 0 0 9px;
+  padding-left: 20px;
+}
+
+.analytics-assistant-md ul.md-list { list-style: disc; }
+.analytics-assistant-md ol.md-list { list-style: decimal; }
+.analytics-assistant-md .md-list li { margin: 3px 0; }
+.analytics-assistant-md .md-list li::marker { color: var(--fg-faint); }
+.analytics-assistant-md .md-list .md-list { margin: 4px 0 0; }
+
+.analytics-assistant-md .md-quote {
+  margin: 9px 0;
+  padding: 3px 0 3px 12px;
+  color: var(--fg-secondary);
+  border-left: 3px solid var(--border-accent);
+}
+
+.analytics-assistant-md .md-quote > :last-child { margin-bottom: 0; }
+
+.analytics-assistant-md .md-hr {
+  margin: 13px 0;
+  border: none;
+  border-top: 1px solid var(--border-default);
+}
+
+/* Fenced code blocks — a sunken well with a language chip and copy control. */
+.analytics-assistant-md .md-codeblock {
+  margin: 9px 0;
+  overflow: hidden;
+  background: var(--ink-900);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.analytics-assistant-md .md-codeblock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 6px 5px 10px;
+  background: var(--ink-850);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.analytics-assistant-md .md-codeblock-lang {
+  color: var(--fg-faint);
+  font: 600 10px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.analytics-assistant-md .md-codeblock-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font: 600 10px/1 var(--font-ui);
+  cursor: pointer;
+  transition: color var(--dur-fast), background var(--dur-fast);
+}
+
+.analytics-assistant-md .md-codeblock-copy:hover { color: var(--fg-primary); background: var(--ink-700); }
+.analytics-assistant-md .md-codeblock-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.analytics-assistant-md .md-codeblock pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+
+.analytics-assistant-md .md-codeblock code {
+  color: var(--fg-secondary);
+  font: 500 12px/1.55 var(--font-mono);
+  white-space: pre;
+}
+
+/* GFM tables — scrollable, hairline-ruled, sticky-free (panel is compact). */
+.analytics-assistant-md .md-table-wrap {
+  margin: 9px 0;
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.analytics-assistant-md .md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: 400 12px/1.4 var(--font-ui);
+}
+
+.analytics-assistant-md .md-table th,
+.analytics-assistant-md .md-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.analytics-assistant-md .md-table th {
+  color: var(--fg-secondary);
+  background: var(--ink-850);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.analytics-assistant-md .md-table td {
+  color: var(--fg-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-assistant-md .md-table tr:last-child td { border-bottom: none; }
+.analytics-assistant-md .md-table tbody tr:hover { background: var(--ink-800); }
 
 .analytics-assistant-stream-cursor {
   display: inline-block;
