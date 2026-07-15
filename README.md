@@ -1,8 +1,8 @@
 # opencode-dashboard
 
-> Local analytics for your AI coding-assistant usage — one binary, web or terminal, works offline.
+> Local analytics for your AI coding-assistant usage — one binary, web or terminal, works offline by default.
 
-See your usage across **OpenCode**, **Claude Code**, and **Codex** — sessions, costs, tokens, models, tools, projects, and messages — through a web dashboard or a terminal UI. Nothing leaves your machine; no source files are modified. The dashboard keeps its own local SQLite cache for aggregate metrics.
+See your usage across **OpenCode**, **Claude Code**, and **Codex** — sessions, costs, tokens, models, tools, projects, and messages — through a web dashboard or a terminal UI. Source files are never modified, and normal dashboard views remain local. The optional MiniMax web assistant is the explicit exception: when enabled and used, it sends the chat and requested aggregate metrics to MiniMax to produce reports and insights.
 
 ## Overview
 
@@ -38,7 +38,7 @@ The Overview deliberately does **not** present a single combined cost number. Op
 ### Privacy
 
 - **Read-only** — no source file or database is ever written to or mutated.
-- **Local-only** — data is read from local paths and served on `127.0.0.1`; nothing is uploaded.
+- **Local by default** — normal dashboard data is read from local paths and served on `127.0.0.1`; nothing is uploaded unless the user opens and uses the optional MiniMax analytics assistant described below.
 - **Dashboard cache** — aggregate metadata is stored in `~/.local/share/opencode-dashboard/usage-cache.sqlite` by default; override with `--cache-db` or `OPENCODE_DASHBOARD_CACHE_DB`.
 - **Self-maintaining consolidation** — an empty cache is built by a background sync at startup (views serve live raw data meanwhile); a ready cache re-mirrors recent raw activity on read, so cached views stay complete through now. The web top bar database action opens a sync panel with status, progress, last update, logs, incremental resync, and clear-and-rebuild.
 - **No cached transcripts** — raw conversation text, reasoning text, tool input, tool output, and patches are not stored in the dashboard cache.
@@ -74,6 +74,14 @@ If a different statusline is already configured, the command refuses; re-run wit
 ### Freshness
 
 Codex and Claude quota only refresh while their CLI is running; the dashboard marks snapshots older than 15 minutes with a *stale* badge instead of hiding them. The Claude snapshot lives at `~/.local/share/opencode-dashboard/claude-rate-limits.json` — dashboard-owned, removed by `opencode-dashboard uninstall`. `opencode-dashboard web` prints a one-line hint at startup if Claude quota tracking is not set up yet.
+
+## Analytics assistant (web only)
+
+The web dashboard can expose a floating, draggable report assistant backed by MiniMax M3. It appears only when a server-side MiniMax key is configured and MiniMax's authenticated model list contains the exact `MiniMax-M3` model. There is no fallback to an older model, and the TUI does not initialize the agent.
+
+The agent loop and every analytics tool run in the Go backend. The browser never receives the MiniMax credential and never calls MiniMax directly. Tools are read-only and aggregate-only: raw transcripts, prompts, reasoning, patches, tool payloads, configs, secrets, paths, and session details are outside the allowlist. Project results use process-scoped keyed pseudonyms before being sent externally, and cross-source costs remain separated by provenance.
+
+Set `OPENCODE_DASHBOARD_MINIMAX_API_KEY`, restart `opencode-dashboard web`, and open the floating assistant. The first-use UI discloses that assistant messages and requested aggregates leave the machine. A complete run is limited to 60 seconds by default; `OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` accepts `10s` through `2m`. See [the architecture, tool contracts, loop limits, and privacy model](docs/analytics-assistant.md).
 
 ## Prerequisites
 
@@ -274,7 +282,7 @@ opencode-dashboard uninstall --force      # Remove without confirmation
 
 ## API endpoints
 
-The web command also serves a JSON API under `/api/v1`. Most endpoints accept a `?source=<id>` parameter (`opencode`, `claude_code`, or `codex`; defaults to the startup source) and a time-range parameter — either `?period=<preset>` or an explicit `?from=YYYY-MM-DD&to=YYYY-MM-DD` (defaults to `7d`).
+The web command also serves a JSON API under `/api/v1`. Most endpoints accept a `?source=<id>` parameter (`opencode`, `claude_code`, or `codex`; omitted values use the API compatibility default, `opencode`) and a time-range parameter — either `?period=<preset>` or an explicit `?from=YYYY-MM-DD&to=YYYY-MM-DD` (defaults to `7d`). The web client sends its startup-selected source explicitly.
 
 | Endpoint | Description | Notable params |
 |----------|-------------|----------------|
@@ -292,6 +300,8 @@ The web command also serves a JSON API under `/api/v1`. Most endpoints accept a 
 | `GET /api/v1/messages/{id}` | Message detail | `source` |
 | `GET /api/v1/config` | Source configuration preview (redacted) | `source` |
 | `GET /api/v1/quotas` | Live provider quota (Codex / Claude Code / MiniMax) | — |
+| `GET /api/v1/assistant/status` | MiniMax M3 entitlement and assistant privacy metadata | — |
+| `POST /api/v1/assistant/chat` | Run the backend report-agent loop | bounded user/assistant history |
 | `GET /api/v1/version` | Build info | — |
 | `GET /health` | Health check | — |
 
@@ -310,6 +320,8 @@ Both web and TUI expose the same seven surfaces:
 | Config | Redacted configuration preview for the selected source |
 
 Sessions and daily entries drill down into individual messages.
+
+The web build additionally provides the optional floating analytics assistant; it is intentionally not a TUI surface.
 
 ## Building from source
 

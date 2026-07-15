@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"opencode-dashboard/internal/analyticsagent"
 	usagecache "opencode-dashboard/internal/cache"
 	"opencode-dashboard/internal/config"
 	"opencode-dashboard/internal/quota"
@@ -221,9 +222,10 @@ func cmdWeb(args []string) error {
 		ClaudeSnapshotPath: config.DefaultClaudeRateLimitsPath(),
 		MiniMaxAuthPath:    config.DefaultOpenCodeAuthPath(),
 	})
+	assistantService := newWebAnalyticsAgent(registry, logger)
 
 	addr := web.DefaultHost + ":" + strconv.Itoa(*port)
-	server := web.NewServerWithServices(addr, registry, logger, cacheRuntime, quotaService)
+	server := web.NewServerWithAssistant(addr, registry, logger, cacheRuntime, quotaService, assistantService)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)
@@ -288,6 +290,41 @@ func cmdWeb(args []string) error {
 	}
 
 	return nil
+}
+
+// newWebAnalyticsAgent intentionally appears only in cmdWeb wiring. The TUI
+// remains fully local/offline and never constructs an outbound LLM client.
+func newWebAnalyticsAgent(registry *source.Registry, logger *slog.Logger) *analyticsagent.Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	runTimeout, timeoutErr := config.MiniMaxRunTimeoutOverride()
+	if timeoutErr != nil {
+		logger.Warn("analytics assistant: invalid timeout override; using the default", "error", timeoutErr)
+		runTimeout = 0
+	}
+	serviceWithoutClient := func() *analyticsagent.Service {
+		return analyticsagent.NewService(analyticsagent.ServiceOptions{Registry: registry, RunTimeout: runTimeout})
+	}
+	key, err := config.ResolveMiniMaxAPIKey(config.DefaultOpenCodeAuthPath())
+	if err != nil {
+		logger.Warn("analytics assistant: MiniMax credential could not be resolved", "error", err)
+		return serviceWithoutClient()
+	}
+	if key == "" {
+		return serviceWithoutClient()
+	}
+	client, err := analyticsagent.NewMiniMaxClient(analyticsagent.MiniMaxClientConfig{
+		APIKey:  key,
+		BaseURL: config.MiniMaxBaseURLOverride(),
+	})
+	if err != nil {
+		// The configuration error can contain the server-provided base URL. Keep
+		// credentials or userinfo accidentally placed there out of logs.
+		logger.Warn("analytics assistant: MiniMax client configuration is invalid")
+		return serviceWithoutClient()
+	}
+	return analyticsagent.NewService(analyticsagent.ServiceOptions{Client: client, Registry: registry, RunTimeout: runTimeout})
 }
 
 func cmdTUI(args []string) error {

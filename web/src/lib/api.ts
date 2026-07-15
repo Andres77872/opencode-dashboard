@@ -20,6 +20,11 @@ import type {
   SourceListResponse,
   ToolStats,
 } from '../types/api'
+import type {
+  AssistantChatRequest,
+  AssistantChatResponse,
+  AssistantStatusResponse,
+} from '../types/assistant'
 
 const DEFAULT_API_BASE_URL = import.meta.env?.VITE_API_BASE_URL?.trim() ?? ''
 
@@ -275,4 +280,19 @@ export function getMessageDetail(id: string, signal?: AbortSignal, sourceId?: So
 
 export function getQuotas(signal?: AbortSignal) {
   return request<QuotasResponse>('/api/v1/quotas', { signal })
+}
+
+export function getAssistantStatus(signal?: AbortSignal) {
+  return request<AssistantStatusResponse>('/api/v1/assistant/status', { signal })
+}
+
+export function sendAssistantChat(payload: AssistantChatRequest, signal?: AbortSignal) {
+  return request<AssistantChatResponse>('/api/v1/assistant/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+    signal,
+  })
 }

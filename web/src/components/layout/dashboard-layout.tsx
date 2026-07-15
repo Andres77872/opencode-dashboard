@@ -7,6 +7,7 @@ import { FilterBar } from './filter-bar'
 import { SidebarProvider } from './sidebar-context'
 import { ViewErrorBoundary } from './error-boundary'
 import { SourceNotice } from '../source/source-notice'
+import { AnalyticsAssistant } from '../assistant/analytics-assistant'
 
 export function DashboardLayout() {
   const { pathname } = useLocation()
@@ -27,6 +28,7 @@ export function DashboardLayout() {
           </div>
         </div>
       </div>
+      <AnalyticsAssistant />
     </SidebarProvider>
   )
 }

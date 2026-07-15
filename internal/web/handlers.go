@@ -14,10 +14,11 @@ import (
 )
 
 type Handlers struct {
-	registry *source.Registry
-	cache    CacheManager
-	quotas   QuotaService
-	logger   *slog.Logger
+	registry  *source.Registry
+	cache     CacheManager
+	quotas    QuotaService
+	assistant AssistantService
+	logger    *slog.Logger
 }
 
 func NewHandlers(registry *source.Registry) *Handlers {
@@ -29,10 +30,14 @@ func NewHandlersWithCache(registry *source.Registry, cache CacheManager) *Handle
 }
 
 func NewHandlersWithServices(registry *source.Registry, cache CacheManager, quotas QuotaService, logger *slog.Logger) *Handlers {
+	return NewHandlersWithAssistant(registry, cache, quotas, nil, logger)
+}
+
+func NewHandlersWithAssistant(registry *source.Registry, cache CacheManager, quotas QuotaService, assistant AssistantService, logger *slog.Logger) *Handlers {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handlers{registry: registry, cache: cache, quotas: quotas, logger: logger}
+	return &Handlers{registry: registry, cache: cache, quotas: quotas, assistant: assistant, logger: logger}
 }
 
 func (h *Handlers) Sources(w http.ResponseWriter, r *http.Request) {

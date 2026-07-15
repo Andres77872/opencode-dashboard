@@ -18,7 +18,7 @@ const (
 	shutdownTimeout   = 5 * time.Second
 	readHeaderTimeout = 10 * time.Second
 	readTimeout       = 30 * time.Second
-	writeTimeout      = 30 * time.Second
+	writeTimeout      = 130 * time.Second
 	apiV1Prefix       = "/api/v1"
 )
 
@@ -38,6 +38,13 @@ func NewServerWithCache(addr string, registry *source.Registry, logger *slog.Log
 }
 
 func NewServerWithServices(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager, quotas QuotaService) *http.Server {
+	return NewServerWithAssistant(addr, registry, logger, cache, quotas, nil)
+}
+
+// NewServerWithAssistant is the complete web service constructor. Older
+// constructors remain source-compatible for TUI/tests and simply omit the
+// optional web-only analytics assistant.
+func NewServerWithAssistant(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager, quotas QuotaService, assistant AssistantService) *http.Server {
 	if addr == "" {
 		addr = defaultAddr
 	}
@@ -51,7 +58,7 @@ func NewServerWithServices(addr string, registry *source.Registry, logger *slog.
 	srv := &Server{
 		Addr:     addr,
 		Registry: registry,
-		handlers: NewHandlersWithServices(registry, cache, quotas, logger),
+		handlers: NewHandlersWithAssistant(registry, cache, quotas, assistant, logger),
 		mux:      http.NewServeMux(),
 	}
 
@@ -91,6 +98,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST "+apiV1Prefix+"/cache/sync", s.handlers.CacheSync)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/quotas", s.handlers.Quotas)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/version", s.handlers.Version)
+	s.mux.HandleFunc("GET "+apiV1Prefix+"/assistant/status", s.handlers.AssistantStatus)
+	s.mux.HandleFunc("POST "+apiV1Prefix+"/assistant/chat", s.handlers.AssistantChat)
 	s.mux.HandleFunc("GET /health", s.healthHandler)
 }
 
@@ -128,6 +137,9 @@ func corsMiddleware(next http.Handler) http.Handler {
 func isLocalOrigin(origin string) bool {
 	u, err := url.Parse(origin)
 	if err != nil {
+		return false
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Host == "" {
 		return false
 	}
 	host := u.Hostname()

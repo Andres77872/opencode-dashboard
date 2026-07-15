@@ -42,6 +42,10 @@ type AllSourcesOverview struct {
 	TopTools    []stats.ToolEntry    `json:"top_tools"`
 	// Errors records sources that failed to load; the response still succeeds.
 	Errors []SourceLoadError `json:"errors,omitempty"`
+	// PartialErrors records best-effort dimensions omitted for an otherwise
+	// available source. Consumers must not present those rankings/trends as
+	// complete when this list is non-empty.
+	PartialErrors []SourceDimensionError `json:"partial_errors,omitempty"`
 }
 
 // SourceOverview is a single source's contribution to the aggregate.
@@ -62,6 +66,13 @@ type SourceOverview struct {
 type SourceLoadError struct {
 	SourceID string `json:"source_id"`
 	Message  string `json:"message"`
+}
+
+// SourceDimensionError identifies an omitted aggregate dimension without
+// exposing the underlying adapter/database error text.
+type SourceDimensionError struct {
+	SourceID  string `json:"source_id"`
+	Dimension string `json:"dimension"`
 }
 
 // AggregateOptions controls how AggregateOverview fans out.
@@ -108,6 +119,7 @@ func AggregateOverview(ctx context.Context, reg *Registry, pq stats.PeriodQuery,
 		projects []stats.ProjectEntry
 		trend    []stats.DayStats
 		err      error
+		partial  []string
 	}
 
 	// Sources are queried concurrently (each writes only its own index slot, so no
@@ -143,35 +155,43 @@ func AggregateOverview(ctx context.Context, reg *Registry, pq stats.PeriodQuery,
 
 			// Top-signal sources are best-effort: a failure here degrades to no
 			// rows for that dimension rather than dropping the whole source.
-			_ = call(func(c context.Context) error {
+			if err := call(func(c context.Context) error {
 				models, err := src.Models(c, pq)
 				if err == nil {
 					raws[i].models = models.Models
 				}
 				return err
-			})
-			_ = call(func(c context.Context) error {
+			}); err != nil {
+				raws[i].partial = append(raws[i].partial, "models")
+			}
+			if err := call(func(c context.Context) error {
 				tools, err := src.Tools(c, pq)
 				if err == nil {
 					raws[i].tools = tools.Tools
 				}
 				return err
-			})
-			_ = call(func(c context.Context) error {
+			}); err != nil {
+				raws[i].partial = append(raws[i].partial, "tools")
+			}
+			if err := call(func(c context.Context) error {
 				projects, err := src.Projects(c, pq)
 				if err == nil {
 					raws[i].projects = projects.Projects
 				}
 				return err
-			})
+			}); err != nil {
+				raws[i].partial = append(raws[i].partial, "projects")
+			}
 			if opts.IncludeTrend {
-				_ = call(func(c context.Context) error {
+				if err := call(func(c context.Context) error {
 					daily, err := src.Daily(c, pq)
 					if err == nil {
 						raws[i].trend = daily.Days
 					}
 					return err
-				})
+				}); err != nil {
+					raws[i].partial = append(raws[i].partial, "trend")
+				}
 			}
 		}(i, src)
 	}
@@ -189,6 +209,9 @@ func AggregateOverview(ctx context.Context, reg *Registry, pq stats.PeriodQuery,
 		if raw.err != nil {
 			result.Errors = append(result.Errors, SourceLoadError{SourceID: id, Message: raw.err.Error()})
 			continue
+		}
+		for _, dimension := range raw.partial {
+			result.PartialErrors = append(result.PartialErrors, SourceDimensionError{SourceID: id, Dimension: dimension})
 		}
 		ov := raw.overview
 		result.Total.Sessions += ov.Sessions

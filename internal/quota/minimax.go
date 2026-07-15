@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -178,24 +177,5 @@ func pickMiniMaxModel(entries []minimaxModelRemain) *minimaxModelRemain {
 // resolveMiniMaxKey prefers the env var and falls back to opencode's auth
 // store; only the minimax-coding-plan key is decoded, nothing else is read.
 func resolveMiniMaxKey(authPath string) (string, error) {
-	if key := strings.TrimSpace(os.Getenv(config.EnvMiniMaxAPIKey)); key != "" {
-		return key, nil
-	}
-	if authPath == "" {
-		return "", nil
-	}
-	body, err := os.ReadFile(authPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", fmt.Errorf("read opencode auth store: %w", err)
-	}
-	var store map[string]struct {
-		Key string `json:"key"`
-	}
-	if err := json.Unmarshal(body, &store); err != nil {
-		return "", fmt.Errorf("parse opencode auth store: %w", err)
-	}
-	return strings.TrimSpace(store["minimax-coding-plan"].Key), nil
+	return config.ResolveMiniMaxAPIKey(authPath)
 }

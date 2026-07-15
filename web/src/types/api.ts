@@ -430,6 +430,11 @@ export interface SourceLoadError {
   message: string
 }
 
+export interface SourceDimensionError {
+  source_id: SourceID
+  dimension: 'models' | 'tools' | 'projects' | 'trend'
+}
+
 export interface AllSourcesOverview {
   total: OverviewStats
   sources: SourceOverview[]
@@ -440,6 +445,7 @@ export interface AllSourcesOverview {
   top_projects: ProjectEntry[]
   top_tools: ToolEntry[]
   errors?: SourceLoadError[]
+  partial_errors?: SourceDimensionError[]
 }
 
 export interface ApiErrorResponse {

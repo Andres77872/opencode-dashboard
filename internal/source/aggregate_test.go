@@ -19,6 +19,10 @@ type aggFake struct {
 	projects    []stats.ProjectEntry
 	trend       []stats.DayStats
 	overviewErr error
+	modelsErr   error
+	toolsErr    error
+	projectsErr error
+	trendErr    error
 	block       time.Duration
 }
 
@@ -43,6 +47,9 @@ func (s *aggFake) Overview(ctx context.Context, _ stats.PeriodQuery) (stats.Over
 }
 
 func (s *aggFake) Daily(context.Context, stats.PeriodQuery, ...stats.Granularity) (stats.DailyStats, error) {
+	if s.trendErr != nil {
+		return stats.DailyStats{}, s.trendErr
+	}
 	return stats.DailyStats{Days: s.trend}, nil
 }
 
@@ -51,14 +58,23 @@ func (s *aggFake) DailyDimension(context.Context, string, stats.PeriodQuery) (st
 }
 
 func (s *aggFake) Models(context.Context, stats.PeriodQuery) (stats.ModelStats, error) {
+	if s.modelsErr != nil {
+		return stats.ModelStats{}, s.modelsErr
+	}
 	return stats.ModelStats{Models: s.models}, nil
 }
 
 func (s *aggFake) Tools(context.Context, stats.PeriodQuery) (stats.ToolStats, error) {
+	if s.toolsErr != nil {
+		return stats.ToolStats{}, s.toolsErr
+	}
 	return stats.ToolStats{Tools: s.tools}, nil
 }
 
 func (s *aggFake) Projects(context.Context, stats.PeriodQuery) (stats.ProjectStats, error) {
+	if s.projectsErr != nil {
+		return stats.ProjectStats{}, s.projectsErr
+	}
 	return stats.ProjectStats{Projects: s.projects}, nil
 }
 
@@ -206,6 +222,39 @@ func TestAggregateOverviewSkipsErroredSource(t *testing.T) {
 	}
 	if len(got.Errors) != 1 || got.Errors[0].SourceID != string(SourceCodex) {
 		t.Fatalf("Errors = %+v; want one for codex", got.Errors)
+	}
+}
+
+func TestAggregateOverviewReportsPartialDimensionFailures(t *testing.T) {
+	src := newAggFake(SourceOpenCode)
+	src.overview = stats.OverviewStats{Sessions: 2, Messages: 4}
+	src.modelsErr = errors.New("private model failure")
+	src.projectsErr = errors.New("private project failure")
+	src.trendErr = errors.New("private trend failure")
+
+	got, err := AggregateOverview(
+		context.Background(),
+		aggTestRegistry(t, src),
+		stats.PeriodQuery{Period: "7d"},
+		AggregateOptions{IncludeTrend: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Errors) != 0 || len(got.Sources) != 1 {
+		t.Fatalf("overview should remain available: errors=%+v sources=%+v", got.Errors, got.Sources)
+	}
+	want := map[string]bool{"models": true, "projects": true, "trend": true}
+	if len(got.PartialErrors) != len(want) {
+		t.Fatalf("PartialErrors = %+v", got.PartialErrors)
+	}
+	for _, partial := range got.PartialErrors {
+		if partial.SourceID != string(SourceOpenCode) || !want[partial.Dimension] {
+			t.Errorf("unexpected partial failure: %+v", partial)
+		}
+		if partial.Dimension == "private model failure" {
+			t.Fatal("raw adapter error escaped into partial failure metadata")
+		}
 	}
 }
 
