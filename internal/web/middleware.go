@@ -14,6 +14,12 @@ type responseWriter struct {
 	wroteHeader bool
 }
 
+// Unwrap lets http.ResponseController preserve optional capabilities exposed by
+// the underlying writer, notably Flush for streaming responses.
+func (w *responseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func (w *responseWriter) WriteHeader(code int) {
 	if w.wroteHeader {
 		return

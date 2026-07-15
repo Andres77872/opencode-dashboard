@@ -24,6 +24,29 @@ type scriptedAgentClient struct {
 	startedOnce    sync.Once
 }
 
+type streamingAgentClient struct {
+	*scriptedAgentClient
+	chunks [][]string
+}
+
+func (c *streamingAgentClient) ChatStream(ctx context.Context, request ChatRequest, onContent func(string) error) (*ChatResponse, error) {
+	response, err := c.Chat(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	index := len(c.requests) - 1
+	c.mu.Unlock()
+	if index < len(c.chunks) {
+		for _, chunk := range c.chunks[index] {
+			if err := onContent(chunk); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return response, nil
+}
+
 func (c *scriptedAgentClient) EnsureAvailable(context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -156,6 +179,180 @@ func TestServiceReplaysCompleteRawAssistantMessage(t *testing.T) {
 	}
 	if !strings.Contains(string(second.Messages[3]), `"tool_call_id":"call-1"`) {
 		t.Errorf("tool response is not correlated: %s", second.Messages[3])
+	}
+}
+
+func TestServiceChatStreamEmitsSafeContentAndToolLifecycle(t *testing.T) {
+	base := &scriptedAgentClient{responses: []*ChatResponse{
+		assistantResponse(t, "tool_calls", "<think>private</think>I will check.", []ToolCall{functionToolCall("provider-call", "list_sources", `{}`)}, nil),
+		assistantResponse(t, "stop", "Final answer.", nil, nil),
+	}}
+	client := &streamingAgentClient{
+		scriptedAgentClient: base,
+		chunks: [][]string{
+			{"<thi", "nk>private</think>I will ", "check."},
+			{"Final ", "answer."},
+		},
+	}
+	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
+	var events []StreamEvent
+	result, err := service.ChatStream(context.Background(), oneUserMessage("Report."), func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Message.Content != "Final answer." || result.Message.Signature == "" {
+		t.Fatalf("result = %#v", result)
+	}
+
+	var streamed strings.Builder
+	var eventTypes []string
+	for _, event := range events {
+		eventTypes = append(eventTypes, event.Type)
+		if event.Type == StreamEventContentDelta {
+			streamed.WriteString(event.Delta)
+		}
+		if strings.Contains(event.Delta, "private") {
+			t.Fatalf("reasoning leaked in stream event: %#v", event)
+		}
+	}
+	wantTypes := []string{
+		StreamEventContentDelta,
+		StreamEventContentDelta,
+		StreamEventContentReset,
+		StreamEventToolStart,
+		StreamEventToolFinish,
+		StreamEventContentDelta,
+		StreamEventContentDelta,
+	}
+	if strings.Join(eventTypes, ",") != strings.Join(wantTypes, ",") {
+		t.Fatalf("event types = %#v, want %#v (events %#v)", eventTypes, wantTypes, events)
+	}
+	if events[3].Name != "list_sources" || events[3].CallID != "tool-1" {
+		t.Fatalf("tool start = %#v", events[3])
+	}
+	if events[4].OK == nil || !*events[4].OK || events[4].CallID != "tool-1" {
+		t.Fatalf("tool finish = %#v", events[4])
+	}
+	if got := streamed.String(); got != "I will check.Final answer." {
+		t.Fatalf("streamed content = %q", got)
+	}
+}
+
+func TestServiceChatStreamResetsIncompleteFinalContent(t *testing.T) {
+	for _, finishReason := range []string{"length", "content_filter"} {
+		t.Run(finishReason, func(t *testing.T) {
+			const partial = "Partial streamed report."
+			base := &scriptedAgentClient{responses: []*ChatResponse{
+				assistantResponse(t, finishReason, partial, nil, nil),
+			}}
+			client := &streamingAgentClient{
+				scriptedAgentClient: base,
+				chunks:              [][]string{{"Partial ", "streamed report."}},
+			}
+			service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
+			var events []StreamEvent
+
+			result, err := service.ChatStream(context.Background(), oneUserMessage("Report."), func(event StreamEvent) error {
+				events = append(events, event)
+				return nil
+			})
+
+			if !errors.Is(err, ErrProviderFailure) {
+				t.Fatalf("result=%#v err=%v, want ErrProviderFailure", result, err)
+			}
+			if result.Message.Content != "" || result.Message.Signature != "" || result.Model != "" {
+				t.Fatalf("incomplete response returned a browser result: %#v", result)
+			}
+			wantTypes := []string{StreamEventContentDelta, StreamEventContentDelta, StreamEventContentReset}
+			if len(events) != len(wantTypes) {
+				t.Fatalf("events = %#v, want event types %#v", events, wantTypes)
+			}
+			var published strings.Builder
+			for index, event := range events {
+				if event.Type != wantTypes[index] {
+					t.Fatalf("event %d = %#v, want type %q", index, event, wantTypes[index])
+				}
+				if event.Type == StreamEventContentDelta {
+					published.WriteString(event.Delta)
+				}
+				if event.Type == "complete" {
+					t.Fatalf("incomplete response emitted complete: %#v", events)
+				}
+			}
+			if published.String() != partial {
+				t.Fatalf("published content = %q, want %q before reset", published.String(), partial)
+			}
+		})
+	}
+}
+
+func TestServiceChatStreamDoesNotResetUnpublishedToolPreamble(t *testing.T) {
+	base := &scriptedAgentClient{responses: []*ChatResponse{
+		assistantResponse(t, "tool_calls", "I will inspect.", []ToolCall{functionToolCall("provider-call", "list_sources", `{}`)}, nil),
+		assistantResponse(t, "stop", "Final answer.", nil, nil),
+	}}
+	client := &streamingAgentClient{
+		scriptedAgentClient: base,
+		chunks:              [][]string{nil, {"Final answer."}},
+	}
+	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
+	var events []StreamEvent
+
+	result, err := service.ChatStream(context.Background(), oneUserMessage("Report."), func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Message.Content != "Final answer." {
+		t.Fatalf("result = %#v", result)
+	}
+	wantTypes := []string{StreamEventToolStart, StreamEventToolFinish, StreamEventContentDelta}
+	if len(events) != len(wantTypes) {
+		t.Fatalf("events = %#v, want event types %#v", events, wantTypes)
+	}
+	for index, event := range events {
+		if event.Type != wantTypes[index] {
+			t.Fatalf("event %d = %#v, want type %q", index, event, wantTypes[index])
+		}
+		if event.Type == StreamEventContentReset {
+			t.Fatalf("unpublished content triggered reset: %#v", events)
+		}
+	}
+}
+
+func TestServiceChatStreamPropagatesEmitterFailure(t *testing.T) {
+	base := &scriptedAgentClient{responses: []*ChatResponse{assistantResponse(t, "stop", "Streaming answer.", nil, nil)}}
+	client := &streamingAgentClient{scriptedAgentClient: base, chunks: [][]string{{"Streaming "}}}
+	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
+	want := errors.New("browser stream closed")
+	_, err := service.ChatStream(context.Background(), oneUserMessage("Report."), func(StreamEvent) error { return want })
+	if !errors.Is(err, want) {
+		t.Fatalf("ChatStream() error = %v, want emitter error", err)
+	}
+}
+
+func TestVisibleContentStreamNeverEmitsReasoning(t *testing.T) {
+	stream := newVisibleContentStream()
+	for _, chunk := range []string{"  <thi", "nk>secret", " reasoning", "</think>Public ", "answer."} {
+		delta, err := stream.Push(chunk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(delta, "secret") || strings.Contains(delta, "reasoning") {
+			t.Fatalf("reasoning delta leaked: %q", delta)
+		}
+	}
+	delta, err := stream.Finish("  <think>secret reasoning</think>Public answer.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta != "" || stream.emitted != "Public answer." {
+		t.Fatalf("finish delta=%q emitted=%q", delta, stream.emitted)
 	}
 }
 
@@ -322,6 +519,78 @@ func TestServicePreservesAvailabilityCancellation(t *testing.T) {
 		if _, err := service.Chat(context.Background(), oneUserMessage("Report.")); !errors.Is(err, availabilityErr) {
 			t.Fatalf("availability error %v became %v", availabilityErr, err)
 		}
+	}
+}
+
+func TestMapProviderErrorPreservesTypedCause(t *testing.T) {
+	t.Parallel()
+
+	transportCause := errors.New("transport cause sentinel")
+	provider := &ProviderError{
+		Operation: "stream chat completion", StatusCode: 502, ProviderCode: 9001, Cause: transportCause,
+	}
+	mapped := mapProviderError(provider)
+	var mappedProvider *ProviderError
+	if !errors.Is(mapped, ErrProviderFailure) || !errors.Is(mapped, ErrProvider) || !errors.Is(mapped, transportCause) ||
+		!errors.As(mapped, &mappedProvider) || mappedProvider != provider {
+		t.Fatalf("mapped provider error lost its typed cause: %v", mapped)
+	}
+	if mappedProvider.Operation != "stream chat completion" || mappedProvider.StatusCode != 502 || mappedProvider.ProviderCode != 9001 {
+		t.Fatalf("mapped provider details = %#v", mappedProvider)
+	}
+
+	authentication := &AuthenticationError{Operation: "list models", StatusCode: 401, ProviderCode: 2049}
+	mapped = mapProviderError(authentication)
+	var mappedAuthentication *AuthenticationError
+	if !errors.Is(mapped, ErrUnavailable) || !errors.Is(mapped, ErrAuthentication) ||
+		!errors.As(mapped, &mappedAuthentication) || mappedAuthentication != authentication {
+		t.Fatalf("mapped authentication error lost its typed cause: %v", mapped)
+	}
+
+	rateLimit := &RateLimitError{Operation: "chat completion", StatusCode: 429, ProviderCode: 2056}
+	mapped = mapProviderError(rateLimit)
+	var mappedRateLimit *RateLimitError
+	if !errors.Is(mapped, ErrProviderFailure) || !errors.Is(mapped, ErrRateLimited) ||
+		!errors.As(mapped, &mappedRateLimit) || mappedRateLimit != rateLimit {
+		t.Fatalf("mapped rate-limit error lost its typed cause: %v", mapped)
+	}
+}
+
+func TestServiceClassifiesAvailabilityProbeFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		providerError error
+		serviceClass  error
+	}{
+		{
+			name:          "authentication remains unavailable",
+			providerError: &AuthenticationError{Operation: "list models", StatusCode: 401, ProviderCode: 2049},
+			serviceClass:  ErrUnavailable,
+		},
+		{
+			name:          "usage exhaustion remains rate limited",
+			providerError: &RateLimitError{Operation: "list models", StatusCode: 429, ProviderCode: 2056},
+			serviceClass:  ErrProviderFailure,
+		},
+		{
+			name:          "provider protocol failure remains bad gateway class",
+			providerError: &ProviderError{Operation: "decode model catalog", StatusCode: 502, ProviderCode: 1008},
+			serviceClass:  ErrProviderFailure,
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			client := &scriptedAgentClient{availableErr: test.providerError}
+			service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
+			_, err := service.Chat(context.Background(), oneUserMessage("Report."))
+			if !errors.Is(err, test.serviceClass) || !errors.Is(err, test.providerError) {
+				t.Fatalf("availability error %v became %v, want service class %v with original cause", test.providerError, err, test.serviceClass)
+			}
+		})
 	}
 }
 

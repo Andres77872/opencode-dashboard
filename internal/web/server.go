@@ -100,6 +100,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/version", s.handlers.Version)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/assistant/status", s.handlers.AssistantStatus)
 	s.mux.HandleFunc("POST "+apiV1Prefix+"/assistant/chat", s.handlers.AssistantChat)
+	s.mux.HandleFunc("POST "+apiV1Prefix+"/assistant/chat/stream", s.handlers.AssistantChatStream)
 	s.mux.HandleFunc("GET /health", s.healthHandler)
 }
 

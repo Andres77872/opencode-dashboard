@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -216,6 +217,481 @@ func TestMiniMaxClientChatSendsFixedM3ContractAndPreservesAssistantMessage(t *te
 	}
 }
 
+func TestMiniMaxClientChatStreamNormalizesCumulativeContentAndKeepsReasoningPrivate(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Accept"); got != "text/event-stream" {
+			t.Errorf("Accept = %q, want text/event-stream", got)
+		}
+		var body struct {
+			Stream         bool `json:"stream"`
+			ReasoningSplit bool `json:"reasoning_split"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if !body.Stream || !body.ReasoningSplit {
+			t.Errorf("stream/reasoning_split = %v/%v, want true/true", body.Stream, body.ReasoningSplit)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		_, _ = io.WriteString(w, ": provider heartbeat\r\n\r\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hel\",\"reasoning_content\":\"private\",\"reasoning_details\":[{\"index\":0,\"type\":\"reasoning.text\",\"text\":\"pri\",\"signature\":\"keep-me\"}],\"future_provider_field\":{\"preserved\":true}},\"finish_reason\":null}],\"base_resp\":{\"status_code\":0}}\r\n\r\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\",\"reasoning_content\":\"private reasoning\",\"reasoning_details\":[{\"index\":0,\"type\":\"reasoning.text\",\"text\":\"private reasoning\"}]},\"finish_reason\":null}]}\r\n\r\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\r\n\r\n")
+		_, _ = io.WriteString(w, "data: [DONE]\r\n\r\n")
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestMiniMaxClient(t, server)
+	var deltas []string
+	response, err := client.ChatStream(context.Background(), ChatRequest{
+		Messages: []json.RawMessage{json.RawMessage(`{"role":"user","content":"hello"}`)},
+	}, func(delta string) error {
+		deltas = append(deltas, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+	if got := strings.Join(deltas, ""); got != "Hello" {
+		t.Fatalf("streamed deltas = %#v (joined %q), want append-only Hello", deltas, got)
+	}
+	if len(deltas) != 2 || deltas[0] != "Hel" || deltas[1] != "lo" {
+		t.Errorf("streamed deltas = %#v, want [Hel lo]", deltas)
+	}
+	for _, delta := range deltas {
+		if strings.Contains(delta, "private") || strings.Contains(delta, "reasoning") {
+			t.Fatalf("reasoning leaked through callback: %q", delta)
+		}
+	}
+	if response.FinishReason != "stop" || response.Content != "Hello" || len(response.ToolCalls) != 0 {
+		t.Fatalf("ChatStream() response = %#v", response)
+	}
+	for _, preserved := range []string{`"reasoning_content":"private reasoning"`, `"reasoning_details"`, `"signature":"keep-me"`, `"future_provider_field"`} {
+		if !bytes.Contains(response.AssistantMessage, []byte(preserved)) {
+			t.Errorf("replayable assistant message lost %s: %s", preserved, response.AssistantMessage)
+		}
+	}
+}
+
+func TestMiniMaxClientChatStreamNormalizesIncrementalContentAtTerminalEOF(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hel\",\"reasoning_content\":\"private \",\"reasoning_details\":[{\"index\":0,\"type\":\"reasoning.text\",\"text\":\"pri\"}]},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\",\"reasoning_content\":\"reasoning\",\"reasoning_details\":[{\"index\":0,\"text\":\"vate reasoning\",\"signature\":\"keep-in-replay\"}]},\"finish_reason\":\"stop\"}]}\n\n")
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestMiniMaxClient(t, server)
+	var deltas []string
+	response, err := client.ChatStream(context.Background(), ChatRequest{
+		Messages: []json.RawMessage{json.RawMessage(`{"role":"user","content":"hello"}`)},
+	}, func(delta string) error {
+		deltas = append(deltas, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+	if len(deltas) != 2 || deltas[0] != "Hel" || deltas[1] != "lo" || strings.Join(deltas, "") != "Hello" {
+		t.Fatalf("streamed deltas = %#v, want append-only [Hel lo]", deltas)
+	}
+	if response.Content != "Hello" || response.FinishReason != "stop" {
+		t.Fatalf("ChatStream() response = %#v", response)
+	}
+	for _, preserved := range []string{`"reasoning_content":"private reasoning"`, `"text":"private reasoning"`, `"signature":"keep-in-replay"`} {
+		if !bytes.Contains(response.AssistantMessage, []byte(preserved)) {
+			t.Errorf("replayable assistant message lost %s: %s", preserved, response.AssistantMessage)
+		}
+	}
+	for _, delta := range deltas {
+		if strings.Contains(delta, "private") || strings.Contains(delta, "reasoning") {
+			t.Fatalf("reasoning leaked through callback: %q", delta)
+		}
+	}
+}
+
+func TestMiniMaxClientChatStreamReconstructsCapturedM3ToolTurnAtTerminalEOF(t *testing.T) {
+	t.Parallel()
+
+	fixture, err := os.ReadFile("testdata/minimax_m3_incremental_tool_stream.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(fixture)
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestMiniMaxClient(t, server)
+	var callbacks []string
+	response, err := client.ChatStream(context.Background(), ChatRequest{
+		Messages: []json.RawMessage{json.RawMessage(`{"role":"user","content":"list sources"}`)},
+		Tools: []ToolDefinition{{
+			Name: "list_sources", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		}},
+	}, func(delta string) error {
+		callbacks = append(callbacks, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+	if len(callbacks) != 0 {
+		t.Fatalf("private/tool-only stream invoked visible callbacks: %#v", callbacks)
+	}
+	if response.FinishReason != "tool_calls" || response.Content != "" || len(response.ToolCalls) != 1 {
+		t.Fatalf("ChatStream() response = %#v", response)
+	}
+	call := response.ToolCalls[0]
+	if call.ID != "provider-call-sanitized" || call.Type != "function" || call.Function.Name != "list_sources" || call.Function.Arguments != `{}` {
+		t.Fatalf("reconstructed tool call = %#v", call)
+	}
+	for _, preserved := range []string{
+		`"reasoning_content":"I should inspect the available sources before answering."`,
+		`"text":"I should inspect the available sources before answering."`,
+		`"signature":"sanitized-signature"`,
+		`"provider_extension":{"trace":"preserved"}`,
+		`"provider_tool_field":{"opaque":"preserved"}`,
+	} {
+		if !bytes.Contains(response.AssistantMessage, []byte(preserved)) {
+			t.Errorf("replayable assistant message lost %s: %s", preserved, response.AssistantMessage)
+		}
+	}
+}
+
+func TestStreamReasoningDetailsAccumulatesEachIndexIndependently(t *testing.T) {
+	t.Parallel()
+
+	var details streamReasoningDetails
+	if err := details.merge(json.RawMessage(`[
+		{"index":0,"type":"reasoning.text","text":"first "},
+		{"index":1,"type":"reasoning.text","text":"second"}
+	]`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := details.merge(json.RawMessage(`[
+		{"index":0,"text":"chunk"},
+		{"index":1,"text":"second cumulative"}
+	]`)); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := details.raw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replay []struct {
+		Index int    `json:"index"`
+		Text  string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &replay); err != nil {
+		t.Fatal(err)
+	}
+	if len(replay) != 2 || replay[0].Index != 0 || replay[0].Text != "first chunk" ||
+		replay[1].Index != 1 || replay[1].Text != "second cumulative" {
+		t.Fatalf("reasoning details = %s, want independent incremental/cumulative accumulation", raw)
+	}
+}
+
+func TestMiniMaxClientChatStreamDeliversContentBeforeProviderCompletes(t *testing.T) {
+	release := make(chan struct{}, 1)
+	providerFinished := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		defer close(providerFinished)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"First\"},\"finish_reason\":null}]}\n\n")
+		w.(http.Flusher).Flush()
+		<-release
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"First chunk\"},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() {
+		select {
+		case release <- struct{}{}:
+		default:
+		}
+	})
+
+	client := newTestMiniMaxClient(t, server)
+	firstDelta := make(chan string, 1)
+	type streamResult struct {
+		response *ChatResponse
+		err      error
+	}
+	completed := make(chan streamResult, 1)
+	go func() {
+		response, err := client.ChatStream(context.Background(), ChatRequest{
+			Messages: []json.RawMessage{json.RawMessage(`{"role":"user","content":"hello"}`)},
+		}, func(delta string) error {
+			select {
+			case firstDelta <- delta:
+			default:
+			}
+			return nil
+		})
+		completed <- streamResult{response: response, err: err}
+	}()
+
+	select {
+	case delta := <-firstDelta:
+		if delta != "First" {
+			t.Fatalf("first streamed delta = %q, want First", delta)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("content callback did not run before the provider completed")
+	}
+	select {
+	case <-providerFinished:
+		t.Fatal("provider completed before the first content callback was observed")
+	default:
+	}
+	release <- struct{}{}
+
+	select {
+	case result := <-completed:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.response.Content != "First chunk" || result.response.FinishReason != "stop" {
+			t.Fatalf("ChatStream() response = %#v", result.response)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("stream did not complete after the provider was released")
+	}
+}
+
+func TestMiniMaxClientChatStreamAccumulatesToolCallFragments(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"get_\",\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"get_overview\",\"arguments\":\"{\\\"source\\\":\"}}]},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"source\\\":\\\"codex\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestMiniMaxClient(t, server)
+	var callbackCalls int
+	response, err := client.ChatStream(context.Background(), ChatRequest{
+		Messages: []json.RawMessage{json.RawMessage(`{"role":"user","content":"compare"}`)},
+	}, func(string) error {
+		callbackCalls++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+	if callbackCalls != 0 {
+		t.Fatalf("content callback calls = %d, want none for tool-only turn", callbackCalls)
+	}
+	if response.FinishReason != "tool_calls" || len(response.ToolCalls) != 1 {
+		t.Fatalf("ChatStream() response = %#v", response)
+	}
+	call := response.ToolCalls[0]
+	if call.ID != "call-1" || call.Type != "function" || call.Function.Name != "get_overview" || call.Function.Arguments != `{"source":"codex"}` {
+		t.Fatalf("accumulated tool call = %#v", call)
+	}
+	if !json.Valid(response.AssistantMessage) || !bytes.Contains(response.AssistantMessage, []byte(`"tool_calls"`)) {
+		t.Fatalf("assistant replay message is invalid: %s", response.AssistantMessage)
+	}
+}
+
+func TestMiniMaxClientChatStreamPreservesArbitraryIncrementalToolFragments(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"call-incremental\",\"type\":\"function\",\"function\":{\"name\":\"get_\",\"arguments\":\"{\\\"q\"}}]},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"overview\",\"arguments\":\"uery\\\":\\\"\"}}]},\"finish_reason\":null}]}\n\n")
+		// This fragment is a prefix of the accumulated value. A per-fragment
+		// cumulative heuristic used to silently discard it.
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"value\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestMiniMaxClient(t, server)
+	response, err := client.ChatStream(context.Background(), ChatRequest{
+		Messages: []json.RawMessage{json.RawMessage(`{"role":"user","content":"compare"}`)},
+		Tools: []ToolDefinition{{
+			Name: "get_overview", Parameters: json.RawMessage(`{"type":"object"}`),
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+	if len(response.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v", response.ToolCalls)
+	}
+	call := response.ToolCalls[0]
+	if call.Function.Name != "get_overview" || call.Function.Arguments != `{"query":"{value"}` {
+		t.Fatalf("incremental fragments were altered: %#v", call.Function)
+	}
+}
+
+func TestStreamToolFragmentResolutionFailsClosedWhenAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	call := &streamToolCallAccumulator{id: "call-1", typeName: "function"}
+	call.name.add("get_overview")
+	call.arguments.add("1")
+	call.arguments.add("12")
+	_, _, err := call.resolve(map[string]struct{}{"get_overview": {}})
+	if !errors.Is(err, ErrProvider) || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("resolve() error = %v, want fail-closed ambiguity", err)
+	}
+}
+
+func TestMiniMaxClientChatStreamReplaysNullContentAndNestedProviderFields(t *testing.T) {
+	t.Parallel()
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var body struct {
+			Messages []json.RawMessage `json:"messages"`
+			Stream   bool              `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request %d: %v", requests, err)
+			return
+		}
+		if !body.Stream {
+			t.Errorf("request %d stream = false", requests)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+
+		if requests == 1 {
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"assistant_extension\":{\"round\":1},\"tool_calls\":[{\"index\":0,\"id\":\"call-replay\",\"type\":\"function\",\"provider_tool_field\":{\"keep\":true},\"function\":{\"name\":\"get_\",\"arguments\":\"{\",\"provider_function_field\":{\"signature\":\"nested-keep\"}}}]},\"finish_reason\":null}]}\n\n")
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"get_overview\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			return
+		}
+
+		if len(body.Messages) != 3 {
+			t.Errorf("second request messages = %d, want user/assistant/tool", len(body.Messages))
+		} else {
+			var replay struct {
+				Content        json.RawMessage `json:"content"`
+				AssistantExtra json.RawMessage `json:"assistant_extension"`
+				ToolCalls      []struct {
+					Index    *int            `json:"index"`
+					Provider json.RawMessage `json:"provider_tool_field"`
+					Function struct {
+						Name      string          `json:"name"`
+						Arguments string          `json:"arguments"`
+						Provider  json.RawMessage `json:"provider_function_field"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			}
+			if err := json.Unmarshal(body.Messages[1], &replay); err != nil {
+				t.Errorf("decode replayed assistant message: %v", err)
+			} else {
+				if string(replay.Content) != "null" {
+					t.Errorf("replayed content = %s, want null", replay.Content)
+				}
+				if len(replay.AssistantExtra) == 0 || len(replay.ToolCalls) != 1 {
+					t.Errorf("replayed extensions/tool calls missing: %s", body.Messages[1])
+				} else {
+					tool := replay.ToolCalls[0]
+					if tool.Index == nil || *tool.Index != 0 || len(tool.Provider) == 0 || len(tool.Function.Provider) == 0 || tool.Function.Name != "get_overview" || tool.Function.Arguments != `{}` {
+						t.Errorf("nested provider fields were not replayed: %s", body.Messages[1])
+					}
+				}
+			}
+		}
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Done\"},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestMiniMaxClient(t, server)
+	tools := []ToolDefinition{{Name: "get_overview", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	user := json.RawMessage(`{"role":"user","content":"compare"}`)
+	first, err := client.ChatStream(context.Background(), ChatRequest{Messages: []json.RawMessage{user}, Tools: tools}, nil)
+	if err != nil {
+		t.Fatalf("first ChatStream() error = %v", err)
+	}
+	if !bytes.Contains(first.AssistantMessage, []byte(`"content":null`)) || len(first.ToolCalls) != 1 {
+		t.Fatalf("first replay message = %s, calls=%#v", first.AssistantMessage, first.ToolCalls)
+	}
+	toolResult := json.RawMessage(`{"role":"tool","tool_call_id":"call-replay","name":"get_overview","content":"{}"}`)
+	second, err := client.ChatStream(context.Background(), ChatRequest{
+		Messages: []json.RawMessage{user, first.AssistantMessage, toolResult},
+		Tools:    tools,
+	}, nil)
+	if err != nil {
+		t.Fatalf("second ChatStream() error = %v", err)
+	}
+	if requests != 2 || second.Content != "Done" || second.FinishReason != "stop" {
+		t.Fatalf("requests=%d second=%#v", requests, second)
+	}
+}
+
+func TestMiniMaxClientChatStreamPropagatesCallbackError(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+
+	sentinel := errors.New("browser stream closed")
+	client := newTestMiniMaxClient(t, server)
+	_, err := client.ChatStream(context.Background(), ChatRequest{
+		Messages: []json.RawMessage{json.RawMessage(`{"role":"user","content":"hello"}`)},
+	}, func(string) error { return sentinel })
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("ChatStream() error = %v, want callback sentinel", err)
+	}
+}
+
+func TestMiniMaxClientChatStreamRejectsOversizedOrIncompleteSSE(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "EOF before finish reason", body: "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"},\"finish_reason\":null}]}\n\n"},
+		{name: "malformed JSON", body: "data: {\"choices\":[\n\n"},
+		{name: "conflicting finish reasons", body: "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}\n\n"},
+		{name: "tool finish without calls", body: "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null},\"finish_reason\":\"tool_calls\"}]}\n\n"},
+		{name: "invalid tool call", body: "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"custom\",\"function\":{\"name\":\"list_sources\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"},
+		{name: "oversized", body: strings.Repeat("x", int(maxResponseBodyBytes)+1)},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, test.body)
+			}))
+			t.Cleanup(server.Close)
+			client := newTestMiniMaxClient(t, server)
+			_, err := client.ChatStream(context.Background(), ChatRequest{
+				Messages: []json.RawMessage{json.RawMessage(`{"role":"user","content":"hello"}`)},
+			}, nil)
+			if !errors.Is(err, ErrProvider) {
+				t.Fatalf("ChatStream() error = %v, want ErrProvider", err)
+			}
+		})
+	}
+}
+
 func TestMiniMaxClientChatReplaysRawAssistantFields(t *testing.T) {
 	t.Parallel()
 
@@ -277,7 +753,7 @@ func TestMiniMaxClientClassifiesHTTPAndProviderFailures(t *testing.T) {
 			want:   ErrAuthentication,
 			checkType: func(err error) bool {
 				var target *AuthenticationError
-				return errors.As(err, &target) && target.StatusCode == http.StatusUnauthorized
+				return errors.As(err, &target) && target.Operation == "list models" && target.StatusCode == http.StatusUnauthorized
 			},
 		},
 		{
@@ -288,7 +764,7 @@ func TestMiniMaxClientClassifiesHTTPAndProviderFailures(t *testing.T) {
 			want:       ErrRateLimited,
 			checkType: func(err error) bool {
 				var target *RateLimitError
-				return errors.As(err, &target) && target.StatusCode == http.StatusTooManyRequests && target.RetryAfter == "3"
+				return errors.As(err, &target) && target.Operation == "list models" && target.StatusCode == http.StatusTooManyRequests && target.RetryAfter == "3"
 			},
 		},
 		{
@@ -334,11 +810,13 @@ func TestMiniMaxClientClassifiesBaseResponseFailures(t *testing.T) {
 
 	tests := []struct {
 		name string
-		code int
+		code int64
 		want error
 	}{
-		{name: "authentication", code: 1004, want: ErrAuthentication},
+		{name: "legacy authentication", code: 1004, want: ErrAuthentication},
+		{name: "invalid API key", code: 2049, want: ErrAuthentication},
 		{name: "rate limit", code: 1002, want: ErrRateLimited},
+		{name: "temporary usage exhaustion", code: 2056, want: ErrRateLimited},
 		{name: "other provider code", code: 1008, want: ErrProvider},
 	}
 	for _, test := range tests {
@@ -352,6 +830,23 @@ func TestMiniMaxClientClassifiesBaseResponseFailures(t *testing.T) {
 			err := newTestMiniMaxClient(t, server).EnsureAvailable(context.Background())
 			if !errors.Is(err, test.want) || !strings.Contains(err.Error(), fmt.Sprintf("provider code %d", test.code)) {
 				t.Fatalf("EnsureAvailable() error = %v, want %v with provider code", err, test.want)
+			}
+			switch test.want {
+			case ErrAuthentication:
+				var typed *AuthenticationError
+				if !errors.As(err, &typed) || typed.Operation != "list models" || typed.ProviderCode != test.code {
+					t.Fatalf("authentication details = %#v, want operation/list-models code %d", typed, test.code)
+				}
+			case ErrRateLimited:
+				var typed *RateLimitError
+				if !errors.As(err, &typed) || typed.Operation != "list models" || typed.ProviderCode != test.code {
+					t.Fatalf("rate-limit details = %#v, want operation/list-models code %d", typed, test.code)
+				}
+			case ErrProvider:
+				var typed *ProviderError
+				if !errors.As(err, &typed) || typed.Operation != "list models" || typed.ProviderCode != test.code {
+					t.Fatalf("provider details = %#v, want operation/list-models code %d", typed, test.code)
+				}
 			}
 		})
 	}

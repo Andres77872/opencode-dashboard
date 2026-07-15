@@ -24,7 +24,10 @@ import type {
   AssistantChatRequest,
   AssistantChatResponse,
   AssistantStatusResponse,
+  AssistantStreamCompleteEvent,
+  AssistantStreamEvent,
 } from '../types/assistant'
+import { AssistantStreamProtocolError, readAssistantStream } from './assistant-stream.ts'
 
 const DEFAULT_API_BASE_URL = import.meta.env?.VITE_API_BASE_URL?.trim() ?? ''
 
@@ -295,4 +298,30 @@ export function sendAssistantChat(payload: AssistantChatRequest, signal?: AbortS
     body: JSON.stringify(payload),
     signal,
   })
+}
+
+export async function streamAssistantChat(
+  payload: AssistantChatRequest,
+  onEvent: (event: AssistantStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<AssistantStreamCompleteEvent> {
+  const response = await fetch(resolveUrl('/api/v1/assistant/chat/stream'), {
+    method: 'POST',
+    headers: {
+      Accept: 'application/x-ndjson',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    signal,
+  })
+
+  if (!response.ok) {
+    throw new ApiClientError(await parseError(response), response.status)
+  }
+  if (!response.body) {
+    throw new AssistantStreamProtocolError('Assistant stream response has no body')
+  }
+
+  return readAssistantStream(response.body, onEvent)
 }

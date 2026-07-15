@@ -1,15 +1,18 @@
 package analyticsagent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -59,6 +62,7 @@ func (e *ModelUnavailableError) Unwrap() error { return ErrModelUnavailable }
 // AuthenticationError covers a missing local credential and credentials
 // rejected by MiniMax over HTTP or through its base_resp envelope.
 type AuthenticationError struct {
+	Operation    string
 	StatusCode   int
 	ProviderCode int64
 	Message      string
@@ -74,8 +78,10 @@ func (e *AuthenticationError) Error() string {
 
 func (e *AuthenticationError) Unwrap() error { return ErrAuthentication }
 
-// RateLimitError is returned for HTTP 429 and MiniMax provider code 1002.
+// RateLimitError is returned for HTTP 429 and MiniMax provider codes that
+// represent temporary request or plan-usage exhaustion.
 type RateLimitError struct {
+	Operation    string
 	StatusCode   int
 	ProviderCode int64
 	RetryAfter   string
@@ -307,12 +313,9 @@ type wireChatRequest struct {
 	Stream         bool `json:"stream"`
 }
 
-// Chat performs one non-streaming M3 turn. It deliberately does not perform
-// model discovery itself; callers should run EnsureAvailable once before the
-// bounded multi-turn loop rather than adding a discovery request to every turn.
-func (c *MiniMaxClient) Chat(ctx context.Context, request ChatRequest) (*ChatResponse, error) {
+func makeWireChatPayload(request ChatRequest, stream bool) ([]byte, error) {
 	if len(request.Messages) == 0 {
-		return nil, fmt.Errorf("MiniMax chat requires at least one message")
+		return nil, errors.New("MiniMax chat requires at least one message")
 	}
 	messages := make([]json.RawMessage, len(request.Messages))
 	for i, message := range request.Messages {
@@ -346,13 +349,24 @@ func (c *MiniMaxClient) Chat(ctx context.Context, request ChatRequest) (*ChatRes
 		Tools:               tools,
 		MaxCompletionTokens: maxCompletionTokens,
 		ReasoningSplit:      true,
-		Stream:              false,
+		Stream:              stream,
 	}
 	wireRequest.Thinking.Type = "adaptive"
 
 	payload, err := json.Marshal(wireRequest)
 	if err != nil {
 		return nil, fmt.Errorf("encode MiniMax chat request: %w", err)
+	}
+	return payload, nil
+}
+
+// Chat performs one non-streaming M3 turn. It deliberately does not perform
+// model discovery itself; callers should run EnsureAvailable once before the
+// bounded multi-turn loop rather than adding a discovery request to every turn.
+func (c *MiniMaxClient) Chat(ctx context.Context, request ChatRequest) (*ChatResponse, error) {
+	payload, err := makeWireChatPayload(request, false)
+	if err != nil {
+		return nil, err
 	}
 	body, err := c.request(ctx, http.MethodPost, "/chat/completions", payload, "chat completion")
 	if err != nil {
@@ -417,6 +431,679 @@ func (c *MiniMaxClient) Chat(ctx context.Context, request ChatRequest) (*ChatRes
 	}, nil
 }
 
+type streamChatChunk struct {
+	Choices  []streamChatChoice `json:"choices"`
+	BaseResp baseResponse       `json:"base_resp"`
+}
+
+type streamChatChoice struct {
+	Index        int             `json:"index"`
+	Delta        json.RawMessage `json:"delta"`
+	FinishReason json.RawMessage `json:"finish_reason"`
+}
+
+type streamToolCallAccumulator struct {
+	index               int
+	id                  string
+	typeName            string
+	name                streamFragmentAccumulator
+	arguments           streamFragmentAccumulator
+	extraFields         map[string]json.RawMessage
+	extraFunctionFields map[string]json.RawMessage
+}
+
+type streamFragmentMode uint8
+
+const (
+	streamFragmentIncremental streamFragmentMode = iota + 1
+	streamFragmentCumulative
+)
+
+// streamFragmentAccumulator keeps both interpretations until the complete
+// tool call is available. MiniMax installations have emitted both ordinary
+// OpenAI fragments and cumulative fields; choosing independently per chunk can
+// silently drop valid fragments when a fragment happens to prefix the current
+// value.
+type streamFragmentAccumulator struct {
+	incremental        string
+	cumulative         string
+	sawValue           bool
+	cumulativePossible bool
+}
+
+type streamReasoningDetails struct {
+	items map[int]map[string]json.RawMessage
+}
+
+type streamAssistantAccumulator struct {
+	role                    string
+	content                 string
+	contentPresent          bool
+	contentNull             bool
+	contentString           bool
+	reasoningContent        string
+	hasReasoningContent     bool
+	reasoningContentNull    bool
+	reasoningContentString  bool
+	reasoningDetails        streamReasoningDetails
+	hasReasoningDetails     bool
+	reasoningDetailsNull    bool
+	toolCalls               map[int]*streamToolCallAccumulator
+	knownToolNames          map[string]struct{}
+	extraAssistantFields    map[string]json.RawMessage
+	providerFinishReason    string
+	providerFinishReasonSet bool
+}
+
+// ChatStream performs one streamed M3 turn. MiniMax deployments have emitted
+// prose as both cumulative values and ordinary incremental chunks, so
+// onContent receives a normalized append-only delta in either mode. Private
+// reasoning fields are accumulated for provider replay and never sent to the
+// callback.
+func (c *MiniMaxClient) ChatStream(ctx context.Context, request ChatRequest, onContent func(string) error) (*ChatResponse, error) {
+	payload, err := makeWireChatPayload(request, true)
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.requestResponse(ctx, http.MethodPost, "/chat/completions", payload, "stream chat completion", "text/event-stream")
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+
+	mediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if mediaErr != nil || mediaType != "text/event-stream" {
+		body, readErr := readBounded(response.Body, maxResponseBodyBytes)
+		if readErr != nil {
+			return nil, &ProviderError{Operation: "read stream chat completion response", Cause: readErr}
+		}
+		var envelope struct {
+			BaseResp baseResponse `json:"base_resp"`
+		}
+		if json.Unmarshal(body, &envelope) == nil {
+			if err := classifyBaseResponse("stream chat completion", envelope.BaseResp); err != nil {
+				return nil, err
+			}
+		}
+		return nil, &ProviderError{Operation: "validate stream chat completion", Message: fmt.Sprintf("unexpected Content-Type %q", response.Header.Get("Content-Type"))}
+	}
+
+	limited := &io.LimitedReader{R: response.Body, N: maxResponseBodyBytes + 1}
+	reader := bufio.NewReader(limited)
+	accumulator := &streamAssistantAccumulator{knownToolNames: make(map[string]struct{}, len(request.Tools))}
+	for _, tool := range request.Tools {
+		accumulator.knownToolNames[tool.Name] = struct{}{}
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		data, readErr := readServerSentData(reader)
+		if limited.N == 0 {
+			return nil, &ProviderError{Operation: "read stream chat completion response", Message: fmt.Sprintf("response body exceeded %d bytes", maxResponseBodyBytes)}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return nil, &ProviderError{Operation: "read stream chat completion response", Cause: readErr}
+		}
+		trimmed := bytes.TrimSpace(data)
+		if len(trimmed) == 0 {
+			continue
+		}
+		if bytes.Equal(trimmed, []byte("[DONE]")) {
+			break
+		}
+
+		var chunk streamChatChunk
+		if err := json.Unmarshal(trimmed, &chunk); err != nil {
+			return nil, &ProviderError{Operation: "decode stream chat completion", Cause: err}
+		}
+		if err := classifyBaseResponse("stream chat completion", chunk.BaseResp); err != nil {
+			return nil, err
+		}
+		for _, choice := range chunk.Choices {
+			if choice.Index != 0 {
+				return nil, &ProviderError{Operation: "validate stream chat completion", Message: fmt.Sprintf("unsupported choice index %d", choice.Index)}
+			}
+			if len(choice.Delta) != 0 && !bytes.Equal(bytes.TrimSpace(choice.Delta), []byte("null")) {
+				if err := accumulator.applyDelta(ctx, choice.Delta, onContent); err != nil {
+					return nil, err
+				}
+			}
+			finishReason, present, err := decodeOptionalString(choice.FinishReason, "finish_reason")
+			if err != nil {
+				return nil, &ProviderError{Operation: "decode stream chat completion", Cause: err}
+			}
+			if present {
+				if accumulator.providerFinishReasonSet && accumulator.providerFinishReason != finishReason {
+					return nil, &ProviderError{Operation: "validate stream chat completion", Message: "stream contained conflicting finish reasons"}
+				}
+				accumulator.providerFinishReason = finishReason
+				accumulator.providerFinishReasonSet = true
+			}
+		}
+	}
+
+	if !accumulator.providerFinishReasonSet || accumulator.providerFinishReason == "" {
+		return nil, &ProviderError{Operation: "validate stream chat completion", Message: "stream contained no finish reason"}
+	}
+	return accumulator.response()
+}
+
+func (a *streamAssistantAccumulator) applyDelta(ctx context.Context, raw json.RawMessage, onContent func(string) error) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return &ProviderError{Operation: "decode stream assistant delta", Cause: err}
+	}
+	if a.extraAssistantFields == nil {
+		a.extraAssistantFields = make(map[string]json.RawMessage)
+	}
+
+	if value, ok := fields["role"]; ok {
+		role, present, err := decodeOptionalString(value, "delta.role")
+		if err != nil {
+			return &ProviderError{Operation: "decode stream assistant delta", Cause: err}
+		}
+		if present && role != "" {
+			if a.role != "" && a.role != role {
+				return &ProviderError{Operation: "validate stream chat completion", Message: "stream changed assistant role"}
+			}
+			a.role = role
+		}
+	}
+
+	if value, ok := fields["content"]; ok {
+		a.contentPresent = true
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			if !a.contentString {
+				a.contentNull = true
+			}
+		} else {
+			content, present, err := decodeOptionalString(value, "delta.content")
+			if err != nil {
+				return &ProviderError{Operation: "decode stream assistant delta", Cause: err}
+			}
+			if present {
+				a.contentNull = false
+				a.contentString = true
+				if content != "" {
+					updated, delta := advanceAdaptiveStreamString(a.content, content)
+					a.content = updated
+					if delta != "" && onContent != nil {
+						if err := onContent(delta); err != nil {
+							return fmt.Errorf("MiniMax content callback: %w", err)
+						}
+						if err := ctx.Err(); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if value, ok := fields["reasoning_content"]; ok {
+		a.hasReasoningContent = true
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			if !a.reasoningContentString {
+				a.reasoningContentNull = true
+			}
+		} else {
+			reasoning, present, err := decodeOptionalString(value, "delta.reasoning_content")
+			if err != nil {
+				return &ProviderError{Operation: "decode stream assistant delta", Cause: err}
+			}
+			if present {
+				a.reasoningContentNull = false
+				a.reasoningContentString = true
+				if reasoning != "" {
+					updated, _ := advanceAdaptiveStreamString(a.reasoningContent, reasoning)
+					a.reasoningContent = updated
+				}
+			}
+		}
+	}
+
+	if value, ok := fields["reasoning_details"]; ok {
+		a.hasReasoningDetails = true
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			if len(a.reasoningDetails.items) == 0 {
+				a.reasoningDetailsNull = true
+			}
+		} else {
+			if err := a.reasoningDetails.merge(value); err != nil {
+				return err
+			}
+			a.reasoningDetailsNull = false
+		}
+	}
+
+	if value, ok := fields["tool_calls"]; ok && !bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		var calls []json.RawMessage
+		if err := json.Unmarshal(value, &calls); err != nil {
+			return &ProviderError{Operation: "decode stream tool calls", Cause: err}
+		}
+		for _, call := range calls {
+			if err := a.mergeToolCall(call); err != nil {
+				return err
+			}
+		}
+	}
+
+	for name, value := range fields {
+		switch name {
+		case "role", "content", "reasoning_content", "reasoning_details", "tool_calls":
+			continue
+		}
+		a.extraAssistantFields[name] = bytes.Clone(value)
+	}
+	return nil
+}
+
+func (a *streamAssistantAccumulator) mergeToolCall(raw json.RawMessage) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return &ProviderError{Operation: "decode stream tool call", Cause: err}
+	}
+	if a.toolCalls == nil {
+		a.toolCalls = make(map[int]*streamToolCallAccumulator)
+	}
+	index := 0
+	if rawIndex, ok := fields["index"]; ok && !bytes.Equal(bytes.TrimSpace(rawIndex), []byte("null")) {
+		if err := json.Unmarshal(rawIndex, &index); err != nil {
+			return &ProviderError{Operation: "decode stream tool call", Cause: err}
+		}
+	} else if len(a.toolCalls) > 1 {
+		return &ProviderError{Operation: "validate stream tool calls", Message: "tool call delta omitted an ambiguous index"}
+	}
+	if index < 0 || index > 1024 {
+		return &ProviderError{Operation: "validate stream tool calls", Message: fmt.Sprintf("invalid tool call index %d", index)}
+	}
+	call := a.toolCalls[index]
+	if call == nil {
+		call = &streamToolCallAccumulator{
+			index:               index,
+			extraFields:         make(map[string]json.RawMessage),
+			extraFunctionFields: make(map[string]json.RawMessage),
+		}
+		a.toolCalls[index] = call
+	}
+	if value, ok := fields["id"]; ok {
+		id, present, err := decodeOptionalString(value, "tool_call.id")
+		if err != nil {
+			return &ProviderError{Operation: "decode stream tool call", Cause: err}
+		}
+		if present && id != "" {
+			if call.id != "" && call.id != id {
+				return &ProviderError{Operation: "validate stream tool calls", Message: fmt.Sprintf("tool call %d changed id", index)}
+			}
+			call.id = id
+		}
+	}
+	if value, ok := fields["type"]; ok {
+		typeName, present, err := decodeOptionalString(value, "tool_call.type")
+		if err != nil {
+			return &ProviderError{Operation: "decode stream tool call", Cause: err}
+		}
+		if present && typeName != "" {
+			if call.typeName != "" && call.typeName != typeName {
+				return &ProviderError{Operation: "validate stream tool calls", Message: fmt.Sprintf("tool call %d changed type", index)}
+			}
+			call.typeName = typeName
+		}
+	}
+	if value, ok := fields["function"]; ok && !bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		var functionFields map[string]json.RawMessage
+		if err := json.Unmarshal(value, &functionFields); err != nil {
+			return &ProviderError{Operation: "decode stream tool function", Cause: err}
+		}
+		if nameRaw, ok := functionFields["name"]; ok {
+			name, present, err := decodeOptionalString(nameRaw, "tool_call.function.name")
+			if err != nil {
+				return &ProviderError{Operation: "decode stream tool function", Cause: err}
+			}
+			if present {
+				call.name.add(name)
+			}
+		}
+		if argumentsRaw, ok := functionFields["arguments"]; ok {
+			arguments, present, err := decodeOptionalString(argumentsRaw, "tool_call.function.arguments")
+			if err != nil {
+				return &ProviderError{Operation: "decode stream tool function", Cause: err}
+			}
+			if present {
+				call.arguments.add(arguments)
+			}
+		}
+		for name, nested := range functionFields {
+			if name != "name" && name != "arguments" {
+				call.extraFunctionFields[name] = bytes.Clone(nested)
+			}
+		}
+	}
+	for name, value := range fields {
+		if name != "id" && name != "type" && name != "function" {
+			call.extraFields[name] = bytes.Clone(value)
+		}
+	}
+	return nil
+}
+
+func (a *streamAssistantAccumulator) response() (*ChatResponse, error) {
+	if a.role != "assistant" {
+		return nil, &ProviderError{Operation: "validate stream chat completion", Message: "response message role was not assistant"}
+	}
+	indices := make([]int, 0, len(a.toolCalls))
+	for index := range a.toolCalls {
+		indices = append(indices, index)
+	}
+	sort.Ints(indices)
+	toolCalls := make([]ToolCall, 0, len(indices))
+	rawToolCalls := make([]json.RawMessage, 0, len(indices))
+	for _, index := range indices {
+		value := a.toolCalls[index]
+		call, mode, err := value.resolve(a.knownToolNames)
+		if err != nil {
+			return nil, err
+		}
+		if call.Type != "function" || strings.TrimSpace(call.ID) == "" || strings.TrimSpace(call.Function.Name) == "" {
+			return nil, &ProviderError{Operation: "validate stream chat completion", Message: fmt.Sprintf("tool call %d is not a valid function call", index)}
+		}
+		toolCalls = append(toolCalls, call)
+		rawCall, err := value.raw(call, mode)
+		if err != nil {
+			return nil, err
+		}
+		rawToolCalls = append(rawToolCalls, rawCall)
+	}
+
+	switch a.providerFinishReason {
+	case "stop", "length", "content_filter":
+		if len(toolCalls) != 0 {
+			return nil, &ProviderError{Operation: "validate stream chat completion", Message: fmt.Sprintf("finish_reason %q included tool calls", a.providerFinishReason)}
+		}
+	case "tool_calls":
+		if len(toolCalls) == 0 {
+			return nil, &ProviderError{Operation: "validate stream chat completion", Message: "finish_reason tool_calls contained no tool calls"}
+		}
+	default:
+		return nil, &ProviderError{Operation: "validate stream chat completion", Message: fmt.Sprintf("unsupported finish_reason %q", a.providerFinishReason)}
+	}
+
+	message := make(map[string]json.RawMessage, len(a.extraAssistantFields)+5)
+	for name, value := range a.extraAssistantFields {
+		message[name] = bytes.Clone(value)
+	}
+	message["role"], _ = json.Marshal(a.role)
+	if a.contentPresent {
+		if a.contentNull && !a.contentString {
+			message["content"] = json.RawMessage(`null`)
+		} else {
+			message["content"], _ = json.Marshal(a.content)
+		}
+	}
+	if a.hasReasoningContent {
+		if a.reasoningContentNull && !a.reasoningContentString {
+			message["reasoning_content"] = json.RawMessage(`null`)
+		} else {
+			message["reasoning_content"], _ = json.Marshal(a.reasoningContent)
+		}
+	}
+	if a.hasReasoningDetails {
+		if a.reasoningDetailsNull && len(a.reasoningDetails.items) == 0 {
+			message["reasoning_details"] = json.RawMessage(`null`)
+		} else {
+			reasoning, err := a.reasoningDetails.raw()
+			if err != nil {
+				return nil, &ProviderError{Operation: "encode stream reasoning details", Cause: err}
+			}
+			message["reasoning_details"] = reasoning
+		}
+	}
+	if len(rawToolCalls) != 0 {
+		encoded, err := json.Marshal(rawToolCalls)
+		if err != nil {
+			return nil, &ProviderError{Operation: "encode stream tool calls", Cause: err}
+		}
+		message["tool_calls"] = encoded
+	}
+	assistantMessage, err := json.Marshal(message)
+	if err != nil {
+		return nil, &ProviderError{Operation: "encode stream assistant message", Cause: err}
+	}
+	return &ChatResponse{
+		FinishReason:     a.providerFinishReason,
+		Content:          a.content,
+		ToolCalls:        toolCalls,
+		AssistantMessage: assistantMessage,
+	}, nil
+}
+
+func (d *streamReasoningDetails) merge(raw json.RawMessage) error {
+	var incoming []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &incoming); err != nil {
+		return &ProviderError{Operation: "decode stream reasoning details", Cause: err}
+	}
+	if d.items == nil {
+		d.items = make(map[int]map[string]json.RawMessage)
+	}
+	for position, item := range incoming {
+		index := position
+		if rawIndex, ok := item["index"]; ok {
+			if err := json.Unmarshal(rawIndex, &index); err != nil || index < 0 || index > 1024 {
+				return &ProviderError{Operation: "validate stream reasoning details", Message: "reasoning detail contained an invalid index"}
+			}
+		}
+		current := d.items[index]
+		if current == nil {
+			current = make(map[string]json.RawMessage)
+			d.items[index] = current
+		}
+		for name, value := range item {
+			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				continue
+			}
+			if name == "text" {
+				textValue, present, err := decodeOptionalString(value, "reasoning_details.text")
+				if err != nil {
+					return &ProviderError{Operation: "decode stream reasoning details", Cause: err}
+				}
+				if present {
+					var currentText string
+					if previous, exists := current[name]; exists {
+						if err := json.Unmarshal(previous, &currentText); err != nil {
+							return &ProviderError{Operation: "decode stream reasoning details", Cause: err}
+						}
+					}
+					updated, _ := advanceAdaptiveStreamString(currentText, textValue)
+					current[name], _ = json.Marshal(updated)
+				}
+				continue
+			}
+			current[name] = bytes.Clone(value)
+		}
+	}
+	return nil
+}
+
+func (d *streamReasoningDetails) raw() (json.RawMessage, error) {
+	indices := make([]int, 0, len(d.items))
+	for index := range d.items {
+		indices = append(indices, index)
+	}
+	sort.Ints(indices)
+	items := make([]map[string]json.RawMessage, 0, len(indices))
+	for _, index := range indices {
+		items = append(items, d.items[index])
+	}
+	encoded, err := json.Marshal(items)
+	return json.RawMessage(encoded), err
+}
+
+func decodeOptionalString(raw json.RawMessage, field string) (string, bool, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return "", false, nil
+	}
+	var value string
+	if err := json.Unmarshal(trimmed, &value); err != nil {
+		return "", false, fmt.Errorf("%s must be a string or null: %w", field, err)
+	}
+	return value, true, nil
+}
+
+func (f *streamFragmentAccumulator) add(next string) {
+	if next == "" {
+		return
+	}
+	if !f.sawValue {
+		f.sawValue = true
+		f.cumulativePossible = true
+		f.incremental = next
+		f.cumulative = next
+		return
+	}
+	f.incremental += next
+	if f.cumulativePossible {
+		if strings.HasPrefix(next, f.cumulative) {
+			f.cumulative = next
+		} else {
+			f.cumulativePossible = false
+		}
+	}
+}
+
+func (f streamFragmentAccumulator) value(mode streamFragmentMode) string {
+	if mode == streamFragmentCumulative {
+		return f.cumulative
+	}
+	return f.incremental
+}
+
+func (c *streamToolCallAccumulator) resolve(knownToolNames map[string]struct{}) (ToolCall, streamFragmentMode, error) {
+	incremental := ToolCall{
+		ID:       c.id,
+		Type:     c.typeName,
+		Function: FunctionCall{Name: c.name.value(streamFragmentIncremental), Arguments: c.arguments.value(streamFragmentIncremental)},
+	}
+	cumulativePossible := (!c.name.sawValue || c.name.cumulativePossible) && (!c.arguments.sawValue || c.arguments.cumulativePossible)
+	if !cumulativePossible {
+		return incremental, streamFragmentIncremental, nil
+	}
+	cumulative := ToolCall{
+		ID:       c.id,
+		Type:     c.typeName,
+		Function: FunctionCall{Name: c.name.value(streamFragmentCumulative), Arguments: c.arguments.value(streamFragmentCumulative)},
+	}
+	if incremental == cumulative {
+		return incremental, streamFragmentIncremental, nil
+	}
+
+	incrementalJSON := json.Valid([]byte(incremental.Function.Arguments))
+	cumulativeJSON := json.Valid([]byte(cumulative.Function.Arguments))
+	if incrementalJSON != cumulativeJSON {
+		if incrementalJSON {
+			return incremental, streamFragmentIncremental, nil
+		}
+		return cumulative, streamFragmentCumulative, nil
+	}
+	_, incrementalKnown := knownToolNames[incremental.Function.Name]
+	_, cumulativeKnown := knownToolNames[cumulative.Function.Name]
+	if incrementalKnown != cumulativeKnown {
+		if incrementalKnown {
+			return incremental, streamFragmentIncremental, nil
+		}
+		return cumulative, streamFragmentCumulative, nil
+	}
+	return ToolCall{}, 0, &ProviderError{
+		Operation: "validate stream tool calls",
+		Message:   fmt.Sprintf("tool call %d fragment mode was ambiguous", c.index),
+	}
+}
+
+func (c *streamToolCallAccumulator) raw(call ToolCall, mode streamFragmentMode) (json.RawMessage, error) {
+	fields := make(map[string]json.RawMessage, len(c.extraFields)+3)
+	for name, value := range c.extraFields {
+		fields[name] = bytes.Clone(value)
+	}
+	fields["id"], _ = json.Marshal(call.ID)
+	fields["type"], _ = json.Marshal(call.Type)
+	function := make(map[string]json.RawMessage, len(c.extraFunctionFields)+2)
+	for name, value := range c.extraFunctionFields {
+		function[name] = bytes.Clone(value)
+	}
+	function["name"], _ = json.Marshal(c.name.value(mode))
+	function["arguments"], _ = json.Marshal(c.arguments.value(mode))
+	encodedFunction, err := json.Marshal(function)
+	if err != nil {
+		return nil, &ProviderError{Operation: "encode stream tool function", Cause: err}
+	}
+	fields["function"] = encodedFunction
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return nil, &ProviderError{Operation: "encode stream tool call", Cause: err}
+	}
+	return json.RawMessage(encoded), nil
+}
+
+// advanceAdaptiveStreamString normalizes either provider convention into an
+// append-only value and delta. A value extending the accumulated text is
+// cumulative; every other value is an incremental chunk.
+func advanceAdaptiveStreamString(current, next string) (string, string) {
+	if next == "" {
+		return current, ""
+	}
+	if strings.HasPrefix(next, current) {
+		return next, next[len(current):]
+	}
+	return current + next, next
+}
+
+// readServerSentData implements the SSE data-field rules needed by the provider
+// transport: comments and unknown fields are ignored, consecutive data fields
+// are joined with newlines, CRLF is accepted, and a blank line dispatches the
+// event. The caller wraps reader with a strict total-byte limit.
+func readServerSentData(reader *bufio.Reader) ([]byte, error) {
+	var data bytes.Buffer
+	hasData := false
+	for {
+		line, err := reader.ReadString('\n')
+		if len(line) != 0 {
+			line = strings.TrimSuffix(line, "\n")
+			line = strings.TrimSuffix(line, "\r")
+			if line == "" {
+				if hasData {
+					return data.Bytes(), nil
+				}
+			} else if !strings.HasPrefix(line, ":") {
+				field, value, found := strings.Cut(line, ":")
+				if !found {
+					field = line
+					value = ""
+				}
+				if field == "data" {
+					if strings.HasPrefix(value, " ") {
+						value = value[1:]
+					}
+					if hasData {
+						data.WriteByte('\n')
+					}
+					data.WriteString(value)
+					hasData = true
+				}
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) && hasData {
+				return data.Bytes(), nil
+			}
+			return nil, err
+		}
+	}
+}
+
 func (c *MiniMaxClient) request(ctx context.Context, method, path string, payload []byte, operation string) ([]byte, error) {
 	var body io.Reader
 	if payload != nil {
@@ -443,9 +1130,9 @@ func (c *MiniMaxClient) request(ctx context.Context, method, path string, payloa
 		message := readErrorMessage(response.Body, response.StatusCode)
 		switch response.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
-			return nil, &AuthenticationError{StatusCode: response.StatusCode, Message: message}
+			return nil, &AuthenticationError{Operation: operation, StatusCode: response.StatusCode, Message: message}
 		case http.StatusTooManyRequests:
-			return nil, &RateLimitError{StatusCode: response.StatusCode, RetryAfter: response.Header.Get("Retry-After"), Message: message}
+			return nil, &RateLimitError{Operation: operation, StatusCode: response.StatusCode, RetryAfter: response.Header.Get("Retry-After"), Message: message}
 		default:
 			return nil, &ProviderError{Operation: operation, StatusCode: response.StatusCode, Message: message}
 		}
@@ -456,6 +1143,45 @@ func (c *MiniMaxClient) request(ctx context.Context, method, path string, payloa
 		return nil, &ProviderError{Operation: "read " + operation + " response", Cause: err}
 	}
 	return responseBody, nil
+}
+
+// requestResponse leaves a successful response body open for incremental
+// consumption. Error responses are still classified and closed here so stream
+// callers receive the same authentication/rate-limit/provider error types as
+// the buffered transport.
+func (c *MiniMaxClient) requestResponse(ctx context.Context, method, path string, payload []byte, operation, accept string) (*http.Response, error) {
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	if err != nil {
+		return nil, &ProviderError{Operation: "build " + operation + " request", Cause: err}
+	}
+	req.Header.Set("Accept", accept)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("User-Agent", version.UserAgent())
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	response, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, &ProviderError{Operation: operation, Cause: err}
+	}
+	if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+		return response, nil
+	}
+	defer response.Body.Close()
+	message := readErrorMessage(response.Body, response.StatusCode)
+	switch response.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, &AuthenticationError{Operation: operation, StatusCode: response.StatusCode, Message: message}
+	case http.StatusTooManyRequests:
+		return nil, &RateLimitError{Operation: operation, StatusCode: response.StatusCode, RetryAfter: response.Header.Get("Retry-After"), Message: message}
+	default:
+		return nil, &ProviderError{Operation: operation, StatusCode: response.StatusCode, Message: message}
+	}
 }
 
 func readBounded(reader io.Reader, limit int64) ([]byte, error) {
@@ -514,10 +1240,10 @@ func classifyBaseResponse(operation string, response baseResponse) error {
 		return nil
 	}
 	switch response.StatusCode {
-	case 1002:
-		return &RateLimitError{ProviderCode: response.StatusCode, Message: response.StatusMsg}
-	case 1004:
-		return &AuthenticationError{ProviderCode: response.StatusCode, Message: response.StatusMsg}
+	case 1002, 2056:
+		return &RateLimitError{Operation: operation, ProviderCode: response.StatusCode, Message: response.StatusMsg}
+	case 1004, 2049:
+		return &AuthenticationError{Operation: operation, ProviderCode: response.StatusCode, Message: response.StatusMsg}
 	default:
 		return &ProviderError{Operation: operation, ProviderCode: response.StatusCode, Message: response.StatusMsg}
 	}

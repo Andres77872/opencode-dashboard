@@ -14,7 +14,7 @@ import { createPortal } from 'react-dom'
 import { useLocation } from 'react-router-dom'
 import { Icon } from '../vael/icon'
 import { useDashboardContext } from '../layout/dashboard-context'
-import { getAssistantStatus, sendAssistantChat } from '../../lib/api'
+import { getAssistantStatus, streamAssistantChat } from '../../lib/api'
 import {
   clampAssistantPosition,
   defaultAssistantPosition,
@@ -30,6 +30,7 @@ import type {
   AssistantMessage,
   AssistantRequestContext,
   AssistantStatusResponse,
+  AssistantStreamEvent,
 } from '../../types/assistant'
 
 const PANEL_ID = 'analytics-assistant-panel'
@@ -49,6 +50,14 @@ const QUICK_PROMPTS = [
 interface DisplayMessage extends AssistantMessage {
   id: number
   toolsUsed?: string[]
+  streaming?: boolean
+  toolActivities?: StreamToolActivity[]
+}
+
+interface StreamToolActivity {
+  id: string
+  name: string
+  status: 'running' | 'complete' | 'failed'
 }
 
 interface DragState {
@@ -172,12 +181,45 @@ function PrivacyDisclosure({
 
 function MessageRow({ message }: { message: DisplayMessage }) {
   const assistant = message.role === 'assistant'
+  const hasContent = message.content.length > 0
   return (
-    <article className={`analytics-assistant-message ${assistant ? 'assistant' : 'user'}`}>
+    <article
+      className={`analytics-assistant-message ${assistant ? 'assistant' : 'user'}${message.streaming ? ' streaming' : ''}`}
+      aria-busy={message.streaming || undefined}
+    >
       <div className="analytics-assistant-message-meta">
         <span>{assistant ? 'Analytics assistant' : 'You'}</span>
+        {message.streaming && <span className="analytics-assistant-stream-label">Live</span>}
       </div>
-      <div className="analytics-assistant-message-content">{message.content}</div>
+      {hasContent && (
+        <div className="analytics-assistant-message-content">
+          {message.content}
+          {message.streaming && <span className="analytics-assistant-stream-cursor" aria-hidden="true" />}
+        </div>
+      )}
+      {assistant && message.toolActivities && message.toolActivities.length > 0 && (
+        <div className="analytics-assistant-tool-activity" aria-label="Live analytics tool activity">
+          {message.toolActivities.map((tool) => (
+            <div key={tool.id} className={`analytics-assistant-tool-call ${tool.status}`}>
+              <span className="analytics-assistant-tool-state" aria-hidden="true">
+                {tool.status === 'running'
+                  ? <i />
+                  : <Icon name={tool.status === 'complete' ? 'check' : 'x'} size={11} />}
+              </span>
+              <Icon name="wrench" size={12} />
+              <span>{humanizeToolName(tool.name)}</span>
+              <small>{tool.status === 'running' ? 'Running' : tool.status === 'complete' ? 'Complete' : 'Failed'}</small>
+            </div>
+          ))}
+        </div>
+      )}
+      {message.streaming && !hasContent && (!message.toolActivities || message.toolActivities.length === 0) && (
+        <div className="analytics-assistant-thinking compact" role="status">
+          <AssistantGlyph size={15} />
+          <span>Starting the report</span>
+          <i /><i /><i />
+        </div>
+      )}
       {assistant && message.toolsUsed && message.toolsUsed.length > 0 && (
         <div className="analytics-assistant-tools" aria-label="Analytics tools used">
           <Icon name="wrench" size={12} />
@@ -216,6 +258,7 @@ export function AnalyticsAssistant() {
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [liveMessage, setLiveMessage] = useState('')
+  const [completedAnnouncement, setCompletedAnnouncement] = useState('')
   const [dragging, setDragging] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
   const launcherRef = useRef<HTMLButtonElement>(null)
@@ -223,9 +266,10 @@ export function AnalyticsAssistant() {
   const restoreButtonRef = useRef<HTMLButtonElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const messageListRef = useRef<HTMLDivElement>(null)
+  const followStreamRef = useRef(true)
   const dragRef = useRef<DragState | null>(null)
   const abortRef = useRef<AbortController | null>(null)
-  const pendingPromptRef = useRef<{ id: number; content: string } | null>(null)
+  const pendingPromptRef = useRef<{ id: number; responseID: number; content: string } | null>(null)
   const requestIDRef = useRef(0)
   const messageIDRef = useRef(1)
   const restoreLauncherFocusRef = useRef(false)
@@ -348,8 +392,14 @@ export function AnalyticsAssistant() {
 
   useEffect(() => {
     const list = messageListRef.current
-    if (list) list.scrollTop = list.scrollHeight
-  }, [messages, sending])
+    if (list && followStreamRef.current) list.scrollTop = list.scrollHeight
+  }, [messages, preferences.minimized, preferences.open, sending])
+
+  const updateMessageScrollFollow = useCallback(() => {
+    const list = messageListRef.current
+    if (!list) return
+    followStreamRef.current = list.scrollHeight - list.scrollTop - list.clientHeight < 40
+  }, [])
 
   useEffect(() => {
     if (!preferences.open || preferences.minimized) return
@@ -426,7 +476,7 @@ export function AnalyticsAssistant() {
     const pending = pendingPromptRef.current
     pendingPromptRef.current = null
     if (pending) {
-      setMessages((current) => current.filter((item) => item.id !== pending.id))
+      setMessages((current) => current.filter((item) => item.id !== pending.id && item.id !== pending.responseID))
       setDraft(pending.content)
     }
     setSending(false)
@@ -444,6 +494,8 @@ export function AnalyticsAssistant() {
     setMessages([])
     setDraft('')
     setError(null)
+    setCompletedAnnouncement('')
+    followStreamRef.current = true
     setLiveMessage('New conversation started.')
   }, [stopRequest])
 
@@ -467,41 +519,103 @@ export function AnalyticsAssistant() {
       role: 'user',
       content: prompt,
     }
+    const assistantMessage: DisplayMessage = {
+      id: messageIDRef.current++,
+      role: 'assistant',
+      content: '',
+      streaming: true,
+      toolActivities: [],
+    }
     const requestMessages = boundAssistantHistory(
       [...messages, userMessage].map(({ role, content, signature }) => ({ role, content, signature })),
     )
     const controller = new AbortController()
     const requestID = ++requestIDRef.current
     abortRef.current = controller
-    pendingPromptRef.current = { id: userMessage.id, content: prompt }
-    setMessages((current) => [...current, userMessage])
+    pendingPromptRef.current = { id: userMessage.id, responseID: assistantMessage.id, content: prompt }
+    followStreamRef.current = true
+    setMessages((current) => [...current, userMessage, assistantMessage])
     setDraft('')
     setError(null)
+    setCompletedAnnouncement('')
     setLiveMessage('Analyzing usage data…')
     setSending(true)
 
     try {
-      const response = await sendAssistantChat({
+      const onStreamEvent = (event: AssistantStreamEvent) => {
+        if (controller.signal.aborted || requestID !== requestIDRef.current) return
+
+        const updateResponse = (update: (message: DisplayMessage) => DisplayMessage) => {
+          setMessages((current) => current.map((message) => (
+            message.id === assistantMessage.id ? update(message) : message
+          )))
+        }
+
+        switch (event.type) {
+          case 'start':
+            setLiveMessage(`Connected to ${event.model}.`)
+            break
+          case 'content_delta':
+            if (event.delta !== '') {
+              updateResponse((message) => ({ ...message, content: message.content + event.delta }))
+              setLiveMessage('Streaming the report…')
+            }
+            break
+          case 'content_reset':
+            updateResponse((message) => ({ ...message, content: '' }))
+            setLiveMessage('Gathering analytics evidence…')
+            break
+          case 'tool_start':
+            updateResponse((message) => ({
+              ...message,
+              toolActivities: [
+                ...(message.toolActivities ?? []).filter((tool) => tool.id !== event.call_id),
+                { id: event.call_id, name: event.name, status: 'running' },
+              ],
+            }))
+            setLiveMessage(`Running ${humanizeToolName(event.name)}…`)
+            break
+          case 'tool_finish':
+            updateResponse((message) => ({
+              ...message,
+              toolActivities: (message.toolActivities ?? []).map((tool) => (
+                tool.id === event.call_id
+                  ? { ...tool, status: event.ok ? 'complete' : 'failed' }
+                  : tool
+              )),
+            }))
+            setLiveMessage(`${humanizeToolName(event.name)} ${event.ok ? 'completed.' : 'failed safely.'}`)
+            break
+          case 'complete':
+            break
+          case 'error':
+            setLiveMessage('')
+            break
+        }
+      }
+
+      const response = await streamAssistantChat({
         messages: requestMessages,
         context,
         consent_version: status.consent_version,
-      }, controller.signal)
+      }, onStreamEvent, controller.signal)
       if (controller.signal.aborted || requestID !== requestIDRef.current) return
-      const content = response.message.content.trim()
-      if (!content) throw new Error('The analytics assistant returned an empty response.')
+      const content = response.message.content
+      if (!content.trim()) throw new Error('The analytics assistant returned an empty response.')
       pendingPromptRef.current = null
-      setMessages((current) => [...current, {
-        id: messageIDRef.current++,
+      setMessages((current) => current.map((message) => message.id === assistantMessage.id ? {
+        id: assistantMessage.id,
         role: 'assistant',
         content,
         signature: response.message.signature,
         toolsUsed: response.tools_used.filter((tool) => tool.trim() !== ''),
-      }])
+      } : message))
+      setCompletedAnnouncement(`Analytics assistant: ${content}`)
       setLiveMessage(`Response complete with ${response.model || status?.model || 'the configured model'}.`)
     } catch (caught) {
       if (controller.signal.aborted || requestID !== requestIDRef.current) return
       pendingPromptRef.current = null
-      setMessages((current) => current.filter((item) => item.id !== userMessage.id))
+      setMessages((current) => current.filter((item) => item.id !== userMessage.id && item.id !== assistantMessage.id))
       setDraft(prompt)
       setError(caught instanceof Error ? caught.message : 'The analytics request failed.')
       setLiveMessage('')
@@ -632,19 +746,29 @@ export function AnalyticsAssistant() {
         />
       ) : (
         <>
-          <div ref={messageListRef} className="analytics-assistant-messages" aria-label="Conversation">
+          <div
+            ref={messageListRef}
+            className="analytics-assistant-messages"
+            role="log"
+            aria-label="Conversation"
+            aria-live="off"
+            aria-busy={sending}
+            tabIndex={0}
+            onScroll={updateMessageScrollFollow}
+          >
             {messages.length === 0 && <Welcome onPrompt={(prompt) => void submitPrompt(prompt)} />}
             {messages.map((message) => <MessageRow key={message.id} message={message} />)}
-            {sending && (
-              <div className="analytics-assistant-thinking" role="status">
-                <AssistantGlyph size={16} />
-                <span>Reviewing the requested analytics</span>
-                <i /><i /><i />
-              </div>
-            )}
           </div>
 
-          <div className="analytics-assistant-status" aria-live="polite" aria-atomic="true">
+          <div className="analytics-assistant-sr-only" role="status" aria-live="polite" aria-atomic="true">
+            {completedAnnouncement}
+          </div>
+
+          <div
+            className="analytics-assistant-status"
+            aria-live={completedAnnouncement ? 'off' : 'polite'}
+            aria-atomic="true"
+          >
             {error ? <span className="error" role="alert">{error}</span> : <span>{liveMessage}</span>}
           </div>
 

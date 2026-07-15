@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"opencode-dashboard/internal/source"
 )
@@ -53,6 +54,14 @@ var (
 type Client interface {
 	EnsureAvailable(context.Context) error
 	Chat(context.Context, ChatRequest) (*ChatResponse, error)
+}
+
+// StreamingClient is implemented by provider clients that can expose generated
+// assistant content as it arrives. Service falls back to Client.Chat for test
+// doubles and alternative providers, while MiniMax uses the streaming path in
+// production.
+type StreamingClient interface {
+	ChatStream(context.Context, ChatRequest, func(string) error) (*ChatResponse, error)
 }
 
 type ServiceOptions struct {
@@ -224,6 +233,20 @@ func publicAvailabilityReason(err error) string {
 }
 
 func (s *Service) Chat(ctx context.Context, input ChatInput) (ChatResult, error) {
+	return s.runChat(ctx, input, nil, false)
+}
+
+// ChatStream runs the same bounded, signed agent loop as Chat while reporting
+// visible assistant deltas and tool lifecycle events. The returned ChatResult
+// remains the canonical, signed result that callers must persist in history.
+func (s *Service) ChatStream(ctx context.Context, input ChatInput, emit func(StreamEvent) error) (ChatResult, error) {
+	if emit == nil {
+		return ChatResult{}, errors.New("analytics assistant stream emitter is required")
+	}
+	return s.runChat(ctx, input, emit, true)
+}
+
+func (s *Service) runChat(ctx context.Context, input ChatInput, emit func(StreamEvent) error, stream bool) (ChatResult, error) {
 	if s == nil || s.client == nil || len(s.historyKey) == 0 {
 		return ChatResult{}, ErrUnavailable
 	}
@@ -244,10 +267,7 @@ func (s *Service) Chat(ctx context.Context, input ChatInput) (ChatResult, error)
 	runCtx, cancel := context.WithTimeout(ctx, s.runTimeout)
 	defer cancel()
 	if err := s.client.EnsureAvailable(runCtx); err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return ChatResult{}, err
-		}
-		return ChatResult{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return ChatResult{}, mapProviderError(err)
 	}
 
 	messages, err := initialMessages(input)
@@ -266,14 +286,75 @@ func (s *Service) Chat(ctx context.Context, input ChatInput) (ChatResult, error)
 		if err := runCtx.Err(); err != nil {
 			return ChatResult{}, err
 		}
-		response, err := s.client.Chat(runCtx, ChatRequest{Messages: messages, Tools: definitions})
+		visible := newVisibleContentStream()
+		var streamEmitErr error
+		visibleReset := false
+		visiblePublished := false
+		publishVisible := func(delta string) error {
+			if delta == "" || emit == nil {
+				return nil
+			}
+			if err := emit(StreamEvent{Type: StreamEventContentDelta, Delta: delta}); err != nil {
+				return err
+			}
+			visiblePublished = true
+			return nil
+		}
+		onContent := func(delta string) error {
+			chunk, err := visible.Push(delta)
+			if err != nil {
+				return fmt.Errorf("%w: unsafe reasoning envelope", ErrProviderFailure)
+			}
+			streamEmitErr = publishVisible(chunk)
+			return streamEmitErr
+		}
+		resetVisible := func() error {
+			if !stream || emit == nil || visibleReset || !visiblePublished {
+				return nil
+			}
+			if err := emit(StreamEvent{Type: StreamEventContentReset}); err != nil {
+				return err
+			}
+			visibleReset = true
+			return nil
+		}
+
+		var response *ChatResponse
+		var err error
+		if stream {
+			if streamingClient, ok := s.client.(StreamingClient); ok {
+				response, err = streamingClient.ChatStream(runCtx, ChatRequest{Messages: messages, Tools: definitions}, onContent)
+			} else {
+				response, err = s.client.Chat(runCtx, ChatRequest{Messages: messages, Tools: definitions})
+				if err == nil && response != nil {
+					err = onContent(response.Content)
+				}
+			}
+		} else {
+			response, err = s.client.Chat(runCtx, ChatRequest{Messages: messages, Tools: definitions})
+		}
 		if err != nil {
+			if streamEmitErr != nil {
+				return ChatResult{}, streamEmitErr
+			}
+			if resetErr := resetVisible(); resetErr != nil {
+				return ChatResult{}, resetErr
+			}
+			if runCtx.Err() != nil {
+				return ChatResult{}, runCtx.Err()
+			}
 			return ChatResult{}, mapProviderError(err)
 		}
 		if response == nil || len(response.AssistantMessage) == 0 || !json.Valid(response.AssistantMessage) {
+			if resetErr := resetVisible(); resetErr != nil {
+				return ChatResult{}, resetErr
+			}
 			return ChatResult{}, fmt.Errorf("%w: provider returned no replayable assistant message", ErrProviderFailure)
 		}
 		if len(response.AssistantMessage) > maxProviderAssistantBytes {
+			if resetErr := resetVisible(); resetErr != nil {
+				return ChatResult{}, resetErr
+			}
 			return ChatResult{}, fmt.Errorf("%w: provider assistant message is too large", ErrProviderFailure)
 		}
 
@@ -283,20 +364,49 @@ func (s *Service) Chat(ctx context.Context, input ChatInput) (ChatResult, error)
 		messages = append(messages, cloneRaw(response.AssistantMessage))
 		if len(response.ToolCalls) == 0 {
 			if response.FinishReason != "stop" {
+				if resetErr := resetVisible(); resetErr != nil {
+					return ChatResult{}, resetErr
+				}
 				return ChatResult{}, fmt.Errorf("%w: provider did not return a complete report", ErrProviderFailure)
 			}
 			content, err := stripLeadingThinkBlocks(response.Content)
 			if err != nil {
+				if resetErr := resetVisible(); resetErr != nil {
+					return ChatResult{}, resetErr
+				}
 				return ChatResult{}, fmt.Errorf("%w: unsafe reasoning envelope", ErrProviderFailure)
 			}
 			if content == "" {
+				if resetErr := resetVisible(); resetErr != nil {
+					return ChatResult{}, resetErr
+				}
 				return ChatResult{}, fmt.Errorf("%w: provider returned an empty final response", ErrProviderFailure)
 			}
 			if crossSourceCostContext {
 				content += "\n\n" + crossSourceCostNotice
 			}
 			if len(content) > maxFinalResponseBytes {
+				if resetErr := resetVisible(); resetErr != nil {
+					return ChatResult{}, resetErr
+				}
 				return ChatResult{}, fmt.Errorf("%w: provider final response is too large", ErrProviderFailure)
+			}
+			if stream {
+				remaining, streamErr := visible.Finish(response.Content)
+				if streamErr != nil {
+					if resetErr := resetVisible(); resetErr != nil {
+						return ChatResult{}, resetErr
+					}
+					return ChatResult{}, fmt.Errorf("%w: unsafe reasoning envelope", ErrProviderFailure)
+				}
+				if err := publishVisible(remaining); err != nil {
+					return ChatResult{}, err
+				}
+				if crossSourceCostContext {
+					if err := publishVisible("\n\n" + crossSourceCostNotice); err != nil {
+						return ChatResult{}, err
+					}
+				}
 			}
 			return ChatResult{
 				Message:   BrowserMessage{Role: "assistant", Content: content, Signature: s.signAssistantMessage(content)},
@@ -305,7 +415,21 @@ func (s *Service) Chat(ctx context.Context, input ChatInput) (ChatResult, error)
 			}, nil
 		}
 		if response.FinishReason != "tool_calls" {
+			if resetErr := resetVisible(); resetErr != nil {
+				return ChatResult{}, resetErr
+			}
 			return ChatResult{}, fmt.Errorf("%w: provider returned tool calls without a tool_calls finish reason", ErrProviderFailure)
+		}
+		if stream {
+			if _, err := visible.Finish(response.Content); err != nil {
+				if resetErr := resetVisible(); resetErr != nil {
+					return ChatResult{}, resetErr
+				}
+				return ChatResult{}, fmt.Errorf("%w: unsafe reasoning envelope", ErrProviderFailure)
+			}
+			if err := resetVisible(); err != nil {
+				return ChatResult{}, err
+			}
 		}
 
 		if totalCalls+len(response.ToolCalls) > s.maxToolCalls {
@@ -331,6 +455,7 @@ func (s *Service) Chat(ctx context.Context, input ChatInput) (ChatResult, error)
 			}
 			seen[fingerprint] = struct{}{}
 			totalCalls++
+			streamCallID := fmt.Sprintf("tool-%d", totalCalls)
 			toolsUsed = appendUnique(toolsUsed, name)
 			if name == "get_cross_source_overview" {
 				crossSourceCostContext = true
@@ -343,6 +468,11 @@ func (s *Service) Chat(ctx context.Context, input ChatInput) (ChatResult, error)
 				}
 			}
 
+			if stream && emit != nil {
+				if err := emit(StreamEvent{Type: StreamEventToolStart, CallID: streamCallID, Name: name}); err != nil {
+					return ChatResult{}, err
+				}
+			}
 			result := s.tools.Execute(runCtx, name, json.RawMessage(call.Function.Arguments))
 			if len(result) == 0 {
 				result = json.RawMessage(`{"ok":false,"error":{"code":"tool_failed","message":"The analytics tool failed safely."}}`)
@@ -351,6 +481,12 @@ func (s *Service) Chat(ctx context.Context, input ChatInput) (ChatResult, error)
 				return ChatResult{}, fmt.Errorf("%w: tool output exceeded %d bytes", ErrLoopLimit, s.maxToolOutputBytes)
 			}
 			totalOutput += len(result)
+			if stream && emit != nil {
+				ok := toolResultOK(result)
+				if err := emit(StreamEvent{Type: StreamEventToolFinish, CallID: streamCallID, Name: name, OK: &ok}); err != nil {
+					return ChatResult{}, err
+				}
+			}
 			toolMessage, err := makeToolMessage(call.ID, name, result)
 			if err != nil {
 				return ChatResult{}, fmt.Errorf("%w: encode tool result", ErrProviderFailure)
@@ -557,9 +693,9 @@ func mapProviderError(err error) error {
 		return err
 	}
 	if errors.Is(err, ErrModelUnavailable) || errors.Is(err, ErrAuthentication) {
-		return fmt.Errorf("%w: MiniMax M3 is unavailable", ErrUnavailable)
+		return fmt.Errorf("%w: MiniMax M3 is unavailable: %w", ErrUnavailable, err)
 	}
-	return fmt.Errorf("%w: MiniMax request failed", ErrProviderFailure)
+	return fmt.Errorf("%w: MiniMax request failed: %w", ErrProviderFailure, err)
 }
 
 // stripLeadingThinkBlocks is defense in depth for providers that unexpectedly
@@ -578,6 +714,97 @@ func stripLeadingThinkBlocks(content string) (string, error) {
 		return "", errors.New("unexpected think tag")
 	}
 	return content, nil
+}
+
+// visibleContentStream withholds reasoning envelopes, partial tag prefixes,
+// and trailing whitespace until it is known to be user-visible answer text.
+// Finish reconciles the streamed text with the provider's authoritative final
+// content before the signed browser message is returned.
+type visibleContentStream struct {
+	raw     string
+	emitted string
+}
+
+func newVisibleContentStream() *visibleContentStream {
+	return &visibleContentStream{}
+}
+
+func (s *visibleContentStream) Push(delta string) (string, error) {
+	if delta == "" {
+		return "", nil
+	}
+	if len(s.raw)+len(delta) > maxProviderAssistantBytes {
+		return "", errors.New("provider content is too large")
+	}
+	s.raw += delta
+	visible, err := streamableVisibleContent(s.raw)
+	if err != nil {
+		return "", err
+	}
+	if len(visible) > maxFinalResponseBytes {
+		return "", errors.New("provider visible content is too large")
+	}
+	if !strings.HasPrefix(visible, s.emitted) {
+		return "", errors.New("provider content changed after it was streamed")
+	}
+	delta = visible[len(s.emitted):]
+	s.emitted = visible
+	return delta, nil
+}
+
+func (s *visibleContentStream) Finish(authoritative string) (string, error) {
+	visible, err := stripLeadingThinkBlocks(authoritative)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(visible, s.emitted) {
+		return "", errors.New("provider final content did not match streamed content")
+	}
+	delta := visible[len(s.emitted):]
+	s.raw = authoritative
+	s.emitted = visible
+	return delta, nil
+}
+
+func streamableVisibleContent(content string) (string, error) {
+	content = strings.TrimLeftFunc(content, unicode.IsSpace)
+	for {
+		if content == "" || strings.HasPrefix("<think>", content) {
+			return "", nil
+		}
+		if !strings.HasPrefix(content, "<think>") {
+			break
+		}
+		end := strings.Index(content, "</think>")
+		if end < 0 {
+			return "", nil
+		}
+		content = strings.TrimLeftFunc(content[end+len("</think>"):], unicode.IsSpace)
+	}
+
+	if strings.Contains(content, "<think>") || strings.Contains(content, "</think>") {
+		return "", errors.New("unexpected think tag")
+	}
+
+	// Do not emit a suffix that could become a reasoning tag in the next
+	// provider chunk. This also prevents the literal partial tag from flashing.
+	safeEnd := len(content)
+	for _, tag := range []string{"<think>", "</think>"} {
+		for prefixBytes := 1; prefixBytes < len(tag); prefixBytes++ {
+			if strings.HasSuffix(content[:safeEnd], tag[:prefixBytes]) {
+				safeEnd -= prefixBytes
+				break
+			}
+		}
+	}
+	return strings.TrimRightFunc(content[:safeEnd], unicode.IsSpace), nil
+}
+
+func toolResultOK(result json.RawMessage) bool {
+	var envelope struct {
+		OK bool `json:"ok"`
+	}
+	return json.Unmarshal(result, &envelope) == nil && envelope.OK
 }
 
 func toolCallFingerprint(name, arguments string) string {

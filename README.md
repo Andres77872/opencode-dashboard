@@ -79,7 +79,7 @@ Codex and Claude quota only refresh while their CLI is running; the dashboard ma
 
 The web dashboard can expose a floating, draggable report assistant backed by MiniMax M3. It appears only when a server-side MiniMax key is configured and MiniMax's authenticated model list contains the exact `MiniMax-M3` model. There is no fallback to an older model, and the TUI does not initialize the agent.
 
-The agent loop and every analytics tool run in the Go backend. The browser never receives the MiniMax credential and never calls MiniMax directly. Tools are read-only and aggregate-only: raw transcripts, prompts, reasoning, patches, tool payloads, configs, secrets, paths, and session details are outside the allowlist. Project results use process-scoped keyed pseudonyms before being sent externally, and cross-source costs remain separated by provenance.
+The agent loop and every analytics tool run in the Go backend. Assistant prose streams into the chat while it is generated, and privacy-safe tool cards show each allowlisted analytics tool as it starts and finishes. The browser never receives the MiniMax credential, tool arguments/results, or provider reasoning, and never calls MiniMax directly. Tools are read-only and aggregate-only: raw transcripts, prompts, reasoning, patches, tool payloads, configs, secrets, paths, and session details are outside the allowlist. Project results use process-scoped keyed pseudonyms before being sent externally, and cross-source costs remain separated by provenance.
 
 Set `OPENCODE_DASHBOARD_MINIMAX_API_KEY`, restart `opencode-dashboard web`, and open the floating assistant. The first-use UI discloses that assistant messages and requested aggregates leave the machine. A complete run is limited to 60 seconds by default; `OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` accepts `10s` through `2m`. See [the architecture, tool contracts, loop limits, and privacy model](docs/analytics-assistant.md).
 
@@ -302,6 +302,7 @@ The web command also serves a JSON API under `/api/v1`. Most endpoints accept a 
 | `GET /api/v1/quotas` | Live provider quota (Codex / Claude Code / MiniMax) | — |
 | `GET /api/v1/assistant/status` | MiniMax M3 entitlement and assistant privacy metadata | — |
 | `POST /api/v1/assistant/chat` | Run the backend report-agent loop | bounded user/assistant history |
+| `POST /api/v1/assistant/chat/stream` | Stream assistant text and privacy-safe tool lifecycle events (NDJSON) | bounded user/assistant history |
 | `GET /api/v1/version` | Build info | — |
 | `GET /health` | Health check | — |
 
