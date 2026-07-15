@@ -1,0 +1,6 @@
+data: {"id":"chatcmpl-sanitized","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":"I should inspect ","reasoning_details":[{"index":0,"type":"reasoning.text","text":"I should inspect ","signature":"sanitized-signature"}],"provider_extension":{"trace":"preserved"}},"finish_reason":null}],"base_resp":{"status_code":0}}
+
+data: {"id":"chatcmpl-sanitized","choices":[{"index":0,"delta":{"reasoning_content":"the available sources ","reasoning_details":[{"index":0,"text":"the available sources "}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-sanitized","choices":[{"index":0,"delta":{"reasoning_content":"before answering.","reasoning_details":[{"index":0,"text":"before answering."}],"tool_calls":[{"index":0,"id":"provider-call-sanitized","type":"function","function":{"name":"list_sources","arguments":"{}"},"provider_tool_field":{"opaque":"preserved"}}]},"finish_reason":"tool_calls"}]}
+
