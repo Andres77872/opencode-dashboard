@@ -36,6 +36,23 @@ func TestQuotasEndpoint(t *testing.T) {
 				},
 			},
 			{Provider: quota.ProviderClaude, Label: "Claude Code", Status: quota.StatusUnavailable, Reason: "no snapshot", Help: "set up the statusline"},
+			{
+				Provider: quota.ProviderKimi,
+				Label:    "Kimi Code",
+				Status:   quota.StatusOK,
+				AsOfMS:   1783900000000,
+				Windows: []quota.Window{
+					{ID: "weekly", Label: "Weekly limit", UsedPercent: 42, ResetsAt: 1784354593, WindowMinutes: 10080},
+				},
+				ExtraUsage: &quota.ExtraUsage{
+					BalanceCents:              10000,
+					TotalCents:                20000,
+					MonthlyChargeLimitEnabled: true,
+					MonthlyChargeLimitCents:   20000,
+					MonthlyUsedCents:          5000,
+					Currency:                  "USD",
+				},
+			},
 		},
 	}}
 	server := NewServerWithServices("", registry, nil, nil, fake)
@@ -55,8 +72,8 @@ func TestQuotasEndpoint(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if len(body.Providers) != 2 {
-		t.Fatalf("providers = %d, want 2", len(body.Providers))
+	if len(body.Providers) != 3 {
+		t.Fatalf("providers = %d, want 3", len(body.Providers))
 	}
 	codexEntry := body.Providers[0]
 	if codexEntry.Provider != quota.ProviderCodex || len(codexEntry.Windows) != 2 || codexEntry.Windows[0].UsedPercent != 37 {
@@ -65,6 +82,12 @@ func TestQuotasEndpoint(t *testing.T) {
 	claudeEntry := body.Providers[1]
 	if claudeEntry.Status != quota.StatusUnavailable || claudeEntry.Help == "" {
 		t.Errorf("claude entry = %+v, want unavailable with help", claudeEntry)
+	}
+	kimiEntry := body.Providers[2]
+	if kimiEntry.Provider != quota.ProviderKimi || len(kimiEntry.Windows) != 1 ||
+		kimiEntry.Windows[0].Label != "Weekly limit" || kimiEntry.ExtraUsage == nil ||
+		kimiEntry.ExtraUsage.BalanceCents != 10000 {
+		t.Errorf("kimi entry = %+v, want labeled quota and Extra Usage balance", kimiEntry)
 	}
 }
 

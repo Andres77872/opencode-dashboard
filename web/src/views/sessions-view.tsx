@@ -18,6 +18,7 @@ import {
   EmptyState,
   ErrorState,
   Notice,
+  vendorMeta,
   type Column,
   type SortSpec,
 } from '../components/vael'
@@ -114,8 +115,7 @@ function fmtDur(createdAt: string, updatedAt: string): string {
 export function SessionsView() {
   const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [searchParams, setSearchParams] = useSearchParams()
-  const sourceLabel =
-    selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
+  const sourceLabel = selectedSourceInfo?.label ?? vendorMeta(selectedSourceId).name
 
   const { cacheKey } = usePeriodControls()
   const rawFilter = searchParams.get('filter') ?? ''
@@ -443,8 +443,8 @@ export function SessionsView() {
             icon="folder"
             title="No sessions recorded yet"
             description={
-              selectedSourceId === 'claude_code'
-                ? 'No persisted Claude Code sessions were found in readable local transcripts for this window.'
+              selectedSourceId === 'claude_code' || selectedSourceId === 'kimi_code'
+                ? `No persisted ${sourceLabel} sessions were found in readable local transcripts for this window.`
                 : `This view stays empty until ${sourceLabel} contains session rows for this range.`
             }
           />

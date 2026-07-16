@@ -39,6 +39,16 @@ function sourceList(startupSourceId: SourceListResponse['startup_source_id']): S
         local_only: true,
         capabilities: [],
       },
+      {
+        id: 'kimi_code',
+        label: 'Kimi Code',
+        kind: 'jsonl',
+        available: true,
+        default: false,
+        read_only: true,
+        local_only: true,
+        capabilities: [],
+      },
     ],
   }
 }
@@ -46,12 +56,14 @@ function sourceList(startupSourceId: SourceListResponse['startup_source_id']): S
 test('uses backend startup source when URL source is absent', () => {
   assert.equal(resolveRequestedSourceId(null, sourceList('claude_code')), 'claude_code')
   assert.equal(resolveRequestedSourceId(null, sourceList('codex')), 'codex')
+  assert.equal(resolveRequestedSourceId(null, sourceList('kimi_code')), 'kimi_code')
 })
 
 test('preserves URL source precedence over backend startup source', () => {
   assert.equal(resolveRequestedSourceId('opencode', sourceList('claude_code')), 'opencode')
   assert.equal(resolveRequestedSourceId('claude_code', sourceList('opencode')), 'claude_code')
   assert.equal(resolveRequestedSourceId('codex', sourceList('opencode')), 'codex')
+  assert.equal(resolveRequestedSourceId('kimi_code', sourceList('opencode')), 'kimi_code')
   assert.equal(resolveRequestedSourceId('claude_code', sourceList('codex')), 'claude_code')
 })
 
@@ -70,15 +82,18 @@ test('omits source param only when default and startup fallback are the same sou
   assert.equal(shouldOmitSourceParam('opencode', sourceList('claude_code')), false)
   assert.equal(shouldOmitSourceParam('claude_code', sourceList('claude_code')), false)
   assert.equal(shouldOmitSourceParam('codex', sourceList('codex')), false)
+  assert.equal(shouldOmitSourceParam('kimi_code', sourceList('kimi_code')), false)
 })
 
-test('source-scoped period cache keys isolate OpenCode Claude and Codex payloads', () => {
+test('source-scoped period cache keys isolate every source payload', () => {
   assert.equal(getSourceScopedCacheKey('opencode', '7d'), 'opencode::7d')
   assert.equal(getSourceScopedCacheKey('claude_code', '7d'), 'claude_code::7d')
   assert.equal(getSourceScopedCacheKey('codex', '7d'), 'codex::7d')
+  assert.equal(getSourceScopedCacheKey('kimi_code', '7d'), 'kimi_code::7d')
   assert.notEqual(getSourceScopedCacheKey('opencode', '7d'), getSourceScopedCacheKey('claude_code', '7d'))
   assert.notEqual(getSourceScopedCacheKey('opencode', '7d'), getSourceScopedCacheKey('codex', '7d'))
   assert.notEqual(getSourceScopedCacheKey('claude_code', '7d'), getSourceScopedCacheKey('codex', '7d'))
+  assert.notEqual(getSourceScopedCacheKey('codex', '7d'), getSourceScopedCacheKey('kimi_code', '7d'))
 })
 
 // A source can vanish between runs — e.g. the backend is restarted without

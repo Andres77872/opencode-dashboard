@@ -3,9 +3,9 @@
    guidance when a provider has no data source configured yet. */
 import { Badge, BudgetRing, Card, ErrorState, SectionTitle, Skeleton } from '../vael'
 import { refreshQuotas, useQuotas } from '../../lib/use-quotas'
-import { clampPercent, formatResetCountdown, providerMeta, quotaTone, windowLabel } from '../../lib/quotas'
+import { clampPercent, formatQuotaCurrency, formatResetLabel, providerMeta, quotaTone, windowLabel } from '../../lib/quotas'
 import { formatRelativeTime } from '../../lib/format'
-import type { ProviderQuota, QuotaWindow } from '../../types/api'
+import type { ProviderQuota, QuotaExtraUsage, QuotaWindow } from '../../types/api'
 
 function WindowRing({ window: win, now }: { window: QuotaWindow; now: number }) {
   const used = Math.round(clampPercent(win.used_percent))
@@ -15,7 +15,7 @@ function WindowRing({ window: win, now }: { window: QuotaWindow; now: number }) 
       <BudgetRing pct={used} size={96} thickness={10} tone={quotaTone(used)} label={windowLabel(win)} />
       {win.resets_at ? (
         <span title={`resets ${resetAbsolute}`} style={{ font: '400 12px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>
-          resets in {formatResetCountdown(win.resets_at, now)}
+          {formatResetLabel(win.resets_at, now)}
         </span>
       ) : (
         <span style={{ font: '400 12px/1 var(--font-ui)', color: 'var(--fg-faint)' }}>no reset time</span>
@@ -32,6 +32,36 @@ function statusBadge(quota: ProviderQuota) {
     return <Badge>unavailable</Badge>
   }
   return <Badge tone="success">live</Badge>
+}
+
+function ExtraUsagePanel({ extra }: { extra: QuotaExtraUsage }) {
+  const hasLimit = extra.monthly_charge_limit_enabled && extra.monthly_charge_limit_cents > 0
+  const usedPercent = hasLimit
+    ? clampPercent((extra.monthly_used_cents / extra.monthly_charge_limit_cents) * 100)
+    : 0
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 9, borderTop: '1px solid var(--border-subtle)', paddingTop: 11 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <span style={{ font: '600 11px/1 var(--font-ui)', color: 'var(--fg-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          Extra Usage
+        </span>
+        <span style={{ font: '600 13px/1 var(--font-mono)', color: 'var(--fg-primary)' }}>
+          {formatQuotaCurrency(extra.balance_cents, extra.currency)} balance
+        </span>
+      </div>
+      {hasLimit && (
+        <div style={{ height: 5, borderRadius: 3, background: 'var(--ink-700)', overflow: 'hidden' }}>
+          <div style={{ width: `${usedPercent}%`, height: '100%', borderRadius: 3, background: quotaTone(usedPercent) }} />
+        </div>
+      )}
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, font: '400 11px/1.3 var(--font-ui)', color: 'var(--fg-muted)' }}>
+        <span>Used this month: {formatQuotaCurrency(extra.monthly_used_cents, extra.currency)}</span>
+        <span>
+          Monthly limit: {hasLimit ? formatQuotaCurrency(extra.monthly_charge_limit_cents, extra.currency) : 'unlimited'}
+        </span>
+      </div>
+    </div>
+  )
 }
 
 function ProviderQuotaCard({ quota, now }: { quota: ProviderQuota; now: number }) {
@@ -73,6 +103,7 @@ function ProviderQuotaCard({ quota, now }: { quota: ProviderQuota; now: number }
             <WindowRing key={win.id} window={win} now={now} />
           ))}
         </div>
+        {quota.extra_usage && <ExtraUsagePanel extra={quota.extra_usage} />}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
           {asOf && <span style={{ font: '400 11px/1 var(--font-ui)', color: 'var(--fg-faint)' }}>as of {asOf}</span>}
           {quota.status === 'stale' && (
@@ -93,8 +124,8 @@ export function QuotasSection() {
     return (
       <div>
         <SectionTitle sub="Live subscription usage — not affected by the time range">Quotas</SectionTitle>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {[0, 1, 2].map((i) => (
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => (
             <Skeleton key={i} height={180} />
           ))}
         </div>
@@ -124,7 +155,7 @@ export function QuotasSection() {
   return (
     <div>
       <SectionTitle sub="Live subscription usage — not affected by the time range">Quotas</SectionTitle>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
         {data.providers.map((quota) => (
           <ProviderQuotaCard key={quota.provider} quota={quota} now={now} />
         ))}

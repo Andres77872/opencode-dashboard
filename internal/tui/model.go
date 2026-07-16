@@ -837,7 +837,7 @@ func (m *model) renderHelp(bodyHeight int) string {
 		"  1-7       jump to tab",
 		"  h / ←     previous tab",
 		"  l / →     next tab",
-		"  S         switch data source (opencode/claude_code/codex)",
+		"  S         switch data source (opencode/claude_code/codex/kimi_code)",
 		"  T         time-range picker (presets + custom from/to)",
 		"  r         refresh data",
 		"  ? / Esc   toggle help",

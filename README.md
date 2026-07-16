@@ -2,7 +2,7 @@
 
 > Local analytics for your AI coding-assistant usage — one binary, web or terminal, works offline by default.
 
-See your usage across **OpenCode**, **Claude Code**, and **Codex** — sessions, costs, tokens, models, tools, projects, and messages — through a web dashboard or a terminal UI. Source files are never modified, and normal dashboard views remain local. The optional MiniMax web assistant is the explicit exception: when enabled and used, it sends the chat and requested aggregate metrics to MiniMax to produce reports and insights.
+See your usage across **OpenCode**, **Claude Code**, **Codex**, and **Kimi Code** — sessions, costs, tokens, models, tools, projects, and messages — through a web dashboard or a terminal UI. Source files are never modified, and normal dashboard views remain local. The optional MiniMax web assistant is the explicit exception: when enabled and used, it sends the chat and requested aggregate metrics to MiniMax to produce reports and insights.
 
 ## Overview
 
@@ -11,13 +11,14 @@ See your usage across **OpenCode**, **Claude Code**, and **Codex** — sessions,
 - **Web dashboard** — browser SPA served at `http://127.0.0.1:7450`
 - **TUI dashboard** — terminal interface built with Bubble Tea
 
-It supports three data sources, all read **read-only** and **local-only**:
+It supports four data sources, all read **read-only** and **local-only**:
 
 | Source | ID | Storage | Default location |
 |--------|----|---------|------------------|
 | OpenCode | `opencode` | SQLite database | channel DBs under `~/.local/share/opencode/` |
 | Claude Code | `claude_code` | JSONL transcripts | `~/.claude` |
 | Codex | `codex` | JSONL transcripts | `~/.codex` |
+| Kimi Code | `kimi_code` | Session state + agent wire JSONL | `~/.kimi-code` |
 
 Most views are scoped to one selected source. The **Overview** is the exception: it merges every available source into combined totals plus a per-source breakdown. You can switch the active source and time range live in both interfaces. No OpenCode (or other) server needs to be running, and at least one source's local data is all that's required. The dashboard creates `~/.local/share/opencode-dashboard/usage-cache.sqlite` by default; an empty cache is consolidated by a background sync at startup while views are served live from raw data. Once a source is cached, views load from the cache and the gap since the finality cutoff (six hours behind the last sync) is automatically re-mirrored from raw content when the source changes, so recent activity is never missing. The web UI also offers an explicit incremental resync and a clear-and-rebuild action.
 
@@ -30,30 +31,61 @@ Each source is detected automatically and exposed with its own capabilities, dia
 | OpenCode | `sqlite` | `--db` → `--channel` → `OPENCODE_DASHBOARD_DB` → auto-detect (stable → latest → beta) | `reported` — real spend recorded by OpenCode |
 | Claude Code | `jsonl` | `--claude-home` → `CLAUDE_CONFIG_DIR` → `~/.claude` | `mixed` — reported when present, else computed from a bundled pricing snapshot, else missing |
 | Codex | `jsonl` | `--codex-home` → `OPENCODE_DASHBOARD_CODEX_HOME` → `~/.codex` | `estimated_api_equivalent` — estimated API-equivalent value, **not** actual subscription spend |
+| Kimi Code | `jsonl` | `--kimi-home` → `KIMI_CODE_HOME` → `~/.kimi-code` | `estimated_api_equivalent` — estimated from official Kimi API prices, **not** actual membership or coding-plan spend |
 
 ### Cross-source costs
 
-The Overview deliberately does **not** present a single combined cost number. OpenCode reports real dollars, Codex reports an estimated API-equivalent, and Claude Code is mixed — summing them would be misleading. Costs are always shown per source with each source's own provenance, while additive metrics (sessions, messages, tokens, days) are combined. Cross-source "top" signals (models, projects, tools) are ranked by a cost-neutral metric (tokens / invocations) so real and estimated dollars are never compared.
+The Overview deliberately does **not** present a single combined cost number. OpenCode reports real dollars, Codex and Kimi Code report estimated API-equivalent values, and Claude Code is mixed — summing them would be misleading. Costs are always shown per source with each source's own provenance, while additive metrics (sessions, messages, tokens, days) are combined. Cross-source "top" signals (models, projects, tools) are ranked by a cost-neutral metric (tokens / invocations) so real and estimated dollars are never compared.
+
+### Kimi Code wire accounting
+
+Kimi Code sessions are read from `sessions/<workspace>/<session>/state.json` and every `agents/<agent>/wire.jsonl`. The adapter:
+
+- counts visible `turn.prompt` / user-origin messages and one assistant row per `llm.request`;
+- uses `usage.record` as the canonical per-request token record, avoiding the duplicate usage embedded in `step.end`;
+- maps `inputOther`, `inputCacheRead`, `inputCacheCreation`, and `output` into the dashboard's disjoint token buckets;
+- pairs `tool.call` and `tool.result` by `toolCallId`;
+- rolls subagent activity into its parent session while preserving agent attribution; and
+- starts accounting after the last durable `forked` marker, so copied parent history is not counted again in forked sessions.
+
+### Kimi model pricing catalog
+
+The bundled snapshot uses Kimi's official per-million-token API prices. Cache creation is priced as a cache miss because the public tables expose cache-hit and cache-miss input rates. These values are an API-equivalent estimate for Kimi Code transcript usage.
+
+| Canonical API model | Context | Cache hit | Input cache miss | Output |
+|---------------------|---------|-----------|------------------|--------|
+| `kimi-k2.5` | 256K | $0.10 | $0.60 | $3.00 |
+| `kimi-k2.6` | 256K | $0.16 | $0.95 | $4.00 |
+| `kimi-k2.7-code` | 256K | $0.19 | $0.95 | $4.00 |
+| `kimi-k2.7-code-highspeed` | 256K | $0.38 | $1.90 | $8.00 |
+| `kimi-k3` | 1M | $0.30 | $3.00 | $15.00 |
+
+Managed Kimi Code aliases follow the current official model table: `kimi-code/k3` and `k3` → `kimi-k3`; `kimi-code/kimi-for-coding` → `kimi-k2.7-code`; and `kimi-code/kimi-for-coding-highspeed` → `kimi-k2.7-code-highspeed`. Historical K2.5 and K2.6 aliases are also retained so old transcripts remain priceable. Unknown or custom aliases stay `missing` rather than receiving a guessed price.
+
+Sources: [Kimi Code model configuration](https://www.kimi.com/code/docs/en/kimi-code/models.html), [Kimi K2.5 pricing](https://platform.kimi.ai/docs/pricing/chat-k25), [Kimi K2.6 pricing](https://platform.kimi.ai/docs/pricing/chat-k26), [Kimi K2.7 Code pricing](https://platform.kimi.ai/docs/pricing/chat-k27-code), and [Kimi K3 pricing](https://platform.kimi.ai/docs/pricing/chat-k3).
 
 ### Privacy
 
-- **Read-only** — no source file or database is ever written to or mutated.
-- **Local by default** — normal dashboard data is read from local paths and served on `127.0.0.1`; nothing is uploaded unless the user opens and uses the optional MiniMax analytics assistant described below.
+- **Read-only source history** — no transcript, session file, source database, or source configuration is ever written to or mutated. The Kimi quota monitor may refresh Kimi's OAuth credential file using the same atomic flow and cross-process lock as Kimi Code itself; it does not alter session history.
+- **Local by default** — historical dashboard data is read from local paths and served on `127.0.0.1`. The quota monitor makes authenticated requests only for providers whose quota is exposed through an official live API (Kimi Code and MiniMax), and the optional analytics assistant sends the disclosed chat and aggregate metrics to MiniMax when used.
 - **Dashboard cache** — aggregate metadata is stored in `~/.local/share/opencode-dashboard/usage-cache.sqlite` by default; override with `--cache-db` or `OPENCODE_DASHBOARD_CACHE_DB`.
 - **Self-maintaining consolidation** — an empty cache is built by a background sync at startup (views serve live raw data meanwhile); a ready cache re-mirrors recent raw activity on read, so cached views stay complete through now. The web top bar database action opens a sync panel with status, progress, last update, logs, incremental resync, and clear-and-rebuild.
 - **No cached transcripts** — raw conversation text, reasoning text, tool input, tool output, and patches are not stored in the dashboard cache.
-- **Plaintext transcripts** — Claude Code and Codex JSONL transcripts are local plaintext and may contain prompts, tool output, file paths, patches, and secrets.
+- **Plaintext transcripts** — Claude Code, Codex, and Kimi Code JSONL data is local plaintext and may contain prompts, reasoning, tool output, file paths, patches, and secrets.
 - **Redaction** — config previews (`/api/v1/config`) redact obvious secrets before display.
 
 ## Quota tracking
 
-Besides historical usage, the dashboard shows the **remaining subscription quota** for the provider accounts on the machine — a compact strip in the sidebar and detailed cards on the Overview page, served by `GET /api/v1/quotas`. Each provider reports its session window and weekly window as used-percent with reset times. Collection uses **official surfaces only** — no reverse-engineered private endpoints:
+Besides historical usage, the dashboard shows the **remaining subscription quota** for the provider accounts on the machine — a compact strip in the sidebar and detailed cards on the Overview page, served by `GET /api/v1/quotas`. Provider enforcement windows are normalized to used-percent with reset times; Kimi Code also exposes its optional Extra Usage balance and monthly spending cap. Collection uses **official surfaces only** — no reverse-engineered private endpoints:
 
 | Provider | Setup | How the data is obtained |
 |----------|-------|--------------------------|
 | Codex | automatic | The Codex CLI records `rate_limits` snapshots in its own rollout files under `~/.codex/sessions`; the dashboard reads the newest one. No network, no credentials. |
 | Claude Code | one command (below) | Claude Code's [documented statusline integration](https://code.claude.com/docs/en/statusline) pipes JSON including `rate_limits` to a configured statusline command. Pro/Max plans only. |
+| Kimi Code | automatic after `kimi login` | The same managed `/usages` surface used by Kimi Code's official [`/usage` command](https://www.kimi.com/code/docs/en/kimi-code-cli/reference/slash-commands.html) is called with the OAuth credential under `$KIMI_CODE_HOME/credentials/`. Short-lived access tokens are refreshed through Kimi's official OAuth flow, using Kimi Code's `oauth/<credential>.lock` protocol to avoid refresh-token races with a running CLI. |
 | MiniMax | API key | MiniMax's documented `token_plan/remains` endpoint, called with the key from `OPENCODE_DASHBOARD_MINIMAX_API_KEY` or, as a fallback, opencode's auth store (`~/.local/share/opencode/auth.json`, entry `minimax-coding-plan`). |
+
+The Kimi collector follows the official open-source [managed usage client](https://github.com/MoonshotAI/kimi-code/blob/main/packages/oauth/src/managed-usage.ts) and [OAuth refresh manager](https://github.com/MoonshotAI/kimi-code/blob/main/packages/oauth/src/oauth-manager.ts), including scoped credentials for custom `KIMI_CODE_BASE_URL` / OAuth environments.
 
 ### Claude setup on a new machine
 
@@ -73,7 +105,7 @@ If a different statusline is already configured, the command refuses; re-run wit
 
 ### Freshness
 
-Codex and Claude quota only refresh while their CLI is running; the dashboard marks snapshots older than 15 minutes with a *stale* badge instead of hiding them. The Claude snapshot lives at `~/.local/share/opencode-dashboard/claude-rate-limits.json` — dashboard-owned, removed by `opencode-dashboard uninstall`. `opencode-dashboard web` prints a one-line hint at startup if Claude quota tracking is not set up yet.
+Codex and Claude quota only refresh while their CLI is running; the dashboard marks snapshots older than 15 minutes with a *stale* badge instead of hiding them. Kimi Code and MiniMax are fetched live and cached for 60 seconds; after a transient API failure, the last successful value remains visible with a *stale* badge. The Claude snapshot lives at `~/.local/share/opencode-dashboard/claude-rate-limits.json` — dashboard-owned, removed by `opencode-dashboard uninstall`. `opencode-dashboard web` prints a one-line hint at startup if Claude quota tracking is not set up yet.
 
 ## Analytics assistant (web only)
 
@@ -87,7 +119,7 @@ Set `OPENCODE_DASHBOARD_MINIMAX_API_KEY`, restart `opencode-dashboard web`, and 
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| At least one source | — | OpenCode DB, Claude Code (`~/.claude`), or Codex (`~/.codex`) data on disk |
+| At least one source | — | OpenCode DB, Claude Code (`~/.claude`), Codex (`~/.codex`), or Kimi Code (`~/.kimi-code`) data on disk |
 | Go | 1.26+ | Only required to build from source |
 
 ## Installation
@@ -183,6 +215,7 @@ opencode-dashboard web --db /path/to/db         # Explicit OpenCode DB path
 opencode-dashboard web --channel beta           # Channel-specific OpenCode DB
 opencode-dashboard web --claude-home ~/.claude  # Explicit Claude Code home
 opencode-dashboard web --codex-home ~/.codex    # Explicit Codex home
+opencode-dashboard web --kimi-home ~/.kimi-code # Explicit Kimi Code home
 opencode-dashboard web --cache-db /tmp/usage.db # Explicit dashboard cache
 opencode-dashboard web --rebuild-cache          # Remove dashboard cache before start
 opencode-dashboard web --no-cache               # Start without dashboard cache
@@ -194,6 +227,7 @@ opencode-dashboard web --no-open                # Don't auto-open the browser
 ```bash
 opencode-dashboard tui                       # Interactive terminal UI
 opencode-dashboard tui --source claude_code  # Start on Claude Code
+opencode-dashboard tui --source kimi_code    # Start on Kimi Code
 opencode-dashboard tui --channel latest      # Channel-specific OpenCode DB
 opencode-dashboard tui --rebuild-cache       # Remove dashboard cache before start
 opencode-dashboard tui --no-cache            # Start without dashboard cache
@@ -223,9 +257,10 @@ Key bindings:
 | `--port <n>` | `web` | Localhost port to bind (default `7450`) |
 | `--db <path>` | `web`, `tui` | Explicit OpenCode SQLite database path |
 | `--channel <c>` | `web`, `tui` | Resolve a channel-specific OpenCode DB (`stable`/`latest`/`beta`/custom) |
-| `--source <id>` | `web`, `tui` | Initial source: `opencode`, `claude_code`, or `codex` (default `opencode`) |
+| `--source <id>` | `web`, `tui` | Initial source: `opencode`, `claude_code`, `codex`, or `kimi_code` (default `opencode`) |
 | `--claude-home <dir>` | `web`, `tui` | Claude Code config directory |
 | `--codex-home <dir>` | `web`, `tui` | Codex config directory |
+| `--kimi-home <dir>` | `web`, `tui` | Kimi Code home directory |
 | `--cache-db <path>` | `web`, `tui` | Dashboard-owned SQLite cache path |
 | `--rebuild-cache` | `web`, `tui` | Delete the dashboard cache before start |
 | `--no-cache` | `web`, `tui` | Run against live sources without using the dashboard cache |
@@ -278,11 +313,11 @@ opencode-dashboard uninstall --force      # Remove without confirmation
 |------|--------|
 | `~/.local/share/opencode/`, `~/.config/opencode/` | OpenCode-owned data and config |
 | `opencode*.db` | Channel databases |
-| `~/.claude`, `~/.codex` | Claude Code / Codex source data |
+| `~/.claude`, `~/.codex`, `~/.kimi-code` | Claude Code / Codex / Kimi Code source data |
 
 ## API endpoints
 
-The web command also serves a JSON API under `/api/v1`. Most endpoints accept a `?source=<id>` parameter (`opencode`, `claude_code`, or `codex`; omitted values use the API compatibility default, `opencode`) and a time-range parameter — either `?period=<preset>` or an explicit `?from=YYYY-MM-DD&to=YYYY-MM-DD` (defaults to `7d`). The web client sends its startup-selected source explicitly.
+The web command also serves a JSON API under `/api/v1`. Most endpoints accept a `?source=<id>` parameter (`opencode`, `claude_code`, `codex`, or `kimi_code`; omitted values use the API compatibility default, `opencode`) and a time-range parameter — either `?period=<preset>` or an explicit `?from=YYYY-MM-DD&to=YYYY-MM-DD` (defaults to `7d`). The web client sends its startup-selected source explicitly.
 
 | Endpoint | Description | Notable params |
 |----------|-------------|----------------|
@@ -299,7 +334,7 @@ The web command also serves a JSON API under `/api/v1`. Most endpoints accept a 
 | `GET /api/v1/messages` | Paginated message list | `page`, `limit` (≤100), `sort`, period |
 | `GET /api/v1/messages/{id}` | Message detail | `source` |
 | `GET /api/v1/config` | Source configuration preview (redacted) | `source` |
-| `GET /api/v1/quotas` | Live provider quota (Codex / Claude Code / MiniMax) | — |
+| `GET /api/v1/quotas` | Provider quota (Codex / Claude Code / Kimi Code / MiniMax), including Kimi Extra Usage when available | — |
 | `GET /api/v1/assistant/status` | MiniMax M3 entitlement and assistant privacy metadata | — |
 | `POST /api/v1/assistant/chat` | Run the backend report-agent loop | bounded user/assistant history |
 | `POST /api/v1/assistant/chat/stream` | Stream assistant text and privacy-safe tool lifecycle events (NDJSON) | bounded user/assistant history |
@@ -368,11 +403,13 @@ opencode-dashboard/
 ├── internal/
 │   ├── config/                      # XDG paths, DB/channel + source-home resolution
 │   ├── cache/                       # Dashboard-owned SQLite aggregate cache
+│   ├── quota/                       # Codex / Claude / Kimi / MiniMax quota collectors
 │   ├── store/                       # SQLite read-only store (OpenCode)
 │   ├── source/                      # Source registry + cross-source aggregate
 │   │   ├── opencode/                # OpenCode (SQLite) source
 │   │   ├── claudecode/              # Claude Code (JSONL) source
-│   │   └── codex/                   # Codex (JSONL) source
+│   │   ├── codex/                   # Codex (JSONL) source
+│   │   └── kimicode/                # Kimi Code (state + wire JSONL) source
 │   ├── stats/                       # Period, aggregation, and view domain types
 │   ├── web/                         # HTTP server, API handlers, embedded SPA
 │   ├── tui/                         # Bubble Tea terminal UI

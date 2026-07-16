@@ -12,6 +12,7 @@ const (
 	SourceOpenCode   SourceID = "opencode"
 	SourceClaudeCode SourceID = "claude_code"
 	SourceCodex      SourceID = "codex"
+	SourceKimiCode   SourceID = "kimi_code"
 )
 
 type Source interface {

@@ -9,6 +9,7 @@ export interface QuotaProviderMeta {
 export const QUOTA_PROVIDER_META: Record<QuotaProviderID, QuotaProviderMeta> = {
   codex: { label: 'Codex', color: 'var(--vendor-codex)' },
   claude_code: { label: 'Claude Code', color: 'var(--vendor-claude)' },
+  kimi_code: { label: 'Kimi Code', color: 'var(--vendor-kimi)' },
   minimax: { label: 'MiniMax', color: 'var(--vendor-minimax)' },
 }
 
@@ -17,6 +18,12 @@ export const QUOTA_PROVIDER_META: Record<QuotaProviderID, QuotaProviderMeta> = {
  * MiniMax 4-hour interval renders "4h" even though its id is "5h".
  */
 export function windowLabel(window: QuotaWindow): string {
+  if (window.label?.trim()) {
+    const label = window.label.trim().replace(/\s+limit$/i, '')
+    if (/^weekly$/i.test(label)) return 'week'
+    if (/^monthly$/i.test(label)) return 'month'
+    return label
+  }
   const minutes = window.window_minutes ?? 0
   if (minutes <= 0) {
     return window.id === 'weekly' ? 'week' : window.id
@@ -52,6 +59,12 @@ export function formatResetCountdown(resetsAtSec: number, nowMs: number): string
   return `${minutes}m`
 }
 
+/** Full reset copy for detail cards, avoiding phrases like "resets in resets now". */
+export function formatResetLabel(resetsAtSec: number, nowMs: number): string {
+  const countdown = formatResetCountdown(resetsAtSec, nowMs)
+  return countdown === 'resets now' ? countdown : `resets in ${countdown}`
+}
+
 /** Traffic-light tone for a used-percent value. */
 export function quotaTone(usedPercent: number): string {
   if (usedPercent >= 90) {
@@ -73,4 +86,18 @@ export function clampPercent(value: number): number {
 
 export function providerMeta(quota: ProviderQuota): QuotaProviderMeta {
   return QUOTA_PROVIDER_META[quota.provider] ?? { label: quota.label || quota.provider, color: 'var(--fg-muted)' }
+}
+
+/** Deterministic compact money formatting for Kimi Code Extra Usage. */
+export function formatQuotaCurrency(cents: number, currency: string): string {
+  const safeCents = Number.isFinite(cents) ? cents : 0
+  const amount = (safeCents / 100).toFixed(2)
+  switch (currency.trim().toUpperCase()) {
+    case 'USD':
+      return `$${amount}`
+    case 'CNY':
+      return `¥${amount}`
+    default:
+      return `${amount} ${currency.trim().toUpperCase() || 'USD'}`
+  }
 }

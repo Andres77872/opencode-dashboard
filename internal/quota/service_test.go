@@ -27,14 +27,15 @@ func TestServiceQuotasStableOrder(t *testing.T) {
 		providers: []provider{
 			&fakeProvider{result: ProviderQuota{Provider: ProviderCodex, Status: StatusOK}},
 			&fakeProvider{result: ProviderQuota{Provider: ProviderClaude, Status: StatusUnavailable}},
+			&fakeProvider{result: ProviderQuota{Provider: ProviderKimi, Status: StatusOK}},
 			&fakeProvider{result: ProviderQuota{Provider: ProviderMiniMax, Status: StatusStale}},
 		},
 	}
 	got := svc.Quotas(context.Background())
-	if len(got.Providers) != 3 {
-		t.Fatalf("providers = %d, want 3", len(got.Providers))
+	if len(got.Providers) != 4 {
+		t.Fatalf("providers = %d, want 4", len(got.Providers))
 	}
-	wantOrder := []string{ProviderCodex, ProviderClaude, ProviderMiniMax}
+	wantOrder := []string{ProviderCodex, ProviderClaude, ProviderKimi, ProviderMiniMax}
 	for i, want := range wantOrder {
 		if got.Providers[i].Provider != want {
 			t.Errorf("providers[%d] = %q, want %q", i, got.Providers[i].Provider, want)
@@ -69,9 +70,14 @@ func TestServiceQuotasSlowProviderIsBounded(t *testing.T) {
 
 func TestNewServiceBuildsAllProviders(t *testing.T) {
 	t.Setenv("OPENCODE_DASHBOARD_MINIMAX_API_KEY", "") // no key => minimax stays offline
-	svc := NewService(Options{CodexHome: t.TempDir(), ClaudeSnapshotPath: "x", MiniMaxAuthPath: filepath.Join(t.TempDir(), "absent.json")})
+	svc := NewService(Options{
+		CodexHome:          t.TempDir(),
+		ClaudeSnapshotPath: "x",
+		KimiHome:           t.TempDir(),
+		MiniMaxAuthPath:    filepath.Join(t.TempDir(), "absent.json"),
+	})
 	got := svc.Quotas(context.Background())
-	if len(got.Providers) != 3 {
-		t.Fatalf("providers = %d, want 3", len(got.Providers))
+	if len(got.Providers) != 4 {
+		t.Fatalf("providers = %d, want 4", len(got.Providers))
 	}
 }

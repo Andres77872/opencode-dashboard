@@ -87,7 +87,7 @@ export interface VendorChipProps {
   size?: number
 }
 
-/** Source/vendor identity chip — brand-colored monogram square plus optional name (opencode, claude_code, codex). @category Atoms */
+/** Source/vendor identity chip — brand-colored monogram square plus optional name. @category Atoms */
 export function VendorChip({ id, label = true, size = 22 }: VendorChipProps) {
   const v = vendorMeta(id)
   return (

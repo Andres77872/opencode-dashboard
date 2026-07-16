@@ -5,7 +5,7 @@
    period arg + cachePeriods:false (re-fetches on source change / refresh).
    No fabricated data — everything derives from the redacted payload. */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Card, EmptyState, ErrorState, Notice, Skeleton } from '../components/vael'
+import { Card, EmptyState, ErrorState, Notice, Skeleton, vendorMeta } from '../components/vael'
 import { ConfigHeader } from '../components/config/config-header'
 import { ConfigTreePane } from '../components/config/config-tree'
 import { SectionNav } from '../components/config/section-nav'
@@ -45,8 +45,7 @@ export function ConfigView() {
     { cachePeriods: false },
   )
 
-  const sourceLabel =
-    selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
+  const sourceLabel = selectedSourceInfo?.label ?? vendorMeta(selectedSourceId).name
 
   const data = useMemo(() => normalizeConfigStats(rawData ?? null), [rawData])
   const doc = useMemo(() => resolveConfigDocument(data), [data])

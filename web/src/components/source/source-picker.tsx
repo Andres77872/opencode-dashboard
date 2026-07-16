@@ -202,7 +202,7 @@ export function SourcePicker() {
             {aggregate
               ? 'The Overview aggregates every source. Costs are shown per source and never combined.'
               : singleSource
-                ? 'Only one data source is configured. Start with --claude-home or --codex-home to add Claude Code or Codex.'
+                ? 'Only one data source is configured. Start with --claude-home, --codex-home, or --kimi-home to add another coding assistant.'
                 : 'Applies to every view except the Overview, which always aggregates all sources.'}
           </p>
         </div>

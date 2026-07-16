@@ -20,10 +20,11 @@ const (
 // all available sources.
 //
 // Cost is intentionally NOT presented as a single combined number by the UIs:
-// OpenCode reports real spend, Codex reports an estimated API-equivalent, and
-// Claude Code is mixed — summing them would be misleading. Total.Cost holds the
-// arithmetic sum for API completeness, but consumers should show per-source costs
-// (SourceOverview.Overview.Cost) with each source's own provenance.
+// OpenCode reports real spend, Codex and Kimi Code report estimated
+// API-equivalent values, and Claude Code is mixed — summing them would be
+// misleading. Total.Cost holds the arithmetic sum for API completeness, but
+// consumers should show per-source costs (SourceOverview.Overview.Cost) with
+// each source's own provenance.
 type AllSourcesOverview struct {
 	// Total holds combined, additive metrics (sessions, messages, tokens, days).
 	Total stats.OverviewStats `json:"total"`

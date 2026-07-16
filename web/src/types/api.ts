@@ -3,7 +3,7 @@ export interface CacheStats {
   write: number
 }
 
-export const SOURCE_ID_VALUES = ['opencode', 'claude_code', 'codex'] as const
+export const SOURCE_ID_VALUES = ['opencode', 'claude_code', 'codex', 'kimi_code'] as const
 
 export type SourceID = (typeof SOURCE_ID_VALUES)[number]
 
@@ -462,15 +462,25 @@ export interface ApiErrorResponse {
   code: number
 }
 
-export type QuotaProviderID = 'codex' | 'claude_code' | 'minimax'
+export type QuotaProviderID = 'codex' | 'claude_code' | 'kimi_code' | 'minimax'
 
 export type QuotaStatus = 'ok' | 'stale' | 'unavailable'
 
 export interface QuotaWindow {
   id: '5h' | 'weekly' | string
+  label?: string
   used_percent: number
   resets_at?: number // epoch seconds
   window_minutes?: number
+}
+
+export interface QuotaExtraUsage {
+  balance_cents: number
+  total_cents: number
+  monthly_charge_limit_enabled: boolean
+  monthly_charge_limit_cents: number
+  monthly_used_cents: number
+  currency: string
 }
 
 export interface ProviderQuota {
@@ -478,6 +488,7 @@ export interface ProviderQuota {
   label: string
   plan?: string
   windows?: QuotaWindow[]
+  extra_usage?: QuotaExtraUsage
   as_of_ms?: number
   status: QuotaStatus
   reason?: string

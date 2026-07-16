@@ -129,8 +129,8 @@ function compareRows(key: SortKey, a: ModelRow, b: ModelRow): number {
 }
 
 function getEmptyWindowCopy(period: string, sourceLabel: string, sourceId: SourceID): string {
-  if (sourceId === 'claude_code') {
-    return 'No Claude Code assistant model usage was found in readable local transcripts for this window.'
+  if (sourceId === 'claude_code' || sourceId === 'kimi_code') {
+    return `No ${sourceLabel} assistant model usage was found in readable local transcripts for this window.`
   }
   if (period === 'all') {
     return `All historic ${sourceLabel} stretches from the first recorded activity day through today when data exists.`
@@ -153,7 +153,7 @@ export function ModelsView() {
     setFilter('')
   })
   const { data, loading, error } = usePeriodResource(getModels, cacheKey)
-  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
+  const sourceLabel = selectedSourceInfo?.label ?? vendorMeta(selectedSourceId).name
 
   const summary = useMemo(() => {
     if (!data) return null

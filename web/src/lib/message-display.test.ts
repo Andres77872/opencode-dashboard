@@ -16,7 +16,7 @@ import type { CostProvenance } from '../types/api.ts'
 test('uses non-grouped wording for every source now that nothing folds', () => {
   // Claude Code and Codex were the last folded-interaction sources; both now report
   // one message per API request, so all sources use the non-grouped wording.
-  for (const source of ['claude_code', 'codex', 'opencode'] as const) {
+  for (const source of ['claude_code', 'codex', 'kimi_code', 'opencode'] as const) {
     assert.equal(getHistoryTitle(source), 'Messages history')
     assert.equal(getSessionColumnLabel(source), 'Session')
     assert.equal(getTotalRowLabel(source), 'messages')
@@ -33,6 +33,10 @@ test('uses source-aware empty state copy', () => {
   assert.equal(
     getEmptyHistoryCopy('codex', 'Codex'),
     'No Codex API requests were found in readable local transcripts for this Daily window.',
+  )
+  assert.equal(
+    getEmptyHistoryCopy('kimi_code', 'Kimi Code'),
+    'No Kimi Code API requests were found in readable local wire logs for this Daily window.',
   )
   assert.equal(getEmptyHistoryCopy('opencode', 'OpenCode'), 'No OpenCode messages recorded for this Daily window yet.')
 })

@@ -36,6 +36,10 @@ func sourceFingerprint(ctx context.Context, info source.SourceInfo) (string, err
 		if err := hashCodexFiles(ctx, h, info.Path); err != nil {
 			return "", err
 		}
+	case source.SourceKimiCode:
+		if err := hashKimiFiles(ctx, h, info.Path); err != nil {
+			return "", err
+		}
 	default:
 		fmt.Fprintf(h, "diagnostics=%d:%d\n", info.Diagnostics.ScannedFiles, info.Diagnostics.MalformedLines)
 	}
@@ -102,6 +106,27 @@ func hashCodexFiles(ctx context.Context, h hashWriter, home string) error {
 		}
 		name := d.Name()
 		return strings.HasPrefix(name, "rollout-") && strings.EqualFold(filepath.Ext(name), ".jsonl"), nil
+	})
+}
+
+func hashKimiFiles(ctx context.Context, h hashWriter, home string) error {
+	root := filepath.Join(home, "sessions")
+	return hashWalk(ctx, h, root, func(path string, d os.DirEntry) (bool, error) {
+		if d.IsDir() {
+			switch strings.ToLower(d.Name()) {
+			case "logs", "plans", "media", "images":
+				return false, filepath.SkipDir
+			}
+			return false, nil
+		}
+		switch d.Name() {
+		case "state.json":
+			return strings.HasPrefix(filepath.Base(filepath.Dir(path)), "session_"), nil
+		case "wire.jsonl":
+			return filepath.Base(filepath.Dir(filepath.Dir(path))) == "agents", nil
+		default:
+			return false, nil
+		}
 	})
 }
 

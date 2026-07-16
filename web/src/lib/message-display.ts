@@ -4,7 +4,8 @@ type SourceLike = Pick<MessageEntry, 'source_id' | 'folded_assistant_calls' | 'f
 
 // Every source now reports one message per API request (Claude Code and Codex were
 // the last folded-interaction sources), so nothing folds multiple requests into a row.
-function isGroupedInteractionSource(_sourceId: SourceID | undefined): boolean {
+function isGroupedInteractionSource(sourceId: SourceID | undefined): boolean {
+  void sourceId
   return false
 }
 
@@ -26,6 +27,9 @@ export function getEmptyHistoryCopy(sourceId: SourceID, sourceLabel: string): st
   }
   if (sourceId === 'codex') {
     return 'No Codex API requests were found in readable local transcripts for this Daily window.'
+  }
+  if (sourceId === 'kimi_code') {
+    return 'No Kimi Code API requests were found in readable local wire logs for this Daily window.'
   }
 
   return `No ${sourceLabel} messages recorded for this Daily window yet.`

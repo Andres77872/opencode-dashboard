@@ -30,6 +30,10 @@ func TestWithSourceAcceptsSupportedSourceStrings(t *testing.T) {
 			name:   "explicit codex",
 			source: SourceCodex,
 		},
+		{
+			name:   "explicit kimi code",
+			source: SourceKimiCode,
+		},
 	}
 
 	for _, tt := range tests {
@@ -106,6 +110,68 @@ func TestDefaultCodexHomePathUsesHomeDotCodex(t *testing.T) {
 
 	if got := DefaultCodexHomePath(); got != filepath.Join(home, ".codex") {
 		t.Errorf("DefaultCodexHomePath() = %q, want HOME/.codex", got)
+	}
+}
+
+func TestKimiHomeResolution(t *testing.T) {
+	tests := []struct {
+		name       string
+		explicit   string
+		env        string
+		wantPath   func(home string) string
+		wantSource string
+	}{
+		{
+			name:     "explicit Kimi home wins",
+			explicit: "/synthetic/kimi/by-flag",
+			env:      "/synthetic/kimi/by-env",
+			wantPath: func(string) string {
+				return "/synthetic/kimi/by-flag"
+			},
+			wantSource: "--kimi-home",
+		},
+		{
+			name: "KIMI_CODE_HOME is used when flag omitted",
+			env:  "/synthetic/kimi/by-env",
+			wantPath: func(string) string {
+				return "/synthetic/kimi/by-env"
+			},
+			wantSource: EnvKimiCodeHome,
+		},
+		{
+			name: "HOME dot kimi-code fallback is used last",
+			wantPath: func(home string) string {
+				return filepath.Join(home, ".kimi-code")
+			},
+			wantSource: "$HOME/.kimi-code",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv(EnvKimiCodeHome, tt.env)
+
+			cfg := New(WithKimiHome(tt.explicit))
+			if got := cfg.KimiHome(); got != tt.wantPath(home) {
+				t.Errorf("KimiHome() = %q, want %q", got, tt.wantPath(home))
+			}
+			if got := cfg.KimiHomeSource(); got != tt.wantSource {
+				t.Errorf("KimiHomeSource() = %q, want %q", got, tt.wantSource)
+			}
+			if got := ResolveKimiHome(tt.explicit); got.Path != tt.wantPath(home) || got.Source != tt.wantSource {
+				t.Errorf("ResolveKimiHome() = %#v, want path/source %q/%q", got, tt.wantPath(home), tt.wantSource)
+			}
+		})
+	}
+}
+
+func TestDefaultKimiHomePathUsesHomeDotKimiCode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got := DefaultKimiHomePath(); got != filepath.Join(home, ".kimi-code") {
+		t.Errorf("DefaultKimiHomePath() = %q, want HOME/.kimi-code", got)
 	}
 }
 

@@ -19,6 +19,7 @@ import {
   Notice,
   AreaChart,
   useWidth,
+  vendorMeta,
   type Column,
   type SortSpec,
 } from '../components/vael'
@@ -153,7 +154,7 @@ function getMessageSessionLabel(message: Pick<MessageEntry, 'session_title'>) {
 
 export function DailyView() {
   const { requestRefresh, refreshNonce, selectedSourceId, selectedSourceInfo } = useDashboardContext()
-  const sourceLabel = selectedSourceInfo?.label ?? (selectedSourceId === 'claude_code' ? 'Claude Code' : 'OpenCode')
+  const sourceLabel = selectedSourceInfo?.label ?? vendorMeta(selectedSourceId).name
 
   const [searchParams, setSearchParams] = useSearchParams()
   const [metric, setMetric] = useState<DailyMetric>('cost')
@@ -482,8 +483,8 @@ export function DailyView() {
               icon="calendar"
               title={`No ${bucketUnit} activity yet`}
               description={
-                selectedSourceId === 'claude_code'
-                  ? 'No persisted Claude Code transcript activity was found in this selected window.'
+                selectedSourceId === 'claude_code' || selectedSourceId === 'kimi_code'
+                  ? `No persisted ${sourceLabel} transcript activity was found in this selected window.`
                   : `Zero-filled window until ${sourceLabel} records sessions and messages in this period.`
               }
             />

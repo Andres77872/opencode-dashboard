@@ -43,7 +43,7 @@ function sourceList(startupSourceId: SourceListResponse['startup_source_id']): S
   return {
     default_source_id: 'opencode',
     startup_source_id: startupSourceId,
-    sources: (['opencode', 'claude_code', 'codex'] as const).map((id) => ({
+    sources: (['opencode', 'claude_code', 'codex', 'kimi_code'] as const).map((id) => ({
       id,
       label: id,
       kind: id === 'opencode' ? ('sqlite' as const) : ('jsonl' as const),
@@ -60,6 +60,8 @@ test('source id round-trips and rejects unknown values', () => {
   assert.equal(getStoredSourceId(), null)
   setStoredSourceId('codex')
   assert.equal(getStoredSourceId(), 'codex')
+  setStoredSourceId('kimi_code')
+  assert.equal(getStoredSourceId(), 'kimi_code')
 
   // A stale / hand-edited value that is not a known source id is ignored.
   globalThis.localStorage.setItem('ocd:source', 'nonsense')

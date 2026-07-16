@@ -12,6 +12,7 @@ const (
 	EnvCacheDBPath     = "OPENCODE_DASHBOARD_CACHE_DB"
 	EnvClaudeConfigDir = "CLAUDE_CONFIG_DIR"
 	EnvCodexHome       = "OPENCODE_DASHBOARD_CODEX_HOME"
+	EnvKimiCodeHome    = "KIMI_CODE_HOME"
 	EnvMiniMaxAPIKey   = "OPENCODE_DASHBOARD_MINIMAX_API_KEY"
 
 	AppName          = "opencode"
@@ -20,6 +21,7 @@ const (
 	SourceOpenCode   = "opencode"
 	SourceClaudeCode = "claude_code"
 	SourceCodex      = "codex"
+	SourceKimiCode   = "kimi_code"
 
 	DefaultDBName       = "opencode.db"
 	LatestChannelDBName = "opencode-latest.db"
@@ -33,6 +35,7 @@ type Config struct {
 	source     string
 	claudeHome string
 	codexHome  string
+	kimiHome   string
 }
 
 type PathSelection struct {
@@ -82,6 +85,14 @@ func WithCodexHome(path string) Option {
 	}
 }
 
+func WithKimiHome(path string) Option {
+	return func(c *Config) {
+		if path != "" {
+			c.kimiHome = path
+		}
+	}
+}
+
 func New(opts ...Option) *Config {
 	c := &Config{}
 	for _, opt := range opts {
@@ -121,6 +132,14 @@ func (c *Config) CodexHome() string {
 
 func (c *Config) CodexHomeSource() string {
 	return ResolveCodexHome(c.codexHome).Source
+}
+
+func (c *Config) KimiHome() string {
+	return ResolveKimiHome(c.kimiHome).Path
+}
+
+func (c *Config) KimiHomeSource() string {
+	return ResolveKimiHome(c.kimiHome).Source
 }
 
 func (c *Config) ConfigPath() string {
@@ -182,6 +201,14 @@ func DefaultCodexHomePath() string {
 	return filepath.Join(home, ".codex")
 }
 
+func DefaultKimiHomePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	return filepath.Join(home, ".kimi-code")
+}
+
 func ResolveOpenCodeDB(flagDB string, channel string) (PathSelection, error) {
 	if flagDB != "" && channel != "" {
 		return PathSelection{}, fmt.Errorf("use either --db or --channel, not both")
@@ -224,6 +251,18 @@ func ResolveCodexHome(flagHome string) PathSelection {
 	}
 
 	return PathSelection{Path: DefaultCodexHomePath(), Source: "$HOME/.codex"}
+}
+
+func ResolveKimiHome(flagHome string) PathSelection {
+	if flagHome != "" {
+		return PathSelection{Path: flagHome, Source: "--kimi-home"}
+	}
+
+	if envHome := os.Getenv(EnvKimiCodeHome); envHome != "" {
+		return PathSelection{Path: envHome, Source: EnvKimiCodeHome}
+	}
+
+	return PathSelection{Path: DefaultKimiHomePath(), Source: "$HOME/.kimi-code"}
 }
 
 func ChannelDBPath(channel string) string {

@@ -3,7 +3,7 @@
    the Overview page (QuotasSection). */
 import { Icon } from '../vael'
 import { refreshQuotas, useQuotas } from '../../lib/use-quotas'
-import { clampPercent, formatResetCountdown, providerMeta, quotaTone, windowLabel } from '../../lib/quotas'
+import { clampPercent, formatQuotaCurrency, formatResetCountdown, providerMeta, quotaTone, windowLabel } from '../../lib/quotas'
 import { formatRelativeTime } from '../../lib/format'
 import type { ProviderQuota, QuotaWindow } from '../../types/api'
 
@@ -11,9 +11,10 @@ function QuotaBar({ window: win, now }: { window: QuotaWindow; now: number }) {
   const used = clampPercent(win.used_percent)
   const countdown = win.resets_at ? formatResetCountdown(win.resets_at, now) : ''
   const resetTitle = win.resets_at ? `resets ${new Date(win.resets_at * 1000).toLocaleString()}` : undefined
+  const label = windowLabel(win)
   return (
     <div title={resetTitle} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-      <span style={{ font: '500 10px/1 var(--font-mono)', color: 'var(--fg-muted)', width: 26, flexShrink: 0 }}>{windowLabel(win)}</span>
+      <span title={label} style={{ font: '500 10px/1 var(--font-mono)', color: 'var(--fg-muted)', width: 48, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
       <span style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--ink-700)', overflow: 'hidden' }}>
         <span style={{ display: 'block', height: '100%', width: `${used}%`, borderRadius: 2, background: quotaTone(used) }} />
       </span>
@@ -26,6 +27,9 @@ function ProviderRow({ quota, now }: { quota: ProviderQuota; now: number }) {
   const meta = providerMeta(quota)
   const unavailable = quota.status === 'unavailable'
   const primary = quota.windows?.[0]
+  const extraBalance = quota.extra_usage
+    ? formatQuotaCurrency(quota.extra_usage.balance_cents, quota.extra_usage.currency)
+    : null
   const asOf = quota.as_of_ms ? formatRelativeTime(new Date(quota.as_of_ms)) : null
   return (
     <div
@@ -43,14 +47,27 @@ function ProviderRow({ quota, now }: { quota: ProviderQuota; now: number }) {
         {unavailable ? (
           <span style={{ font: '400 10px/1 var(--font-ui)', color: 'var(--fg-faint)' }}>not set up</span>
         ) : (
-          primary && (
+          primary ? (
             <span style={{ font: '600 11px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>
               {Math.round(clampPercent(primary.used_percent))}%
             </span>
+          ) : (
+            extraBalance && (
+              <span style={{ font: '600 10px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>
+                {extraBalance}
+              </span>
+            )
           )
         )}
       </div>
       {!unavailable && (quota.windows ?? []).map((win) => <QuotaBar key={win.id} window={win} now={now} />)}
+      {!unavailable && quota.extra_usage && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          <span style={{ font: '500 10px/1 var(--font-mono)', color: 'var(--fg-muted)', width: 48, flexShrink: 0 }}>extra</span>
+          <span style={{ flex: 1, font: '400 10px/1 var(--font-ui)', color: 'var(--fg-faint)' }}>balance</span>
+          <span style={{ font: '500 10px/1 var(--font-mono)', color: 'var(--fg-secondary)' }}>{extraBalance}</span>
+        </div>
+      )}
     </div>
   )
 }

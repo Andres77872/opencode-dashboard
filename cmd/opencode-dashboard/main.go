@@ -30,6 +30,7 @@ import (
 	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/source/claudecode"
 	"opencode-dashboard/internal/source/codex"
+	"opencode-dashboard/internal/source/kimicode"
 	opencodesource "opencode-dashboard/internal/source/opencode"
 	"opencode-dashboard/internal/stats"
 	"opencode-dashboard/internal/store"
@@ -114,9 +115,10 @@ Web flags:
   --rebuild-cache    Remove the dashboard usage cache before starting
   --no-cache     Run without the dashboard cache
   --channel <c>  Resolve a channel-specific OpenCode DB (stable/latest/beta/custom)
-  --source <id>  Initial data source (opencode, claude_code, or codex; default: opencode)
-  --claude-home <dir>  Claude Code config directory for future claude_code registration
+  --source <id>  Initial data source (opencode, claude_code, codex, or kimi_code; default: opencode)
+  --claude-home <dir>  Claude Code config directory for claude_code registration
   --codex-home <dir>   Codex config directory for codex registration
+  --kimi-home <dir>    Kimi Code home directory for kimi_code registration
   --no-open      Do not launch the browser automatically
 
 TUI flags:
@@ -125,6 +127,10 @@ TUI flags:
   --rebuild-cache    Remove the dashboard usage cache before starting
   --no-cache     Run without the dashboard cache
   --channel <c>  Resolve a channel-specific OpenCode DB
+  --source <id>  Initial data source (opencode, claude_code, codex, or kimi_code)
+  --claude-home <dir>  Claude Code config directory
+  --codex-home <dir>   Codex config directory
+  --kimi-home <dir>    Kimi Code home directory
 
 Uninstall flags:
   --dry-run      Show the removal plan only
@@ -153,11 +159,12 @@ func cmdWeb(args []string) error {
 	noCache := fs.Bool("no-cache", false, "run without the dashboard usage cache")
 	noOpen := fs.Bool("no-open", false, "do not open a browser")
 	channel := fs.String("channel", "", "channel-specific OpenCode database to use")
-	sourceFlag := fs.String("source", string(source.SourceOpenCode), "initial data source: opencode, claude_code, or codex")
+	sourceFlag := fs.String("source", string(source.SourceOpenCode), "initial data source: opencode, claude_code, codex, or kimi_code")
 	claudeHome := fs.String("claude-home", "", "explicit Claude Code config directory")
 	codexHome := fs.String("codex-home", "", "explicit Codex config directory")
+	kimiHome := fs.String("kimi-home", "", "explicit Kimi Code home directory")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard web [--port <n>] [--db <path>] [--cache-db <path>] [--rebuild-cache] [--no-cache] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>] [--no-open]\n\n")
+		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard web [--port <n>] [--db <path>] [--cache-db <path>] [--rebuild-cache] [--no-cache] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>] [--kimi-home <dir>] [--no-open]\n\n")
 		fmt.Fprintf(fs.Output(), "Starts the local web dashboard and serves the API on http://%s:<port>.\n", web.DefaultHost)
 	}
 
@@ -183,6 +190,7 @@ func cmdWeb(args []string) error {
 	}
 	claudeSelection := config.ResolveClaudeHome(*claudeHome)
 	codexSelection := config.ResolveCodexHome(*codexHome)
+	kimiSelection := config.ResolveKimiHome(*kimiHome)
 
 	selection, err := resolveDBSelection(*dbPath, *channel)
 	if err != nil {
@@ -207,7 +215,11 @@ func cmdWeb(args []string) error {
 		return err
 	}
 	cacheRuntime.SetLogger(logger)
-	registry, err := buildWebRegistry(cacheRuntime, st, selection, selectedSource, claudeSelection, *claudeHome, codexSelection, *codexHome)
+	registry, err := buildWebRegistry(
+		cacheRuntime, st, selection, selectedSource,
+		claudeSelection, *claudeHome, codexSelection, *codexHome,
+		kimiRegistrySelection{selection: kimiSelection, explicitHome: *kimiHome},
+	)
 	if err != nil {
 		if st != nil {
 			_ = st.Close()
@@ -220,6 +232,7 @@ func cmdWeb(args []string) error {
 	quotaService := quota.NewService(quota.Options{
 		CodexHome:          codexSelection.Path,
 		ClaudeSnapshotPath: config.DefaultClaudeRateLimitsPath(),
+		KimiHome:           kimiSelection.Path,
 		MiniMaxAuthPath:    config.DefaultOpenCodeAuthPath(),
 	})
 	assistantService := newWebAnalyticsAgent(registry, logger)
@@ -252,6 +265,9 @@ func cmdWeb(args []string) error {
 	}
 	if selectedSource == source.SourceCodex || *codexHome != "" || os.Getenv(config.EnvCodexHome) != "" {
 		fmt.Printf("codex:     %s (%s)\n", codexSelection.Path, codexSelection.Source)
+	}
+	if selectedSource == source.SourceKimiCode || *kimiHome != "" || os.Getenv(config.EnvKimiCodeHome) != "" {
+		fmt.Printf("kimi:      %s (%s)\n", kimiSelection.Path, kimiSelection.Source)
 	}
 	if _, err := os.Stat(config.DefaultClaudeRateLimitsPath()); os.IsNotExist(err) {
 		if claudeStatuslineInstalled(claudeSelection.Path) {
@@ -336,11 +352,12 @@ func cmdTUI(args []string) error {
 	rebuildCache := fs.Bool("rebuild-cache", false, "remove the dashboard usage cache before running")
 	noCache := fs.Bool("no-cache", false, "run without the dashboard usage cache")
 	channel := fs.String("channel", "", "channel-specific OpenCode database to use")
-	sourceFlag := fs.String("source", string(source.SourceOpenCode), "initial data source: opencode, claude_code, or codex")
+	sourceFlag := fs.String("source", string(source.SourceOpenCode), "initial data source: opencode, claude_code, codex, or kimi_code")
 	claudeHome := fs.String("claude-home", "", "explicit Claude Code config directory")
 	codexHome := fs.String("codex-home", "", "explicit Codex config directory")
+	kimiHome := fs.String("kimi-home", "", "explicit Kimi Code home directory")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard tui [--db <path>] [--cache-db <path>] [--rebuild-cache] [--no-cache] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>]\n\n")
+		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard tui [--db <path>] [--cache-db <path>] [--rebuild-cache] [--no-cache] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>] [--kimi-home <dir>]\n\n")
 		fmt.Fprintln(fs.Output(), "Starts the local terminal dashboard. Switch source (S) and time range (T) live.")
 	}
 
@@ -364,6 +381,7 @@ func cmdTUI(args []string) error {
 	}
 	claudeSelection := config.ResolveClaudeHome(*claudeHome)
 	codexSelection := config.ResolveCodexHome(*codexHome)
+	kimiSelection := config.ResolveKimiHome(*kimiHome)
 
 	selection, err := resolveDBSelection(*dbPath, *channel)
 	if err != nil {
@@ -387,7 +405,11 @@ func cmdTUI(args []string) error {
 		}
 		return err
 	}
-	registry, err := buildWebRegistry(cacheRuntime, st, selection, selectedSource, claudeSelection, *claudeHome, codexSelection, *codexHome)
+	registry, err := buildWebRegistry(
+		cacheRuntime, st, selection, selectedSource,
+		claudeSelection, *claudeHome, codexSelection, *codexHome,
+		kimiRegistrySelection{selection: kimiSelection, explicitHome: *kimiHome},
+	)
 	if err != nil {
 		if st != nil {
 			_ = st.Close()
@@ -664,12 +686,12 @@ func parseSourceSelection(value string) (source.SourceID, error) {
 		return source.SourceOpenCode, nil
 	}
 	switch source.SourceID(selected) {
-	case source.SourceOpenCode, source.SourceClaudeCode, source.SourceCodex:
+	case source.SourceOpenCode, source.SourceClaudeCode, source.SourceCodex, source.SourceKimiCode:
 		return source.SourceID(selected), nil
 	case source.SourceID("both"):
 		return "", fmt.Errorf("--source=both is unsupported in v1; select one source at a time")
 	default:
-		return "", fmt.Errorf("invalid --source %q (supported: opencode, claude_code, codex)", selected)
+		return "", fmt.Errorf("invalid --source %q (supported: opencode, claude_code, codex, kimi_code)", selected)
 	}
 }
 
@@ -736,7 +758,12 @@ func (c *cacheRuntime) Close() error {
 	return c.store.Close()
 }
 
-func buildWebRegistry(cache *cacheRuntime, st *store.Store, selection dbSelection, startup source.SourceID, claudeSelection config.PathSelection, explicitClaudeHome string, codexSelection config.PathSelection, explicitCodexHome string) (*source.Registry, error) {
+type kimiRegistrySelection struct {
+	selection    config.PathSelection
+	explicitHome string
+}
+
+func buildWebRegistry(cache *cacheRuntime, st *store.Store, selection dbSelection, startup source.SourceID, claudeSelection config.PathSelection, explicitClaudeHome string, codexSelection config.PathSelection, explicitCodexHome string, kimiOptions ...kimiRegistrySelection) (*source.Registry, error) {
 	registry := source.NewRegistry(source.SourceOpenCode)
 	registry.SetStartupID(startup)
 	if cache != nil {
@@ -791,6 +818,26 @@ func buildWebRegistry(cache *cacheRuntime, st *store.Store, selection dbSelectio
 	} else if codexConfigured {
 		if err := registry.RegisterUnavailable(codexInfo); err != nil {
 			return nil, err
+		}
+	}
+
+	if len(kimiOptions) > 0 {
+		kimiSelection := kimiOptions[0].selection
+		if kimiSelection.Path == "" {
+			kimiSelection = config.ResolveKimiHome("")
+		}
+		explicitKimiHome := kimiOptions[0].explicitHome
+		kimiSrc := kimicode.New(kimicode.Options{KimiHome: kimiSelection.Path, PathSource: kimiSelection.Source})
+		kimiInfo := kimiSrc.Info(context.Background())
+		kimiConfigured := startup == source.SourceKimiCode || explicitKimiHome != "" || os.Getenv(config.EnvKimiCodeHome) != ""
+		if kimiInfo.Available {
+			if err := registerCachedSource(context.Background(), registry, cache, kimiSrc); err != nil {
+				return nil, err
+			}
+		} else if kimiConfigured {
+			if err := registry.RegisterUnavailable(kimiInfo); err != nil {
+				return nil, err
+			}
 		}
 	}
 

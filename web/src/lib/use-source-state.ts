@@ -70,6 +70,32 @@ const PENDING_SOURCE_INFO: Partial<Record<SourceID, SourceInfo>> = {
       redaction: true,
     },
   },
+  kimi_code: {
+    id: 'kimi_code',
+    label: 'Kimi Code',
+    kind: 'jsonl',
+    available: false,
+    default: false,
+    read_only: true,
+    local_only: true,
+    capabilities: [],
+    warnings: ['Kimi Code wire logs are plaintext local files and may contain sensitive prompt, reasoning, path, and tool-output content.'],
+    diagnostics: {
+      status: 'unavailable',
+      reason: 'Kimi Code source is not registered by this backend yet.',
+    },
+    cost_policy: {
+      status: 'estimated_api_equivalent',
+      currency: 'USD',
+      note: 'Kimi Code costs are estimated API-equivalent values, not actual membership or coding-plan spend.',
+    },
+    privacy: {
+      plaintext_transcripts: true,
+      read_only: true,
+      local_only: true,
+      redaction: true,
+    },
+  },
 }
 
 export function getPendingSourceInfo(sourceId: SourceID): SourceInfo | null {
@@ -96,8 +122,8 @@ function getSourceStateError(rawSourceParam: string | null, requestedSourceId: S
   }
 
   if (!sourceInfo) {
-    if (requestedSourceId === 'claude_code' || requestedSourceId === 'codex') {
-      const label = requestedSourceId === 'codex' ? 'Codex' : 'Claude Code'
+    if (requestedSourceId === 'claude_code' || requestedSourceId === 'codex' || requestedSourceId === 'kimi_code') {
+      const label = requestedSourceId === 'codex' ? 'Codex' : requestedSourceId === 'kimi_code' ? 'Kimi Code' : 'Claude Code'
       return {
         kind: 'unavailable',
         message: `${label} is not registered by the backend yet. OpenCode remains available, but this selected ${label} view has no data source to query.`,
