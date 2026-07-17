@@ -37,6 +37,12 @@ const (
 	dataVersion            = 5
 	busyTimeout            = 5000 * time.Millisecond
 	DefaultSyncSafetyDelay = 6 * time.Hour
+	// collectCallTimeout bounds one bulk snapshot or one generic pagination
+	// page (including that page's detail lookups), not a whole-job budget.
+	// Initial JSONL scans can legitimately exceed their short interactive
+	// timeout, while large database sources can take many pages and run for
+	// substantially longer than this in aggregate.
+	collectCallTimeout = 5 * time.Minute
 )
 
 var syncSort = stats.MessageSort{Field: stats.MessageSortTime, Direction: stats.MessageSortAsc}
@@ -1029,6 +1035,9 @@ type collectSummary struct {
 func collectSource(ctx context.Context, src source.Source, info source.SourceInfo, window syncWindow, progress func(SyncProgress)) (sourcePayload, collectSummary, error) {
 	payload := sourcePayload{Info: info}
 	sourceID := string(info.ID)
+	if bulk, ok := src.(source.ConsolidationSource); ok {
+		return collectConsolidationSource(ctx, bulk, payload, sourceID, window, progress)
+	}
 
 	sessionMap, err := collectSessions(ctx, src, sourceID, window, progress)
 	if err != nil {
@@ -1072,6 +1081,123 @@ func windowFromHint(window syncWindow) string {
 	return window.Since.UTC().Format("2006-01-02")
 }
 
+func periodForWindow(window syncWindow) stats.PeriodQuery {
+	pq := stats.PeriodQuery{Period: "all"}
+	if from := windowFromHint(window); from != "" {
+		// FromTime both selects a bounded JSONL snapshot and applies the exact
+		// lower bound; From is retained for sources that only understand dates.
+		pq = stats.PeriodQuery{From: from, FromTime: window.Since.UTC()}
+	}
+	if !window.Cutoff.IsZero() {
+		pq.ToTime = window.Cutoff.UTC()
+	}
+	return pq
+}
+
+// collectConsolidationSource consumes a single stable, metadata-only snapshot
+// from JSONL sources. Besides avoiding repeated filtering/sorting, this is
+// essential for detail metadata: the generic fallback calls MessageByID once
+// per row, which would otherwise rediscover and reparse transcript files tens
+// of thousands of times during an initial sync.
+func collectConsolidationSource(ctx context.Context, bulk source.ConsolidationSource, payload sourcePayload, sourceID string, window syncWindow, progress func(SyncProgress)) (sourcePayload, collectSummary, error) {
+	callCtx, cancel := context.WithTimeout(ctx, collectCallTimeout)
+	data, err := bulk.ConsolidationData(callCtx, periodForWindow(window))
+	cancel()
+	if err != nil {
+		return payload, collectSummary{}, fmt.Errorf("cache collect consolidation data: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return payload, collectSummary{}, fmt.Errorf("cache collect consolidation data: %w", err)
+	}
+
+	sessions := make(map[string]cachedSession, len(data.Sessions))
+	for _, entry := range data.Sessions {
+		if err := ctx.Err(); err != nil {
+			return payload, collectSummary{}, fmt.Errorf("cache collect consolidation data: %w", err)
+		}
+		sessions[entry.ID] = cachedSession{
+			SessionID:    entry.ID,
+			Title:        safeSessionTitle(sourceID, entry.ID),
+			ProjectID:    entry.ProjectID,
+			ProjectName:  entry.ProjectName,
+			Created:      entry.TimeCreated,
+			Updated:      entry.TimeUpdated,
+			MessageCount: entry.MessageCount,
+			Cost:         entry.Cost,
+			Status:       entry.CostStatus,
+			Provenance:   entry.CostProvenance,
+		}
+	}
+	if progress != nil {
+		count := int64(len(data.Sessions))
+		progress(SyncProgress{SourceID: sourceID, Phase: "sessions", Done: count, Total: count})
+	}
+
+	messages := make([]messageRow, 0, len(data.Messages))
+	tools := make([]toolRow, 0)
+	var summary collectSummary
+	total := int64(len(data.Messages))
+	if progress != nil && total == 0 {
+		progress(SyncProgress{SourceID: sourceID, Phase: "messages", Done: 0, Total: 0})
+	}
+	reportMessageProgress := func(done int) {
+		if progress != nil && (done%100 == 0 || done == len(data.Messages)) {
+			progress(SyncProgress{SourceID: sourceID, Phase: "messages", Done: int64(done), Total: total})
+		}
+	}
+	for i, item := range data.Messages {
+		if err := ctx.Err(); err != nil {
+			return payload, summary, fmt.Errorf("cache collect consolidation data: %w", err)
+		}
+		entry := item.Entry
+		// Keep this guard even though snapshot-aware sources apply the exact
+		// query. It protects the cache boundary from an optional implementation
+		// that treats From as day-granular or ignores ToTime.
+		switch {
+		case !window.Since.IsZero() && entry.TimeCreated.Before(window.Since):
+			summary.SkippedOld++
+			reportMessageProgress(i + 1)
+			continue
+		case !window.Cutoff.IsZero() && !entry.TimeCreated.Before(window.Cutoff):
+			summary.SkippedRecent++
+			reportMessageProgress(i + 1)
+			continue
+		}
+
+		session := sessions[entry.SessionID]
+		entry.SourceID = sourceID
+		entry.SessionTitle = safeSessionTitle(sourceID, entry.SessionID)
+		if entry.CostStatus == "" && entry.Role == "assistant" {
+			entry.CostStatus = data.CostStatus
+			entry.CostProvenance = data.CostProvenance
+		}
+		messages = append(messages, messageRow{Entry: entry, ProjectID: session.ProjectID, ProjectName: session.ProjectName})
+		for _, tool := range item.Tools {
+			if tool.Name == "" {
+				continue
+			}
+			tools = append(tools, toolRow{
+				MessageID:   entry.ID,
+				SessionID:   entry.SessionID,
+				ProjectID:   session.ProjectID,
+				ProjectName: session.ProjectName,
+				TimeCreated: entry.TimeCreated,
+				Name:        tool.Name,
+				Status:      tool.Status,
+			})
+		}
+		reportMessageProgress(i + 1)
+	}
+
+	payload.Messages = messages
+	payload.Tools = tools
+	payload.Sessions = sessionsFromMessages(sourceID, sessions, messages)
+	payload.Projects = projectsFromMessages(messages)
+	ensureProjectsFromMessages(&payload)
+	ensureSessionsFromMessages(&payload)
+	return payload, summary, nil
+}
+
 func collectSessions(ctx context.Context, src source.Source, sourceID string, window syncWindow, progress func(SyncProgress)) (map[string]cachedSession, error) {
 	result := make(map[string]cachedSession)
 	query := stats.SessionQuery{PageSize: 100, Sort: stats.SessionSortOldest, Period: "all"}
@@ -1086,7 +1212,9 @@ func collectSessions(ctx context.Context, src source.Source, sourceID string, wi
 	}
 	for page := 1; ; page++ {
 		query.Page = page
-		list, err := src.Sessions(ctx, query)
+		pageCtx, cancel := context.WithTimeout(ctx, collectCallTimeout)
+		list, err := src.Sessions(pageCtx, query)
+		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("cache collect sessions: %w", err)
 		}
@@ -1147,17 +1275,14 @@ func collectMessagesAndTools(ctx context.Context, src source.Source, sourceID st
 	tools := make([]toolRow, 0)
 	var summary collectSummary
 	var seen int64
-	pq := stats.PeriodQuery{Period: "all"}
-	if from := windowFromHint(window); from != "" {
-		// Time-precision hint engages bounded loads in the JSONL sources.
-		pq = stats.PeriodQuery{From: from, FromTime: window.Since.UTC()}
-	}
-	if !window.Cutoff.IsZero() {
-		pq.ToTime = window.Cutoff.UTC()
-	}
+	pq := periodForWindow(window)
 	for page := 1; ; page++ {
-		list, err := src.Messages(ctx, pq, page, 100, syncSort)
+		// One deadline covers the page query and its at-most-100 detail
+		// lookups. The next page receives a fresh budget.
+		pageCtx, cancel := context.WithTimeout(ctx, collectCallTimeout)
+		list, err := src.Messages(pageCtx, pq, page, 100, syncSort)
 		if err != nil {
+			cancel()
 			return nil, nil, summary, fmt.Errorf("cache collect messages: %w", err)
 		}
 		seen += int64(len(list.Messages))
@@ -1183,8 +1308,9 @@ func collectMessagesAndTools(ctx context.Context, src source.Source, sourceID st
 			row := messageRow{Entry: entry, ProjectID: session.ProjectID, ProjectName: session.ProjectName}
 			messages = append(messages, row)
 
-			detail, err := src.MessageByID(ctx, entry.ID)
+			detail, err := src.MessageByID(pageCtx, entry.ID)
 			if err != nil {
+				cancel()
 				return nil, nil, summary, fmt.Errorf("cache collect message tools %s: %w", entry.ID, err)
 			}
 			if detail == nil {
@@ -1209,6 +1335,7 @@ func collectMessagesAndTools(ctx context.Context, src source.Source, sourceID st
 			// Reported after the page's per-message detail fetches, the slow part.
 			progress(SyncProgress{SourceID: sourceID, Phase: "messages", Done: seen, Total: list.Total})
 		}
+		cancel()
 		if len(list.Messages) == 0 || int64(page*list.PageSize) >= list.Total {
 			break
 		}

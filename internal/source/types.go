@@ -32,6 +32,34 @@ type Source interface {
 	Config(context.Context) (stats.ConfigView, error)
 }
 
+// ConsolidationSource is an optional fast path for sources that already build
+// an in-memory snapshot. It lets the cache consume one stable snapshot instead
+// of paginating the source and resolving every message detail individually.
+//
+// ConsolidationData deliberately carries only aggregate-safe metadata. Raw
+// message text, reasoning, tool input, and tool output must never cross this
+// boundary because the dashboard cache does not persist conversation content.
+type ConsolidationSource interface {
+	ConsolidationData(context.Context, stats.PeriodQuery) (ConsolidationData, error)
+}
+
+type ConsolidationData struct {
+	Sessions       []stats.SessionEntry
+	Messages       []ConsolidationMessage
+	CostStatus     stats.CostStatus
+	CostProvenance *stats.CostProvenance
+}
+
+type ConsolidationMessage struct {
+	Entry stats.MessageEntry
+	Tools []ConsolidationTool
+}
+
+type ConsolidationTool struct {
+	Name   string
+	Status string
+}
+
 type SourceInfo struct {
 	ID           SourceID          `json:"id"`
 	Label        string            `json:"label"`
