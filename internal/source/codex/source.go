@@ -100,7 +100,7 @@ func (s *Source) Info(ctx context.Context) source.SourceInfo {
 			Status:            string(stats.CostEstimatedAPIEquivalent),
 			Currency:          "USD",
 			PricingSnapshotID: s.pricingSnapshotID(ctx),
-			Note:              "Codex costs are estimated API-equivalent values, not actual subscription spend",
+			Note:              apiEquivalentNote,
 		},
 		Privacy: source.PrivacyInfo{
 			PlaintextTranscripts: true,

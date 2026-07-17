@@ -141,7 +141,7 @@ export function formatCostProvenance(status?: CostStatus, provenance?: CostProve
     case 'approximate':
       return provenance?.note ?? 'approximate cost'
     case 'estimated_api_equivalent':
-      return provenance?.note ?? 'estimated API-equivalent cost; not actual subscription spend'
+      return provenance?.note ?? 'estimated API-equivalent USD cost; not actual billed spend'
     case 'mixed':
       return provenance?.note ?? 'mixed cost provenance'
     case 'missing':

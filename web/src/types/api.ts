@@ -145,6 +145,9 @@ export interface TokenStats {
   cache: CacheStats
 }
 
+/** Codex processing mode requested by the local client and recorded in local telemetry. */
+export type ProcessingMode = 'fast' | 'standard' | 'flex' | 'unknown'
+
 export const DAILY_PERIOD_VALUES = ['1h', '6h', '12h', '24h', '72h', '1d', '7d', '14d', '30d', '1y', 'all'] as const
 
 export type DailyPeriod = (typeof DAILY_PERIOD_VALUES)[number]
@@ -326,6 +329,10 @@ export interface SessionMessage extends SourceTagged {
   provider_id?: string
   agent?: string
   is_subagent?: boolean
+  /** Raw protocol tier requested by the local Codex client (for example, priority). */
+  service_tier?: string
+  /** User-facing normalization of the locally requested service_tier. */
+  processing_mode?: ProcessingMode
 }
 
 export interface SessionDetail extends SourceTagged {
@@ -354,6 +361,10 @@ export interface MessageEntry extends SourceTagged {
   provider_id?: string
   agent?: string
   is_subagent?: boolean
+  /** Raw protocol tier requested by the local Codex client (for example, priority). */
+  service_tier?: string
+  /** User-facing normalization of the locally requested service_tier. */
+  processing_mode?: ProcessingMode
   folded_assistant_calls?: number
   folded_tool_calls?: number
   folded_token_updates?: number

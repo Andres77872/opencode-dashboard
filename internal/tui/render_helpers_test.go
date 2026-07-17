@@ -136,6 +136,69 @@ func TestFormatTokens(t *testing.T) {
 	}
 }
 
+func TestRequestedProcessingModeLabel(t *testing.T) {
+	tests := []struct {
+		name        string
+		mode        stats.ProcessingMode
+		serviceTier string
+		want        string
+	}{
+		{name: "normalized fast", mode: stats.ProcessingModeFast, want: "Fast requested"},
+		{name: "raw priority", serviceTier: "priority", want: "Fast requested"},
+		{name: "raw default", serviceTier: "default", want: "Standard requested"},
+		{name: "flex", serviceTier: "flex", want: "Flex requested"},
+		{name: "missing", want: "Tier unknown"},
+		{name: "normalized value wins", mode: stats.ProcessingModeStandard, serviceTier: "priority", want: "Standard requested"},
+		{name: "explicit unknown wins", mode: stats.ProcessingModeUnknown, serviceTier: "priority", want: "Tier unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := requestedProcessingModeLabel(tt.mode, tt.serviceTier); got != tt.want {
+				t.Fatalf("requestedProcessingModeLabel(%q, %q) = %q, want %q", tt.mode, tt.serviceTier, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRequestedProcessingModePricingUsesOfficialUSDTiers(t *testing.T) {
+	tests := []struct {
+		mode      stats.ProcessingMode
+		wantLabel string
+		wantRates string
+	}{
+		{mode: stats.ProcessingModeFast, wantLabel: "Priority API estimate", wantRates: "Priority API rates"},
+		{mode: stats.ProcessingModeFlex, wantLabel: "Flex API estimate", wantRates: "Flex API rates"},
+		{mode: stats.ProcessingModeStandard, wantLabel: "Standard API estimate", wantRates: "Standard API rates"},
+		{mode: stats.ProcessingModeUnknown, wantLabel: "Standard API estimate", wantRates: "Tier unknown stays unknown → Standard API fallback"},
+	}
+
+	for _, tt := range tests {
+		if got := requestedProcessingModePricingLabel(tt.mode, ""); got != tt.wantLabel {
+			t.Fatalf("requestedProcessingModePricingLabel(%q) = %q, want %q", tt.mode, got, tt.wantLabel)
+		}
+		disclosure := requestedProcessingModePricingDisclosure(tt.mode, "")
+		if !strings.Contains(disclosure, tt.wantRates) || !strings.Contains(disclosure, "not server-confirmed") || !strings.Contains(disclosure, "not actual billed spend") {
+			t.Fatalf("requestedProcessingModePricingDisclosure(%q) = %q", tt.mode, disclosure)
+		}
+	}
+}
+
+func TestTotalTokenStatsIncludesEveryDisjointBucket(t *testing.T) {
+	tokens := stats.TokenStats{
+		Input:     100,
+		Output:    20,
+		Reasoning: 5,
+		Cache:     stats.CacheStats{Read: 40, Write: 10},
+	}
+	if got, want := totalTokenStats(tokens), int64(175); got != want {
+		t.Fatalf("totalTokenStats() = %d, want %d", got, want)
+	}
+	if got, want := totalDayTokens(tokens), int64(175); got != want {
+		t.Fatalf("totalDayTokens() = %d, want %d", got, want)
+	}
+}
+
 func TestAsciiBar(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -69,8 +69,8 @@ func (s *snapshot) daily(pq stats.PeriodQuery, granularity ...stats.Granularity)
 }
 
 func (s *snapshot) dailyDimension(dimension string, pq stats.PeriodQuery) (stats.DailyDimensionStats, error) {
-	if dimension != "model" && dimension != "tool" && dimension != "project" {
-		return stats.DailyDimensionStats{}, fmt.Errorf("invalid dimension %q: supported values are model, tool, project", dimension)
+	if dimension != "model" && dimension != "tool" && dimension != "project" && dimension != "processing_mode" {
+		return stats.DailyDimensionStats{}, fmt.Errorf("invalid dimension %q: supported values are model, tool, project, processing_mode", dimension)
 	}
 	messages, err := s.filteredMessages(pq)
 	if err != nil {
@@ -101,6 +101,12 @@ func (s *snapshot) dailyDimension(dimension string, pq stats.PeriodQuery) (stats
 				seen[tool.Tool] = true
 				groups[key{day: day, dim: tool.Tool}] = append(groups[key{day: day, dim: tool.Tool}], msg)
 			}
+		case "processing_mode":
+			mode := msg.Entry.ProcessingMode
+			if mode == "" {
+				mode = stats.ProcessingModeUnknown
+			}
+			groups[key{day: day, dim: string(mode)}] = append(groups[key{day: day, dim: string(mode)}], msg)
 		}
 	}
 	keys := make([]key, 0, len(groups))
@@ -316,7 +322,7 @@ func (s *snapshot) sessionByID(id string) *stats.SessionDetail {
 	}
 	messages := make([]stats.SessionMessage, 0, len(session.Messages))
 	for _, msg := range session.Messages {
-		entry := stats.SessionMessage{SourceID: codexSourceID, ID: msg.Entry.ID, Role: msg.Entry.Role, TimeCreated: msg.Entry.TimeCreated, Cost: msg.Entry.Cost, Tokens: cloneTokens(msg.Entry.Tokens), ModelID: msg.Entry.ModelID, ProviderID: msg.Entry.ProviderID, IsSubagent: msg.Entry.IsSubagent, CostStatus: msg.Entry.CostStatus, CostProvenance: cloneProvenance(msg.Entry.CostProvenance)}
+		entry := stats.SessionMessage{SourceID: codexSourceID, ID: msg.Entry.ID, Role: msg.Entry.Role, TimeCreated: msg.Entry.TimeCreated, Cost: msg.Entry.Cost, Tokens: cloneTokens(msg.Entry.Tokens), ModelID: msg.Entry.ModelID, ProviderID: msg.Entry.ProviderID, ServiceTier: msg.Entry.ServiceTier, ProcessingMode: msg.Entry.ProcessingMode, IsSubagent: msg.Entry.IsSubagent, CostStatus: msg.Entry.CostStatus, CostProvenance: cloneProvenance(msg.Entry.CostProvenance)}
 		messages = append(messages, entry)
 	}
 	cost, tokens, status, provenance := aggregateCostProvenance(session.Messages)

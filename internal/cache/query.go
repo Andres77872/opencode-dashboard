@@ -203,10 +203,15 @@ func (s *Store) DailyDimension(ctx context.Context, sourceID, dimension string, 
 		return s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(model_id, '')", label, startMs, endMs)
 	case "project":
 		return s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(project_id, '')", label, startMs, endMs)
+	case "processing_mode":
+		if sourceID != "codex" {
+			return stats.DailyDimensionStats{}, fmt.Errorf("invalid dimension %q for source %q: supported only for codex", dimension, sourceID)
+		}
+		return s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(NULLIF(processing_mode, ''), 'unknown')", label, startMs, endMs)
 	case "tool":
 		return s.dailyToolDimension(ctx, sourceID, dimension, label, startMs, endMs)
 	default:
-		return stats.DailyDimensionStats{}, fmt.Errorf("invalid dimension %q: supported values are model, tool, project", dimension)
+		return stats.DailyDimensionStats{}, fmt.Errorf("invalid dimension %q: supported values are model, tool, project, processing_mode", dimension)
 	}
 }
 
@@ -232,13 +237,67 @@ func (s *Store) dailyMessageDimension(ctx context.Context, sourceID, dimension, 
 	if err != nil {
 		return stats.DailyDimensionStats{}, err
 	}
-	defer rows.Close()
 	days, err := scanDimensionRows(rows, sourceID)
 	if err != nil {
+		rows.Close()
+		return stats.DailyDimensionStats{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return stats.DailyDimensionStats{}, err
+	}
+	if err := s.attachDimensionCostSummaries(ctx, sourceID, expr, startMs, endMs, days); err != nil {
 		return stats.DailyDimensionStats{}, err
 	}
 	status, provenance := s.costSummary(ctx, sourceID, startMs, endMs)
 	return stats.DailyDimensionStats{SourceID: sourceID, Days: days, Dimension: dimension, Period: period, CostStatus: status, CostProvenance: provenance}, nil
+}
+
+// attachDimensionCostSummaries restores the cost metadata that SQL's numeric
+// aggregation cannot carry on its own. Keeping this metadata per (day,
+// dimension) is essential for requested processing modes: a zero cost with a
+// missing catalog entry is unknown, not a real $0.00 estimate.
+func (s *Store) attachDimensionCostSummaries(ctx context.Context, sourceID, expr string, startMs, endMs int64, days []stats.DimensionDayStats) error {
+	query := fmt.Sprintf(`
+		SELECT
+			DATE(time_created_ms / 1000, 'unixepoch') AS day,
+			%s AS dim,
+			COALESCE(cost_status, ''),
+			COUNT(*)
+		FROM message_index
+		WHERE source_id = ? AND role = 'assistant' AND time_created_ms >= ? AND time_created_ms < ? AND %s != ''
+		GROUP BY day, dim, COALESCE(cost_status, '')
+	`, expr, expr)
+	rows, err := s.db.QueryContext(ctx, query, sourceID, startMs, endMs)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type rowKey struct{ date, dim string }
+	countsByRow := make(map[rowKey]*costCounts)
+	for rows.Next() {
+		var date, dim, statusText string
+		var count int64
+		if err := rows.Scan(&date, &dim, &statusText, &count); err != nil {
+			return err
+		}
+		key := rowKey{date: date, dim: dim}
+		counts := countsByRow[key]
+		if counts == nil {
+			counts = &costCounts{}
+			countsByRow[key] = counts
+		}
+		counts.add(stats.CostStatus(statusText), count)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range days {
+		if counts := countsByRow[rowKey{date: days[i].Date, dim: days[i].Dimension}]; counts != nil {
+			days[i].CostStatus, days[i].CostProvenance = counts.result()
+		}
+	}
+	return nil
 }
 
 func (s *Store) dailyToolDimension(ctx context.Context, sourceID, dimension, period string, startMs, endMs int64) (stats.DailyDimensionStats, error) {
@@ -578,7 +637,8 @@ func (s *Store) Messages(ctx context.Context, sourceID string, pq stats.PeriodQu
 		SELECT
 			message_id, session_id, session_title, role, time_created_ms, cost,
 			input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens,
-			COALESCE(model_id, ''), COALESCE(provider_id, ''), COALESCE(agent, ''), is_subagent,
+			COALESCE(model_id, ''), COALESCE(provider_id, ''),
+			COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent,
 			folded_assistant_calls, folded_tool_calls, folded_token_updates, COALESCE(cost_status, ''), cost_provenance_json
 		FROM message_index
 		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?
@@ -637,7 +697,7 @@ func (s *Store) SessionByID(ctx context.Context, sourceID, id string) (*stats.Se
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT message_id, role, time_created_ms, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, COALESCE(model_id, ''), COALESCE(provider_id, ''), COALESCE(agent, ''), is_subagent, COALESCE(cost_status, ''), cost_provenance_json
+		SELECT message_id, role, time_created_ms, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, COALESCE(model_id, ''), COALESCE(provider_id, ''), COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent, COALESCE(cost_status, ''), cost_provenance_json
 		FROM message_index
 		WHERE source_id = ? AND session_id = ?
 		ORDER BY time_created_ms ASC, message_id ASC
@@ -654,7 +714,7 @@ func (s *Store) SessionByID(ctx context.Context, sourceID, id string) (*stats.Se
 		var isSubagent int
 		var msgProv sql.NullString
 		msg.SourceID = sourceID
-		if err := rows.Scan(&msg.ID, &msg.Role, &msgMs, &msg.Cost, &input, &output, &reasoning, &cacheRead, &cacheWrite, &msg.ModelID, &msg.ProviderID, &msg.Agent, &isSubagent, &msg.CostStatus, &msgProv); err != nil {
+		if err := rows.Scan(&msg.ID, &msg.Role, &msgMs, &msg.Cost, &input, &output, &reasoning, &cacheRead, &cacheWrite, &msg.ModelID, &msg.ProviderID, &msg.ServiceTier, &msg.ProcessingMode, &msg.Agent, &isSubagent, &msg.CostStatus, &msgProv); err != nil {
 			return nil, err
 		}
 		msg.TimeCreated = time.UnixMilli(msgMs).UTC()
@@ -694,7 +754,7 @@ func scanMessageEntry(rows interface {
 	if err := rows.Scan(
 		&entry.ID, &entry.SessionID, &entry.SessionTitle, &entry.Role, &createdMs, &entry.Cost,
 		&input, &output, &reasoning, &cacheRead, &cacheWrite,
-		&entry.ModelID, &entry.ProviderID, &entry.Agent, &isSubagent,
+		&entry.ModelID, &entry.ProviderID, &entry.ServiceTier, &entry.ProcessingMode, &entry.Agent, &isSubagent,
 		&entry.FoldedAssistantCalls, &entry.FoldedToolCalls, &entry.FoldedTokenUpdates, &entry.CostStatus, &prov,
 	); err != nil {
 		return entry, err
@@ -723,7 +783,8 @@ func (s *Store) MessageByID(ctx context.Context, sourceID, id string) (*stats.Me
 		SELECT
 			message_id, session_id, session_title, role, time_created_ms, cost,
 			input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens,
-			COALESCE(model_id, ''), COALESCE(provider_id, ''), COALESCE(agent, ''), is_subagent,
+			COALESCE(model_id, ''), COALESCE(provider_id, ''),
+			COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent,
 			folded_assistant_calls, folded_tool_calls, folded_token_updates, COALESCE(cost_status, ''), cost_provenance_json
 		FROM message_index
 		WHERE source_id = ? AND message_id = ?

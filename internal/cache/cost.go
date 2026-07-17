@@ -14,6 +14,44 @@ type costCounts struct {
 	statuses map[stats.CostStatus]int64
 }
 
+func (c *costCounts) add(status stats.CostStatus, count int64) {
+	if status == "" || count <= 0 {
+		return
+	}
+	if c.statuses == nil {
+		c.statuses = make(map[stats.CostStatus]int64)
+	}
+	c.statuses[status] += count
+	c.total += count
+	switch status {
+	case stats.CostReported:
+		c.reported += count
+	case stats.CostMissing:
+		c.missing += count
+	default:
+		c.computed += count
+	}
+}
+
+func (c costCounts) result() (stats.CostStatus, *stats.CostProvenance) {
+	if c.total == 0 {
+		return "", nil
+	}
+	status := stats.CostMixed
+	if len(c.statuses) == 1 {
+		for only := range c.statuses {
+			status = only
+		}
+	}
+	return status, &stats.CostProvenance{
+		Status:        status,
+		Currency:      "USD",
+		MissingCount:  c.missing,
+		ComputedCount: c.computed,
+		ReportedCount: c.reported,
+	}
+}
+
 func (s *Store) costSummary(ctx context.Context, sourceID string, startMs, endMs int64) (stats.CostStatus, *stats.CostProvenance) {
 	return s.costSummaryWhere(ctx, sourceID, startMs, endMs, "", nil)
 }
@@ -44,43 +82,17 @@ func (s *Store) costSummaryWhere(ctx context.Context, sourceID string, startMs, 
 		return "", nil
 	}
 	defer rows.Close()
-	counts := costCounts{statuses: make(map[stats.CostStatus]int64)}
+	var counts costCounts
 	for rows.Next() {
 		var statusText string
 		var count int64
 		if err := rows.Scan(&statusText, &count); err != nil {
 			return "", nil
 		}
-		if statusText == "" {
-			continue
-		}
-		status := stats.CostStatus(statusText)
-		counts.statuses[status] += count
-		counts.total += count
-		switch status {
-		case stats.CostReported:
-			counts.reported += count
-		case stats.CostMissing:
-			counts.missing += count
-		default:
-			counts.computed += count
-		}
+		counts.add(stats.CostStatus(statusText), count)
 	}
-	if rows.Err() != nil || counts.total == 0 {
+	if rows.Err() != nil {
 		return "", nil
 	}
-
-	status := stats.CostMixed
-	if len(counts.statuses) == 1 {
-		for only := range counts.statuses {
-			status = only
-		}
-	}
-	return status, &stats.CostProvenance{
-		Status:        status,
-		Currency:      "USD",
-		MissingCount:  counts.missing,
-		ComputedCount: counts.computed,
-		ReportedCount: counts.reported,
-	}
+	return counts.result()
 }

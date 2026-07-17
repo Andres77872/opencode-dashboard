@@ -38,8 +38,12 @@ func renderDaily(s styles, width, height int, daily stats.DailyStats, period str
 	} else {
 		periodLabel = period
 	}
+	metricLabel := renderDailyMetricLabel(metric)
+	if daily.SourceID == "codex" && metric == dailyMetricCost {
+		metricLabel = "API cost estimate (USD)"
+	}
 	lines := []string{
-		s.PanelTitle.Render(fmt.Sprintf("Daily activity • %s • %s", periodLabel, renderDailyMetricLabel(metric))),
+		s.PanelTitle.Render(fmt.Sprintf("Daily activity • %s • %s", periodLabel, metricLabel)),
 		s.Muted.Render(renderDailySummary(daily, metric, isHourly, showFullSummary)),
 	}
 
@@ -47,19 +51,24 @@ func renderDaily(s styles, width, height int, daily stats.DailyStats, period str
 	if len(daily.Days) > 0 && width >= 80 {
 		total := 0.0
 		peakValue := 0.0
-		for _, day := range daily.Days {
+		peakDay := daily.Days[0]
+		for i, day := range daily.Days {
 			val := dailyMetricValue(day, metric)
 			total += val
-			if val > peakValue {
+			if i == 0 || val > peakValue {
 				peakValue = val
+				peakDay = day
 			}
 		}
 		avg := total / float64(len(daily.Days))
+		totalValue := renderDailyMetricValueWithProvenance(metric, total, daily.CostStatus, daily.CostProvenance, true)
+		avgValue := renderDailyMetricValueWithProvenance(metric, avg, daily.CostStatus, daily.CostProvenance, true)
+		peakDisplay := renderDailyMetricValueWithProvenance(metric, peakValue, peakDay.CostStatus, peakDay.CostProvenance, true)
 		cardWidth := max((width-8)/4, 18)
 		dailyKPI := lipgloss.JoinHorizontal(lipgloss.Top,
-			compactMetricCard(s, "Total", renderDailyMetricValue(metric, total, true), "", cardWidth),
-			compactMetricCard(s, "Avg/day", renderDailyMetricValue(metric, avg, true), "", cardWidth),
-			compactMetricCard(s, "Peak", renderDailyMetricValue(metric, peakValue, true), "", cardWidth),
+			compactMetricCard(s, "Total", totalValue, "", cardWidth),
+			compactMetricCard(s, "Avg/day", avgValue, "", cardWidth),
+			compactMetricCard(s, "Peak", peakDisplay, "", cardWidth),
 			compactMetricCard(s, "Days", formatInt(int64(len(daily.Days))), "", cardWidth),
 		)
 		lines = append(lines, dailyKPI)
@@ -161,6 +170,13 @@ func renderDailyMetricValue(metric dailyMetric, value float64, compact bool) str
 	return formatInt(rounded)
 }
 
+func renderDailyMetricValueWithProvenance(metric dailyMetric, value float64, status stats.CostStatus, provenance *stats.CostProvenance, compact bool) string {
+	if metric == dailyMetricCost {
+		return plainCostProv(value, status, provenance)
+	}
+	return renderDailyMetricValue(metric, value, compact)
+}
+
 func renderDailySummary(daily stats.DailyStats, metric dailyMetric, isHourly bool, full bool) string {
 	if len(daily.Days) == 0 {
 		return ""
@@ -186,12 +202,17 @@ func renderDailySummary(daily stats.DailyStats, metric dailyMetric, isHourly boo
 	}
 
 	if !full {
-		return fmt.Sprintf("Total %s • %s %s", renderDailyMetricValue(metric, total, true), avgLabel, renderDailyMetricValue(metric, total/float64(len(daily.Days)), true))
+		return fmt.Sprintf(
+			"Total %s • %s %s",
+			renderDailyMetricValueWithProvenance(metric, total, daily.CostStatus, daily.CostProvenance, true),
+			avgLabel,
+			renderDailyMetricValueWithProvenance(metric, total/float64(len(daily.Days)), daily.CostStatus, daily.CostProvenance, true),
+		)
 	}
 
 	parts := []string{
-		fmt.Sprintf("Total %s", renderDailyMetricValue(metric, total, true)),
-		fmt.Sprintf("%s %s", avgLabel, renderDailyMetricValue(metric, total/float64(len(daily.Days)), true)),
+		fmt.Sprintf("Total %s", renderDailyMetricValueWithProvenance(metric, total, daily.CostStatus, daily.CostProvenance, true)),
+		fmt.Sprintf("%s %s", avgLabel, renderDailyMetricValueWithProvenance(metric, total/float64(len(daily.Days)), daily.CostStatus, daily.CostProvenance, true)),
 	}
 
 	if len(daily.Days) > 1 {
@@ -202,20 +223,21 @@ func renderDailySummary(daily stats.DailyStats, metric dailyMetric, isHourly boo
 		parts = append(parts, fmt.Sprintf("Latest %s %s vs %s", latestLabel, renderDailyDelta(latest, previous, metric), previousLabel))
 	}
 
-	parts = append(parts, fmt.Sprintf("%s %s %s", peakLabel, renderDateLabel(peak.Date, isHourly), renderDailyMetricValue(metric, peakValue, true)))
+	parts = append(parts, fmt.Sprintf("%s %s %s", peakLabel, renderDateLabel(peak.Date, isHourly), renderDailyMetricValueWithProvenance(metric, peakValue, peak.CostStatus, peak.CostProvenance, true)))
 	return strings.Join(parts, " • ")
 }
 
 func renderDailyFooter(daily stats.DailyStats, isHourly bool, full bool) string {
 	latest := daily.Days[len(daily.Days)-1]
 	latestLabel := renderDateLabel(latest.Date, isHourly)
+	latestCost := plainCostProv(latest.Cost, latest.CostStatus, latest.CostProvenance)
 	if !full {
-		return fmt.Sprintf("%s • %s", latestLabel, formatMoney(latest.Cost))
+		return fmt.Sprintf("%s • %s", latestLabel, latestCost)
 	}
 	return fmt.Sprintf(
 		"Latest %s • %s • %s sessions • %s messages • %s tokens",
 		latestLabel,
-		formatMoney(latest.Cost),
+		latestCost,
 		formatInt(latest.Sessions),
 		formatInt(latest.Messages),
 		formatCompactInt(totalDayTokens(latest.Tokens)),
@@ -225,7 +247,7 @@ func renderDailyFooter(daily stats.DailyStats, isHourly bool, full bool) string 
 func renderDailySecondary(day stats.DayStats, metric dailyMetric) string {
 	switch metric {
 	case dailyMetricSessions:
-		return formatMoney(day.Cost)
+		return plainCostProv(day.Cost, day.CostStatus, day.CostProvenance)
 	case dailyMetricMessages, dailyMetricTokens:
 		return padLeft(formatCompactInt(day.Sessions), 4) + " sess"
 	default:
@@ -251,19 +273,23 @@ func renderDailyTrendGlyph(s styles, visible []stats.DayStats, index int, metric
 }
 
 func renderDailyDelta(current, previous stats.DayStats, metric dailyMetric) string {
+	if metric == dailyMetricCost && (resolveCostStatus(current.CostStatus, current.CostProvenance) == stats.CostMissing || resolveCostStatus(previous.CostStatus, previous.CostProvenance) == stats.CostMissing) {
+		return "Unknown"
+	}
 	delta := dailyMetricValue(current, metric) - dailyMetricValue(previous, metric)
+	status, provenance := mergeProcessingModeCost(current.CostStatus, current.CostProvenance, previous.CostStatus, previous.CostProvenance)
 	switch {
 	case delta > 0:
-		return "↑ " + renderDailyMetricValue(metric, delta, true)
+		return "↑ " + renderDailyMetricValueWithProvenance(metric, delta, status, provenance, true)
 	case delta < 0:
-		return "↓ " + renderDailyMetricValue(metric, math.Abs(delta), true)
+		return "↓ " + renderDailyMetricValueWithProvenance(metric, math.Abs(delta), status, provenance, true)
 	default:
 		return "→ flat"
 	}
 }
 
 func totalDayTokens(tokens stats.TokenStats) int64 {
-	return tokens.Input + tokens.Output + tokens.Reasoning
+	return totalTokenStats(tokens)
 }
 
 func calculateDailyBarWidth(width int) int {

@@ -18,6 +18,8 @@ import {
   ErrorState,
   Notice,
   AreaChart,
+  StackedBars,
+  Legend,
   useWidth,
   vendorMeta,
   type Column,
@@ -43,6 +45,15 @@ import { getNextSortState, type SortState } from '../lib/table-sort'
 import { groupModelDaysByDate } from '../lib/daily-models'
 import { getTokenBreakdownItems, getTokenTotal } from '../lib/token-breakdown'
 import {
+  aggregateProcessingModeUsage,
+  getProcessingModeMeta,
+  getProcessingModePricingDisclosure,
+  getProcessingModePricingLabel,
+  PROCESSING_MODE_ORDER,
+  REQUESTED_TIER_DISCLOSURE,
+  resolveProcessingMode,
+} from '../lib/processing-mode'
+import {
   getDetailLoadingCopy,
   getDetailTitle,
   getEmptyHistoryCopy,
@@ -50,9 +61,12 @@ import {
 } from '../lib/message-display'
 import type {
   DayStats,
+  DailyDimensionStats,
+  DimensionDayStats,
   MessageDetail,
   MessageEntry,
   MessageList,
+  ProcessingMode,
   SourceID,
   ToolPart,
 } from '../types/api'
@@ -65,13 +79,33 @@ function getDailyModels(period: string, signal?: AbortSignal, sourceId?: SourceI
   return getDailyDimension('model', period, signal, sourceId)
 }
 
+// Keep this dimension request Codex-only. Other adapters do not expose Codex's
+// locally requested processing tier and must not receive an unsupported query.
+function getDailyProcessingModes(period: string, signal?: AbortSignal, sourceId?: SourceID): Promise<DailyDimensionStats> {
+  if (sourceId !== 'codex') {
+    return Promise.resolve({ source_id: sourceId, days: [], dimension: 'processing_mode', period })
+  }
+  return getDailyDimension('processing_mode', period, signal, sourceId)
+}
+
 // ── Daily metric lens (inlined from components/daily/daily-metrics.ts) ──
 type DailyMetric = 'cost' | 'requests' | 'tokens'
+type DailyBreakdown = 'overall' | 'processing_mode'
 
 const METRIC_OPTS: { value: DailyMetric; label: string }[] = [
   { value: 'cost', label: 'Cost' },
   { value: 'requests', label: 'Messages' },
   { value: 'tokens', label: 'Tokens' },
+]
+
+const PROCESSING_MODE_METRIC_OPTS: { value: DailyMetric; label: string }[] = [
+  { value: 'cost', label: 'API cost' },
+  { value: 'requests', label: 'Assistant requests' },
+  { value: 'tokens', label: 'Tokens' },
+]
+const BREAKDOWN_OPTS: { value: DailyBreakdown; label: string }[] = [
+  { value: 'overall', label: 'Overall' },
+  { value: 'processing_mode', label: 'Requested mode' },
 ]
 
 interface DailyMetricMeta {
@@ -152,12 +186,33 @@ function getMessageSessionLabel(message: Pick<MessageEntry, 'session_title'>) {
   return message.session_title || 'Untitled session'
 }
 
+function RequestedTierBadge({ processingMode, serviceTier }: { processingMode?: string; serviceTier?: string }) {
+  const meta = getProcessingModeMeta(processingMode, serviceTier)
+  return (
+    <span title={REQUESTED_TIER_DISCLOSURE}>
+      <Badge tone={meta.tone} dot>{meta.label}</Badge>
+    </span>
+  )
+}
+
+function getDimensionMetricValue(row: DimensionDayStats, metric: DailyMetric): number {
+  switch (metric) {
+    case 'cost':
+      return row.cost
+    case 'tokens':
+      return getTokenTotal(row.tokens)
+    default:
+      return row.messages
+  }
+}
+
 export function DailyView() {
   const { requestRefresh, refreshNonce, selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const sourceLabel = selectedSourceInfo?.label ?? vendorMeta(selectedSourceId).name
 
   const [searchParams, setSearchParams] = useSearchParams()
   const [metric, setMetric] = useState<DailyMetric>('cost')
+  const [breakdown, setBreakdown] = useState<DailyBreakdown>('overall')
 
   // ── Daily stats (period resource) ──
   const { cacheKey } = usePeriodControls()
@@ -167,8 +222,17 @@ export function DailyView() {
   // Per-day model message counts for the breakdown table. Loads independently;
   // the table renders without the Models column data until it arrives.
   const { data: modelDaily } = usePeriodResource(getDailyModels, cacheKey)
+  const {
+    data: processingModeDaily,
+    loading: processingModeLoading,
+    error: processingModeError,
+  } = usePeriodResource(getDailyProcessingModes, cacheKey)
 
   const modelsByDate = useMemo(() => groupModelDaysByDate(modelDaily?.days), [modelDaily])
+
+  useEffect(() => {
+    if (selectedSourceId !== 'codex' && breakdown !== 'overall') setBreakdown('overall')
+  }, [breakdown, selectedSourceId])
 
   // ── Message ledger (own page/sort state; page mirrors the URL) ──
   const [messages, setMessages] = useState<MessageList | null>(null)
@@ -275,6 +339,15 @@ export function DailyView() {
   }, [data])
 
   const metricMeta = getDailyMetricMeta(metric)
+  const overallChartTitle = selectedSourceId === 'codex' && metric === 'cost'
+    ? 'Daily API cost estimate (USD)'
+    : metricMeta.cardTitle
+  const overallSeriesLabel = selectedSourceId === 'codex' && metric === 'cost'
+    ? 'API cost estimate (USD)'
+    : metricMeta.label
+  const processingModeMetricLabel = metric === 'cost'
+    ? 'API cost estimate (USD)'
+    : metric === 'tokens' ? 'Tokens' : 'Assistant requests'
 
   // ── Chart series (labels respect hourly granularity) ──
   const chart = useMemo(() => {
@@ -285,9 +358,34 @@ export function DailyView() {
     }
   }, [data?.days, metric])
 
+  const processingModeBreakdown = useMemo(() => {
+    const byDate = new Map<string, Record<ProcessingMode, number>>()
+
+    for (const row of processingModeDaily?.days ?? []) {
+      const mode = resolveProcessingMode(row.dimension_key)
+      const perMode = byDate.get(row.date) ?? { fast: 0, standard: 0, flex: 0, unknown: 0 }
+      perMode[mode] += getDimensionMetricValue(row, metric)
+      byDate.set(row.date, perMode)
+    }
+
+    return {
+      totals: aggregateProcessingModeUsage(processingModeDaily?.days),
+      days: [...byDate.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, per]) => ({ key: formatShortDate(date), per })),
+      keys: PROCESSING_MODE_ORDER.map((mode) => {
+        const meta = getProcessingModeMeta(mode)
+        return { id: mode, short: meta.shortLabel, color: meta.color }
+      }),
+    }
+  }, [metric, processingModeDaily?.days])
+
   const [chartRef, chartWidth] = useWidth(720)
 
   const handleRetry = () => requestRefresh()
+  const handleBreakdownChange = (next: DailyBreakdown) => {
+    setBreakdown(next)
+  }
 
   // ── Loading skeleton (mirrors overview-view) ──
   if (loading && !data) {
@@ -394,6 +492,17 @@ export function DailyView() {
         </span>
       ),
     },
+    ...(selectedSourceId === 'codex'
+      ? [
+          {
+            key: 'processing_mode',
+            header: 'Requested tier',
+            render: (m: MessageEntry) => m.role === 'assistant'
+              ? <RequestedTierBadge processingMode={m.processing_mode} serviceTier={m.service_tier} />
+              : <span style={{ color: 'var(--fg-faint)' }}>—</span>,
+          } satisfies Column<MessageEntry>,
+        ]
+      : []),
     {
       key: 'cost',
       header: 'Cost',
@@ -410,6 +519,36 @@ export function DailyView() {
         const total = m.tokens ? getTokenTotal(m.tokens) : 0
         return total > 0 ? <span title={`${formatInteger(total)} tokens`}>{formatTokenCount(total)}</span> : <span style={{ color: 'var(--fg-faint)' }}>—</span>
       },
+    },
+  ]
+
+  const processingModeTotalCols: Column<ReturnType<typeof aggregateProcessingModeUsage>[number]>[] = [
+    {
+      key: 'mode',
+      header: 'Requested tier',
+      render: (row) => <RequestedTierBadge processingMode={row.mode} />,
+    },
+    {
+      key: 'messages',
+      header: 'Assistant requests',
+      numeric: true,
+      render: (row) => formatInteger(row.messages),
+    },
+    {
+      key: 'cost',
+      header: 'API cost estimate',
+      numeric: true,
+      render: (row) => formatCurrencyWithProvenance(
+        row.cost,
+        row.costStatus,
+        row.costProvenance,
+      ),
+    },
+    {
+      key: 'tokens',
+      header: 'Tokens',
+      numeric: true,
+      render: (row) => <span title={`${formatInteger(row.tokens)} tokens`}>{formatTokenCount(row.tokens)}</span>,
     },
   ]
 
@@ -431,7 +570,7 @@ export function DailyView() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
         <StatCard
           accent
-          label="Total spend"
+          label={selectedSourceId === 'codex' ? 'API cost estimate' : 'Total spend'}
           value={formatCurrencyWithProvenance(summary?.cost ?? 0, data.cost_status, data.cost_provenance)}
           hint={formatCostProvenance(data.cost_status, data.cost_provenance) ?? `${formatCompactInteger(summary?.bucketCount ?? 0)} ${bucketUnitPlural} in window`}
         />
@@ -455,15 +594,65 @@ export function DailyView() {
 
       {/* Primary trend chart */}
       <Card
-        title={metricMeta.cardTitle}
-        subtitle={metricMeta.cardSubtitle}
-        action={<SegmentedControl size="sm" options={METRIC_OPTS} value={metric} onChange={setMetric} />}
+        title={breakdown === 'processing_mode' ? `${processingModeMetricLabel} by requested processing mode` : overallChartTitle}
+        subtitle={breakdown === 'processing_mode'
+          ? `${REQUESTED_TIER_DISCLOSURE} Cost and token totals come from recorded assistant request rows.`
+          : metricMeta.cardSubtitle}
+        action={(
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {selectedSourceId === 'codex' && (
+              <SegmentedControl size="sm" options={BREAKDOWN_OPTS} value={breakdown} onChange={handleBreakdownChange} />
+            )}
+            <SegmentedControl
+              size="sm"
+              options={breakdown === 'processing_mode' ? PROCESSING_MODE_METRIC_OPTS : METRIC_OPTS}
+              value={metric}
+              onChange={setMetric}
+            />
+          </div>
+        )}
       >
         <div ref={chartRef} style={{ minWidth: 0 }}>
-          {chart.labels.length > 0 ? (
+          {breakdown === 'processing_mode' && processingModeLoading && !processingModeDaily ? (
+            <Skeleton width="100%" height={260} />
+          ) : breakdown === 'processing_mode' && processingModeError ? (
+            <div style={{ height: 260, display: 'flex', alignItems: 'center', justifyContent: 'center', font: '400 13px/1.5 var(--font-ui)', color: 'var(--danger)', textAlign: 'center' }}>
+              Requested-mode breakdown unavailable.
+            </div>
+          ) : breakdown === 'processing_mode' && processingModeBreakdown.days.length > 0 ? (
+            <>
+              <StackedBars
+                days={processingModeBreakdown.days}
+                keys={processingModeBreakdown.keys}
+                width={Math.max(320, chartWidth)}
+                height={260}
+                valueFmt={metricMeta.yFormat}
+                label={processingModeMetricLabel}
+              />
+              <div style={{ marginTop: 10 }}>
+                <Legend
+                  items={processingModeBreakdown.totals.map((row) => {
+                    const meta = getProcessingModeMeta(row.mode)
+                    const value = metric === 'cost' ? row.cost : metric === 'tokens' ? row.tokens : row.messages
+                    return {
+                      label: meta.label,
+                      color: meta.color,
+                      value: metric === 'cost'
+                        ? formatCurrencyWithProvenance(value, row.costStatus, row.costProvenance)
+                        : metricMeta.yFormat(value),
+                    }
+                  })}
+                />
+              </div>
+            </>
+          ) : breakdown === 'processing_mode' ? (
+            <div style={{ height: 260, display: 'flex', alignItems: 'center', justifyContent: 'center', font: '400 13px/1.5 var(--font-ui)', color: 'var(--fg-muted)', textAlign: 'center' }}>
+              No requested-tier telemetry is available for this Codex window.
+            </div>
+          ) : chart.labels.length > 0 ? (
             <AreaChart
               labels={chart.labels}
-              series={[{ name: metricMeta.label, color: metricMeta.color, data: chart.values, fmt: metricMeta.yFormat }]}
+              series={[{ name: overallSeriesLabel, color: metricMeta.color, data: chart.values, fmt: metricMeta.yFormat }]}
               width={Math.max(320, chartWidth)}
               height={260}
               yFormat={metricMeta.yFormat}
@@ -473,6 +662,24 @@ export function DailyView() {
           )}
         </div>
       </Card>
+
+      {breakdown === 'processing_mode' && (
+        <div>
+          <SectionTitle sub={`${REQUESTED_TIER_DISCLOSURE} USD costs and tokens are summed from assistant requests.`}>
+            Requested processing mode totals
+          </SectionTitle>
+          {processingModeError ? (
+            <Notice tone="warning" title="Requested-mode breakdown unavailable">{processingModeError}</Notice>
+          ) : (
+            <DataTable
+              columns={processingModeTotalCols}
+              rows={processingModeBreakdown.totals}
+              rowKey={(row) => row.mode}
+              dense
+            />
+          )}
+        </div>
+      )}
 
       {/* Daily breakdown table */}
       <div>
@@ -595,6 +802,18 @@ function MessageDetailDrawer({ messageId, onClose }: { messageId: string | null;
   const reasoningParts = detail?.content.reasoning_parts ?? []
   const toolParts = detail?.content.tool_parts ?? []
   const sourceLabel = selectedSourceInfo?.label ?? selectedSourceId
+  const detailSourceId = detail?.source_id ?? selectedSourceId
+  const isCodexAssistant = detailSourceId === 'codex' && detail?.role === 'assistant'
+  const costLabel = isCodexAssistant
+    ? getProcessingModePricingLabel(detail?.processing_mode, detail?.service_tier)
+    : 'Request spend'
+  const provenanceHint = detail
+    ? formatCostProvenance(detail.cost_status, detail.cost_provenance)
+    : null
+  const tierPricingDisclosure = isCodexAssistant
+    ? getProcessingModePricingDisclosure(detail?.processing_mode, detail?.service_tier)
+    : null
+  const costHint = tierPricingDisclosure ?? provenanceHint ?? detail?.model_id ?? 'model unavailable'
 
   return (
     <Drawer
@@ -619,14 +838,18 @@ function MessageDetailDrawer({ messageId, onClose }: { messageId: string | null;
             <Badge tone={getRoleTone(detail.role)}>{detail.role || 'unknown'}</Badge>
             <Badge>{detail.session_title || 'Untitled session'}</Badge>
             <Badge>{sourceLabel}</Badge>
+            {isCodexAssistant && (
+              <RequestedTierBadge processingMode={detail.processing_mode} serviceTier={detail.service_tier} />
+            )}
           </div>
 
           {/* Detail metrics */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
             <DetailMetric
-              label="Request spend"
+              label={costLabel}
               value={formatCurrencyWithProvenance(detail.cost ?? 0, detail.cost_status, detail.cost_provenance)}
-              hint={formatCostProvenance(detail.cost_status, detail.cost_provenance) ?? (detail.model_id || 'model unavailable')}
+              hint={costHint}
+              title={provenanceHint ?? tierPricingDisclosure ?? undefined}
             />
             <DetailMetric
               label="Token load"

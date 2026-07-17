@@ -54,16 +54,25 @@ const (
 	dailyMetricTokens   dailyMetric = "tokens"
 )
 
+type dailyBreakdown string
+
+const (
+	dailyBreakdownOverall        dailyBreakdown = "overall"
+	dailyBreakdownProcessingMode dailyBreakdown = "processing_mode"
+)
+
 // dashboardData holds the loaded data for the single global period. Switching
 // source or period resets this wholesale and refetches (no per-period caching).
 type dashboardData struct {
-	Overview stats.OverviewStats
-	Daily    stats.DailyStats
-	Models   stats.ModelStats
-	Tools    stats.ToolStats
-	Projects stats.ProjectStats
-	Sessions stats.SessionList
-	Config   stats.ConfigView
+	Overview           stats.OverviewStats
+	Daily              stats.DailyStats
+	ProcessingModes    stats.DailyDimensionStats
+	ProcessingModesErr error
+	Models             stats.ModelStats
+	Tools              stats.ToolStats
+	Projects           stats.ProjectStats
+	Sessions           stats.SessionList
+	Config             stats.ConfigView
 	// AllOverview is the cross-source aggregate that powers the Overview tab. It
 	// is loaded independently of the per-source snapshot (it spans every source)
 	// and survives source switches.
@@ -128,29 +137,30 @@ type model struct {
 	width  int
 	height int
 
-	activeTab     tabID
-	helpVisible   bool
-	period        stats.PeriodQuery // GLOBAL time range applied to every tab
-	dailyMetric   dailyMetric
-	dailyCursor   int
-	dayMessages   dayMessagesOverlayState
-	messageDetail messageDetailOverlayState
-	periodPicker  periodPickerOverlayState
-	sourcePicker  sourcePickerOverlayState
-	filterMode    bool
-	loading       bool
-	loaded        bool
-	loadErr       error
-	aggErr        error // last cross-source aggregate load error (Overview tab)
-	lastLoaded    time.Time
-	data          dashboardData
-	models        modelTableState
-	tools         toolTableState
-	projects      projectTableState
-	sessions      sessionTableState
-	sessionDetail sessionOverlayState
-	projectDetail projectDetailOverlayState
-	config        configState
+	activeTab      tabID
+	helpVisible    bool
+	period         stats.PeriodQuery // GLOBAL time range applied to every tab
+	dailyMetric    dailyMetric
+	dailyBreakdown dailyBreakdown
+	dailyCursor    int
+	dayMessages    dayMessagesOverlayState
+	messageDetail  messageDetailOverlayState
+	periodPicker   periodPickerOverlayState
+	sourcePicker   sourcePickerOverlayState
+	filterMode     bool
+	loading        bool
+	loaded         bool
+	loadErr        error
+	aggErr         error // last cross-source aggregate load error (Overview tab)
+	lastLoaded     time.Time
+	data           dashboardData
+	models         modelTableState
+	tools          toolTableState
+	projects       projectTableState
+	sessions       sessionTableState
+	sessionDetail  sessionOverlayState
+	projectDetail  projectDetailOverlayState
+	config         configState
 }
 
 func newModel(reg *source.Registry, startup source.SourceID, opts Options) *model {
@@ -165,6 +175,7 @@ func newModel(reg *source.Registry, startup source.SourceID, opts Options) *mode
 		activeTab:      tabOverview,
 		period:         stats.PeriodQuery{Period: "7d"},
 		dailyMetric:    dailyMetricCost,
+		dailyBreakdown: dailyBreakdownOverall,
 		loading:        true,
 		models:         modelTableState{sort: modelSortCost},
 		tools:          toolTableState{sort: toolSortRuns},
@@ -609,8 +620,26 @@ func (m *model) updateDailyKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	daily := m.currentDaily()
 	dayCount := len(daily.Days)
 
+	if matches(key, m.keys.Dimension...) && m.selectedSource == source.SourceCodex {
+		if m.dailyBreakdown == dailyBreakdownProcessingMode {
+			m.dailyBreakdown = dailyBreakdownOverall
+		} else {
+			m.dailyBreakdown = dailyBreakdownProcessingMode
+			if m.dailyMetric != dailyMetricCost && m.dailyMetric != dailyMetricMessages && m.dailyMetric != dailyMetricTokens {
+				m.dailyMetric = dailyMetricCost
+			}
+		}
+		return m, nil
+	}
 	if matches(key, m.keys.Metric...) {
-		m.dailyMetric = nextDailyMetric(m.dailyMetric)
+		if m.dailyBreakdown == dailyBreakdownProcessingMode {
+			m.dailyMetric = nextProcessingModeMetric(m.dailyMetric)
+		} else {
+			m.dailyMetric = nextDailyMetric(m.dailyMetric)
+		}
+		return m, nil
+	}
+	if m.dailyBreakdown == dailyBreakdownProcessingMode {
 		return m, nil
 	}
 	if dayCount > 0 {
@@ -785,6 +814,9 @@ func (m *model) renderActiveTab(width, height int) string {
 	case tabOverview:
 		return renderOverview(m.styles, width, height, m.data)
 	case tabDaily:
+		if m.selectedSource == source.SourceCodex && m.dailyBreakdown == dailyBreakdownProcessingMode {
+			return renderDailyProcessingModes(m.styles, width, height, m.data.ProcessingModes, m.data.ProcessingModesErr, periodLabel(m.period), m.dailyMetric, m.loading)
+		}
 		return renderDaily(m.styles, width, height, m.currentDaily(), periodLabel(m.period), m.dailyMetric, m.loading, m.dailyCursor)
 	case tabModels:
 		return renderModels(m.styles, width, height, m.visibleModelEntries(), len(m.data.Models.Models), tableViewState{
@@ -863,6 +895,7 @@ func (m *model) renderHelp(bodyHeight int) string {
 		"  j/k       move cursor on bars",
 		"  g/G       jump top/bottom",
 		"  t         cycles cost/sessions/messages/tokens",
+		"  d         toggles overall/requested-mode lens (Codex)",
 		"  Enter     open day messages overlay",
 		"",
 		m.styles.Text.Render("Config"),
@@ -895,7 +928,14 @@ func (m *model) renderHelp(bodyHeight int) string {
 func (m *model) renderFooter() string {
 	contextKeys := "1-7 tabs • h/l switch • S source • T range • r refresh • ? help • q quit"
 	if m.activeTab == tabDaily {
-		contextKeys += fmt.Sprintf(" • j/k move • t metric:%s • Enter day", renderDailyMetricLabel(m.dailyMetric))
+		if m.selectedSource == source.SourceCodex {
+			contextKeys += fmt.Sprintf(" • d lens:%s", renderDailyBreakdownLabel(m.dailyBreakdown))
+		}
+		if m.dailyBreakdown == dailyBreakdownProcessingMode {
+			contextKeys += fmt.Sprintf(" • t metric:%s", processingModeMetricLabel(m.dailyMetric))
+		} else {
+			contextKeys += fmt.Sprintf(" • j/k move • t metric:%s • Enter day", renderDailyMetricLabel(m.dailyMetric))
+		}
 	}
 	if m.activeTab == tabModels {
 		contextKeys += fmt.Sprintf(" • j/k move • / filter • s sort:%s", renderModelSortLabel(m.models.sort))
@@ -1054,6 +1094,13 @@ func loadSnapshotCmd(src source.Source, pq stats.PeriodQuery, query stats.Sessio
 		if !load(func(ctx context.Context) error { var e error; data.Daily, e = src.Daily(ctx, pq); return e }) {
 			return snapshotLoadedMsg{err: err}
 		}
+		if info := src.Info(context.Background()); info.ID == source.SourceCodex {
+			// This dimension is Codex-specific. A failure must not hide the rest of
+			// the dashboard snapshot; the requested-mode lens renders the error.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			data.ProcessingModes, data.ProcessingModesErr = src.DailyDimension(ctx, "processing_mode", pq)
+			cancel()
+		}
 		if !load(func(ctx context.Context) error { var e error; data.Models, e = src.Models(ctx, pq); return e }) {
 			return snapshotLoadedMsg{err: err}
 		}
@@ -1098,6 +1145,24 @@ func nextDailyMetric(current dailyMetric) dailyMetric {
 	default:
 		return dailyMetricCost
 	}
+}
+
+func nextProcessingModeMetric(current dailyMetric) dailyMetric {
+	switch current {
+	case dailyMetricCost:
+		return dailyMetricMessages
+	case dailyMetricMessages:
+		return dailyMetricTokens
+	default:
+		return dailyMetricCost
+	}
+}
+
+func renderDailyBreakdownLabel(breakdown dailyBreakdown) string {
+	if breakdown == dailyBreakdownProcessingMode {
+		return "requested mode"
+	}
+	return "overall"
 }
 
 func hasNextSessionPage(list stats.SessionList) bool {

@@ -21,6 +21,17 @@ const (
 	CostMissing                CostStatus = "missing"
 )
 
+// ProcessingMode is the locally requested processing tier associated with an
+// assistant request. It is not a server-confirmed billing or serving tier.
+type ProcessingMode string
+
+const (
+	ProcessingModeFast     ProcessingMode = "fast"
+	ProcessingModeStandard ProcessingMode = "standard"
+	ProcessingModeFlex     ProcessingMode = "flex"
+	ProcessingModeUnknown  ProcessingMode = "unknown"
+)
+
 type CostProvenance struct {
 	Status            CostStatus `json:"status"`
 	Currency          string     `json:"currency,omitempty"`
@@ -386,6 +397,8 @@ type SessionMessage struct {
 	Tokens         *TokenStats     `json:"tokens,omitempty"`
 	ModelID        string          `json:"model_id,omitempty"`
 	ProviderID     string          `json:"provider_id,omitempty"`
+	ServiceTier    string          `json:"service_tier,omitempty"`
+	ProcessingMode ProcessingMode  `json:"processing_mode,omitempty"`
 	Agent          string          `json:"agent,omitempty"`
 	IsSubagent     bool            `json:"is_subagent,omitempty"`
 	CostStatus     CostStatus      `json:"cost_status,omitempty"`
@@ -463,6 +476,8 @@ type MessageEntry struct {
 	Tokens         *TokenStats     `json:"tokens,omitempty"`
 	ModelID        string          `json:"model_id,omitempty"`
 	ProviderID     string          `json:"provider_id,omitempty"`
+	ServiceTier    string          `json:"service_tier,omitempty"`
+	ProcessingMode ProcessingMode  `json:"processing_mode,omitempty"`
 	CostStatus     CostStatus      `json:"cost_status,omitempty"`
 	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
 

@@ -61,7 +61,7 @@ const PENDING_SOURCE_INFO: Partial<Record<SourceID, SourceInfo>> = {
     cost_policy: {
       status: 'estimated_api_equivalent',
       currency: 'USD',
-      note: 'Codex costs are estimated API-equivalent values, not actual subscription spend.',
+      note: 'Codex costs are USD API-equivalent estimates from official per-token rates: Fast uses Priority pricing, Flex uses Flex pricing, and Standard uses Standard pricing. Tier unknown remains unknown and falls back to Standard pricing. Requested tiers are not server-confirmed, and estimates are not actual billed spend.',
     },
     privacy: {
       plaintext_transcripts: true,

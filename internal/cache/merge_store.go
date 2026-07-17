@@ -174,7 +174,8 @@ func (s *Store) messagesSlice(ctx context.Context, sourceID string, pq stats.Per
 		SELECT
 			message_id, session_id, session_title, role, time_created_ms, cost,
 			input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens,
-			COALESCE(model_id, ''), COALESCE(provider_id, ''), COALESCE(agent, ''), is_subagent,
+			COALESCE(model_id, ''), COALESCE(provider_id, ''),
+			COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent,
 			folded_assistant_calls, folded_tool_calls, folded_token_updates, COALESCE(cost_status, ''), cost_provenance_json
 		FROM message_index
 		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?

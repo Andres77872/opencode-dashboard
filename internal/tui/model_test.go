@@ -1553,6 +1553,65 @@ func TestMessageDetailOverlayShowsToolParts(t *testing.T) {
 	}
 }
 
+func TestCodexRequestedTierLabelsOnlyAssistantRequests(t *testing.T) {
+	s := newStyles()
+	assistant := stats.MessageEntry{
+		SourceID:       "codex",
+		Role:           "assistant",
+		ServiceTier:    "priority",
+		ProcessingMode: stats.ProcessingModeFast,
+		TimeCreated:    time.Now(),
+	}
+	if got := renderMessageRow(s, assistant, "codex", 120, false); !strings.Contains(got, "Fast requested") {
+		t.Fatalf("Codex assistant row must show requested tier:\n%s", got)
+	}
+
+	user := stats.MessageEntry{SourceID: "codex", Role: "user", TimeCreated: time.Now()}
+	if got := renderMessageRow(s, user, "codex", 120, false); strings.Contains(got, "Tier unknown") {
+		t.Fatalf("Codex user row must not be labeled as a tier request:\n%s", got)
+	}
+
+	other := stats.MessageEntry{SourceID: "claude_code", Role: "assistant", ServiceTier: "priority", TimeCreated: time.Now()}
+	if got := renderMessageRow(s, other, "claude_code", 120, false); strings.Contains(got, "Fast requested") {
+		t.Fatalf("non-Codex assistant row must not show Codex requested-tier labels:\n%s", got)
+	}
+}
+
+func TestCodexRequestedTierAppearsInMessageAndSessionDetails(t *testing.T) {
+	s := newStyles()
+	messageState := messageDetailOverlayState{detail: &stats.MessageDetail{
+		MessageEntry: stats.MessageEntry{
+			SourceID:       "codex",
+			Role:           "assistant",
+			TimeCreated:    time.Now(),
+			ProcessingMode: stats.ProcessingModeFast,
+			Cost:           0.170853,
+			CostStatus:     stats.CostEstimatedAPIEquivalent,
+		},
+	}}
+	if got := renderMessageDetailOverlayContent(s, 100, 30, messageState); !strings.Contains(got, "Fast requested") ||
+		!strings.Contains(got, "Priority API estimate ~$0.17") ||
+		!strings.Contains(got, "not server-confirmed") ||
+		!strings.Contains(got, "estimated API-equivalent USD cost") {
+		t.Fatalf("message detail must show requested tier and Priority-rate USD provenance:\n%s", got)
+	}
+	userState := messageDetailOverlayState{detail: &stats.MessageDetail{
+		MessageEntry: stats.MessageEntry{SourceID: "codex", Role: "user", TimeCreated: time.Now()},
+	}}
+	if got := renderMessageDetailOverlayContent(s, 100, 30, userState); strings.Contains(got, "Tier unknown") {
+		t.Fatalf("Codex user detail must not be labeled as a tier request:\n%s", got)
+	}
+
+	rows := renderSessionMessageRows(s, "codex", []stats.SessionMessage{{
+		Role:           "assistant",
+		TimeCreated:    time.Now(),
+		ProcessingMode: stats.ProcessingModeFlex,
+	}}, 100, 5)
+	if got := strings.Join(rows, "\n"); !strings.Contains(got, "Flex requested") {
+		t.Fatalf("session message row must show requested tier:\n%s", got)
+	}
+}
+
 // Leader Summary Helper Tests
 
 func TestRenderLeaderSection(t *testing.T) {

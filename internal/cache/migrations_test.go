@@ -125,6 +125,61 @@ func TestOpenUpgradesLegacyV4DatabasePreservingRows(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesCurrentSchemaForMessageProcessingMode(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "processing-mode-migration.sqlite")
+	db, err := sql.Open("sqlite", buildDSN(path))
+	if err != nil {
+		t.Fatalf("open current-schema db: %v", err)
+	}
+	store := &Store{db: db, path: path, writeSem: make(chan struct{}, 1)}
+	if err := store.migrateWith(ctx, migrations[:2]); err != nil {
+		t.Fatalf("seed current schema: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO message_index (
+			source_id, message_id, session_id, session_title, role, time_created_ms, input_tokens
+		) VALUES ('codex', 'legacy-request', 's1', 'title', 'assistant', 1690000000000, 42)
+	`); err != nil {
+		t.Fatalf("seed current-schema message: %v", err)
+	}
+	if got := queryInt(t, db, `PRAGMA user_version`); got != 2 {
+		t.Fatalf("seed user_version = %d, want 2", got)
+	}
+	for _, column := range []string{"service_tier", "processing_mode"} {
+		if got := queryInt(t, db, `SELECT COUNT(*) FROM pragma_table_info('message_index') WHERE name = ?`, column); got != 0 {
+			t.Fatalf("pre-migration column %s unexpectedly exists", column)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close current-schema db: %v", err)
+	}
+
+	store, err = Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open() current-schema db: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if got := queryInt(t, store.db, `PRAGMA user_version`); got != latestStructuralVersion() {
+		t.Errorf("user_version = %d, want %d", got, latestStructuralVersion())
+	}
+	for _, column := range []string{"service_tier", "processing_mode"} {
+		if got := queryInt(t, store.db, `SELECT COUNT(*) FROM pragma_table_info('message_index') WHERE name = ?`, column); got != 1 {
+			t.Errorf("post-migration column %s count = %d, want 1", column, got)
+		}
+	}
+	if got := queryInt(t, store.db, `SELECT COUNT(*) FROM pragma_index_info('idx_message_index_source_processing_mode') WHERE name = 'processing_mode'`); got != 1 {
+		t.Errorf("processing-mode index contains processing_mode %d times, want 1", got)
+	}
+	var serviceTier, processingMode sql.NullString
+	if err := store.db.QueryRow(`SELECT service_tier, processing_mode FROM message_index WHERE message_id = 'legacy-request'`).Scan(&serviceTier, &processingMode); err != nil {
+		t.Fatalf("read migrated legacy message: %v", err)
+	}
+	if serviceTier.Valid || processingMode.Valid {
+		t.Errorf("legacy metadata = tier %v / mode %v, want both NULL", serviceTier, processingMode)
+	}
+}
+
 func TestOpenIsIdempotentAcrossReopens(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "reopen.sqlite")

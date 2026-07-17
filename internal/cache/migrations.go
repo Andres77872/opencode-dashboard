@@ -24,6 +24,7 @@ type migration struct {
 var migrations = []migration{
 	{1, "baseline: v4-era schema (idempotent create + source_state columns)", applyBaseline},
 	{2, "drop dead source_files/schema_migrations tables, add source_state.data_version", applyDropDeadTablesAddDataVersion},
+	{3, "add requested service tier and processing mode to cached messages", applyAddMessageProcessingMode},
 }
 
 func latestStructuralVersion() int {
@@ -155,10 +156,35 @@ func applyDropDeadTablesAddDataVersion(ctx context.Context, tx *sql.Tx) error {
 	return ensureSourceStateColumn(ctx, tx, "data_version", "data_version INTEGER NOT NULL DEFAULT 0")
 }
 
+// applyAddMessageProcessingMode stores both the raw service tier selected by
+// the Codex client and its normalized dashboard processing mode. The columns
+// intentionally remain nullable: empty metadata from non-Codex sources is not
+// rewritten as a Codex-specific "unknown" mode. Query-time aggregation applies
+// that fallback only when the processing-mode dimension is requested.
+func applyAddMessageProcessingMode(ctx context.Context, tx *sql.Tx) error {
+	if err := ensureTableColumn(ctx, tx, "message_index", "service_tier", "service_tier TEXT"); err != nil {
+		return err
+	}
+	if err := ensureTableColumn(ctx, tx, "message_index", "processing_mode", "processing_mode TEXT"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_message_index_source_processing_mode
+		ON message_index(source_id, role, processing_mode, time_created_ms)
+	`); err != nil {
+		return fmt.Errorf("create message processing-mode index: %w", err)
+	}
+	return nil
+}
+
 func ensureSourceStateColumn(ctx context.Context, tx *sql.Tx, column, ddl string) error {
-	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(source_state)`)
+	return ensureTableColumn(ctx, tx, "source_state", column, ddl)
+}
+
+func ensureTableColumn(ctx context.Context, tx *sql.Tx, table, column, ddl string) error {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
 	if err != nil {
-		return fmt.Errorf("inspect source_state schema: %w", err)
+		return fmt.Errorf("inspect %s schema: %w", table, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -168,17 +194,17 @@ func ensureSourceStateColumn(ctx context.Context, tx *sql.Tx, column, ddl string
 		var defaultValue any
 		var pk int
 		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
-			return fmt.Errorf("scan source_state schema: %w", err)
+			return fmt.Errorf("scan %s schema: %w", table, err)
 		}
 		if name == column {
 			return rows.Err()
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate source_state schema: %w", err)
+		return fmt.Errorf("iterate %s schema: %w", table, err)
 	}
-	if _, err := tx.ExecContext(ctx, `ALTER TABLE source_state ADD COLUMN `+ddl); err != nil {
-		return fmt.Errorf("add source_state.%s: %w", column, err)
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+ddl); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
 	}
 	return nil
 }

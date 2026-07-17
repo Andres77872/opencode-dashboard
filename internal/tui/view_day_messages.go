@@ -44,7 +44,7 @@ func renderDayMessagesOverlayContent(s styles, width, height int, state dayMessa
 	start, end := tableWindow(len(state.messages.Messages), state.cursor, height-10)
 	for i := start; i < end; i++ {
 		msg := state.messages.Messages[i]
-		row := renderMessageRow(s, msg, width-4, i == state.cursor)
+		row := renderMessageRow(s, msg, state.messages.SourceID, width-4, i == state.cursor)
 		lines = append(lines, row)
 	}
 
@@ -62,7 +62,7 @@ func renderDayMessagesOverlayContent(s styles, width, height int, state dayMessa
 	return s.OverlayPanel.Width(width).Height(height).Render(joinLines(lines...))
 }
 
-func renderMessageRow(s styles, msg stats.MessageEntry, width int, isActive bool) string {
+func renderMessageRow(s styles, msg stats.MessageEntry, fallbackSourceID string, width int, isActive bool) string {
 	timeStr := msg.TimeCreated.Format("15:04")
 	roleStyle := s.Text
 	if msg.Role == "user" {
@@ -82,10 +82,10 @@ func renderMessageRow(s styles, msg stats.MessageEntry, width int, isActive bool
 		sessionPart = truncateWithEllipsis(msg.SessionID, 12)
 	}
 
-	costStr := formatMoney(msg.Cost)
+	costStr := plainCostProv(msg.Cost, msg.CostStatus, msg.CostProvenance)
 	tokensStr := ""
 	if msg.Tokens != nil {
-		totalTok := msg.Tokens.Input + msg.Tokens.Output + msg.Tokens.Reasoning + msg.Tokens.Cache.Read + msg.Tokens.Cache.Write
+		totalTok := totalTokenStats(*msg.Tokens)
 		tokensStr = formatCompactInt(totalTok) + " tok"
 	}
 
@@ -94,7 +94,15 @@ func renderMessageRow(s styles, msg stats.MessageEntry, width int, isActive bool
 		modelStr = truncateWithEllipsis(msg.ModelID, 14)
 	}
 
-	parts := []string{timeStr, role, sessionPart}
+	parts := []string{timeStr, role}
+	sourceID := msg.SourceID
+	if sourceID == "" {
+		sourceID = fallbackSourceID
+	}
+	if sourceID == "codex" && msg.Role == "assistant" {
+		parts = append(parts, requestedProcessingModeLabel(msg.ProcessingMode, msg.ServiceTier))
+	}
+	parts = append(parts, sessionPart)
 	if modelStr != "" {
 		parts = append(parts, modelStr)
 	}
@@ -164,7 +172,14 @@ func renderMessageDetailOverlayContent(s styles, width, height int, state messag
 	if detail.Role == "assistant" {
 		lines = append(lines, "")
 		lines = append(lines, s.Text.Render("Metadata"))
-		metaParts := []string{fmt.Sprintf("Cost %s", formatMoney(detail.Cost))}
+		costLabel := "Cost"
+		if detail.SourceID == "codex" {
+			costLabel = requestedProcessingModePricingLabel(detail.ProcessingMode, detail.ServiceTier)
+		}
+		metaParts := []string{fmt.Sprintf("%s %s", costLabel, plainCostProv(detail.Cost, detail.CostStatus, detail.CostProvenance))}
+		if detail.SourceID == "codex" && detail.Role == "assistant" {
+			metaParts = append(metaParts, requestedProcessingModeLabel(detail.ProcessingMode, detail.ServiceTier))
+		}
 		if detail.ModelID != "" {
 			metaParts = append(metaParts, fmt.Sprintf("Model %s", truncateWithEllipsis(detail.ModelID, 18)))
 		}
@@ -172,6 +187,15 @@ func renderMessageDetailOverlayContent(s styles, width, height int, state messag
 			metaParts = append(metaParts, fmt.Sprintf("Provider %s", truncateWithEllipsis(detail.ProviderID, 12)))
 		}
 		lines = append(lines, s.Muted.Render(strings.Join(metaParts, " • ")))
+		if detail.SourceID == "codex" {
+			lines = append(lines, s.Muted.Render(truncateWithEllipsis(
+				requestedProcessingModePricingDisclosure(detail.ProcessingMode, detail.ServiceTier),
+				max(width-4, 20),
+			)))
+			if note := provenanceNote(detail.CostStatus, detail.CostProvenance); note != "" {
+				lines = append(lines, s.Muted.Render(truncateWithEllipsis(note, max(width-4, 20))))
+			}
+		}
 
 		if detail.Tokens != nil {
 			tokParts := []string{

@@ -499,13 +499,14 @@ func boolPtr(v bool) *bool {
 const syncFakeSourceID = "cache_sync_test"
 
 type syncFakeSource struct {
-	id            string // overrides syncFakeSourceID, so one store can host several fakes
-	messages      []stats.MessageEntry
-	available     *bool
-	scannedFiles  int64
-	messagesErr   error
-	messagesGate  chan struct{} // when set, Messages blocks until closed
-	ignoreWindows bool          // when set, window hints are ignored (everything is returned)
+	id                string // overrides syncFakeSourceID, so one store can host several fakes
+	messages          []stats.MessageEntry
+	available         *bool
+	scannedFiles      int64
+	pricingSnapshotID string
+	messagesErr       error
+	messagesGate      chan struct{} // when set, Messages blocks until closed
+	ignoreWindows     bool          // when set, window hints are ignored (everything is returned)
 
 	mu             sync.Mutex // guards the call-tracking fields; reads are racy with concurrent calls otherwise
 	detailCalls    []string
@@ -556,6 +557,7 @@ func (s *syncFakeSource) Info(context.Context) source.SourceInfo {
 		Diagnostics: source.SourceDiagnostics{
 			ScannedFiles: s.scannedFiles,
 		},
+		CostPolicy: source.CostPolicy{PricingSnapshotID: s.pricingSnapshotID},
 	}
 }
 

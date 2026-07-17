@@ -14,7 +14,15 @@ import (
 //go:embed pricing_snapshot.json
 var defaultPricingFS embed.FS
 
-const apiEquivalentNote = "Estimated using OpenAI API rates as an API-equivalent value. Codex subscription plans are flat-fee/credit-based; this is not actual billed spend."
+const apiEquivalentNote = "API-equivalent estimate in USD using official OpenAI API per-token rates for each request's requested processing tier (Fast maps to Priority, Flex maps to Flex, and Standard maps to Standard). An unknown processing tier remains unclassified and defaults to Standard pricing for this estimate only. Local Codex transcripts expose the requested tier, not the tier actually served; this is not actual API-billed spend."
+
+const (
+	priorityMaxInputTokens    = 272_000
+	standardAPIEquivalentNote = "API-equivalent estimate in USD using official OpenAI Standard API per-token rates for the requested Standard tier. Local Codex transcripts expose the requested tier, not the tier actually served; this is not actual API-billed spend."
+	unknownAPIEquivalentNote  = "API-equivalent estimate in USD using official OpenAI Standard API per-token rates because the processing tier is unknown. The unknown processing tier remains classified as unknown and defaults to Standard pricing for this estimate only; this does not mean Standard was requested, served, or billed, and this is not actual API-billed spend."
+	priorityAPIEquivalentNote = "API-equivalent estimate in USD using official OpenAI Priority API per-token rates because Fast was requested. Local Codex transcripts expose the requested tier, not the tier actually served; this is not actual API-billed spend."
+	flexAPIEquivalentNote     = "API-equivalent estimate in USD using official OpenAI Flex API per-token rates for the requested Flex tier. Local Codex transcripts expose the requested tier, not the tier actually served; this is not actual API-billed spend."
+)
 
 type pricingSnapshot struct {
 	ID          string                 `json:"id"`
@@ -25,16 +33,24 @@ type pricingSnapshot struct {
 }
 
 type pricingRate struct {
-	InputPerMillion             float64 `json:"input_per_million"`
-	CachedInputPerMillion       float64 `json:"cached_input_per_million"`
-	OutputPerMillion            float64 `json:"output_per_million"`
-	CacheWriteInputPerMillion   float64 `json:"cache_write_input_per_million"`
-	ReasoningOutputBilledAs     string  `json:"reasoning_output_billed_as"`
-	LongContextThresholdTokens  int64   `json:"long_context_threshold_input_tokens"`
-	LongContextInputMultiplier  float64 `json:"long_context_input_multiplier"`
-	LongContextOutputMultiplier float64 `json:"long_context_output_multiplier"`
-	FastModeMultiplier          float64 `json:"fast_mode_multiplier"`
-	CacheWriteNote              string  `json:"cache_write_note"`
+	InputPerMillion             float64          `json:"input_per_million"`
+	CachedInputPerMillion       float64          `json:"cached_input_per_million"`
+	OutputPerMillion            float64          `json:"output_per_million"`
+	CacheWriteInputPerMillion   float64          `json:"cache_write_input_per_million"`
+	ReasoningOutputBilledAs     string           `json:"reasoning_output_billed_as"`
+	LongContextThresholdTokens  int64            `json:"long_context_threshold_input_tokens"`
+	LongContextInputMultiplier  float64          `json:"long_context_input_multiplier"`
+	LongContextOutputMultiplier float64          `json:"long_context_output_multiplier"`
+	CacheWriteNote              string           `json:"cache_write_note"`
+	Priority                    *tierPricingRate `json:"priority,omitempty"`
+	Flex                        *tierPricingRate `json:"flex,omitempty"`
+}
+
+type tierPricingRate struct {
+	InputPerMillion           float64 `json:"input_per_million"`
+	CachedInputPerMillion     float64 `json:"cached_input_per_million"`
+	OutputPerMillion          float64 `json:"output_per_million"`
+	CacheWriteInputPerMillion float64 `json:"cache_write_input_per_million"`
 }
 
 type costResult struct {
@@ -96,7 +112,7 @@ func (p pricingSnapshot) isStale(now time.Time) bool {
 	return now.Sub(retrieved.UTC()) > 365*24*time.Hour
 }
 
-func computeCost(model string, tokens stats.TokenStats, maxInputSnapshot int64, pricing pricingSnapshot) costResult {
+func computeCost(model string, tokens stats.TokenStats, maxInputSnapshot int64, pricing pricingSnapshot, processingModes ...stats.ProcessingMode) costResult {
 	currency := pricing.Currency
 	if currency == "" {
 		currency = "USD"
@@ -107,6 +123,17 @@ func computeCost(model string, tokens stats.TokenStats, maxInputSnapshot int64, 
 	rate, ok := lookupRate(model, pricing.Models)
 	if !ok || rate.InputPerMillion == 0 || rate.OutputPerMillion == 0 {
 		return missingCost(currency)
+	}
+	processingMode := stats.ProcessingModeUnknown
+	if len(processingModes) > 0 {
+		processingMode = processingModes[0]
+	}
+	selectedRate, note, ok := selectTierRate(rate, processingMode)
+	if !ok {
+		return missingTierCost(currency, processingMode, "official per-token rates are unavailable for this model")
+	}
+	if processingMode == stats.ProcessingModeFast && maxInputSnapshot > priorityMaxInputTokens {
+		return missingTierCost(currency, processingMode, "official Priority pricing is unavailable above the model's 272K input-token threshold")
 	}
 	// TokenStats buckets are disjoint: Input excludes cache reads/writes, and
 	// Output excludes reasoning. Reasoning bills at the output rate.
@@ -120,8 +147,8 @@ func computeCost(model string, tokens stats.TokenStats, maxInputSnapshot int64, 
 		inputMultiplier = nonZero(rate.LongContextInputMultiplier, 1)
 		outputMultiplier = nonZero(rate.LongContextOutputMultiplier, 1)
 	}
-	cost := ((float64(normalInput)*rate.InputPerMillion + float64(cachedInput)*rate.CachedInputPerMillion + float64(cacheWriteInput)*rate.CacheWriteInputPerMillion) * inputMultiplier / 1_000_000) +
-		(float64(outputBillable) * rate.OutputPerMillion * outputMultiplier / 1_000_000)
+	cost := ((float64(normalInput)*selectedRate.InputPerMillion + float64(cachedInput)*selectedRate.CachedInputPerMillion + float64(cacheWriteInput)*selectedRate.CacheWriteInputPerMillion) * inputMultiplier / 1_000_000) +
+		(float64(outputBillable) * selectedRate.OutputPerMillion * outputMultiplier / 1_000_000)
 	return costResult{
 		Cost:   cost,
 		Status: stats.CostEstimatedAPIEquivalent,
@@ -131,8 +158,36 @@ func computeCost(model string, tokens stats.TokenStats, maxInputSnapshot int64, 
 			PricingSnapshotID: pricing.ID,
 			PricingSource:     pricing.Source,
 			ComputedCount:     1,
-			Note:              apiEquivalentNote,
+			Note:              note,
 		},
+	}
+}
+
+func selectTierRate(rate pricingRate, processingMode stats.ProcessingMode) (tierPricingRate, string, bool) {
+	switch processingMode {
+	case stats.ProcessingModeFast:
+		if rate.Priority == nil || rate.Priority.InputPerMillion == 0 || rate.Priority.OutputPerMillion == 0 {
+			return tierPricingRate{}, priorityAPIEquivalentNote, false
+		}
+		return *rate.Priority, priorityAPIEquivalentNote, true
+	case stats.ProcessingModeFlex:
+		if rate.Flex == nil || rate.Flex.InputPerMillion == 0 || rate.Flex.OutputPerMillion == 0 {
+			return tierPricingRate{}, flexAPIEquivalentNote, false
+		}
+		return *rate.Flex, flexAPIEquivalentNote, true
+	case stats.ProcessingModeStandard:
+		return standardTierRate(rate), standardAPIEquivalentNote, true
+	default:
+		return standardTierRate(rate), unknownAPIEquivalentNote, true
+	}
+}
+
+func standardTierRate(rate pricingRate) tierPricingRate {
+	return tierPricingRate{
+		InputPerMillion:           rate.InputPerMillion,
+		CachedInputPerMillion:     rate.CachedInputPerMillion,
+		OutputPerMillion:          rate.OutputPerMillion,
+		CacheWriteInputPerMillion: rate.CacheWriteInputPerMillion,
 	}
 }
 
@@ -171,6 +226,22 @@ func missingCost(currency string) costResult {
 			Currency:     currency,
 			MissingCount: 1,
 			Note:         "Codex cost is unknown because supported pricing/model usage is unavailable",
+		},
+	}
+}
+
+func missingTierCost(currency string, processingMode stats.ProcessingMode, reason string) costResult {
+	tier := string(processingMode)
+	if processingMode == stats.ProcessingModeFast {
+		tier = "Priority (Fast requested)"
+	}
+	return costResult{
+		Status: stats.CostMissing,
+		Provenance: &stats.CostProvenance{
+			Status:       stats.CostMissing,
+			Currency:     currency,
+			MissingCount: 1,
+			Note:         "Codex " + tier + " API-equivalent cost is unknown because " + reason,
 		},
 	}
 }

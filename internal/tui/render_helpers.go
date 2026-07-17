@@ -136,7 +136,7 @@ func provenanceNote(flat stats.CostStatus, prov *stats.CostProvenance) string {
 	case stats.CostApproximate:
 		return "approximate cost"
 	case stats.CostEstimatedAPIEquivalent:
-		return "estimated API-equivalent cost; not actual subscription spend"
+		return "estimated API-equivalent USD cost; not actual billed spend"
 	case stats.CostMixed:
 		return "mixed cost provenance"
 	case stats.CostMissing:
@@ -191,6 +191,74 @@ func renderProvenanceLegend(s styles, width int, statuses ...stats.CostStatus) s
 
 func formatTokens(tokens stats.TokenStats) string {
 	return fmt.Sprintf("%s in • %s out • %s reason", formatInt(tokens.Input), formatInt(tokens.Output), formatInt(tokens.Reasoning))
+}
+
+// resolveRequestedProcessingMode normalizes the locally requested Codex tier
+// without implying the actual processing outcome.
+func resolveRequestedProcessingMode(mode stats.ProcessingMode, serviceTier string) stats.ProcessingMode {
+	normalize := func(value string) stats.ProcessingMode {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "fast", "priority":
+			return stats.ProcessingModeFast
+		case "standard", "default":
+			return stats.ProcessingModeStandard
+		case "flex":
+			return stats.ProcessingModeFlex
+		case "unknown":
+			return stats.ProcessingModeUnknown
+		default:
+			return ""
+		}
+	}
+	if normalized := normalize(string(mode)); normalized != "" {
+		return normalized
+	}
+	if normalized := normalize(serviceTier); normalized != "" {
+		return normalized
+	}
+	return stats.ProcessingModeUnknown
+}
+
+func requestedProcessingModeLabel(mode stats.ProcessingMode, serviceTier string) string {
+	switch resolveRequestedProcessingMode(mode, serviceTier) {
+	case stats.ProcessingModeFast:
+		return "Fast requested"
+	case stats.ProcessingModeStandard:
+		return "Standard requested"
+	case stats.ProcessingModeFlex:
+		return "Flex requested"
+	default:
+		return "Tier unknown"
+	}
+}
+
+func requestedProcessingModePricingLabel(mode stats.ProcessingMode, serviceTier string) string {
+	switch resolveRequestedProcessingMode(mode, serviceTier) {
+	case stats.ProcessingModeFast:
+		return "Priority API estimate"
+	case stats.ProcessingModeFlex:
+		return "Flex API estimate"
+	default:
+		return "Standard API estimate"
+	}
+}
+
+func requestedProcessingModePricingDisclosure(mode stats.ProcessingMode, serviceTier string) string {
+	switch resolveRequestedProcessingMode(mode, serviceTier) {
+	case stats.ProcessingModeFast:
+		return "Requested Fast → Priority API rates • not server-confirmed • not actual billed spend"
+	case stats.ProcessingModeFlex:
+		return "Requested Flex → Flex API rates • not server-confirmed • not actual billed spend"
+	case stats.ProcessingModeStandard:
+		return "Requested Standard → Standard API rates • not server-confirmed • not actual billed spend"
+	default:
+		return "Tier unknown stays unknown → Standard API fallback • not server-confirmed • not actual billed spend"
+	}
+}
+
+// totalTokenStats sums the five disjoint token buckets used by the API and web.
+func totalTokenStats(tokens stats.TokenStats) int64 {
+	return tokens.Input + tokens.Cache.Read + tokens.Cache.Write + tokens.Output + tokens.Reasoning
 }
 
 func asciiBar(value, maxValue float64, width int) string {

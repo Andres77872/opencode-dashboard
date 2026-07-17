@@ -45,6 +45,7 @@ func (m *model) switchSource(id source.SourceID) (tea.Model, tea.Cmd) {
 	// while the per-source tabs reload for the newly selected source.
 	m.data = dashboardData{AllOverview: m.data.AllOverview}
 	m.dailyCursor = 0
+	m.dailyBreakdown = dailyBreakdownOverall
 	m.models = modelTableState{sort: m.models.sort}
 	m.tools = toolTableState{sort: m.tools.sort}
 	m.projects = projectTableState{sort: m.projects.sort}

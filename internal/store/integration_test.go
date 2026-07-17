@@ -110,8 +110,7 @@ func TestSchemaRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create fixture database: %v", err)
 	}
-	defer os.Remove(dbPath)
-	defer os.RemoveAll(filepathWithoutExt(dbPath))
+	defer os.RemoveAll(filepath.Dir(dbPath))
 
 	store, err := Connect(ctx, dbPath)
 	if err != nil {
@@ -127,32 +126,6 @@ func TestSchemaRefresh(t *testing.T) {
 	if !store.IsValidSchema() {
 		t.Error("IsValidSchema() = false after refresh, want true")
 	}
-}
-
-func filepathWithoutExt(path string) string {
-	// Returns the directory containing the db file for cleanup
-	// (fixture creates temp dir with db inside)
-	dir := ""
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
-			dir = path[:i+1]
-			break
-		}
-	}
-	// Go up one more level if the dir looks like a temp pattern
-	if dir != "" {
-		parent := ""
-		for i := len(dir) - 2; i >= 0; i-- {
-			if dir[i] == '/' {
-				parent = dir[:i+1]
-				break
-			}
-		}
-		if parent != "" && containsSubstring(dir, "opencode-fixture") {
-			return parent
-		}
-	}
-	return dir
 }
 
 func containsSubstring(s, substr string) bool {

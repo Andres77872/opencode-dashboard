@@ -34,14 +34,102 @@ func TestCodexCostUsesGPT55EstimatedAPIEquivalentPricing(t *testing.T) {
 	if entry.CostProvenance.Status != stats.CostEstimatedAPIEquivalent {
 		t.Errorf("provenance status = %q, want %q", entry.CostProvenance.Status, stats.CostEstimatedAPIEquivalent)
 	}
-	if entry.CostProvenance.PricingSnapshotID != "openai-codex-api-pricing-2026-07-09" {
-		t.Errorf("PricingSnapshotID = %q, want openai-codex-api-pricing-2026-07-09", entry.CostProvenance.PricingSnapshotID)
+	if entry.CostProvenance.PricingSnapshotID != "openai-codex-api-pricing-2026-07-17" {
+		t.Errorf("PricingSnapshotID = %q, want openai-codex-api-pricing-2026-07-17", entry.CostProvenance.PricingSnapshotID)
 	}
 	if !strings.Contains(strings.ToLower(entry.CostProvenance.Note), "api-equivalent") || !strings.Contains(strings.ToLower(entry.CostProvenance.Note), "not actual") {
 		t.Errorf("provenance note = %q, want API-equivalent/not actual spend caveat", entry.CostProvenance.Note)
 	}
 	if entry.Tokens == nil || entry.Tokens.Cache.Write != 0 {
 		t.Fatalf("Cache.Write = %#v, want zero/absent Codex cache write tokens", entry.Tokens)
+	}
+}
+
+func TestCodexFastUsesPriorityUSDForScreenshotRequest(t *testing.T) {
+	src := newTempCodexSource(t, map[string][]string{
+		"sessions/2026/07/17/rollout-2026-07-17T21-43-00Z-fast-pricing.jsonl": {
+			`{"timestamp":"2026-07-17T21:43:00Z","type":"session_meta","payload":{"id":"fast-pricing","model_provider":"openai"}}`,
+			`{"timestamp":"2026-07-17T21:43:01Z","type":"turn_context","payload":{"turn_id":"pricing-turn","model":"gpt-5.6-sol","model_provider":"openai"}}`,
+			`{"timestamp":"2026-07-17T21:43:02Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"priority"}}}`,
+			`{"timestamp":"2026-07-17T21:43:03Z","type":"event_msg","payload":{"type":"token_count","turn_id":"pricing-turn","info":{"total_token_usage":{"input_tokens":214629,"cached_input_tokens":212736,"output_tokens":1834,"reasoning_output_tokens":1034,"total_tokens":216463}}}}`,
+			`{"timestamp":"2026-07-17T21:43:04Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"default"}}}`,
+			`{"timestamp":"2026-07-17T21:43:05Z","type":"event_msg","payload":{"type":"token_count","turn_id":"pricing-turn","info":{"total_token_usage":{"input_tokens":429258,"cached_input_tokens":425472,"output_tokens":3668,"reasoning_output_tokens":2068,"total_tokens":432926}}}}`,
+		},
+	})
+
+	messages := readAllMessages(t, src)
+	fast := findMessage(t, messages, func(entry stats.MessageEntry) bool {
+		return entry.ID == "codex:fast-pricing:pricing-turn:r0"
+	})
+	standard := findMessage(t, messages, func(entry stats.MessageEntry) bool {
+		return entry.ID == "codex:fast-pricing:pricing-turn:r1"
+	})
+
+	if fast.ProcessingMode != stats.ProcessingModeFast || standard.ProcessingMode != stats.ProcessingModeStandard {
+		t.Fatalf("fast/standard modes = %q/%q, want %q/%q", fast.ProcessingMode, standard.ProcessingMode, stats.ProcessingModeFast, stats.ProcessingModeStandard)
+	}
+	if fast.Tokens == nil || *fast.Tokens != (stats.TokenStats{Input: 1_893, Output: 800, Reasoning: 1_034, Cache: stats.CacheStats{Read: 212_736}}) {
+		t.Fatalf("fast tokens = %+v, want screenshot's disjoint token buckets", fast.Tokens)
+	}
+	if !approxEqual(fast.Cost, 0.341706) {
+		t.Errorf("Fast/Priority cost = %.9f, want 0.341706 USD", fast.Cost)
+	}
+	if !approxEqual(standard.Cost, 0.170853) {
+		t.Errorf("Standard cost = %.9f, want 0.170853 USD", standard.Cost)
+	}
+	if fast.CostProvenance == nil || !strings.Contains(fast.CostProvenance.Note, "Priority API") || !strings.Contains(fast.CostProvenance.Note, "Fast was requested") {
+		t.Errorf("Fast provenance = %#v, want requested Fast mapped to Priority API rates", fast.CostProvenance)
+	}
+}
+
+func TestCodexUnknownProcessingTierUsesStandardPricing(t *testing.T) {
+	src := newTempCodexSource(t, map[string][]string{
+		"sessions/2026/07/17/rollout-2026-07-17T13-00-00Z-unknown-pricing.jsonl": {
+			`{"timestamp":"2026-07-17T13:00:00Z","type":"session_meta","payload":{"id":"unknown-pricing","model_provider":"openai"}}`,
+			`{"timestamp":"2026-07-17T13:00:01Z","type":"turn_context","payload":{"turn_id":"pricing-turn","model":"gpt-5.5","model_provider":"openai"}}`,
+			// With no tier marker, the first request remains unknown for classification.
+			`{"timestamp":"2026-07-17T13:00:02Z","type":"event_msg","payload":{"type":"token_count","turn_id":"pricing-turn","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":50,"reasoning_output_tokens":25,"total_tokens":1075}}}}`,
+			`{"timestamp":"2026-07-17T13:00:03Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"default"}}}`,
+			// The cumulative totals produce a second request with exactly the same token delta.
+			`{"timestamp":"2026-07-17T13:00:04Z","type":"event_msg","payload":{"type":"token_count","turn_id":"pricing-turn","info":{"total_token_usage":{"input_tokens":2000,"cached_input_tokens":200,"output_tokens":100,"reasoning_output_tokens":50,"total_tokens":2150}}}}`,
+		},
+	})
+
+	messages := readAllMessages(t, src)
+	unknown := findMessage(t, messages, func(entry stats.MessageEntry) bool {
+		return entry.ID == "codex:unknown-pricing:pricing-turn:r0"
+	})
+	standard := findMessage(t, messages, func(entry stats.MessageEntry) bool {
+		return entry.ID == "codex:unknown-pricing:pricing-turn:r1"
+	})
+
+	if unknown.ProcessingMode != stats.ProcessingModeUnknown {
+		t.Errorf("unknown request processing mode = %q, want %q", unknown.ProcessingMode, stats.ProcessingModeUnknown)
+	}
+	if standard.ProcessingMode != stats.ProcessingModeStandard {
+		t.Errorf("explicit request processing mode = %q, want %q", standard.ProcessingMode, stats.ProcessingModeStandard)
+	}
+	if unknown.ServiceTier != "" || standard.ServiceTier != "default" {
+		t.Errorf("unknown/standard raw tiers = %q/%q, want empty/default", unknown.ServiceTier, standard.ServiceTier)
+	}
+	if unknown.CostStatus != stats.CostEstimatedAPIEquivalent || standard.CostStatus != stats.CostEstimatedAPIEquivalent {
+		t.Fatalf("unknown/standard cost statuses = %q/%q, want both %q", unknown.CostStatus, standard.CostStatus, stats.CostEstimatedAPIEquivalent)
+	}
+	if unknown.Cost <= 0 || standard.Cost <= 0 {
+		t.Fatalf("unknown/standard costs = %.9f/%.9f, want non-zero estimates", unknown.Cost, standard.Cost)
+	}
+	if !approxEqual(unknown.Cost, standard.Cost) {
+		t.Errorf("unknown cost = %.9f, standard cost = %.9f; want equal Standard pricing for identical token usage", unknown.Cost, standard.Cost)
+	}
+	if unknown.Tokens == nil || standard.Tokens == nil || *unknown.Tokens != *standard.Tokens {
+		t.Errorf("unknown/standard tokens = %+v/%+v, want identical per-request deltas", unknown.Tokens, standard.Tokens)
+	}
+	if unknown.CostProvenance == nil || unknown.CostProvenance.Status != stats.CostEstimatedAPIEquivalent {
+		t.Fatalf("unknown cost provenance = %#v, want estimated API-equivalent provenance", unknown.CostProvenance)
+	}
+	note := strings.ToLower(unknown.CostProvenance.Note)
+	if !strings.Contains(note, "unknown processing tier") || !strings.Contains(note, "standard pricing") {
+		t.Errorf("unknown cost provenance note = %q, want explicit unknown-to-Standard pricing policy", unknown.CostProvenance.Note)
 	}
 }
 
@@ -77,6 +165,61 @@ func TestBundledCodexPricingCoversCurrentModels(t *testing.T) {
 				t.Errorf("computeCost(%q) = %.9f, want %.9f", tt.model, result.Cost, tt.wantCost)
 			}
 		})
+	}
+}
+
+func TestBundledCodexPricingCoversPriorityAndFlexTiers(t *testing.T) {
+	pricing := New(Options{PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json")}).loadPricing(testContext(t))
+	tokens := stats.TokenStats{
+		Input:     1_000_000,
+		Output:    1_000_000,
+		Reasoning: 1_000_000,
+		Cache:     stats.CacheStats{Read: 1_000_000, Write: 1_000_000},
+	}
+	tests := []struct {
+		model         string
+		priorityCost  float64
+		flexCost      float64
+		flexSupported bool
+	}{
+		{model: "gpt-5.6", priorityCost: 143.5, flexCost: 35.875, flexSupported: true},
+		{model: "gpt-5.6-sol", priorityCost: 143.5, flexCost: 35.875, flexSupported: true},
+		{model: "gpt-5.6-terra", priorityCost: 71.75, flexCost: 17.9375, flexSupported: true},
+		{model: "gpt-5.6-luna", priorityCost: 28.7, flexCost: 7.175, flexSupported: true},
+		{model: "gpt-5.5", priorityCost: 163.75, flexCost: 32.75, flexSupported: true},
+		{model: "gpt-5.4", priorityCost: 65.5, flexCost: 16.375, flexSupported: true},
+		{model: "gpt-5.4-mini", priorityCost: 19.65, flexCost: 4.9125, flexSupported: true},
+		{model: "gpt-5.3-codex", priorityCost: 59.85},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			priority := computeCost(tt.model, tokens, 100_000, pricing, stats.ProcessingModeFast)
+			if priority.Status != stats.CostEstimatedAPIEquivalent || !approxEqual(priority.Cost, tt.priorityCost) {
+				t.Errorf("Priority computeCost(%q) = %.9f (%q), want %.9f (%q)", tt.model, priority.Cost, priority.Status, tt.priorityCost, stats.CostEstimatedAPIEquivalent)
+			}
+			flex := computeCost(tt.model, tokens, 100_000, pricing, stats.ProcessingModeFlex)
+			if !tt.flexSupported {
+				if flex.Status != stats.CostMissing || flex.Cost != 0 {
+					t.Errorf("Flex computeCost(%q) = %.9f (%q), want missing because no official Flex catalog entry exists", tt.model, flex.Cost, flex.Status)
+				}
+			} else if flex.Status != stats.CostEstimatedAPIEquivalent || !approxEqual(flex.Cost, tt.flexCost) {
+				t.Errorf("Flex computeCost(%q) = %.9f (%q), want %.9f (%q)", tt.model, flex.Cost, flex.Status, tt.flexCost, stats.CostEstimatedAPIEquivalent)
+			}
+		})
+	}
+}
+
+func TestCodexPriorityLongContextIsMissingWithoutOfficialRates(t *testing.T) {
+	pricing := New(Options{PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json")}).loadPricing(testContext(t))
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.4-mini", "gpt-5.3-codex"} {
+		result := computeCost(model, stats.TokenStats{Input: 272_001, Output: 1}, 272_001, pricing, stats.ProcessingModeFast)
+		if result.Status != stats.CostMissing || result.Cost != 0 {
+			t.Fatalf("long-context Priority result for %q = %#v, want missing zero-cost estimate", model, result)
+		}
+		if result.Provenance == nil || !strings.Contains(result.Provenance.Note, "Priority pricing is unavailable") {
+			t.Errorf("long-context Priority provenance for %q = %#v, want explicit unavailable-rate reason", model, result.Provenance)
+		}
 	}
 }
 

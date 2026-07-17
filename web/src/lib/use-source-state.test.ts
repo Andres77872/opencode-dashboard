@@ -20,7 +20,12 @@ test('provides generic pending source metadata for transcript-backed sources', (
   assert.equal(codex?.privacy?.plaintext_transcripts, true)
   assert.equal(codex?.privacy?.redaction, true)
   assert.equal(codex?.cost_policy?.status, 'estimated_api_equivalent')
-  assert.match(codex?.cost_policy?.note ?? '', /not actual subscription spend/i)
+  assert.match(codex?.cost_policy?.note ?? '', /USD API-equivalent estimates/)
+  assert.match(codex?.cost_policy?.note ?? '', /Fast uses Priority pricing/)
+  assert.match(codex?.cost_policy?.note ?? '', /Flex uses Flex pricing/)
+  assert.match(codex?.cost_policy?.note ?? '', /Tier unknown remains unknown and falls back to Standard pricing/)
+  assert.match(codex?.cost_policy?.note ?? '', /not server-confirmed/)
+  assert.match(codex?.cost_policy?.note ?? '', /not actual billed spend/i)
 
   assert.equal(kimi?.id, 'kimi_code')
   assert.equal(kimi?.label, 'Kimi Code')

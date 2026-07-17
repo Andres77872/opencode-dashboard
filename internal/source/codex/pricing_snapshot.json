@@ -1,7 +1,7 @@
 {
-  "id": "openai-codex-api-pricing-2026-07-09",
-  "retrieved_at": "2026-07-09T00:00:00Z",
-  "source": "https://developers.openai.com/api/docs/models/compare",
+  "id": "openai-codex-api-pricing-2026-07-17",
+  "retrieved_at": "2026-07-17T00:00:00Z",
+  "source": "https://developers.openai.com/api/docs/pricing",
   "currency": "USD",
   "models": {
     "gpt-5.6": {
@@ -13,7 +13,9 @@
       "long_context_threshold_input_tokens": 272000,
       "long_context_input_multiplier": 2.0,
       "long_context_output_multiplier": 1.5,
-      "cache_write_note": "Cache writes are billed at 1.25x the uncached input token rate"
+      "cache_write_note": "Cache writes are billed at 1.25x the uncached input token rate",
+      "priority": {"input_per_million": 10.0, "cached_input_per_million": 1.0, "cache_write_input_per_million": 12.5, "output_per_million": 60.0},
+      "flex": {"input_per_million": 2.5, "cached_input_per_million": 0.25, "cache_write_input_per_million": 3.125, "output_per_million": 15.0}
     },
     "gpt-5.6-sol": {
       "input_per_million": 5.0,
@@ -24,7 +26,9 @@
       "long_context_threshold_input_tokens": 272000,
       "long_context_input_multiplier": 2.0,
       "long_context_output_multiplier": 1.5,
-      "cache_write_note": "Cache writes are billed at 1.25x the uncached input token rate"
+      "cache_write_note": "Cache writes are billed at 1.25x the uncached input token rate",
+      "priority": {"input_per_million": 10.0, "cached_input_per_million": 1.0, "cache_write_input_per_million": 12.5, "output_per_million": 60.0},
+      "flex": {"input_per_million": 2.5, "cached_input_per_million": 0.25, "cache_write_input_per_million": 3.125, "output_per_million": 15.0}
     },
     "gpt-5.6-terra": {
       "input_per_million": 2.5,
@@ -35,7 +39,9 @@
       "long_context_threshold_input_tokens": 272000,
       "long_context_input_multiplier": 2.0,
       "long_context_output_multiplier": 1.5,
-      "cache_write_note": "Cache writes are billed at 1.25x the uncached input token rate"
+      "cache_write_note": "Cache writes are billed at 1.25x the uncached input token rate",
+      "priority": {"input_per_million": 5.0, "cached_input_per_million": 0.5, "cache_write_input_per_million": 6.25, "output_per_million": 30.0},
+      "flex": {"input_per_million": 1.25, "cached_input_per_million": 0.125, "cache_write_input_per_million": 1.5625, "output_per_million": 7.5}
     },
     "gpt-5.6-luna": {
       "input_per_million": 1.0,
@@ -46,7 +52,9 @@
       "long_context_threshold_input_tokens": 272000,
       "long_context_input_multiplier": 2.0,
       "long_context_output_multiplier": 1.5,
-      "cache_write_note": "Cache writes are billed at 1.25x the uncached input token rate"
+      "cache_write_note": "Cache writes are billed at 1.25x the uncached input token rate",
+      "priority": {"input_per_million": 2.0, "cached_input_per_million": 0.2, "cache_write_input_per_million": 2.5, "output_per_million": 12.0},
+      "flex": {"input_per_million": 0.5, "cached_input_per_million": 0.05, "cache_write_input_per_million": 0.625, "output_per_million": 3.0}
     },
     "gpt-5.5": {
       "input_per_million": 5.0,
@@ -57,8 +65,9 @@
       "long_context_threshold_input_tokens": 272000,
       "long_context_input_multiplier": 2.0,
       "long_context_output_multiplier": 1.5,
-      "fast_mode_multiplier": 2.5,
-      "cache_write_note": "OpenAI prompt caching has no cache write charge"
+      "cache_write_note": "OpenAI prompt caching has no cache write charge",
+      "priority": {"input_per_million": 12.5, "cached_input_per_million": 1.25, "cache_write_input_per_million": 0.0, "output_per_million": 75.0},
+      "flex": {"input_per_million": 2.5, "cached_input_per_million": 0.25, "cache_write_input_per_million": 0.0, "output_per_million": 15.0}
     },
     "gpt-5.4": {
       "input_per_million": 2.5,
@@ -69,7 +78,9 @@
       "long_context_threshold_input_tokens": 272000,
       "long_context_input_multiplier": 2.0,
       "long_context_output_multiplier": 1.5,
-      "cache_write_note": "OpenAI prompt caching has no cache write charge"
+      "cache_write_note": "OpenAI prompt caching has no cache write charge",
+      "priority": {"input_per_million": 5.0, "cached_input_per_million": 0.5, "cache_write_input_per_million": 0.0, "output_per_million": 30.0},
+      "flex": {"input_per_million": 1.25, "cached_input_per_million": 0.125, "cache_write_input_per_million": 0.0, "output_per_million": 7.5}
     },
     "gpt-5.4-mini": {
       "input_per_million": 0.75,
@@ -77,7 +88,9 @@
       "output_per_million": 4.5,
       "cache_write_input_per_million": 0.0,
       "reasoning_output_billed_as": "output",
-      "cache_write_note": "OpenAI prompt caching has no cache write charge"
+      "cache_write_note": "OpenAI prompt caching has no cache write charge",
+      "priority": {"input_per_million": 1.5, "cached_input_per_million": 0.15, "cache_write_input_per_million": 0.0, "output_per_million": 9.0},
+      "flex": {"input_per_million": 0.375, "cached_input_per_million": 0.0375, "cache_write_input_per_million": 0.0, "output_per_million": 2.25}
     },
     "gpt-5.3-codex": {
       "input_per_million": 1.75,
@@ -85,7 +98,8 @@
       "output_per_million": 14.0,
       "cache_write_input_per_million": 0.0,
       "reasoning_output_billed_as": "output",
-      "cache_write_note": "OpenAI prompt caching has no cache write charge"
+      "cache_write_note": "OpenAI prompt caching has no cache write charge",
+      "priority": {"input_per_million": 3.5, "cached_input_per_million": 0.35, "cache_write_input_per_million": 0.0, "output_per_million": 28.0}
     }
   }
 }

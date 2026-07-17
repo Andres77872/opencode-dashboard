@@ -73,6 +73,7 @@ type turnContextRecord struct {
 type eventMsgRecord struct {
 	PayloadType        string
 	TurnID             string
+	ServiceTier        string
 	Text               string
 	CallID             string
 	ToolName           string
@@ -215,6 +216,11 @@ func parseEventPayload(payload map[string]any) *eventMsgRecord {
 		Status:       firstString(payload, "status"),
 		ChangedFiles: intValue(payload["changed_files"]),
 	}
+	threadSettings := mapValue(payload["thread_settings"])
+	if threadSettings == nil {
+		threadSettings = mapValue(payload["threadSettings"])
+	}
+	event.ServiceTier = firstString(threadSettings, "service_tier", "serviceTier")
 	if event.PayloadType == "context_compacted" {
 		event.Compaction = true
 	}

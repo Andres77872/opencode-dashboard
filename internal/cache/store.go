@@ -33,8 +33,11 @@ const (
 	// touch this constant — they go in migrations.go.
 	//
 	// v4: finalized-only caches. v5: per-thread Codex token accounting with
-	// fork/resume replay suppression (thread-scoped message ids).
-	dataVersion            = 5
+	// fork/resume replay suppression (thread-scoped message ids). v6: Codex
+	// requested service-tier and normalized processing-mode attribution. v7:
+	// Codex API-equivalent USD estimates use the requested processing tier's
+	// official Standard, Priority, or Flex per-token catalog.
+	dataVersion            = 7
 	busyTimeout            = 5000 * time.Millisecond
 	DefaultSyncSafetyDelay = 6 * time.Hour
 	// collectCallTimeout bounds one bulk snapshot or one generic pagination
@@ -52,6 +55,8 @@ type SyncMode string
 const (
 	SyncModeIncremental SyncMode = "incremental"
 	SyncModeRebuild     SyncMode = "rebuild"
+
+	pricingSnapshotChangeReason = "pricing catalog changed; full historical repricing required"
 )
 
 type SyncOptions struct {
@@ -309,6 +314,9 @@ func (s *Store) NeedsSync(ctx context.Context, src source.Source) (SyncNeed, err
 	if !ok {
 		return SyncNeed{Needed: true, Reason: "cache has no consolidated data for this source"}, nil
 	}
+	if pricingIdentityChanged(current.Fingerprint, fp, info.CostPolicy.PricingSnapshotID) {
+		return SyncNeed{Needed: true, Reason: pricingSnapshotChangeReason, Status: current}, nil
+	}
 	if current.Status != "ready" {
 		reason := "cache is not ready"
 		if current.Reason != "" {
@@ -373,6 +381,15 @@ func (s *Store) SyncSourceWithOptions(ctx context.Context, src source.Source, op
 		return report, s.replaceUnavailable(ctx, info, fp)
 	}
 
+	pricingChanged := ok && pricingIdentityChanged(current.Fingerprint, fp, info.CostPolicy.PricingSnapshotID)
+	if pricingChanged && opts.Mode == SyncModeIncremental {
+		// Incremental consolidation only re-collects rows at/after the previous
+		// cutoff. Catalog changes alter the cost of every historical token, so
+		// retaining that window would leave older rows priced with stale rates.
+		opts.Mode = SyncModeRebuild
+		report.Mode = SyncModeRebuild
+	}
+
 	// The finality boundary never regresses, except down to the start of its
 	// own hour: the cache only ever holds complete clock-hour buckets, so a
 	// non-aligned cutoff inherited from a pre-v4 cache snaps back once (the
@@ -414,7 +431,14 @@ func (s *Store) SyncSourceWithOptions(ctx context.Context, src source.Source, op
 	if err != nil {
 		s.logger.Warn("cache sync failed while collecting", "source", info.ID, "mode", opts.Mode, "read_triggered", opts.ReadTriggered, "error", err)
 		if !opts.ReadTriggered {
-			_ = s.replaceFailed(ctx, info, fp, current, err)
+			failedFingerprint := fp
+			if pricingChanged {
+				// No rows were replaced, so retain the pricing identity that the
+				// cached rows actually use. A later incremental retry will again
+				// promote itself to a full historical rebuild.
+				failedFingerprint = current.Fingerprint
+			}
+			_ = s.replaceFailed(ctx, info, failedFingerprint, current, err)
 		}
 		retErr = err
 		return report, retErr
@@ -820,10 +844,11 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 		INSERT INTO message_index(
 			source_id, message_id, session_id, session_title, role, time_created_ms,
 			cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens,
-			cache_write_tokens, model_id, provider_id, agent, is_subagent,
+			cache_write_tokens, model_id, provider_id, service_tier, processing_mode,
+			agent, is_subagent,
 			folded_assistant_calls, folded_tool_calls, folded_token_updates,
 			cost_status, cost_provenance_json, project_id, project_name
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_id, message_id) DO UPDATE SET
 			session_id = excluded.session_id,
 			session_title = excluded.session_title,
@@ -837,6 +862,8 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 			cache_write_tokens = excluded.cache_write_tokens,
 			model_id = excluded.model_id,
 			provider_id = excluded.provider_id,
+			service_tier = excluded.service_tier,
+			processing_mode = excluded.processing_mode,
 			agent = excluded.agent,
 			is_subagent = excluded.is_subagent,
 			folded_assistant_calls = excluded.folded_assistant_calls,
@@ -867,7 +894,8 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 		if _, err := stmt.ExecContext(ctx,
 			sourceID, entry.ID, entry.SessionID, entry.SessionTitle, entry.Role, entry.TimeCreated.UTC().UnixMilli(),
 			entry.Cost, tokens.Input, tokens.Output, tokens.Reasoning, tokens.Cache.Read, tokens.Cache.Write,
-			nullEmpty(entry.ModelID), nullEmpty(entry.ProviderID), nullEmpty(entry.Agent), boolInt(entry.IsSubagent),
+			nullEmpty(entry.ModelID), nullEmpty(entry.ProviderID), nullEmpty(entry.ServiceTier), nullEmpty(string(entry.ProcessingMode)),
+			nullEmpty(entry.Agent), boolInt(entry.IsSubagent),
 			entry.FoldedAssistantCalls, entry.FoldedToolCalls, entry.FoldedTokenUpdates,
 			string(entry.CostStatus), prov, row.ProjectID, row.ProjectName,
 		); err != nil {

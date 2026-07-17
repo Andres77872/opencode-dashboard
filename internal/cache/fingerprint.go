@@ -13,9 +13,15 @@ import (
 	"opencode-dashboard/internal/source"
 )
 
+const (
+	fingerprintFormatVersion = "fp1"
+	pricingTagPrefix         = fingerprintFormatVersion + ":pricing="
+	fingerprintDataSeparator = ":data="
+)
+
 func sourceFingerprint(ctx context.Context, info source.SourceInfo) (string, error) {
 	h := sha256.New()
-	fmt.Fprintf(h, "v=%d\nid=%s\nkind=%s\npath=%s\n", dataVersion, info.ID, info.Kind, info.Path)
+	fmt.Fprintf(h, "v=%d\nid=%s\nkind=%s\npath=%s\npricing_snapshot=%s\n", dataVersion, info.ID, info.Kind, info.Path, info.CostPolicy.PricingSnapshotID)
 
 	switch info.ID {
 	case source.SourceOpenCode:
@@ -43,14 +49,64 @@ func sourceFingerprint(ctx context.Context, info source.SourceInfo) (string, err
 	default:
 		fmt.Fprintf(h, "diagnostics=%d:%d\n", info.Diagnostics.ScannedFiles, info.Diagnostics.MalformedLines)
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return tagFingerprint(hex.EncodeToString(h.Sum(nil)), info.CostPolicy.PricingSnapshotID), nil
 }
 
 func fallbackFingerprint(info source.SourceInfo) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "v=%d\nid=%s\nkind=%s\npath=%s\navailable=%v\nfiles=%d\nmalformed=%d\nunsupported=%d\n",
-		dataVersion, info.ID, info.Kind, info.Path, info.Available, info.Diagnostics.ScannedFiles, info.Diagnostics.MalformedLines, info.Diagnostics.UnsupportedEvents)
-	return hex.EncodeToString(h.Sum(nil))
+	fmt.Fprintf(h, "v=%d\nid=%s\nkind=%s\npath=%s\npricing_snapshot=%s\navailable=%v\nfiles=%d\nmalformed=%d\nunsupported=%d\n",
+		dataVersion, info.ID, info.Kind, info.Path, info.CostPolicy.PricingSnapshotID, info.Available, info.Diagnostics.ScannedFiles, info.Diagnostics.MalformedLines, info.Diagnostics.UnsupportedEvents)
+	return tagFingerprint(hex.EncodeToString(h.Sum(nil)), info.CostPolicy.PricingSnapshotID)
+}
+
+// tagFingerprint keeps the content digest opaque while making the pricing
+// catalog identity independently comparable. A plain fingerprint mismatch can
+// be handled incrementally, but a pricing mismatch requires all historical
+// rows to be re-collected so their persisted costs are recomputed.
+func tagFingerprint(dataDigest, pricingSnapshotID string) string {
+	pricingDigest := sha256.Sum256([]byte(pricingSnapshotID))
+	return pricingTagPrefix + hex.EncodeToString(pricingDigest[:]) + fingerprintDataSeparator + dataDigest
+}
+
+// fingerprintPricingIdentity returns the fixed-width digest of the pricing
+// snapshot encoded in a tagged fingerprint. False identifies legacy/invalid
+// fingerprints, which callers handle conservatively for priced sources.
+func fingerprintPricingIdentity(fingerprint string) (string, bool) {
+	if !strings.HasPrefix(fingerprint, pricingTagPrefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(fingerprint, pricingTagPrefix)
+	separator := strings.Index(rest, fingerprintDataSeparator)
+	if separator < 0 {
+		return "", false
+	}
+	pricingDigest := rest[:separator]
+	dataDigest := rest[separator+len(fingerprintDataSeparator):]
+	if len(pricingDigest) != sha256.Size*2 || len(dataDigest) != sha256.Size*2 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(pricingDigest); err != nil {
+		return "", false
+	}
+	if _, err := hex.DecodeString(dataDigest); err != nil {
+		return "", false
+	}
+	return pricingDigest, true
+}
+
+func pricingIdentityChanged(cachedFingerprint, currentFingerprint, currentSnapshotID string) bool {
+	currentIdentity, currentTagged := fingerprintPricingIdentity(currentFingerprint)
+	if !currentTagged {
+		return false
+	}
+	cachedIdentity, cachedTagged := fingerprintPricingIdentity(cachedFingerprint)
+	if cachedTagged {
+		return cachedIdentity != currentIdentity
+	}
+	// Existing databases may contain the pre-tag opaque hash. If this source
+	// has a pricing catalog, its historical rows cannot safely be assumed to
+	// use the current catalog, so upgrade it with one full rebuild.
+	return currentSnapshotID != ""
 }
 
 type hashWriter interface {

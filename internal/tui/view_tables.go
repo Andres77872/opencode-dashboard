@@ -596,33 +596,39 @@ func renderSessions(s styles, width, height int, list stats.SessionList, state s
 	if len(list.Sessions) > 0 {
 		totalCost := 0.0
 		maxCost := 0.0
+		maxCostStatus := stats.CostStatus("")
+		var maxCostProvenance *stats.CostProvenance
 		totalMessages := int64(0)
-		for _, item := range list.Sessions {
+		for i, item := range list.Sessions {
 			totalCost += item.Cost
 			totalMessages += item.MessageCount
-			if item.Cost > maxCost {
+			if i == 0 || item.Cost > maxCost {
 				maxCost = item.Cost
+				maxCostStatus = item.CostStatus
+				maxCostProvenance = item.CostProvenance
 			}
 		}
 		avgCost := totalCost / float64(len(list.Sessions))
+		avgCostDisplay := formatMoneyProv(s, avgCost, list.CostStatus, list.CostProvenance, false)
+		maxCostDisplay := formatMoneyProv(s, maxCost, maxCostStatus, maxCostProvenance, false)
 		if width >= 80 {
 			cardWidth := max((width-8)/4, 18)
 			sessionsKPI := lipgloss.JoinHorizontal(lipgloss.Top,
 				compactMetricCard(s, "Sessions", formatInt(int64(len(list.Sessions))), "", cardWidth),
-				compactMetricCard(s, "Avg $/sess", formatMoney(avgCost), "", cardWidth),
+				compactMetricCard(s, "Avg $/sess", avgCostDisplay, "", cardWidth),
 				compactMetricCard(s, "Messages", formatInt(totalMessages), "", cardWidth),
-				compactMetricCard(s, "Max Cost", formatMoney(maxCost), "", cardWidth),
+				compactMetricCard(s, "Max Cost", maxCostDisplay, "", cardWidth),
 			)
 			rows = append(rows, sessionsKPI, "")
 		} else {
 			cardWidth := max((width-8)/2, 18)
 			row1 := lipgloss.JoinHorizontal(lipgloss.Top,
 				compactMetricCard(s, "Sessions", formatInt(int64(len(list.Sessions))), "", cardWidth),
-				compactMetricCard(s, "Avg $/sess", formatMoney(avgCost), "", cardWidth),
+				compactMetricCard(s, "Avg $/sess", avgCostDisplay, "", cardWidth),
 			)
 			row2 := lipgloss.JoinHorizontal(lipgloss.Top,
 				compactMetricCard(s, "Messages", formatInt(totalMessages), "", cardWidth),
-				compactMetricCard(s, "Max Cost", formatMoney(maxCost), "", cardWidth),
+				compactMetricCard(s, "Max Cost", maxCostDisplay, "", cardWidth),
 			)
 			rows = append(rows, row1, row2, "")
 		}

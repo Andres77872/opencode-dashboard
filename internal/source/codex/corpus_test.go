@@ -60,6 +60,86 @@ func TestCodexCorpusTotals(t *testing.T) {
 	}
 }
 
+// TestCodexCorpusProcessingModes is an opt-in invariant check for real local
+// history. Unlike TestCodexCorpusTotals it has no snapshot-specific expected
+// values: every assistant request must land in exactly one requested-mode
+// bucket, and those buckets must preserve the overview's disjoint token total.
+func TestCodexCorpusProcessingModes(t *testing.T) {
+	home := os.Getenv("OPENCODE_DASHBOARD_CODEX_CORPUS")
+	if home == "" {
+		t.Skip("set OPENCODE_DASHBOARD_CODEX_CORPUS to a .codex directory to run the corpus processing-mode check")
+	}
+
+	src := New(Options{CodexHome: home, PathSource: "corpus", ScanTimeout: 5 * time.Minute})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	pq := stats.PeriodQuery{Period: "all"}
+
+	overview, err := src.Overview(ctx, pq)
+	if err != nil {
+		t.Fatalf("Overview(all) failed: %v", err)
+	}
+	dimension, err := src.DailyDimension(ctx, "processing_mode", pq)
+	if err != nil {
+		t.Fatalf("DailyDimension(processing_mode) failed: %v", err)
+	}
+
+	type modeUsage struct {
+		messages int64
+		tokens   stats.TokenStats
+	}
+	byMode := make(map[string]modeUsage)
+	var summed stats.TokenStats
+	var classifiedRequests int64
+	for _, row := range dimension.Days {
+		switch stats.ProcessingMode(row.Dimension) {
+		case stats.ProcessingModeFast, stats.ProcessingModeStandard, stats.ProcessingModeFlex, stats.ProcessingModeUnknown:
+		default:
+			t.Errorf("unexpected processing-mode bucket %q", row.Dimension)
+		}
+		usage := byMode[row.Dimension]
+		usage.messages += row.Messages
+		usage.tokens.Input += row.Tokens.Input
+		usage.tokens.Output += row.Tokens.Output
+		usage.tokens.Reasoning += row.Tokens.Reasoning
+		usage.tokens.Cache.Read += row.Tokens.Cache.Read
+		usage.tokens.Cache.Write += row.Tokens.Cache.Write
+		byMode[row.Dimension] = usage
+		summed.Input += row.Tokens.Input
+		summed.Output += row.Tokens.Output
+		summed.Reasoning += row.Tokens.Reasoning
+		summed.Cache.Read += row.Tokens.Cache.Read
+		summed.Cache.Write += row.Tokens.Cache.Write
+		classifiedRequests += row.Messages
+	}
+
+	for _, mode := range []stats.ProcessingMode{stats.ProcessingModeFast, stats.ProcessingModeStandard, stats.ProcessingModeFlex, stats.ProcessingModeUnknown} {
+		usage := byMode[string(mode)]
+		t.Logf("processing mode %s: messages=%d input=%d cache_read=%d cache_write=%d output=%d reasoning=%d",
+			mode, usage.messages, usage.tokens.Input, usage.tokens.Cache.Read, usage.tokens.Cache.Write, usage.tokens.Output, usage.tokens.Reasoning)
+	}
+	if summed != overview.Tokens {
+		t.Errorf("sum(processing_mode tokens) = %+v, want Overview tokens %+v", summed, overview.Tokens)
+	}
+	snap, err := src.snapshotFor(ctx, pq)
+	if err != nil {
+		t.Fatalf("load normalized snapshot: %v", err)
+	}
+	normalized, err := snap.filteredMessages(pq)
+	if err != nil {
+		t.Fatalf("filter normalized messages: %v", err)
+	}
+	var assistantRequests int64
+	for _, message := range normalized {
+		if message.Entry.Role == "assistant" {
+			assistantRequests++
+		}
+	}
+	if classifiedRequests != assistantRequests {
+		t.Errorf("classified processing-mode requests = %d, want all %d assistant requests", classifiedRequests, assistantRequests)
+	}
+}
+
 func envInt64(t *testing.T, name string, fallback int64) int64 {
 	t.Helper()
 	raw := os.Getenv(name)

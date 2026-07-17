@@ -32,9 +32,10 @@ func renderSessionDetailOverlay(s styles, width, height int, state sessionOverla
 	}
 
 	detail := state.detail
+	headerCost := plainCostProv(detail.TotalCost, detail.CostStatus, detail.CostProvenance)
 	lines = append(lines,
 		s.Accent.Render(truncateWithEllipsis(detail.Title, max(width-8, 24))),
-		s.Muted.Render(fmt.Sprintf("project %s • messages %s • cost %s", fallbackString(detail.ProjectName, "-"), formatInt(detail.MessageCount), formatMoney(detail.TotalCost))),
+		s.Muted.Render(fmt.Sprintf("project %s • messages %s • cost %s", fallbackString(detail.ProjectName, "-"), formatInt(detail.MessageCount), headerCost)),
 		s.Muted.Render(fmt.Sprintf("created %s • updated %s", detail.TimeCreated.Format("2006-01-02 15:04"), detail.TimeUpdated.Format("2006-01-02 15:04"))),
 	)
 
@@ -167,7 +168,7 @@ func renderSessionDetailOverlay(s styles, width, height int, state sessionOverla
 	)
 
 	messageRows := calculateMessageRows(height, len(lines))
-	for _, row := range renderSessionMessageRows(s, detail.Messages, width-4, messageRows) {
+	for _, row := range renderSessionMessageRows(s, detail.SourceID, detail.Messages, width-4, messageRows) {
 		lines = append(lines, row)
 	}
 
@@ -175,7 +176,7 @@ func renderSessionDetailOverlay(s styles, width, height int, state sessionOverla
 	return s.OverlayPanel.Width(width).Height(height).Render(joinLines(lines...))
 }
 
-func renderSessionMessageRows(s styles, messages []stats.SessionMessage, width, limit int) []string {
+func renderSessionMessageRows(s styles, fallbackSourceID string, messages []stats.SessionMessage, width, limit int) []string {
 	if len(messages) == 0 {
 		return []string{s.Muted.Render("No messages recorded.")}
 	}
@@ -183,6 +184,13 @@ func renderSessionMessageRows(s styles, messages []stats.SessionMessage, width, 
 	rows := make([]string, 0, min(len(messages), limit)+1)
 	for _, msg := range messages[start:] {
 		meta := []string{msg.Role}
+		sourceID := msg.SourceID
+		if sourceID == "" {
+			sourceID = fallbackSourceID
+		}
+		if sourceID == "codex" && msg.Role == "assistant" {
+			meta = append(meta, requestedProcessingModeLabel(msg.ProcessingMode, msg.ServiceTier))
+		}
 		if msg.ModelID != "" {
 			meta = append(meta, truncateWithEllipsis(msg.ModelID, 18))
 		}
@@ -194,7 +202,7 @@ func renderSessionMessageRows(s styles, messages []stats.SessionMessage, width, 
 		}
 		meta = append(meta, plainCostProv(msg.Cost, msg.CostStatus, msg.CostProvenance))
 		if msg.Tokens != nil {
-			meta = append(meta, fmt.Sprintf("%s tok", formatInt(msg.Tokens.Input+msg.Tokens.Output+msg.Tokens.Reasoning+msg.Tokens.Cache.Read+msg.Tokens.Cache.Write)))
+			meta = append(meta, fmt.Sprintf("%s tok", formatInt(totalTokenStats(*msg.Tokens))))
 		}
 		line := fmt.Sprintf("%s  %s", msg.TimeCreated.Format("01-02 15:04"), strings.Join(meta, " • "))
 		rows = append(rows, truncateWithEllipsis(line, width))

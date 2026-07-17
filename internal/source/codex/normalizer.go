@@ -68,17 +68,19 @@ type messageRecord struct {
 // parallel divergent counters under one logical session id, and mixing them in
 // one state would collapse their usage to the envelope maximum.
 type threadState struct {
-	threadID    string // the file's own thread id (first session_meta in file order)
-	sessionID   string // logical session the thread belongs to (parent for forks)
-	metaLine    int    // line of the thread's own session_meta
-	provider    string
-	model       string
-	projectID   string
-	projectName string
-	directory   string
-	turnID      string
-	requestSeq  int
-	userSeq     int
+	threadID       string // the file's own thread id (first session_meta in file order)
+	sessionID      string // logical session the thread belongs to (parent for forks)
+	metaLine       int    // line of the thread's own session_meta
+	provider       string
+	model          string
+	serviceTier    string
+	processingMode stats.ProcessingMode
+	projectID      string
+	projectName    string
+	directory      string
+	turnID         string
+	requestSeq     int
+	userSeq        int
 	// turnSeqs preserves each turn's row counters across revisits: transcripts
 	// can return to an earlier turn id, and restarting its counters would
 	// synthesize duplicate message ids (which the cache's primary key would
@@ -135,11 +137,12 @@ func normalizeRecords(home string, records []codexRecord, pricing pricingSnapsho
 		state := states[record.File.Path]
 		if state == nil {
 			state = &threadState{
-				threadID:   info.threadID,
-				sessionID:  info.sessionID,
-				metaLine:   info.metaLine,
-				replay:     info.derived,
-				isSubagent: info.isSubagent,
+				threadID:       info.threadID,
+				sessionID:      info.sessionID,
+				metaLine:       info.metaLine,
+				replay:         info.derived,
+				isSubagent:     info.isSubagent,
+				processingMode: stats.ProcessingModeUnknown,
 			}
 			states[record.File.Path] = state
 		}
@@ -286,6 +289,13 @@ func recordTimestamp(record codexRecord) time.Time {
 func (s *snapshot) applyEvent(state *threadState, event *eventMsgRecord, timestamp time.Time, pricing pricingSnapshot) {
 	s.syncTurn(state, event.TurnID)
 	switch event.PayloadType {
+	case "thread_settings_applied":
+		// This is the locally selected/requested tier. Codex rollouts do not
+		// currently persist the server-returned service tier, so keep the raw
+		// value and expose a conservative normalized mode without treating it
+		// as authoritative billing data.
+		state.serviceTier = event.ServiceTier
+		state.processingMode = normalizeProcessingMode(event.ServiceTier)
 	case "task_started":
 		// Marks the turn; the user prompt (user_message) and assistant API requests
 		// (token_count) create the rows. Fork replays also re-emit task_started, so
@@ -546,10 +556,29 @@ func (s *snapshot) closeRequest(state *threadState, timestamp time.Time, usage t
 	if req.Entry.ProviderID == "" {
 		req.Entry.ProviderID = state.provider
 	}
+	attachRequestedTier(req, state)
 	req.Entry.Role = "assistant"
 	s.registerMessage(state, req)
 	state.pending = nil
 	state.requestSeq++
+}
+
+func attachRequestedTier(req *messageRecord, state *threadState) {
+	req.Entry.ServiceTier = state.serviceTier
+	req.Entry.ProcessingMode = state.processingMode
+}
+
+func normalizeProcessingMode(serviceTier string) stats.ProcessingMode {
+	switch strings.ToLower(strings.TrimSpace(serviceTier)) {
+	case "priority", "fast":
+		return stats.ProcessingModeFast
+	case "default", "standard":
+		return stats.ProcessingModeStandard
+	case "flex":
+		return stats.ProcessingModeFlex
+	default:
+		return stats.ProcessingModeUnknown
+	}
 }
 
 // flushPending releases an assistant request that never received a token_count
@@ -562,6 +591,7 @@ func (s *snapshot) flushPending(state *threadState) {
 		return
 	}
 	if !state.replay {
+		attachRequestedTier(state.pending, state)
 		s.registerMessage(state, state.pending)
 	}
 	state.pending = nil
@@ -688,7 +718,7 @@ func (m *messageRecord) recomputeCost(pricing pricingSnapshot) {
 		m.Entry.CostProvenance = missing.Provenance
 		return
 	}
-	result := computeCost(m.Entry.ModelID, *m.Entry.Tokens, m.maxInputSnapshot, pricing)
+	result := computeCost(m.Entry.ModelID, *m.Entry.Tokens, m.maxInputSnapshot, pricing, m.Entry.ProcessingMode)
 	m.Entry.Cost = result.Cost
 	m.Entry.CostStatus = result.Status
 	m.Entry.CostProvenance = result.Provenance

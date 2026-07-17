@@ -764,7 +764,8 @@ func mergeDailyDimension(sourceID, dimension, period string, c stats.DailyDimens
 }
 
 // gapDimensionRows builds per (date, dimension) rows from gap messages for
-// the model and project dimensions (tool rows come from the live source).
+// the model, project, and processing-mode dimensions (tool rows come from the
+// live source).
 func gapDimensionRows(sourceID, dimension string, msgs []stats.MessageEntry, projectOf map[string]stats.SessionEntry) []stats.DimensionDayStats {
 	keyOf := func(e stats.MessageEntry) (string, bool) {
 		if e.Role != "assistant" {
@@ -782,6 +783,14 @@ func gapDimensionRows(sourceID, dimension string, msgs []stats.MessageEntry, pro
 				return "", false
 			}
 			return projectID, true
+		case "processing_mode":
+			if e.ProcessingMode == "" {
+				if sourceID != "codex" {
+					return "", false
+				}
+				return string(stats.ProcessingModeUnknown), true
+			}
+			return string(e.ProcessingMode), true
 		}
 		return "", false
 	}

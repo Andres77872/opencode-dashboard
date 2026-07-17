@@ -2,8 +2,10 @@ package web
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -50,7 +52,7 @@ func TestSourceAwareCodexAPIRoutingFromFixture(t *testing.T) {
 		if codexInfo.Kind != "jsonl" || !codexInfo.ReadOnly || !codexInfo.LocalOnly {
 			t.Errorf("codex kind/read/local = %q/%v/%v, want jsonl/true/true", codexInfo.Kind, codexInfo.ReadOnly, codexInfo.LocalOnly)
 		}
-		if codexInfo.CostPolicy.Status != string(stats.CostEstimatedAPIEquivalent) || codexInfo.CostPolicy.PricingSnapshotID != "openai-codex-api-pricing-2026-07-09" {
+		if codexInfo.CostPolicy.Status != string(stats.CostEstimatedAPIEquivalent) || codexInfo.CostPolicy.PricingSnapshotID != "openai-codex-api-pricing-2026-07-17" {
 			t.Errorf("codex cost policy = %#v, want current estimated API-equivalent snapshot", codexInfo.CostPolicy)
 		}
 		if !codexInfo.Privacy.PlaintextTranscripts || !codexInfo.Privacy.Redaction || !codexInfo.Privacy.ReadOnly || !codexInfo.Privacy.LocalOnly {
@@ -216,4 +218,108 @@ func TestCodexInvalidUnavailableAndDetailCollisionDoNotFallback(t *testing.T) {
 			t.Errorf("detail ID = %q, want Codex-scoped ID only", detail.ID)
 		}
 	})
+}
+
+func TestCodexRequestedProcessingModeFlowsThroughAPI(t *testing.T) {
+	home := t.TempDir()
+	sessionDir := filepath.Join(home, "sessions", "2026", "07", "17")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("create Codex fixture directory: %v", err)
+	}
+	lines := []string{
+		`{"timestamp":"2026-07-17T09:00:00Z","type":"session_meta","payload":{"id":"api-tier-session","model_provider":"openai","cwd":"[REDACTED_PATH]/api-tier-project"}}`,
+		`{"timestamp":"2026-07-17T09:00:01Z","type":"turn_context","payload":{"turn_id":"api-tier-turn","model":"gpt-5.5","model_provider":"openai"}}`,
+		`{"timestamp":"2026-07-17T09:00:02Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"priority"}}}`,
+		`{"timestamp":"2026-07-17T09:00:03Z","type":"event_msg","payload":{"type":"user_message","turn_id":"api-tier-turn","message":"[REDACTED_API_TIER_PROMPT]"}}`,
+		`{"timestamp":"2026-07-17T09:00:04Z","type":"event_msg","payload":{"type":"token_count","turn_id":"api-tier-turn","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120}}}}`,
+		`{"timestamp":"2026-07-17T09:00:05Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"default"}}}`,
+		`{"timestamp":"2026-07-17T09:00:06Z","type":"event_msg","payload":{"type":"token_count","turn_id":"api-tier-turn","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":50,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":350}}}}`,
+	}
+	rollout := filepath.Join(sessionDir, "rollout-2026-07-17T09-00-00Z-api-tier-session.jsonl")
+	if err := os.WriteFile(rollout, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write Codex fixture: %v", err)
+	}
+
+	codexSource := codex.New(codex.Options{
+		CodexHome:           home,
+		PathSource:          "test fixture",
+		PricingSnapshotPath: filepath.Join("..", "source", "codex", "testdata", "pricing_snapshot.json"),
+	})
+	handler := newSourceTestHandler(t, newHandlerFakeSource(source.SourceOpenCode, true, 999), codexSource)
+
+	var messages stats.MessageList
+	getHandlerJSON(t, handler, "/api/v1/messages?source=codex&period=all", &messages)
+	if messages.Total != 3 {
+		t.Fatalf("Codex messages total = %d, want one user and two assistant requests", messages.Total)
+	}
+	assertAPITierMessage := func(id, tier string, mode stats.ProcessingMode) {
+		t.Helper()
+		for _, message := range messages.Messages {
+			if message.ID != id {
+				continue
+			}
+			if message.ServiceTier != tier || message.ProcessingMode != mode {
+				t.Errorf("message %q tier/mode = %q/%q, want %q/%q", id, message.ServiceTier, message.ProcessingMode, tier, mode)
+			}
+			return
+		}
+		t.Errorf("messages response missing %q", id)
+	}
+	assertAPITierMessage("codex:api-tier-session:api-tier-turn:r0", "priority", stats.ProcessingModeFast)
+	assertAPITierMessage("codex:api-tier-session:api-tier-turn:r1", "default", stats.ProcessingModeStandard)
+	for _, message := range messages.Messages {
+		switch message.ID {
+		case "codex:api-tier-session:api-tier-turn:r0":
+			if math.Abs(message.Cost-0.002525) > 1e-12 {
+				t.Errorf("Fast/Priority API cost = %.9f, want 0.002525", message.Cost)
+			}
+		case "codex:api-tier-session:api-tier-turn:r1":
+			if math.Abs(message.Cost-0.001765) > 1e-12 {
+				t.Errorf("Standard API cost = %.9f, want 0.001765", message.Cost)
+			}
+		}
+	}
+
+	var detail stats.MessageDetail
+	getHandlerJSON(t, handler, "/api/v1/messages/codex:api-tier-session:api-tier-turn:r0?source=codex", &detail)
+	if detail.ServiceTier != "priority" || detail.ProcessingMode != stats.ProcessingModeFast {
+		t.Errorf("message detail tier/mode = %q/%q, want priority/fast", detail.ServiceTier, detail.ProcessingMode)
+	}
+
+	var session stats.SessionDetail
+	getHandlerJSON(t, handler, "/api/v1/sessions/api-tier-session?source=codex", &session)
+	if len(session.Messages) != 3 {
+		t.Fatalf("session messages = %d, want 3", len(session.Messages))
+	}
+	for _, message := range session.Messages {
+		if message.Role == "user" && (message.ServiceTier != "" || message.ProcessingMode != "") {
+			t.Errorf("user session row tier/mode = %q/%q, want omitted", message.ServiceTier, message.ProcessingMode)
+		}
+	}
+
+	var dimension stats.DailyDimensionStats
+	getHandlerJSON(t, handler, "/api/v1/daily?source=codex&period=all&dimension=processing_mode", &dimension)
+	if dimension.Dimension != "processing_mode" {
+		t.Errorf("dimension = %q, want processing_mode", dimension.Dimension)
+	}
+	type modeTotal struct {
+		messages int64
+		tokens   int64
+	}
+	got := make(map[string]modeTotal)
+	for _, row := range dimension.Days {
+		got[row.Dimension] = modeTotal{
+			messages: row.Messages,
+			tokens:   row.Tokens.Input + row.Tokens.Cache.Read + row.Tokens.Cache.Write + row.Tokens.Output + row.Tokens.Reasoning,
+		}
+	}
+	want := map[string]modeTotal{
+		"fast":     {messages: 1, tokens: 120},
+		"standard": {messages: 1, tokens: 230},
+	}
+	for mode, expected := range want {
+		if got[mode] != expected {
+			t.Errorf("processing mode %q = %+v, want %+v", mode, got[mode], expected)
+		}
+	}
 }

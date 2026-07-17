@@ -84,6 +84,18 @@ func TestParserRecognizesCodexTopLevelRecordFamilies(t *testing.T) {
 			},
 		},
 		{
+			name: "thread settings preserve the raw requested service tier",
+			line: `{"timestamp":"2026-01-02T03:04:07Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"priority"}}}`,
+			assert: func(t *testing.T, record codexRecord) {
+				if record.Event == nil || record.Event.PayloadType != "thread_settings_applied" {
+					t.Fatalf("Event = %#v, want thread_settings_applied", record.Event)
+				}
+				if record.Event.ServiceTier != "priority" {
+					t.Errorf("Event.ServiceTier = %q, want raw priority", record.Event.ServiceTier)
+				}
+			},
+		},
+		{
 			name: "event message user message preserves redacted text for folding",
 			line: `{"timestamp":"2026-01-02T03:04:08Z","type":"event_msg","payload":{"type":"user_message","turn_id":"turn-1","message":"[REDACTED_USER_MESSAGE_PART_1]"}}`,
 			assert: func(t *testing.T, record codexRecord) {

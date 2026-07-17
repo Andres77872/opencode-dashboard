@@ -30,12 +30,27 @@ Each source is detected automatically and exposed with its own capabilities, dia
 |--------|------|------------------|-----------------|
 | OpenCode | `sqlite` | `--db` → `--channel` → `OPENCODE_DASHBOARD_DB` → auto-detect (stable → latest → beta) | `reported` — real spend recorded by OpenCode |
 | Claude Code | `jsonl` | `--claude-home` → `CLAUDE_CONFIG_DIR` → `~/.claude` | `mixed` — reported when present, else computed from a bundled pricing snapshot, else missing |
-| Codex | `jsonl` | `--codex-home` → `OPENCODE_DASHBOARD_CODEX_HOME` → `~/.codex` | `estimated_api_equivalent` — estimated API-equivalent value, **not** actual subscription spend |
+| Codex | `jsonl` | `--codex-home` → `OPENCODE_DASHBOARD_CODEX_HOME` → `~/.codex` | `estimated_api_equivalent` — estimated USD from official API per-token rates, **not** actual billed spend |
 | Kimi Code | `jsonl` | `--kimi-home` → `KIMI_CODE_HOME` → `~/.kimi-code` | `estimated_api_equivalent` — estimated from official Kimi API prices, **not** actual membership or coding-plan spend |
 
 ### Cross-source costs
 
 The Overview deliberately does **not** present a single combined cost number. OpenCode reports real dollars, Codex and Kimi Code report estimated API-equivalent values, and Claude Code is mixed — summing them would be misleading. Costs are always shown per source with each source's own provenance, while additive metrics (sessions, messages, tokens, days) are combined. Cross-source "top" signals (models, projects, tools) are ranked by a cost-neutral metric (tokens / invocations) so real and estimated dollars are never compared.
+
+### Codex requested processing mode
+
+For recent Codex CLI rollouts, the dashboard reads each persisted `thread_settings_applied.thread_settings.service_tier` event and attaches that setting to the assistant API requests that follow it. Message rows and session details show **Fast requested**, **Standard requested**, **Flex requested**, or **Tier unknown**. The Codex Daily view can group estimated USD cost and exact input, cache-read, output, and reasoning token totals by this requested mode; the equivalent API query is `GET /api/v1/daily?source=codex&period=all&dimension=processing_mode`.
+
+The classification is deliberately conservative:
+
+- Codex wire values `priority` and `fast` map to **Fast requested**; `default` and `standard` map to **Standard requested**; `flex` maps to **Flex requested**.
+- Missing or unrecognized markers remain **Tier unknown**. Older Codex CLI histories usually have no persisted marker, so the dashboard does not backfill them from the current `config.toml` value.
+- The marker records what the local client requested. Codex rollouts do not persist the service tier returned by the backend, so this is not proof of the tier actually served or billed.
+- Processing-mode totals use the same per-request cumulative-delta and fork/replay deduplication as the rest of Codex accounting. They do not sum overlapping `last_token_usage` records or copied histories.
+
+All Codex costs stay in USD and use the official [OpenAI API per-token pricing catalog](https://developers.openai.com/api/docs/pricing). For these API-equivalent estimates, **Fast requested** uses Priority processing rates, **Flex requested** uses Flex processing rates, and **Standard requested** uses Standard rates. **Tier unknown** remains unknown for classification and falls back to Standard rates for the estimate only; that fallback does not mean Standard was requested, served, or billed. The locally persisted marker is never treated as server confirmation, so these values are estimates rather than actual billed spend.
+
+This distinction matters because OpenAI's [Priority processing guide](https://developers.openai.com/api/docs/guides/priority-processing) says the response `service_tier` identifies the tier actually used and that a Priority request can be downgraded to Standard. Codex's local rollouts do not retain that response field. OpenAI's [Flex processing guide](https://developers.openai.com/api/docs/guides/flex-processing) documents Flex as the lower-cost, slower processing tier; its token rates follow the Flex column in the official pricing catalog.
 
 ### Kimi Code wire accounting
 
@@ -324,7 +339,7 @@ The web command also serves a JSON API under `/api/v1`. Most endpoints accept a 
 | `GET /api/v1/sources` | Registered sources, availability, and capabilities | — |
 | `GET /api/v1/overview` | Aggregate metrics for one source | `source`, period |
 | `GET /api/v1/overview/all` | Cross-source merged overview | period, `trend=true`, `top=<n>` |
-| `GET /api/v1/daily` | Time-series breakdown | `granularity=hour\|day`, `dimension=<dim>`, period |
+| `GET /api/v1/daily` | Time-series breakdown | `granularity=hour\|day`, `dimension=model\|tool\|project\|processing_mode` (last is Codex), period |
 | `GET /api/v1/models` | Model usage statistics | `source`, period |
 | `GET /api/v1/tools` | Tool invocation statistics | `source`, period |
 | `GET /api/v1/projects` | Per-project aggregation | `source`, period |

@@ -27,6 +27,7 @@ import { getSessionDetail, getSessionsWithFilter } from '../lib/api'
 import { usePeriodResource } from '../lib/use-period-resource'
 import { usePeriodControls } from '../lib/use-period-controls'
 import { getTokenTotal } from '../lib/token-breakdown'
+import { getProcessingModeMeta, REQUESTED_TIER_DISCLOSURE } from '../lib/processing-mode'
 import {
   formatCompactCurrencyWithProvenance,
   formatCompactInteger,
@@ -701,7 +702,12 @@ function SessionDetailScreen({
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column' }}>
                 {detail.messages.map((m, i) => (
-                  <MessageRow key={m.id} message={m} last={i === detail.messages.length - 1} />
+                  <MessageRow
+                    key={m.id}
+                    message={m}
+                    sourceId={detail.source_id ?? sourceId}
+                    last={i === detail.messages.length - 1}
+                  />
                 ))}
               </div>
             )
@@ -730,11 +736,12 @@ function roleTone(role: string): { color: string; dot: string } {
   }
 }
 
-function MessageRow({ message, last }: { message: SessionMessage; last: boolean }) {
+function MessageRow({ message, sourceId, last }: { message: SessionMessage; sourceId: SourceID; last: boolean }) {
   const tone = roleTone(message.role)
   const tokens = message.tokens ? getTokenTotal(message.tokens) : 0
   const cost = message.cost ?? 0
   const meta = [message.model_id, message.provider_id, message.agent].filter(Boolean).join(' · ')
+  const requestedMode = getProcessingModeMeta(message.processing_mode, message.service_tier)
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '16px minmax(0,1fr) auto', gap: 12, padding: '10px 0', borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}>
@@ -747,6 +754,11 @@ function MessageRow({ message, last }: { message: SessionMessage; last: boolean 
             {message.role || 'unknown'}
           </span>
           {message.is_subagent && <Badge tone="accent">subagent</Badge>}
+          {sourceId === 'codex' && message.role === 'assistant' && (
+            <span title={REQUESTED_TIER_DISCLOSURE}>
+              <Badge tone={requestedMode.tone} dot>{requestedMode.label}</Badge>
+            </span>
+          )}
           <span style={{ font: '400 11px/1 var(--font-mono)', color: 'var(--fg-faint)' }} title={message.id}>
             {formatDateTime(message.time_created)}
           </span>
