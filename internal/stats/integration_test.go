@@ -72,6 +72,43 @@ func TestOverviewWithFixture(t *testing.T) {
 	}
 }
 
+func TestOverviewCountsSessionsWithActivityInWindow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	base := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	builder := fixture.NewBuilder().AddProject(fixture.NewProject("project", "/workspace/project"))
+	session := fixture.NewSession("session", "project").
+		CreatedAt(base.Add(-24 * time.Hour)).
+		UpdatedAt(base.Add(30 * time.Minute))
+	session.AddMessage(fixture.NewMessage("assistant", "session", "assistant").
+		CreatedAt(base.Add(15*time.Minute)).
+		Cost(0.25).
+		ModelID("model").
+		ProviderID("provider").
+		Tokens(10, 5, 1, 2, 3))
+	builder.AddSession(session)
+
+	dbPath, err := builder.Build(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(filepath.Dir(dbPath))
+	st, err := store.Connect(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	overview, err := Overview(ctx, st, PeriodQuery{FromTime: base, ToTime: base.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overview.Sessions != 1 || overview.Messages != 1 || overview.Days != 1 {
+		t.Fatalf("activity counts = sessions:%d messages:%d days:%d, want 1/1/1", overview.Sessions, overview.Messages, overview.Days)
+	}
+}
+
 func TestSessionsWithFixture(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -248,7 +285,6 @@ func TestModelsWithFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Models() failed: %v", err)
 	}
-
 	// Should have 4 different models: claude-3-sonnet, gpt-4, gpt-4-turbo, gpt-3.5-turbo
 	if len(models.Models) != 4 {
 		t.Errorf("len(ModelStats.Models) = %d, want 4", len(models.Models))
@@ -303,11 +339,38 @@ func TestModelsWithFixture_MultiStepTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Models() failed: %v", err)
 	}
+	trend, err := DailyDimension(ctx, st, "model", PeriodQuery{Period: "all"})
+	if err != nil {
+		t.Fatalf("DailyDimension(model) failed: %v", err)
+	}
 
 	// Build lookup by model_id
 	byID := make(map[string]ModelEntry)
 	for _, m := range models.Models {
 		byID[m.ModelID] = m
+	}
+	trendByID := make(map[string]ModelEntry)
+	for _, day := range trend.Days {
+		entry := trendByID[day.Dimension]
+		entry.ModelID = day.Dimension
+		entry.Messages += day.Messages
+		entry.Cost += day.Cost
+		entry.Tokens.Input += day.Tokens.Input
+		entry.Tokens.Output += day.Tokens.Output
+		entry.Tokens.Reasoning += day.Tokens.Reasoning
+		entry.Tokens.Cache.Read += day.Tokens.Cache.Read
+		entry.Tokens.Cache.Write += day.Tokens.Cache.Write
+		trendByID[day.Dimension] = entry
+	}
+	for modelID, total := range byID {
+		fromTrend, ok := trendByID[modelID]
+		if !ok {
+			t.Errorf("DailyDimension(model) omitted %q", modelID)
+			continue
+		}
+		if fromTrend.Messages != total.Messages || fromTrend.Tokens != total.Tokens || fromTrend.Cost != total.Cost {
+			t.Errorf("model %q totals disagree with daily trend\ntotals: %#v\ntrend:  %#v", modelID, total, fromTrend)
+		}
 	}
 
 	t.Run("multi-step accumulation", func(t *testing.T) {
@@ -1263,6 +1326,76 @@ func TestDailyHourlyExplicitRangeUTC(t *testing.T) {
 		}
 		if parsed.Location() != time.UTC {
 			t.Errorf("Date %q parsed location = %v, want UTC", h.Date, parsed.Location())
+		}
+	}
+}
+
+// TestDailyDimensionHourlyMatchesDaily proves the dimension trend buckets with
+// the same shared granularity rule as Daily: hour keys use Daily's hour layout
+// and aggregate exactly to the day rows.
+func TestDailyDimensionHourlyMatchesDaily(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	dbPath, err := fixture.SampleFixture(ctx)
+	if err != nil {
+		t.Fatalf("Failed to create fixture database: %v", err)
+	}
+	defer os.RemoveAll(filepath.Dir(dbPath))
+
+	st, err := store.Connect(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Failed to connect to fixture: %v", err)
+	}
+	defer st.Close()
+
+	hourly, err := DailyDimension(ctx, st, "model", PeriodQuery{Period: "all"}, GranularityHour)
+	if err != nil {
+		t.Fatalf("DailyDimension(model, all, hour) failed: %v", err)
+	}
+	if hourly.Granularity != GranularityHour {
+		t.Errorf("hourly Granularity = %q, want %q", hourly.Granularity, GranularityHour)
+	}
+	daily, err := DailyDimension(ctx, st, "model", PeriodQuery{Period: "all"})
+	if err != nil {
+		t.Fatalf("DailyDimension(model, all) failed: %v", err)
+	}
+	if daily.Granularity != GranularityDay {
+		t.Errorf("daily Granularity = %q, want %q", daily.Granularity, GranularityDay)
+	}
+	if len(hourly.Days) == 0 || len(daily.Days) == 0 {
+		t.Fatalf("expected rows in both granularities, got %d hourly / %d daily", len(hourly.Days), len(daily.Days))
+	}
+
+	type rowKey struct{ day, dim string }
+	type rowTotals struct {
+		messages, input int64
+		cost            float64
+	}
+	agg := map[rowKey]rowTotals{}
+	for _, row := range hourly.Days {
+		if len(row.Date) != len("2006-01-02T15:04:05Z") {
+			t.Fatalf("hourly date %q is not an hour bucket key", row.Date)
+		}
+		k := rowKey{day: row.Date[:10], dim: row.Dimension}
+		cur := agg[k]
+		cur.messages += row.Messages
+		cur.input += row.Tokens.Input
+		cur.cost += row.Cost
+		agg[k] = cur
+	}
+	if len(agg) != len(daily.Days) {
+		t.Errorf("hourly rows collapse to %d (day, model) groups, daily has %d", len(agg), len(daily.Days))
+	}
+	for _, row := range daily.Days {
+		got := agg[rowKey{day: row.Date, dim: row.Dimension}]
+		costDiff := got.cost - row.Cost
+		if got.messages != row.Messages || got.input != row.Tokens.Input || costDiff < -1e-9 || costDiff > 1e-9 {
+			t.Errorf("hourly sum for %s/%s = %+v, want %d messages / %d input / $%v", row.Date, row.Dimension, got, row.Messages, row.Tokens.Input, row.Cost)
 		}
 	}
 }

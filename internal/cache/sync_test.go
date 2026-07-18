@@ -569,7 +569,7 @@ func (s *syncFakeSource) Daily(context.Context, stats.PeriodQuery, ...stats.Gran
 	return stats.DailyStats{}, nil
 }
 
-func (s *syncFakeSource) DailyDimension(context.Context, string, stats.PeriodQuery) (stats.DailyDimensionStats, error) {
+func (s *syncFakeSource) DailyDimension(context.Context, string, stats.PeriodQuery, ...stats.Granularity) (stats.DailyDimensionStats, error) {
 	return stats.DailyDimensionStats{}, nil
 }
 

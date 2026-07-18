@@ -29,15 +29,17 @@ const (
 	// normalized into rows, token accounting, message id synthesis. It
 	// participates in source fingerprints, and Open resets the consolidation
 	// state of any source cached under an older value so the next sync fully
-	// re-collects (see resetOutdatedDataVersions). Structural DDL changes never
-	// touch this constant — they go in migrations.go.
+	// re-collects (see resetOutdatedDataVersions). Schema (DDL) changes never
+	// touch this constant — they bump schemaVersion in schema.go, which removes
+	// and rebuilds the whole cache database.
 	//
 	// v4: finalized-only caches. v5: per-thread Codex token accounting with
 	// fork/resume replay suppression (thread-scoped message ids). v6: Codex
 	// requested service-tier and normalized processing-mode attribution. v7:
 	// Codex API-equivalent USD estimates use the requested processing tier's
-	// official Standard, Priority, or Flex per-token catalog.
-	dataVersion            = 7
+	// official Standard, Priority, or Flex per-token catalog. v8: OpenCode
+	// model analytics use additive step-finish usage without changing Overview.
+	dataVersion            = 8
 	busyTimeout            = 5000 * time.Millisecond
 	DefaultSyncSafetyDelay = 6 * time.Hour
 	// collectCallTimeout bounds one bulk snapshot or one generic pagination
@@ -218,6 +220,27 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, fmt.Errorf("create cache directory: %w", err)
 	}
 
+	db, err := openDB(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	// A schema-version mismatch removes and rebuilds the database here; the
+	// returned handle may therefore be a different connection than db.
+	db, err = ensureSchemaVersion(ctx, db, path)
+	if err != nil {
+		return nil, err
+	}
+
+	store := &Store{db: db, path: path, logger: slog.New(slog.DiscardHandler), writeSem: make(chan struct{}, 1)}
+	if err := store.resetOutdatedDataVersions(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+// openDB opens and probes one cache database connection pool.
+func openDB(ctx context.Context, path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", buildDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open cache database: %w", err)
@@ -225,23 +248,13 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(2)
 
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.PingContext(pingCtx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("connect cache database: %w", err)
 	}
-
-	store := &Store{db: db, path: path, logger: slog.New(slog.DiscardHandler), writeSem: make(chan struct{}, 1)}
-	if err := store.migrate(ctx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("%w (delete the cache file or start with --rebuild-cache to rebuild it from sources)", err)
-	}
-	if err := store.resetOutdatedDataVersions(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return store, nil
+	return db, nil
 }
 
 func (s *Store) Close() error {
@@ -274,7 +287,11 @@ func buildDSN(path string) string {
 		"_txlock=immediate",
 		fmt.Sprintf("_pragma=busy_timeout(%d)", busyTimeout.Milliseconds()),
 		"_pragma=journal_mode(WAL)",
+		"_pragma=synchronous(NORMAL)",
 		"_pragma=foreign_keys(1)",
+		"_pragma=temp_store(MEMORY)",
+		"_pragma=cache_size(-16384)",
+		"_pragma=mmap_size(268435456)",
 	}
 	return path + "?" + strings.Join(params, "&")
 }
@@ -581,6 +598,7 @@ type messageRow struct {
 	Entry       stats.MessageEntry
 	ProjectID   string
 	ProjectName string
+	ModelTokens *stats.TokenStats
 }
 
 type toolRow struct {
@@ -669,6 +687,9 @@ func (s *Store) replaceSource(ctx context.Context, payload sourcePayload, cutoff
 	if err := rebuildHourlyToolUsage(ctx, tx, sourceID); err != nil {
 		return err
 	}
+	if err := rebuildOverviewHourly(ctx, tx, sourceID); err != nil {
+		return err
+	}
 	return s.commitState(tx, sourceID)
 }
 
@@ -699,6 +720,9 @@ func (s *Store) fillSource(ctx context.Context, payload sourcePayload, since, cu
 		boundary = cutoff
 	}
 	sinceMs := timeToMillis(boundary)
+	if err := prepareChangedSessions(ctx, tx, sourceID, sinceMs, payload); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM tool_index WHERE source_id = ? AND time_created_ms >= ?`, sourceID, sinceMs); err != nil {
 		return fmt.Errorf("clear gap tool rows: %w", err)
 	}
@@ -720,13 +744,16 @@ func (s *Store) fillSource(ctx context.Context, payload sourcePayload, since, cu
 	if err := insertTools(ctx, tx, sourceID, payload.Tools); err != nil {
 		return err
 	}
-	if err := refreshSessionRollups(ctx, tx, sourceID); err != nil {
+	if err := refreshChangedSessionRollups(ctx, tx, sourceID); err != nil {
 		return err
 	}
-	if err := rebuildHourlyUsage(ctx, tx, sourceID); err != nil {
+	if err := refreshHourlyUsage(ctx, tx, sourceID, sinceMs); err != nil {
 		return err
 	}
-	if err := rebuildHourlyToolUsage(ctx, tx, sourceID); err != nil {
+	if err := refreshHourlyToolUsage(ctx, tx, sourceID, sinceMs); err != nil {
+		return err
+	}
+	if err := refreshOverviewHourly(ctx, tx, sourceID, sinceMs); err != nil {
 		return err
 	}
 	return s.commitState(tx, sourceID)
@@ -734,6 +761,11 @@ func (s *Store) fillSource(ctx context.Context, payload sourcePayload, since, cu
 
 func deleteSourceRows(ctx context.Context, tx *sql.Tx, sourceID string) error {
 	tables := []string{
+		"hourly_model_cost",
+		"hourly_model_sessions",
+		"overview_hourly_cost",
+		"overview_hourly_sessions",
+		"overview_hourly",
 		"hourly_tool_usage",
 		"hourly_usage",
 		"tool_index",
@@ -844,11 +876,13 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 		INSERT INTO message_index(
 			source_id, message_id, session_id, session_title, role, time_created_ms,
 			cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens,
-			cache_write_tokens, model_id, provider_id, service_tier, processing_mode,
+			cache_write_tokens, model_input_tokens, model_output_tokens,
+			model_reasoning_tokens, model_cache_read_tokens, model_cache_write_tokens,
+			model_id, provider_id, service_tier, processing_mode,
 			agent, is_subagent,
 			folded_assistant_calls, folded_tool_calls, folded_token_updates,
 			cost_status, cost_provenance_json, project_id, project_name
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_id, message_id) DO UPDATE SET
 			session_id = excluded.session_id,
 			session_title = excluded.session_title,
@@ -860,6 +894,11 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 			reasoning_tokens = excluded.reasoning_tokens,
 			cache_read_tokens = excluded.cache_read_tokens,
 			cache_write_tokens = excluded.cache_write_tokens,
+			model_input_tokens = excluded.model_input_tokens,
+			model_output_tokens = excluded.model_output_tokens,
+			model_reasoning_tokens = excluded.model_reasoning_tokens,
+			model_cache_read_tokens = excluded.model_cache_read_tokens,
+			model_cache_write_tokens = excluded.model_cache_write_tokens,
 			model_id = excluded.model_id,
 			provider_id = excluded.provider_id,
 			service_tier = excluded.service_tier,
@@ -887,6 +926,10 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 		if entry.Tokens != nil {
 			tokens = *entry.Tokens
 		}
+		modelTokens := tokens
+		if row.ModelTokens != nil {
+			modelTokens = *row.ModelTokens
+		}
 		prov, err := marshalProvenance(entry.CostProvenance)
 		if err != nil {
 			return err
@@ -894,6 +937,7 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 		if _, err := stmt.ExecContext(ctx,
 			sourceID, entry.ID, entry.SessionID, entry.SessionTitle, entry.Role, entry.TimeCreated.UTC().UnixMilli(),
 			entry.Cost, tokens.Input, tokens.Output, tokens.Reasoning, tokens.Cache.Read, tokens.Cache.Write,
+			modelTokens.Input, modelTokens.Output, modelTokens.Reasoning, modelTokens.Cache.Read, modelTokens.Cache.Write,
 			nullEmpty(entry.ModelID), nullEmpty(entry.ProviderID), nullEmpty(entry.ServiceTier), nullEmpty(string(entry.ProcessingMode)),
 			nullEmpty(entry.Agent), boolInt(entry.IsSubagent),
 			entry.FoldedAssistantCalls, entry.FoldedToolCalls, entry.FoldedTokenUpdates,
@@ -941,6 +985,100 @@ func deleteToolsForMessages(ctx context.Context, tx *sql.Tx, sourceID string, ro
 		if _, err := stmt.ExecContext(ctx, sourceID, row.Entry.ID); err != nil {
 			return fmt.Errorf("delete tools for message %s: %w", row.Entry.ID, err)
 		}
+	}
+	return nil
+}
+
+// prepareChangedSessions snapshots every session whose cached messages may be
+// replaced by an incremental fill. The temporary table lives on the
+// transaction's SQLite connection and is cleared before each use. Capturing
+// the ids before the suffix delete is important: an upstream deletion can
+// remove the last message of a session, so the incoming payload alone is not
+// sufficient to identify every rollup that must be repaired.
+func prepareChangedSessions(ctx context.Context, tx *sql.Tx, sourceID string, sinceMs int64, payload sourcePayload) error {
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE IF NOT EXISTS cache_changed_sessions (
+			session_id TEXT PRIMARY KEY
+		) WITHOUT ROWID;
+		DELETE FROM cache_changed_sessions;
+	`); err != nil {
+		return fmt.Errorf("prepare changed-session set: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO cache_changed_sessions(session_id)
+		SELECT DISTINCT session_id
+		FROM message_index
+		WHERE source_id = ? AND time_created_ms >= ?
+	`, sourceID, sinceMs); err != nil {
+		return fmt.Errorf("snapshot changed sessions: %w", err)
+	}
+	stmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO cache_changed_sessions(session_id) VALUES (?)`)
+	if err != nil {
+		return fmt.Errorf("prepare changed-session insert: %w", err)
+	}
+	defer stmt.Close()
+	for _, row := range payload.Sessions {
+		if row.SessionID != "" {
+			if _, err := stmt.ExecContext(ctx, row.SessionID); err != nil {
+				return fmt.Errorf("mark changed session %s: %w", row.SessionID, err)
+			}
+		}
+	}
+	for _, row := range payload.Messages {
+		if row.Entry.SessionID != "" {
+			if _, err := stmt.ExecContext(ctx, row.Entry.SessionID); err != nil {
+				return fmt.Errorf("mark changed message session %s: %w", row.Entry.SessionID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// refreshChangedSessionRollups updates only sessions touched by the suffix
+// replacement. The previous implementation recomputed four correlated
+// aggregates for every historical session after every hourly fill, which made
+// small cache updates grow linearly with the lifetime size of the cache.
+func refreshChangedSessionRollups(ctx context.Context, tx *sql.Tx, sourceID string) error {
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM sessions
+		WHERE source_id = ?
+		  AND session_id IN (SELECT session_id FROM cache_changed_sessions)
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM message_index m
+			WHERE m.source_id = sessions.source_id AND m.session_id = sessions.session_id
+		  )
+	`, sourceID); err != nil {
+		return fmt.Errorf("remove changed empty sessions: %w", err)
+	}
+	_, err := tx.ExecContext(ctx, `
+		UPDATE sessions
+		SET
+			time_created_ms = (
+				SELECT MIN(m.time_created_ms)
+				FROM message_index m
+				WHERE m.source_id = sessions.source_id AND m.session_id = sessions.session_id
+			),
+			time_updated_ms = (
+				SELECT MAX(m.time_created_ms)
+				FROM message_index m
+				WHERE m.source_id = sessions.source_id AND m.session_id = sessions.session_id
+			),
+			message_count = (
+				SELECT COUNT(*)
+				FROM message_index m
+				WHERE m.source_id = sessions.source_id AND m.session_id = sessions.session_id
+			),
+			cost = COALESCE((
+				SELECT SUM(m.cost)
+				FROM message_index m
+				WHERE m.source_id = sessions.source_id AND m.session_id = sessions.session_id
+			), 0)
+		WHERE source_id = ?
+		  AND session_id IN (SELECT session_id FROM cache_changed_sessions)
+	`, sourceID)
+	if err != nil {
+		return fmt.Errorf("refresh changed session rollups: %w", err)
 	}
 	return nil
 }
@@ -1009,17 +1147,67 @@ func rebuildHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string) error 
 			COUNT(DISTINCT session_id),
 			COUNT(*),
 			COALESCE(SUM(cost), 0),
-			COALESCE(SUM(input_tokens), 0),
-			COALESCE(SUM(output_tokens), 0),
-			COALESCE(SUM(reasoning_tokens), 0),
-			COALESCE(SUM(cache_read_tokens), 0),
-			COALESCE(SUM(cache_write_tokens), 0)
+			COALESCE(SUM(model_input_tokens), 0),
+			COALESCE(SUM(model_output_tokens), 0),
+			COALESCE(SUM(model_reasoning_tokens), 0),
+			COALESCE(SUM(model_cache_read_tokens), 0),
+			COALESCE(SUM(model_cache_write_tokens), 0)
 		FROM message_index
 		WHERE source_id = ?
 		GROUP BY source_id, bucket_start_ms, project_id, project_name, model_id, provider_id, role
 	`, sourceID)
 	if err != nil {
 		return fmt.Errorf("rebuild hourly usage: %w", err)
+	}
+	return nil
+}
+
+func hourBucketStartMs(ms int64) int64 {
+	const hourMs = int64(time.Hour / time.Millisecond)
+	if ms >= 0 {
+		return (ms / hourMs) * hourMs
+	}
+	// Go integer division truncates toward zero; SQLite's historical timestamps
+	// are normally positive, but floor negative values correctly as well.
+	return ((ms - hourMs + 1) / hourMs) * hourMs
+}
+
+// refreshHourlyUsage rebuilds only buckets that can have changed after the
+// suffix replacement. The first bucket is intentionally rounded down because
+// legacy caches can carry a non-hour-aligned watermark.
+func refreshHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string, sinceMs int64) error {
+	bucketMs := hourBucketStartMs(sinceMs)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM hourly_usage WHERE source_id = ? AND bucket_start_ms >= ?`, sourceID, bucketMs); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO hourly_usage(
+			source_id, bucket_start_ms, project_id, project_name, model_id, provider_id, role,
+			sessions, messages, cost, input_tokens, output_tokens, reasoning_tokens,
+			cache_read_tokens, cache_write_tokens
+		)
+		SELECT
+			source_id,
+			(time_created_ms / 3600000) * 3600000 AS bucket_start_ms,
+			COALESCE(project_id, ''),
+			COALESCE(project_name, ''),
+			COALESCE(model_id, ''),
+			COALESCE(provider_id, ''),
+			role,
+			COUNT(DISTINCT session_id),
+			COUNT(*),
+			COALESCE(SUM(cost), 0),
+			COALESCE(SUM(model_input_tokens), 0),
+			COALESCE(SUM(model_output_tokens), 0),
+			COALESCE(SUM(model_reasoning_tokens), 0),
+			COALESCE(SUM(model_cache_read_tokens), 0),
+			COALESCE(SUM(model_cache_write_tokens), 0)
+		FROM message_index
+		WHERE source_id = ? AND time_created_ms >= ?
+		GROUP BY source_id, bucket_start_ms, project_id, project_name, model_id, provider_id, role
+	`, sourceID, bucketMs)
+	if err != nil {
+		return fmt.Errorf("refresh hourly usage: %w", err)
 	}
 	return nil
 }
@@ -1046,6 +1234,146 @@ func rebuildHourlyToolUsage(ctx context.Context, tx *sql.Tx, sourceID string) er
 	`, sourceID)
 	if err != nil {
 		return fmt.Errorf("rebuild hourly tool usage: %w", err)
+	}
+	return nil
+}
+
+func refreshHourlyToolUsage(ctx context.Context, tx *sql.Tx, sourceID string, sinceMs int64) error {
+	bucketMs := hourBucketStartMs(sinceMs)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM hourly_tool_usage WHERE source_id = ? AND bucket_start_ms >= ?`, sourceID, bucketMs); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO hourly_tool_usage(
+			source_id, bucket_start_ms, tool_name, invocations, successes, failures, sessions
+		)
+		SELECT
+			source_id,
+			(time_created_ms / 3600000) * 3600000 AS bucket_start_ms,
+			tool_name,
+			COUNT(*),
+			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END),
+			COUNT(DISTINCT session_id)
+		FROM tool_index
+		WHERE source_id = ? AND time_created_ms >= ?
+		GROUP BY source_id, bucket_start_ms, tool_name
+	`, sourceID, bucketMs)
+	if err != nil {
+		return fmt.Errorf("refresh hourly tool usage: %w", err)
+	}
+	return nil
+}
+
+func rebuildOverviewHourly(ctx context.Context, tx *sql.Tx, sourceID string) error {
+	if err := deleteOverviewHourly(ctx, tx, sourceID, 0, false); err != nil {
+		return err
+	}
+	return insertOverviewHourly(ctx, tx, sourceID, 0, false)
+}
+
+func refreshOverviewHourly(ctx context.Context, tx *sql.Tx, sourceID string, sinceMs int64) error {
+	bucketMs := hourBucketStartMs(sinceMs)
+	if err := deleteOverviewHourly(ctx, tx, sourceID, bucketMs, true); err != nil {
+		return err
+	}
+	return insertOverviewHourly(ctx, tx, sourceID, bucketMs, true)
+}
+
+func deleteOverviewHourly(ctx context.Context, tx *sql.Tx, sourceID string, bucketMs int64, bounded bool) error {
+	where := `source_id = ?`
+	args := []any{sourceID}
+	if bounded {
+		where += ` AND bucket_start_ms >= ?`
+		args = append(args, bucketMs)
+	}
+	for _, table := range []string{"hourly_model_cost", "hourly_model_sessions", "overview_hourly_cost", "overview_hourly_sessions", "overview_hourly"} {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE `+where, args...); err != nil {
+			return fmt.Errorf("clear %s: %w", table, err)
+		}
+	}
+	return nil
+}
+
+func insertOverviewHourly(ctx context.Context, tx *sql.Tx, sourceID string, bucketMs int64, bounded bool) error {
+	where := `source_id = ?`
+	args := []any{sourceID}
+	if bounded {
+		where += ` AND time_created_ms >= ?`
+		args = append(args, bucketMs)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO overview_hourly(
+			source_id, bucket_start_ms, messages, cost, input_tokens, output_tokens,
+			reasoning_tokens, cache_read_tokens, cache_write_tokens
+		)
+		SELECT
+			source_id,
+			(time_created_ms / 3600000) * 3600000,
+			COUNT(*),
+			COALESCE(SUM(cost), 0),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(reasoning_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0),
+			COALESCE(SUM(cache_write_tokens), 0)
+		FROM message_index
+		WHERE `+where+`
+		GROUP BY source_id, (time_created_ms / 3600000) * 3600000
+	`, args...); err != nil {
+		return fmt.Errorf("refresh overview hourly totals: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO overview_hourly_sessions(source_id, bucket_start_ms, session_id)
+		SELECT DISTINCT source_id, (time_created_ms / 3600000) * 3600000, session_id
+		FROM message_index
+		WHERE `+where+`
+	`, args...); err != nil {
+		return fmt.Errorf("refresh overview hourly sessions: %w", err)
+	}
+	costWhere := where + ` AND role = 'assistant'`
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO overview_hourly_cost(source_id, bucket_start_ms, cost_status, messages)
+		SELECT
+			source_id,
+			(time_created_ms / 3600000) * 3600000,
+			COALESCE(cost_status, ''),
+			COUNT(*)
+		FROM message_index
+		WHERE `+costWhere+`
+		GROUP BY source_id, (time_created_ms / 3600000) * 3600000, COALESCE(cost_status, '')
+	`, args...); err != nil {
+		return fmt.Errorf("refresh overview hourly cost status: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO hourly_model_sessions(source_id, bucket_start_ms, model_id, provider_id, session_id)
+		SELECT DISTINCT
+			source_id,
+			(time_created_ms / 3600000) * 3600000,
+			COALESCE(model_id, ''),
+			COALESCE(provider_id, ''),
+			session_id
+		FROM message_index
+		WHERE `+where+` AND role = 'assistant' AND COALESCE(model_id, '') != ''
+	`, args...); err != nil {
+		return fmt.Errorf("refresh hourly model sessions: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO hourly_model_cost(source_id, bucket_start_ms, model_id, provider_id, cost_status, messages)
+		SELECT
+			source_id,
+			(time_created_ms / 3600000) * 3600000,
+			COALESCE(model_id, ''),
+			COALESCE(provider_id, ''),
+			COALESCE(cost_status, ''),
+			COUNT(*)
+		FROM message_index
+		WHERE `+where+` AND role = 'assistant' AND COALESCE(model_id, '') != ''
+		GROUP BY
+			source_id, (time_created_ms / 3600000) * 3600000,
+			COALESCE(model_id, ''), COALESCE(provider_id, ''), COALESCE(cost_status, '')
+	`, args...); err != nil {
+		return fmt.Errorf("refresh hourly model cost status: %w", err)
 	}
 	return nil
 }
@@ -1199,7 +1527,10 @@ func collectConsolidationSource(ctx context.Context, bulk source.ConsolidationSo
 			entry.CostStatus = data.CostStatus
 			entry.CostProvenance = data.CostProvenance
 		}
-		messages = append(messages, messageRow{Entry: entry, ProjectID: session.ProjectID, ProjectName: session.ProjectName})
+		messages = append(messages, messageRow{
+			Entry: entry, ProjectID: session.ProjectID, ProjectName: session.ProjectName,
+			ModelTokens: item.ModelTokens,
+		})
 		for _, tool := range item.Tools {
 			if tool.Name == "" {
 				continue

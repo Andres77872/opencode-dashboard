@@ -99,7 +99,7 @@ func (s *failingTestSource) Daily(context.Context, stats.PeriodQuery, ...stats.G
 	return stats.DailyStats{}, nil
 }
 
-func (s *failingTestSource) DailyDimension(context.Context, string, stats.PeriodQuery) (stats.DailyDimensionStats, error) {
+func (s *failingTestSource) DailyDimension(context.Context, string, stats.PeriodQuery, ...stats.Granularity) (stats.DailyDimensionStats, error) {
 	return stats.DailyDimensionStats{}, nil
 }
 

@@ -83,8 +83,8 @@ func (s *Source) Daily(ctx context.Context, pq stats.PeriodQuery, granularity ..
 	return result, nil
 }
 
-func (s *Source) DailyDimension(ctx context.Context, dimension string, pq stats.PeriodQuery) (stats.DailyDimensionStats, error) {
-	result, err := stats.DailyDimension(ctx, s.store, dimension, pq)
+func (s *Source) DailyDimension(ctx context.Context, dimension string, pq stats.PeriodQuery, granularity ...stats.Granularity) (stats.DailyDimensionStats, error) {
+	result, err := stats.DailyDimension(ctx, s.store, dimension, pq, granularity...)
 	if err != nil {
 		return result, err
 	}

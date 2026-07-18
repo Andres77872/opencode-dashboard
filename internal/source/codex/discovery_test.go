@@ -150,7 +150,7 @@ func (s *codexDiscoveryFakeSource) Overview(context.Context, stats.PeriodQuery) 
 func (s *codexDiscoveryFakeSource) Daily(context.Context, stats.PeriodQuery, ...stats.Granularity) (stats.DailyStats, error) {
 	return stats.DailyStats{SourceID: string(s.info.ID)}, nil
 }
-func (s *codexDiscoveryFakeSource) DailyDimension(context.Context, string, stats.PeriodQuery) (stats.DailyDimensionStats, error) {
+func (s *codexDiscoveryFakeSource) DailyDimension(context.Context, string, stats.PeriodQuery, ...stats.Granularity) (stats.DailyDimensionStats, error) {
 	return stats.DailyDimensionStats{SourceID: string(s.info.ID)}, nil
 }
 func (s *codexDiscoveryFakeSource) Models(context.Context, stats.PeriodQuery) (stats.ModelStats, error) {

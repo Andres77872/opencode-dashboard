@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -24,37 +23,10 @@ func (s *Store) Overview(ctx context.Context, sourceID string, pq stats.PeriodQu
 		return stats.OverviewStats{}, err
 	}
 	startMs, endMs := w.ms()
-
-	var result stats.OverviewStats
-	result.SourceID = sourceID
-	err = s.db.QueryRowContext(ctx, `
-		SELECT
-			COUNT(DISTINCT session_id),
-			COUNT(*),
-			COALESCE(SUM(cost), 0),
-			COALESCE(SUM(input_tokens), 0),
-			COALESCE(SUM(output_tokens), 0),
-			COALESCE(SUM(reasoning_tokens), 0),
-			COALESCE(SUM(cache_read_tokens), 0),
-			COALESCE(SUM(cache_write_tokens), 0),
-			COUNT(DISTINCT DATE(time_created_ms / 1000, 'unixepoch'))
-		FROM message_index
-		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?
-	`, sourceID, startMs, endMs).Scan(
-		&result.Sessions,
-		&result.Messages,
-		&result.Cost,
-		&result.Tokens.Input,
-		&result.Tokens.Output,
-		&result.Tokens.Reasoning,
-		&result.Tokens.Cache.Read,
-		&result.Tokens.Cache.Write,
-		&result.Days,
-	)
+	result, err := s.overviewFromRollups(ctx, sourceID, startMs, endMs)
 	if err != nil {
 		return result, err
 	}
-	result.CostStatus, result.CostProvenance = s.costSummary(ctx, sourceID, startMs, endMs)
 	if result.Days > 0 {
 		result.CostPerDay = result.Cost / float64(result.Days)
 	}
@@ -62,13 +34,7 @@ func (s *Store) Overview(ctx context.Context, sourceID string, pq stats.PeriodQu
 }
 
 func (s *Store) Daily(ctx context.Context, sourceID string, pq stats.PeriodQuery, granularity ...stats.Granularity) (stats.DailyStats, error) {
-	gran := stats.GranularityDay
-	explicit := len(granularity) > 0 && granularity[0] != ""
-	if explicit {
-		gran = granularity[0]
-	} else if pq.Period == "1d" || isHourPeriod(pq.Period) {
-		gran = stats.GranularityHour
-	}
+	gran := stats.ResolveGranularity(pq, granularity...)
 
 	w, err := s.periodWindow(ctx, sourceID, pq)
 	if err != nil {
@@ -191,7 +157,8 @@ func (s *Store) dailyHourly(ctx context.Context, sourceID string, w window) (sta
 	return stats.DailyStats{SourceID: sourceID, Days: days, Granularity: stats.GranularityHour, CostStatus: status, CostProvenance: provenance}, nil
 }
 
-func (s *Store) DailyDimension(ctx context.Context, sourceID, dimension string, pq stats.PeriodQuery) (stats.DailyDimensionStats, error) {
+func (s *Store) DailyDimension(ctx context.Context, sourceID, dimension string, pq stats.PeriodQuery, granularity ...stats.Granularity) (stats.DailyDimensionStats, error) {
+	gran := stats.ResolveGranularity(pq, granularity...)
 	w, err := s.periodWindow(ctx, sourceID, pq)
 	if err != nil {
 		return stats.DailyDimensionStats{}, err
@@ -200,25 +167,25 @@ func (s *Store) DailyDimension(ctx context.Context, sourceID, dimension string, 
 	label := periodLabel(pq)
 	switch dimension {
 	case "model":
-		return s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(model_id, '')", label, startMs, endMs)
+		return s.dailyModelDimensionFromRollups(ctx, sourceID, label, gran, startMs, endMs)
 	case "project":
-		return s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(project_id, '')", label, startMs, endMs)
+		return s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(project_id, '')", label, gran, startMs, endMs)
 	case "processing_mode":
 		if sourceID != "codex" {
 			return stats.DailyDimensionStats{}, fmt.Errorf("invalid dimension %q for source %q: supported only for codex", dimension, sourceID)
 		}
-		return s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(NULLIF(processing_mode, ''), 'unknown')", label, startMs, endMs)
+		return s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(NULLIF(processing_mode, ''), 'unknown')", label, gran, startMs, endMs)
 	case "tool":
-		return s.dailyToolDimension(ctx, sourceID, dimension, label, startMs, endMs)
+		return s.dailyToolDimension(ctx, sourceID, dimension, label, gran, startMs, endMs)
 	default:
 		return stats.DailyDimensionStats{}, fmt.Errorf("invalid dimension %q: supported values are model, tool, project, processing_mode", dimension)
 	}
 }
 
-func (s *Store) dailyMessageDimension(ctx context.Context, sourceID, dimension, expr, period string, startMs, endMs int64) (stats.DailyDimensionStats, error) {
+func (s *Store) dailyMessageDimension(ctx context.Context, sourceID, dimension, expr, period string, gran stats.Granularity, startMs, endMs int64) (stats.DailyDimensionStats, error) {
 	query := fmt.Sprintf(`
 		SELECT
-			DATE(time_created_ms / 1000, 'unixepoch') AS day,
+			%s AS day,
 			%s AS dim,
 			COUNT(DISTINCT session_id),
 			COUNT(*),
@@ -232,7 +199,7 @@ func (s *Store) dailyMessageDimension(ctx context.Context, sourceID, dimension, 
 		WHERE source_id = ? AND role = 'assistant' AND time_created_ms >= ? AND time_created_ms < ? AND %s != ''
 		GROUP BY day, dim
 		ORDER BY day ASC, COUNT(*) DESC
-	`, expr, expr)
+	`, stats.TrendBucketSQL("time_created_ms", gran), expr, expr)
 	rows, err := s.db.QueryContext(ctx, query, sourceID, startMs, endMs)
 	if err != nil {
 		return stats.DailyDimensionStats{}, err
@@ -245,28 +212,28 @@ func (s *Store) dailyMessageDimension(ctx context.Context, sourceID, dimension, 
 	if err := rows.Close(); err != nil {
 		return stats.DailyDimensionStats{}, err
 	}
-	if err := s.attachDimensionCostSummaries(ctx, sourceID, expr, startMs, endMs, days); err != nil {
+	if err := s.attachDimensionCostSummaries(ctx, sourceID, expr, gran, startMs, endMs, days); err != nil {
 		return stats.DailyDimensionStats{}, err
 	}
 	status, provenance := s.costSummary(ctx, sourceID, startMs, endMs)
-	return stats.DailyDimensionStats{SourceID: sourceID, Days: days, Dimension: dimension, Period: period, CostStatus: status, CostProvenance: provenance}, nil
+	return stats.DailyDimensionStats{SourceID: sourceID, Days: days, Dimension: dimension, Period: period, Granularity: gran, CostStatus: status, CostProvenance: provenance}, nil
 }
 
 // attachDimensionCostSummaries restores the cost metadata that SQL's numeric
 // aggregation cannot carry on its own. Keeping this metadata per (day,
 // dimension) is essential for requested processing modes: a zero cost with a
 // missing catalog entry is unknown, not a real $0.00 estimate.
-func (s *Store) attachDimensionCostSummaries(ctx context.Context, sourceID, expr string, startMs, endMs int64, days []stats.DimensionDayStats) error {
+func (s *Store) attachDimensionCostSummaries(ctx context.Context, sourceID, expr string, gran stats.Granularity, startMs, endMs int64, days []stats.DimensionDayStats) error {
 	query := fmt.Sprintf(`
 		SELECT
-			DATE(time_created_ms / 1000, 'unixepoch') AS day,
+			%s AS day,
 			%s AS dim,
 			COALESCE(cost_status, ''),
 			COUNT(*)
 		FROM message_index
 		WHERE source_id = ? AND role = 'assistant' AND time_created_ms >= ? AND time_created_ms < ? AND %s != ''
 		GROUP BY day, dim, COALESCE(cost_status, '')
-	`, expr, expr)
+	`, stats.TrendBucketSQL("time_created_ms", gran), expr, expr)
 	rows, err := s.db.QueryContext(ctx, query, sourceID, startMs, endMs)
 	if err != nil {
 		return err
@@ -300,10 +267,10 @@ func (s *Store) attachDimensionCostSummaries(ctx context.Context, sourceID, expr
 	return nil
 }
 
-func (s *Store) dailyToolDimension(ctx context.Context, sourceID, dimension, period string, startMs, endMs int64) (stats.DailyDimensionStats, error) {
-	rows, err := s.db.QueryContext(ctx, `
+func (s *Store) dailyToolDimension(ctx context.Context, sourceID, dimension, period string, gran stats.Granularity, startMs, endMs int64) (stats.DailyDimensionStats, error) {
+	query := fmt.Sprintf(`
 		SELECT
-			DATE(time_created_ms / 1000, 'unixepoch') AS day,
+			%s AS day,
 			tool_name,
 			COUNT(DISTINCT session_id),
 			COUNT(*),
@@ -313,7 +280,8 @@ func (s *Store) dailyToolDimension(ctx context.Context, sourceID, dimension, per
 		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?
 		GROUP BY day, tool_name
 		ORDER BY day ASC, COUNT(*) DESC
-	`, sourceID, startMs, endMs)
+	`, stats.TrendBucketSQL("time_created_ms", gran))
+	rows, err := s.db.QueryContext(ctx, query, sourceID, startMs, endMs)
 	if err != nil {
 		return stats.DailyDimensionStats{}, err
 	}
@@ -323,7 +291,7 @@ func (s *Store) dailyToolDimension(ctx context.Context, sourceID, dimension, per
 		return stats.DailyDimensionStats{}, err
 	}
 	status, provenance := s.costSummary(ctx, sourceID, startMs, endMs)
-	return stats.DailyDimensionStats{SourceID: sourceID, Days: days, Dimension: dimension, Period: period, CostStatus: status, CostProvenance: provenance}, nil
+	return stats.DailyDimensionStats{SourceID: sourceID, Days: days, Dimension: dimension, Period: period, Granularity: gran, CostStatus: status, CostProvenance: provenance}, nil
 }
 
 func scanDimensionRows(rows *sql.Rows, sourceID string) ([]stats.DimensionDayStats, error) {
@@ -348,55 +316,7 @@ func (s *Store) Models(ctx context.Context, sourceID string, pq stats.PeriodQuer
 		return stats.ModelStats{}, err
 	}
 	startMs, endMs := w.ms()
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			COALESCE(model_id, ''),
-			COALESCE(provider_id, ''),
-			COUNT(DISTINCT session_id),
-			COUNT(*),
-			COALESCE(SUM(cost), 0),
-			COALESCE(SUM(input_tokens), 0),
-			COALESCE(SUM(output_tokens), 0),
-			COALESCE(SUM(reasoning_tokens), 0),
-			COALESCE(SUM(cache_read_tokens), 0),
-			COALESCE(SUM(cache_write_tokens), 0)
-		FROM message_index
-		WHERE source_id = ? AND role = 'assistant' AND COALESCE(model_id, '') != '' AND time_created_ms >= ? AND time_created_ms < ?
-		GROUP BY model_id, provider_id
-	`, sourceID, startMs, endMs)
-	if err != nil {
-		return stats.ModelStats{}, err
-	}
-	defer rows.Close()
-
-	models := make([]stats.ModelEntry, 0)
-	for rows.Next() {
-		var entry stats.ModelEntry
-		entry.SourceID = sourceID
-		var cacheRead, cacheWrite int64
-		if err := rows.Scan(&entry.ModelID, &entry.ProviderID, &entry.Sessions, &entry.Messages, &entry.Cost, &entry.Tokens.Input, &entry.Tokens.Output, &entry.Tokens.Reasoning, &cacheRead, &cacheWrite); err != nil {
-			return stats.ModelStats{}, err
-		}
-		entry.Tokens.Cache.Read = cacheRead
-		entry.Tokens.Cache.Write = cacheWrite
-		entry.CostStatus, entry.CostProvenance = s.costSummaryForModel(ctx, sourceID, entry.ModelID, entry.ProviderID, startMs, endMs)
-		setModelAverages(&entry)
-		models = append(models, entry)
-	}
-	if err := rows.Err(); err != nil {
-		return stats.ModelStats{}, err
-	}
-	sort.Slice(models, func(i, j int) bool {
-		if models[i].Cost != models[j].Cost {
-			return models[i].Cost > models[j].Cost
-		}
-		if models[i].Messages != models[j].Messages {
-			return models[i].Messages > models[j].Messages
-		}
-		return models[i].ModelID < models[j].ModelID
-	})
-	status, provenance := s.costSummary(ctx, sourceID, startMs, endMs)
-	return stats.ModelStats{SourceID: sourceID, Models: models, CostStatus: status, CostProvenance: provenance}, nil
+	return s.modelsFromRollups(ctx, sourceID, startMs, endMs)
 }
 
 func (s *Store) Tools(ctx context.Context, sourceID string, pq stats.PeriodQuery) (stats.ToolStats, error) {
@@ -979,11 +899,6 @@ func parseHourPeriod(period string) (int, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func isHourPeriod(period string) bool {
-	_, ok := parseHourPeriod(period)
-	return ok
 }
 
 func messageOrderBy(sortSpec stats.MessageSort) string {

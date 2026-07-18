@@ -89,9 +89,30 @@ func (h *Handlers) OverviewAll(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w)
 		return
 	}
+	dimension := strings.TrimSpace(r.URL.Query().Get("dimension"))
+	switch dimension {
+	case "", "source", "model":
+	default:
+		BadRequest("invalid overview dimension: supported values are source and model").Write(w)
+		return
+	}
+	if dimension == "model" {
+		result, err := source.AggregateModelUsage(ctx, h.registry, pq, source.ModelUsageOptions{
+			IncludeTrend: r.URL.Query().Get("trend") == "true",
+		})
+		if err != nil {
+			InternalError("failed to compute model usage").Write(w)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
 	opts := source.AggregateOptions{
 		IncludeTrend: r.URL.Query().Get("trend") == "true",
 		TopN:         parseIntQuery(r, "top", 10, maxTopNQuery),
+		// Model totals have their own lazy dimension endpoint. Keeping them out
+		// of the source-grouped cold path avoids a large-database Models scan.
+		SkipModels: true,
 	}
 	result, err := source.AggregateOverview(ctx, h.registry, pq, opts)
 	if err != nil {
@@ -117,9 +138,20 @@ func (h *Handlers) Daily(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check for dimension query param — if present, route to dimension endpoint
+	// Check for dimension query param — if present, route to dimension endpoint.
+	// The granularity param behaves exactly as it does for the plain daily
+	// route: explicit hour/day wins, otherwise the period's auto rule applies.
 	if dim := r.URL.Query().Get("dimension"); dim != "" {
-		result, err := selected.DailyDimension(ctx, dim, pq)
+		var result stats.DailyDimensionStats
+		var err error
+		switch r.URL.Query().Get("granularity") {
+		case "hour":
+			result, err = selected.DailyDimension(ctx, dim, pq, stats.GranularityHour)
+		case "day":
+			result, err = selected.DailyDimension(ctx, dim, pq, stats.GranularityDay)
+		default:
+			result, err = selected.DailyDimension(ctx, dim, pq)
+		}
 		if err != nil {
 			if strings.Contains(err.Error(), "invalid dimension") {
 				BadRequest(err.Error()).Write(w)
@@ -469,8 +501,24 @@ func parsePeriodQuery(r *http.Request) (stats.PeriodQuery, *APIError) {
 	if period == "" {
 		period = "7d"
 	}
+	if !isSupportedPeriodPreset(period) {
+		return stats.PeriodQuery{}, &APIError{
+			Error:   http.StatusText(http.StatusBadRequest),
+			Code:    http.StatusBadRequest,
+			Message: "invalid period: supported presets are 1h, 6h, 12h, 24h, 72h, 1d, 7d, 14d, 30d, 1y, and all",
+		}
+	}
 
 	return stats.PeriodQuery{Period: period}, nil
+}
+
+func isSupportedPeriodPreset(period string) bool {
+	switch period {
+	case "1h", "6h", "12h", "24h", "72h", "1d", "7d", "14d", "30d", "1y", "all":
+		return true
+	default:
+		return false
+	}
 }
 
 func extractSessionID(path string) string {

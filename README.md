@@ -338,7 +338,7 @@ The web command also serves a JSON API under `/api/v1`. Most endpoints accept a 
 |----------|-------------|----------------|
 | `GET /api/v1/sources` | Registered sources, availability, and capabilities | — |
 | `GET /api/v1/overview` | Aggregate metrics for one source | `source`, period |
-| `GET /api/v1/overview/all` | Cross-source merged overview | period, `trend=true`, `top=<n>` |
+| `GET /api/v1/overview/all` | Cross-source merged overview; a lean all-model usage payload when `dimension=model` | period, `trend=true`, `top=<n>`, `dimension=source\|model` |
 | `GET /api/v1/daily` | Time-series breakdown | `granularity=hour\|day`, `dimension=model\|tool\|project\|processing_mode` (last is Codex), period |
 | `GET /api/v1/models` | Model usage statistics | `source`, period |
 | `GET /api/v1/tools` | Tool invocation statistics | `source`, period |
@@ -356,13 +356,21 @@ The web command also serves a JSON API under `/api/v1`. Most endpoints accept a 
 | `GET /api/v1/version` | Build info | — |
 | `GET /health` | Health check | — |
 
+The base `/overview/all?trend=true` response powers the source-grouped Usage
+charts and deliberately leaves `top_models` empty, avoiding a model-ranking
+scan during cold load. `/overview/all?dimension=model&trend=true` is
+intentionally lean and returns only complete, source-tagged `model_usage`
+totals plus `model_trend` rows and per-source errors. The web client requests
+that payload lazily when Model is selected, reuses it for the Top Models card,
+and does not repeat the overview, project, or tool scans.
+
 ## Analytics surfaces
 
 Both web and TUI expose the same seven surfaces:
 
 | Surface | Description |
 |---------|-------------|
-| Overview | Combined totals plus a per-source breakdown (cross-source) |
+| Overview | Combined totals plus cross-source Usage charts switchable between source and model |
 | Daily | Time series, auto hour/day granularity, with per-dimension breakdowns |
 | Models | Usage by model and provider |
 | Tools | Tool invocation counts and patterns |

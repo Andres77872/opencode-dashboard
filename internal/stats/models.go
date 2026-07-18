@@ -8,6 +8,55 @@ import (
 	"opencode-dashboard/internal/store"
 )
 
+const modelsQuery = `
+	WITH filtered_messages AS MATERIALIZED (
+		SELECT
+			id,
+			session_id,
+			json_extract(data, '$.modelID') AS model_id,
+			json_extract(data, '$.providerID') AS provider_id,
+			COALESCE(json_extract(data, '$.cost'), 0) AS cost,
+			COALESCE(json_extract(data, '$.tokens.input'), 0) AS input,
+			COALESCE(json_extract(data, '$.tokens.output'), 0) AS output,
+			COALESCE(json_extract(data, '$.tokens.reasoning'), 0) AS reasoning,
+			COALESCE(json_extract(data, '$.tokens.cache.read'), 0) AS cache_read,
+			COALESCE(json_extract(data, '$.tokens.cache.write'), 0) AS cache_write
+		FROM message
+		WHERE json_extract(data, '$.role') = 'assistant'
+			AND json_extract(data, '$.modelID') IS NOT NULL
+			AND json_extract(data, '$.modelID') != ''
+			AND time_created >= ? AND time_created < ?
+	),
+	step_usage AS MATERIALIZED (
+		SELECT
+			p.message_id,
+			SUM(COALESCE(json_extract(p.data, '$.tokens.input'), 0)) AS input,
+			SUM(COALESCE(json_extract(p.data, '$.tokens.output'), 0)) AS output,
+			SUM(COALESCE(json_extract(p.data, '$.tokens.reasoning'), 0)) AS reasoning,
+			SUM(COALESCE(json_extract(p.data, '$.tokens.cache.read'), 0)) AS cache_read,
+			SUM(COALESCE(json_extract(p.data, '$.tokens.cache.write'), 0)) AS cache_write
+		FROM filtered_messages msg
+		CROSS JOIN part p
+		WHERE p.message_id = msg.id
+			AND json_extract(p.data, '$.type') = 'step-finish'
+		GROUP BY p.message_id
+	)
+	SELECT
+		msg.model_id,
+		msg.provider_id,
+		COUNT(DISTINCT msg.session_id) AS sessions,
+		COUNT(*) AS messages,
+		SUM(msg.cost) AS total_cost,
+		SUM(COALESCE(step.input, msg.input)) AS input_tokens,
+		SUM(COALESCE(step.output, msg.output)) AS output_tokens,
+		SUM(COALESCE(step.reasoning, msg.reasoning)) AS reasoning_tokens,
+		SUM(COALESCE(step.cache_read, msg.cache_read)) AS cache_read,
+		SUM(COALESCE(step.cache_write, msg.cache_write)) AS cache_write
+	FROM filtered_messages msg
+	LEFT JOIN step_usage step ON step.message_id = msg.id
+	GROUP BY msg.model_id, msg.provider_id
+`
+
 // ModelsString is a backward-compatible wrapper that accepts a string period.
 func ModelsString(ctx context.Context, s *store.Store, period string) (ModelStats, error) {
 	return Models(ctx, s, PeriodQuery{Period: period})
@@ -22,41 +71,12 @@ func Models(ctx context.Context, s *store.Store, pq PeriodQuery) (ModelStats, er
 	startMs := pw.StartMs
 	endMs := pw.EndMs
 
-	query := `
-		SELECT
-			json_extract(msg.data, '$.modelID') as model_id,
-			json_extract(msg.data, '$.providerID') as provider_id,
-			COUNT(DISTINCT msg.session_id) as sessions,
-			COUNT(*) as messages,
-			SUM(COALESCE(json_extract(msg.data, '$.cost'), 0)) as total_cost,
-			SUM(COALESCE(step.input, json_extract(msg.data, '$.tokens.input'), 0)) as input_tokens,
-			SUM(COALESCE(step.output, json_extract(msg.data, '$.tokens.output'), 0)) as output_tokens,
-			SUM(COALESCE(step.reasoning, json_extract(msg.data, '$.tokens.reasoning'), 0)) as reasoning_tokens,
-			SUM(COALESCE(step.cache_read, json_extract(msg.data, '$.tokens.cache.read'), 0)) as cache_read,
-			SUM(COALESCE(step.cache_write, json_extract(msg.data, '$.tokens.cache.write'), 0)) as cache_write
-		FROM (
-			SELECT id, session_id, data, time_created
-			FROM message
-			WHERE json_extract(data, '$.role') = 'assistant'
-				AND json_extract(data, '$.modelID') IS NOT NULL
-				AND time_created >= ? AND time_created < ?
-		) msg
-		LEFT JOIN (
-			SELECT
-				p.message_id,
-				SUM(COALESCE(json_extract(p.data, '$.tokens.input'), 0)) as input,
-				SUM(COALESCE(json_extract(p.data, '$.tokens.output'), 0)) as output,
-				SUM(COALESCE(json_extract(p.data, '$.tokens.reasoning'), 0)) as reasoning,
-				SUM(COALESCE(json_extract(p.data, '$.tokens.cache.read'), 0)) as cache_read,
-				SUM(COALESCE(json_extract(p.data, '$.tokens.cache.write'), 0)) as cache_write
-			FROM part p
-			WHERE json_extract(p.data, '$.type') = 'step-finish'
-			GROUP BY p.message_id
-		) step ON step.message_id = msg.id
-		GROUP BY model_id, provider_id
-	`
-
-	rows, err := s.DB().QueryContext(ctx, query, startMs, endMs)
+	// Materialize the small, requested message window first. The previous
+	// shape aggregated every step-finish part in the database before joining
+	// it to this window, so a 30-day model view still parsed years of (often
+	// very large) part JSON. Joining parts through filtered_messages lets
+	// SQLite use its message-id index and extracts each message field once.
+	rows, err := s.DB().QueryContext(ctx, modelsQuery, startMs, endMs)
 	if err != nil {
 		return ModelStats{}, err
 	}

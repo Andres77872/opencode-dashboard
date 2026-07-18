@@ -114,6 +114,7 @@ type DailyDimensionStats struct {
 	Days           []DimensionDayStats `json:"days"`
 	Dimension      string              `json:"dimension"`
 	Period         string              `json:"period"`
+	Granularity    Granularity         `json:"granularity"`
 	CostStatus     CostStatus          `json:"cost_status,omitempty"`
 	CostProvenance *CostProvenance     `json:"cost_provenance,omitempty"`
 }

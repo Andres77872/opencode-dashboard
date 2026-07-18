@@ -20,7 +20,7 @@ type Source interface {
 
 	Overview(context.Context, stats.PeriodQuery) (stats.OverviewStats, error)
 	Daily(context.Context, stats.PeriodQuery, ...stats.Granularity) (stats.DailyStats, error)
-	DailyDimension(context.Context, string, stats.PeriodQuery) (stats.DailyDimensionStats, error)
+	DailyDimension(context.Context, string, stats.PeriodQuery, ...stats.Granularity) (stats.DailyDimensionStats, error)
 	Models(context.Context, stats.PeriodQuery) (stats.ModelStats, error)
 	Tools(context.Context, stats.PeriodQuery) (stats.ToolStats, error)
 	Projects(context.Context, stats.PeriodQuery) (stats.ProjectStats, error)
@@ -53,6 +53,12 @@ type ConsolidationData struct {
 type ConsolidationMessage struct {
 	Entry stats.MessageEntry
 	Tools []ConsolidationTool
+	// ModelTokens optionally carries the source's canonical token accounting
+	// for model analytics when it differs from the message row's display and
+	// overview tokens. OpenCode uses this for messages with step-finish parts:
+	// every step is additive, while message.data.tokens only contains the last
+	// upstream update. Nil means model analytics should use Entry.Tokens.
+	ModelTokens *stats.TokenStats
 }
 
 type ConsolidationTool struct {

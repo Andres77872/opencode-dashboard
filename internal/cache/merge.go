@@ -550,7 +550,7 @@ func earliestDate(byDate map[string]stats.DayStats) time.Time {
 	return min
 }
 
-func (s *CachedSource) mergeModels(ctx context.Context, sp splitWindows, c stats.ModelStats, gap gapData) (stats.ModelStats, error) {
+func (s *CachedSource) mergeModels(ctx context.Context, sp splitWindows, c, live stats.ModelStats, gap gapData) (stats.ModelStats, error) {
 	out := stats.ModelStats{SourceID: s.sourceID()}
 	type modelKey struct{ provider, model string }
 	gapByKey := make(map[modelKey]*bucketAgg)
@@ -572,27 +572,35 @@ func (s *CachedSource) mergeModels(ctx context.Context, sp splitWindows, c stats
 	for _, entry := range c.Models {
 		merged[modelKey{provider: entry.ProviderID, model: entry.ModelID}] = entry
 	}
-	for key, b := range gapByKey {
+	for _, gapEntry := range live.Models {
+		key := modelKey{provider: gapEntry.ProviderID, model: gapEntry.ModelID}
+		b := gapByKey[key]
 		entry, hadCache := merged[key]
 		if !hadCache {
 			entry = stats.ModelEntry{SourceID: s.sourceID(), ModelID: key.model, ProviderID: key.provider}
 		}
-		entry.Messages += b.messages
-		entry.Cost += b.cost
-		addTokens(&entry.Tokens, b.tokens)
-		gapSessions := int64(len(b.sessions))
+		entry.Messages += gapEntry.Messages
+		entry.Cost += gapEntry.Cost
+		addTokens(&entry.Tokens, gapEntry.Tokens)
+		gapSessions := gapEntry.Sessions
 		if hadCache && entry.Sessions > 0 {
-			overlap, err := s.store.distinctSessionOverlap(ctx, s.sourceID(), startMs, endMs, b.sessionIDs(),
-				"AND role = 'assistant' AND COALESCE(model_id, '') = ? AND COALESCE(provider_id, '') = ?", []any{key.model, key.provider})
-			if err != nil {
-				return out, err
+			var overlap int64
+			if b != nil {
+				var err error
+				overlap, err = s.store.distinctSessionOverlap(ctx, s.sourceID(), startMs, endMs, b.sessionIDs(),
+					"AND role = 'assistant' AND COALESCE(model_id, '') = ? AND COALESCE(provider_id, '') = ?", []any{key.model, key.provider})
+				if err != nil {
+					return out, err
+				}
 			}
 			entry.Sessions = entry.Sessions + gapSessions - overlap
 		} else {
 			entry.Sessions += gapSessions
 		}
-		gapStatus, gapProv := b.cost2.result()
-		entry.CostStatus, entry.CostProvenance = mergeCost(entry.CostStatus, entry.CostProvenance, gapStatus, gapProv)
+		entry.CostStatus, entry.CostProvenance = mergeCost(
+			entry.CostStatus, entry.CostProvenance,
+			gapEntry.CostStatus, gapEntry.CostProvenance,
+		)
 		entry.AvgTokensPerMessage, entry.AvgTokensPerSession = nil, nil
 		setModelAverages(&entry)
 		merged[key] = entry
@@ -611,12 +619,7 @@ func (s *CachedSource) mergeModels(ctx context.Context, sp splitWindows, c stats
 		return models[i].ModelID < models[j].ModelID
 	})
 	out.Models = models
-	gapAgg := newBucketAgg()
-	for _, entry := range gap.msgs {
-		gapAgg.cost2.add(entry)
-	}
-	gapStatus, gapProv := gapAgg.cost2.result()
-	out.CostStatus, out.CostProvenance = mergeCost(c.CostStatus, c.CostProvenance, gapStatus, gapProv)
+	out.CostStatus, out.CostProvenance = mergeCost(c.CostStatus, c.CostProvenance, live.CostStatus, live.CostProvenance)
 	return out, nil
 }
 
@@ -725,7 +728,7 @@ func (s *CachedSource) mergeProjects(ctx context.Context, sp splitWindows, c sta
 // mergeDailyDimension merges per (date, dimension) rows. Session counts are
 // summed: only the boundary date can over-count, and per-(day,dimension)
 // dedup is not worth a query per row (documented over-count).
-func mergeDailyDimension(sourceID, dimension, period string, c stats.DailyDimensionStats, gapRows []stats.DimensionDayStats, gapStatus stats.CostStatus, gapProv *stats.CostProvenance) stats.DailyDimensionStats {
+func mergeDailyDimension(sourceID, dimension, period string, gran stats.Granularity, c stats.DailyDimensionStats, gapRows []stats.DimensionDayStats, gapStatus stats.CostStatus, gapProv *stats.CostProvenance) stats.DailyDimensionStats {
 	type rowKey struct{ date, dim string }
 	merged := make(map[rowKey]stats.DimensionDayStats, len(c.Days))
 	for _, row := range c.Days {
@@ -760,13 +763,13 @@ func mergeDailyDimension(sourceID, dimension, period string, c stats.DailyDimens
 		return rows[i].Dimension < rows[j].Dimension
 	})
 	status, prov := mergeCost(c.CostStatus, c.CostProvenance, gapStatus, gapProv)
-	return stats.DailyDimensionStats{SourceID: sourceID, Days: rows, Dimension: dimension, Period: period, CostStatus: status, CostProvenance: prov}
+	return stats.DailyDimensionStats{SourceID: sourceID, Days: rows, Dimension: dimension, Period: period, Granularity: gran, CostStatus: status, CostProvenance: prov}
 }
 
 // gapDimensionRows builds per (date, dimension) rows from gap messages for
 // the model, project, and processing-mode dimensions (tool rows come from the
 // live source).
-func gapDimensionRows(sourceID, dimension string, msgs []stats.MessageEntry, projectOf map[string]stats.SessionEntry) []stats.DimensionDayStats {
+func gapDimensionRows(sourceID, dimension string, gran stats.Granularity, msgs []stats.MessageEntry, projectOf map[string]stats.SessionEntry) []stats.DimensionDayStats {
 	keyOf := func(e stats.MessageEntry) (string, bool) {
 		if e.Role != "assistant" {
 			return "", false
@@ -801,7 +804,7 @@ func gapDimensionRows(sourceID, dimension string, msgs []stats.MessageEntry, pro
 		if !ok {
 			continue
 		}
-		key := rowKey{date: dayKey(entry.TimeCreated), dim: dim}
+		key := rowKey{date: stats.BucketKey(entry.TimeCreated, gran), dim: dim}
 		b := buckets[key]
 		if b == nil {
 			b = newBucketAgg()

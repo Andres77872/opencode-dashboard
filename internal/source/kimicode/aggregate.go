@@ -34,12 +34,7 @@ func (s *snapshot) overview(pq stats.PeriodQuery) (stats.OverviewStats, error) {
 }
 
 func (s *snapshot) daily(pq stats.PeriodQuery, granularity ...stats.Granularity) (stats.DailyStats, error) {
-	gran := stats.GranularityDay
-	if len(granularity) > 0 && granularity[0] != "" {
-		gran = granularity[0]
-	} else if pq.Period == "1d" || isHourPreset(pq.Period) {
-		gran = stats.GranularityHour
-	}
+	gran := stats.ResolveGranularity(pq, granularity...)
 	window, err := s.window(pq)
 	if err != nil {
 		return stats.DailyStats{}, err
@@ -50,10 +45,7 @@ func (s *snapshot) daily(pq stats.PeriodQuery, granularity ...stats.Granularity)
 	}
 	groups := make(map[string][]*messageRecord)
 	for _, msg := range messages {
-		key := msg.Entry.TimeCreated.UTC().Format("2006-01-02")
-		if gran == stats.GranularityHour {
-			key = msg.Entry.TimeCreated.UTC().Truncate(time.Hour).Format("2006-01-02T15:04:05Z")
-		}
+		key := stats.BucketKey(msg.Entry.TimeCreated, gran)
 		groups[key] = append(groups[key], msg)
 	}
 	fillEmptyBuckets(groups, window, gran, messages)
@@ -79,10 +71,11 @@ func (s *snapshot) daily(pq stats.PeriodQuery, granularity ...stats.Granularity)
 	}, nil
 }
 
-func (s *snapshot) dailyDimension(dimension string, pq stats.PeriodQuery) (stats.DailyDimensionStats, error) {
+func (s *snapshot) dailyDimension(dimension string, pq stats.PeriodQuery, granularity ...stats.Granularity) (stats.DailyDimensionStats, error) {
 	if dimension != "model" && dimension != "tool" && dimension != "project" {
 		return stats.DailyDimensionStats{}, fmt.Errorf("invalid dimension %q: supported values are model, tool, project", dimension)
 	}
+	gran := stats.ResolveGranularity(pq, granularity...)
 	messages, err := s.filteredMessages(pq)
 	if err != nil {
 		return stats.DailyDimensionStats{}, err
@@ -93,7 +86,7 @@ func (s *snapshot) dailyDimension(dimension string, pq stats.PeriodQuery) (stats
 		if msg.Entry.Role != "assistant" {
 			continue
 		}
-		day := msg.Entry.TimeCreated.UTC().Format("2006-01-02")
+		day := stats.BucketKey(msg.Entry.TimeCreated, gran)
 		switch dimension {
 		case "model":
 			if msg.Entry.ModelID != "" {
@@ -139,7 +132,7 @@ func (s *snapshot) dailyDimension(dimension string, pq stats.PeriodQuery) (stats
 	_, _, status, provenance := aggregateCostProvenance(messages)
 	return stats.DailyDimensionStats{
 		SourceID: kimiSourceID, Days: days, Dimension: dimension, Period: periodLabel,
-		CostStatus: status, CostProvenance: provenance,
+		Granularity: gran, CostStatus: status, CostProvenance: provenance,
 	}, nil
 }
 
@@ -557,11 +550,6 @@ func parseHourPreset(period string) (int, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func isHourPreset(period string) bool {
-	_, ok := parseHourPreset(period)
-	return ok
 }
 
 func uniqueSessions(messages []*messageRecord) map[string]bool {

@@ -323,3 +323,39 @@ func TestCodexRequestedProcessingModeFlowsThroughAPI(t *testing.T) {
 		}
 	}
 }
+
+// TestDailyDimensionGranularityParam proves the dimension route honors the
+// same granularity query parameter as the plain daily route, end to end
+// through a real source adapter.
+func TestDailyDimensionGranularityParam(t *testing.T) {
+	opencodeSource := newHandlerFakeSource(source.SourceOpenCode, true, 999)
+	claudeSource := newHandlerFakeSource(source.SourceClaudeCode, true, 777)
+	codexSource := codex.New(codex.Options{
+		CodexHome:           filepath.Join("..", "source", "codex", "testdata", "valid_home"),
+		PathSource:          "test fixture",
+		PricingSnapshotPath: filepath.Join("..", "source", "codex", "testdata", "pricing_snapshot.json"),
+	})
+	handler := newSourceTestHandler(t, opencodeSource, claudeSource, codexSource)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/daily?source=codex&period=all&dimension=model&granularity=hour", nil)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("granularity=hour dimension status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body stats.DailyDimensionStats
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode hourly dimension payload: %v", err)
+	}
+	if body.Granularity != stats.GranularityHour {
+		t.Errorf("granularity = %q, want %q", body.Granularity, stats.GranularityHour)
+	}
+	if len(body.Days) == 0 {
+		t.Fatal("hourly model dimension returned no rows, want fixture data")
+	}
+	for _, day := range body.Days {
+		if len(day.Date) != len("2006-01-02T15:04:05Z") {
+			t.Errorf("hourly dimension date = %q, want an hour bucket key", day.Date)
+		}
+	}
+}

@@ -2,12 +2,17 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   buildCombinedDailyTotals,
+  buildModelMetricBreakdown,
   buildSourceMetricShares,
   buildSourceTrendData,
+  dimensionMetricValue,
+  modelMetricValue,
+  modelUsageKey,
   overviewMetricValue,
   trendMetricValue,
+  usageMetricCopy,
 } from './overview-all.ts'
-import type { DayStats, SourceOverview } from '../types/api.ts'
+import type { DayStats, DimensionDayStats, ModelEntry, SourceID, SourceOverview } from '../types/api.ts'
 
 function day(date: string, messages: number, cost: number, sessions = 0): DayStats {
   return {
@@ -49,6 +54,30 @@ function srcWith(id: string, ov: { tokens?: number; cost?: number; messages?: nu
       cost: ov.cost ?? 0,
       tokens: { input: ov.tokens ?? 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
     },
+  }
+}
+
+function model(sourceId: SourceID, modelId: string, value: number, providerId = 'provider'): ModelEntry {
+  return {
+    source_id: sourceId,
+    model_id: modelId,
+    provider_id: providerId,
+    sessions: 1,
+    messages: value,
+    cost: value / 10,
+    tokens: { input: value * 2, output: value, reasoning: 0, cache: { read: 0, write: 0 } },
+  }
+}
+
+function modelDay(sourceId: SourceID, date: string, modelId: string, value: number): DimensionDayStats {
+  return {
+    source_id: sourceId,
+    date,
+    dimension_key: modelId,
+    sessions: 1,
+    messages: value,
+    cost: value / 10,
+    tokens: { input: value * 2, output: value, reasoning: 0, cache: { read: 0, write: 0 } },
   }
 }
 
@@ -132,4 +161,93 @@ test('buildSourceMetricShares reads cost for the cost metric', () => {
   assert.equal(shares[0].value, 3)
   assert.equal(shares[1].value, 1)
   assert.ok(Math.abs(shares[0].share - 0.75) < 1e-9)
+})
+
+test('model and dimension metric selectors preserve tokens, cost, and messages', () => {
+  const total = model('opencode', 'gpt-5', 10)
+  const daily = modelDay('opencode', '2026-01-01', 'gpt-5', 4)
+
+  assert.equal(modelMetricValue(total, 'messages'), 10)
+  assert.equal(modelMetricValue(total, 'cost'), 1)
+  assert.equal(modelMetricValue(total, 'tokens'), 30)
+  assert.equal(dimensionMetricValue(daily, 'messages'), 4)
+  assert.equal(dimensionMetricValue(daily, 'cost'), 0.4)
+  assert.equal(dimensionMetricValue(daily, 'tokens'), 12)
+})
+
+test('model message grouping is labeled as model calls with its distinct denominator explained', () => {
+  assert.deepEqual(usageMetricCopy('messages', 'source'), { label: 'Messages', noun: 'messages' })
+  assert.deepEqual(usageMetricCopy('messages', 'model'), {
+    label: 'Model calls',
+    noun: 'model calls',
+    explanation: 'Model calls count assistant messages attributed to a model. Source Messages counts every recorded message, so the totals are intentionally different.',
+  })
+  assert.match(usageMetricCopy('tokens', 'model').explanation ?? '', /additive per-step usage.*message snapshots/i)
+  assert.match(usageMetricCopy('cost', 'source').explanation ?? '', /reported spend.*estimated API-equivalent/i)
+})
+
+test('model usage identity includes source, provider, and model without delimiter collisions', () => {
+  assert.notEqual(
+    modelUsageKey('opencode', ['openai'], 'gpt-5'),
+    modelUsageKey('codex', ['openai'], 'gpt-5'),
+  )
+  assert.notEqual(
+    modelUsageKey('opencode', ['openai'], 'gpt-5'),
+    modelUsageKey('opencode', ['azure'], 'gpt-5'),
+  )
+})
+
+test('model breakdown keeps the same model source-scoped and merges daily rows by date', () => {
+  const breakdown = buildModelMetricBreakdown(
+    [model('opencode', 'gpt-5', 30), model('codex', 'gpt-5', 10)],
+    [
+      modelDay('opencode', '2026-01-02', 'gpt-5', 20),
+      modelDay('codex', '2026-01-02', 'gpt-5', 5),
+      modelDay('opencode', '2026-01-01', 'gpt-5', 10),
+    ],
+    'messages',
+  )
+
+  assert.equal(breakdown.series.length, 2)
+  const open = breakdown.series.find((series) => series.sourceId === 'opencode')
+  const codex = breakdown.series.find((series) => series.sourceId === 'codex')
+  assert.ok(open)
+  assert.ok(codex)
+  assert.notEqual(open.id, codex.id)
+  assert.equal(open.share, 0.75)
+  assert.equal(codex.share, 0.25)
+  assert.deepEqual(breakdown.trend.map((row) => row.date), ['2026-01-01', '2026-01-02'])
+  assert.equal(breakdown.trend[1][open.id], 20)
+  assert.equal(breakdown.trend[1][codex.id], 5)
+})
+
+test('model breakdown bounds high cardinality with an Other bucket in totals and trend', () => {
+  const models = Array.from({ length: 10 }, (_, index) => model('opencode', `model-${index + 1}`, 10 - index))
+  const trend = models.map((entry) => modelDay('opencode', '2026-01-01', entry.model_id, entry.messages))
+  const breakdown = buildModelMetricBreakdown(models, trend, 'messages', 4)
+
+  assert.equal(breakdown.series.length, 4)
+  assert.deepEqual(breakdown.series.slice(0, 3).map((series) => series.value), [10, 9, 8])
+  const other = breakdown.series[3]
+  assert.equal(other.isOther, true)
+  assert.equal(other.memberCount, 7)
+  assert.equal(other.value, 28)
+  assert.equal(breakdown.total, 55)
+  assert.equal(breakdown.trend[0][other.id], 28)
+  assert.ok(Math.abs(breakdown.series.reduce((sum, series) => sum + series.share, 0) - 1) < 1e-9)
+})
+
+test('model breakdown falls back to daily totals when model totals are unavailable', () => {
+  const breakdown = buildModelMetricBreakdown(
+    [],
+    [
+      modelDay('claude_code', '2026-01-01', 'opus', 3),
+      modelDay('claude_code', '2026-01-02', 'opus', 7),
+    ],
+    'tokens',
+  )
+
+  assert.equal(breakdown.series.length, 1)
+  assert.equal(breakdown.series[0].value, 30)
+  assert.equal(breakdown.series[0].share, 1)
 })

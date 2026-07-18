@@ -187,7 +187,7 @@ func TestCachedSourceConcurrentReadsDuringSync(t *testing.T) {
 	}
 }
 
-func TestOpenMigratesLegacySourceState(t *testing.T) {
+func TestOpenRebuildsLegacySchemaCache(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "legacy.sqlite")
 
@@ -229,24 +229,22 @@ func TestOpenMigratesLegacySourceState(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	status, ok, err := store.SourceStatus(ctx, "legacy")
+	// A legacy cache predates the schema version stamp, so Open removes and
+	// rebuilds it: the row is gone and the source re-consolidates from scratch
+	// on the next sync, which yields the same fresh-collect outcome the old
+	// in-place upgrade produced via a reset consolidation state.
+	_, ok, err := store.SourceStatus(ctx, "legacy")
 	if err != nil {
 		t.Fatalf("SourceStatus() failed: %v", err)
 	}
-	if !ok {
-		t.Fatalf("legacy source_state row missing after migration")
+	if ok {
+		t.Fatalf("legacy source_state row survived, want the database rebuilt from scratch")
 	}
-	// Legacy rows predate data_version, so their consolidation state is reset:
-	// rows collected under old data semantics must be fully re-collected (a
-	// cleared fingerprint triggers the sync, a zero cutoff makes it collect
-	// from the beginning of time).
-	if status.Fingerprint != "" {
-		t.Fatalf("Fingerprint = %q, want cleared for legacy data version", status.Fingerprint)
+	var freshThrough int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('source_state') WHERE name='fresh_through_ms'`).Scan(&freshThrough); err != nil {
+		t.Fatalf("inspect rebuilt source_state: %v", err)
 	}
-	if status.LastSafeCutoff != 0 {
-		t.Fatalf("LastSafeCutoff = %d, want 0 reset for legacy data version", status.LastSafeCutoff)
-	}
-	if status.FreshThrough != 0 {
-		t.Fatalf("FreshThrough = %d, want 0 for legacy rows (forces a heal collect)", status.FreshThrough)
+	if freshThrough != 1 {
+		t.Fatalf("rebuilt source_state lacks fresh_through_ms column")
 	}
 }

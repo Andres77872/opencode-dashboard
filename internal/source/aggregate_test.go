@@ -12,18 +12,20 @@ import (
 
 // aggFake is a configurable Source for exercising AggregateOverview.
 type aggFake struct {
-	info        SourceInfo
-	overview    stats.OverviewStats
-	models      []stats.ModelEntry
-	tools       []stats.ToolEntry
-	projects    []stats.ProjectEntry
-	trend       []stats.DayStats
-	overviewErr error
-	modelsErr   error
-	toolsErr    error
-	projectsErr error
-	trendErr    error
-	block       time.Duration
+	info          SourceInfo
+	overview      stats.OverviewStats
+	models        []stats.ModelEntry
+	tools         []stats.ToolEntry
+	projects      []stats.ProjectEntry
+	trend         []stats.DayStats
+	modelTrend    []stats.DimensionDayStats
+	overviewErr   error
+	modelsErr     error
+	toolsErr      error
+	projectsErr   error
+	trendErr      error
+	modelTrendErr error
+	block         time.Duration
 }
 
 func newAggFake(id SourceID) *aggFake {
@@ -53,8 +55,11 @@ func (s *aggFake) Daily(context.Context, stats.PeriodQuery, ...stats.Granularity
 	return stats.DailyStats{Days: s.trend}, nil
 }
 
-func (s *aggFake) DailyDimension(context.Context, string, stats.PeriodQuery) (stats.DailyDimensionStats, error) {
-	return stats.DailyDimensionStats{}, nil
+func (s *aggFake) DailyDimension(_ context.Context, dimension string, _ stats.PeriodQuery, _ ...stats.Granularity) (stats.DailyDimensionStats, error) {
+	if s.modelTrendErr != nil {
+		return stats.DailyDimensionStats{}, s.modelTrendErr
+	}
+	return stats.DailyDimensionStats{Dimension: dimension, Days: s.modelTrend}, nil
 }
 
 func (s *aggFake) Models(context.Context, stats.PeriodQuery) (stats.ModelStats, error) {
@@ -200,6 +205,96 @@ func TestAggregateOverviewTrendDayCount(t *testing.T) {
 		if len(s.Trend) == 0 {
 			t.Errorf("source %s missing trend", s.SourceID)
 		}
+	}
+}
+
+func TestAggregateModelUsageIsCompleteAndSourceTagged(t *testing.T) {
+	a := newAggFake(SourceOpenCode)
+	a.overview = stats.OverviewStats{Sessions: 1, Messages: 4, Days: 1}
+	a.models = []stats.ModelEntry{
+		{ModelID: "anthropic/claude", ProviderID: "openrouter", Messages: 3, Tokens: stats.TokenStats{Input: 30}},
+		{ModelID: "gpt", ProviderID: "openai", Messages: 1, Tokens: stats.TokenStats{Input: 10}},
+	}
+	a.modelTrend = []stats.DimensionDayStats{
+		{Date: "2026-01-01", Dimension: "anthropic/claude", Messages: 3, Tokens: stats.TokenStats{Input: 30}},
+	}
+	b := newAggFake(SourceCodex)
+	b.overview = stats.OverviewStats{Sessions: 1, Messages: 2, Days: 1}
+	b.models = []stats.ModelEntry{{ModelID: "gpt", ProviderID: "openai", Messages: 2, Tokens: stats.TokenStats{Input: 20}}}
+	b.modelTrend = []stats.DimensionDayStats{
+		{Date: "2026-01-02", Dimension: "gpt", Messages: 2, Tokens: stats.TokenStats{Input: 20}},
+	}
+
+	got, err := AggregateModelUsage(
+		context.Background(),
+		aggTestRegistry(t, a, b),
+		stats.PeriodQuery{Period: "all"},
+		ModelUsageOptions{IncludeTrend: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ModelUsage) != 3 {
+		t.Fatalf("ModelUsage len = %d, want all 3 model/source entries", len(got.ModelUsage))
+	}
+	if len(got.ModelTrend) != 2 {
+		t.Fatalf("ModelTrend len = %d, want 2", len(got.ModelTrend))
+	}
+	if got.ModelTrend[0].SourceID != string(SourceOpenCode) || got.ModelTrend[1].SourceID != string(SourceCodex) {
+		t.Fatalf("ModelTrend source tags = %q, %q", got.ModelTrend[0].SourceID, got.ModelTrend[1].SourceID)
+	}
+	for _, model := range got.ModelUsage {
+		if model.SourceID == "" {
+			t.Fatalf("model usage row was not source tagged: %+v", model)
+		}
+	}
+}
+
+func TestAggregateModelUsageTrendFailureIsPartial(t *testing.T) {
+	src := newAggFake(SourceOpenCode)
+	src.overview = stats.OverviewStats{Sessions: 1, Messages: 1}
+	src.models = []stats.ModelEntry{{ModelID: "m", Messages: 1}}
+	src.modelTrendErr = errors.New("private model trend failure")
+
+	got, err := AggregateModelUsage(
+		context.Background(),
+		aggTestRegistry(t, src),
+		stats.PeriodQuery{Period: "7d"},
+		ModelUsageOptions{IncludeTrend: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ModelUsage) != 1 || len(got.Errors) != 0 {
+		t.Fatalf("model trend failure should not drop model totals: %+v", got)
+	}
+	if len(got.PartialErrors) != 1 || got.PartialErrors[0].Dimension != "model_trend" {
+		t.Fatalf("PartialErrors = %+v, want model_trend", got.PartialErrors)
+	}
+}
+
+func TestAggregateModelUsageKeepsTrendWhenModelTotalsFail(t *testing.T) {
+	src := newAggFake(SourceOpenCode)
+	src.modelsErr = errors.New("private model totals failure")
+	src.modelTrend = []stats.DimensionDayStats{{Date: "2026-01-01", Dimension: "m", Messages: 2}}
+
+	got, err := AggregateModelUsage(
+		context.Background(),
+		aggTestRegistry(t, src),
+		stats.PeriodQuery{Period: "7d"},
+		ModelUsageOptions{IncludeTrend: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Errors) != 0 || len(got.ModelTrend) != 1 {
+		t.Fatalf("daily model fallback was dropped: %+v", got)
+	}
+	if len(got.PartialErrors) != 1 || got.PartialErrors[0].Dimension != "models" {
+		t.Fatalf("PartialErrors = %+v, want models", got.PartialErrors)
+	}
+	if got.ModelTrend[0].SourceID != string(SourceOpenCode) {
+		t.Fatalf("fallback trend source_id = %q", got.ModelTrend[0].SourceID)
 	}
 }
 

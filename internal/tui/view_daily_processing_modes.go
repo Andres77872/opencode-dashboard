@@ -255,7 +255,7 @@ func renderDailyProcessingModes(
 			unknown := values[stats.ProcessingModeUnknown]
 			lines = append(lines, s.TableRow.Render(fmt.Sprintf(
 				"  %-10s %12s %12s %12s %12s",
-				renderDateLabel(date, false),
+				renderDateLabel(date, dimension.Granularity == stats.GranularityHour),
 				renderProcessingModeMetricValue(metric, fast.value, fast.costStatus, fast.costProv),
 				renderProcessingModeMetricValue(metric, standard.value, standard.costStatus, standard.costProv),
 				renderProcessingModeMetricValue(metric, flex.value, flex.costStatus, flex.costProv),

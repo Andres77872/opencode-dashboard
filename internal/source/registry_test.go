@@ -442,7 +442,7 @@ func (s *registryFakeSource) Daily(context.Context, stats.PeriodQuery, ...stats.
 	return stats.DailyStats{}, nil
 }
 
-func (s *registryFakeSource) DailyDimension(context.Context, string, stats.PeriodQuery) (stats.DailyDimensionStats, error) {
+func (s *registryFakeSource) DailyDimension(context.Context, string, stats.PeriodQuery, ...stats.Granularity) (stats.DailyDimensionStats, error) {
 	return stats.DailyDimensionStats{}, nil
 }
 

@@ -109,13 +109,17 @@ export interface SegmentedControlProps<V extends string> {
   value: V
   onChange?: (value: V) => void
   size?: ControlSize
+  /** Accessible name for the exclusive button group. */
+  ariaLabel?: string
 }
 
 /** Inline segmented switch for small exclusive option sets (metric, granularity). @category Controls */
-export function SegmentedControl<V extends string>({ options, value, onChange, size = 'md' }: SegmentedControlProps<V>) {
+export function SegmentedControl<V extends string>({ options, value, onChange, size = 'md', ariaLabel }: SegmentedControlProps<V>) {
   const h = size === 'sm' ? 28 : 32
   return (
     <div
+      role="group"
+      aria-label={ariaLabel}
       style={{
         display: 'inline-flex',
         padding: 3,
@@ -134,6 +138,7 @@ export function SegmentedControl<V extends string>({ options, value, onChange, s
           <button
             key={val}
             type="button"
+            aria-pressed={active}
             onClick={() => onChange && onChange(val)}
             style={{
               display: 'inline-flex',

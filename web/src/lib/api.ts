@@ -1,4 +1,5 @@
 import type {
+  AllSourcesModelUsage,
   AllSourcesOverview,
   ApiErrorResponse,
   CacheStatusResponse,
@@ -170,6 +171,20 @@ export function getOverview(period: string, signal?: AbortSignal, sourceId?: Sou
 export function getOverviewAll(period: string, signal?: AbortSignal) {
   return request<AllSourcesOverview>(
     buildUrl('/api/v1/overview/all', period, { trend: 'true', top: '10' }),
+    { signal },
+  )
+}
+
+/**
+ * Fetch the lean, model-dimension payload used by the Overview usage switch.
+ * This is deliberately separate from getOverviewAll: the base overview renders
+ * immediately and model totals/trends are requested only when the user asks for
+ * them. Consumers must use only model_usage/model_trend and partial errors from
+ * this response; the server may omit the normal overview roll-ups.
+ */
+export function getOverviewAllModels(period: string, signal?: AbortSignal) {
+  return request<AllSourcesModelUsage>(
+    buildUrl('/api/v1/overview/all', period, { trend: 'true', dimension: 'model' }),
     { signal },
   )
 }

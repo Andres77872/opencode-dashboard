@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	busyTimeout = 5000 * time.Millisecond
+	busyTimeout        = 5000 * time.Millisecond
+	maxReadConnections = 4
 )
 
 var requiredTables = []string{
@@ -61,8 +62,11 @@ func Connect(ctx context.Context, dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	// Overview pages request several independent aggregates at once. OpenCode's
+	// database is opened read-only and normally runs in WAL mode, so allowing a
+	// small reader pool avoids serializing every card behind one long scan.
+	db.SetMaxOpenConns(maxReadConnections)
+	db.SetMaxIdleConns(maxReadConnections)
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -170,6 +174,11 @@ func buildDSN(dbPath string) string {
 		"mode=ro",
 		"_journal=WAL",
 		fmt.Sprintf("_busy_timeout=%d", busyTimeout.Milliseconds()),
+		fmt.Sprintf("_pragma=busy_timeout(%d)", busyTimeout.Milliseconds()),
+		"_pragma=query_only(1)",
+		"_pragma=temp_store(MEMORY)",
+		"_pragma=cache_size(-16384)",
+		"_pragma=mmap_size(268435456)",
 		"_txlock=immediate",
 	}
 

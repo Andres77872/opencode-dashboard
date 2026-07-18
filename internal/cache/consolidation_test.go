@@ -147,7 +147,7 @@ func (s *consolidationOnlySource) Daily(context.Context, stats.PeriodQuery, ...s
 	return stats.DailyStats{}, nil
 }
 
-func (s *consolidationOnlySource) DailyDimension(context.Context, string, stats.PeriodQuery) (stats.DailyDimensionStats, error) {
+func (s *consolidationOnlySource) DailyDimension(context.Context, string, stats.PeriodQuery, ...stats.Granularity) (stats.DailyDimensionStats, error) {
 	return stats.DailyDimensionStats{}, nil
 }
 

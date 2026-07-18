@@ -263,10 +263,17 @@ func newSourceTestHandler(t *testing.T, sources ...source.Source) http.Handler {
 }
 
 type handlerFakeSource struct {
-	info             source.SourceInfo
-	sessions         int64
-	overviewCalls    int
-	sessionByIDCalls int
+	info                source.SourceInfo
+	sessions            int64
+	models              []stats.ModelEntry
+	modelTrend          []stats.DimensionDayStats
+	overviewCalls       int
+	dailyCalls          int
+	dailyDimensionCalls int
+	modelsCalls         int
+	toolsCalls          int
+	projectsCalls       int
+	sessionByIDCalls    int
 }
 
 func newHandlerFakeSource(id source.SourceID, available bool, sessions int64) *handlerFakeSource {
@@ -294,22 +301,27 @@ func (s *handlerFakeSource) Overview(context.Context, stats.PeriodQuery) (stats.
 }
 
 func (s *handlerFakeSource) Daily(context.Context, stats.PeriodQuery, ...stats.Granularity) (stats.DailyStats, error) {
+	s.dailyCalls++
 	return stats.DailyStats{}, nil
 }
 
-func (s *handlerFakeSource) DailyDimension(context.Context, string, stats.PeriodQuery) (stats.DailyDimensionStats, error) {
-	return stats.DailyDimensionStats{}, nil
+func (s *handlerFakeSource) DailyDimension(context.Context, string, stats.PeriodQuery, ...stats.Granularity) (stats.DailyDimensionStats, error) {
+	s.dailyDimensionCalls++
+	return stats.DailyDimensionStats{Dimension: "model", Days: s.modelTrend}, nil
 }
 
 func (s *handlerFakeSource) Models(context.Context, stats.PeriodQuery) (stats.ModelStats, error) {
-	return stats.ModelStats{}, nil
+	s.modelsCalls++
+	return stats.ModelStats{Models: s.models}, nil
 }
 
 func (s *handlerFakeSource) Tools(context.Context, stats.PeriodQuery) (stats.ToolStats, error) {
+	s.toolsCalls++
 	return stats.ToolStats{}, nil
 }
 
 func (s *handlerFakeSource) Projects(context.Context, stats.PeriodQuery) (stats.ProjectStats, error) {
+	s.projectsCalls++
 	return stats.ProjectStats{}, nil
 }
 

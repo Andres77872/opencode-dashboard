@@ -145,12 +145,12 @@ func (s *Source) Daily(ctx context.Context, pq stats.PeriodQuery, granularity ..
 	}
 	return snap.daily(pq, granularity...)
 }
-func (s *Source) DailyDimension(ctx context.Context, dimension string, pq stats.PeriodQuery) (stats.DailyDimensionStats, error) {
+func (s *Source) DailyDimension(ctx context.Context, dimension string, pq stats.PeriodQuery, granularity ...stats.Granularity) (stats.DailyDimensionStats, error) {
 	snap, err := s.snapshotFor(ctx, pq)
 	if err != nil {
 		return stats.DailyDimensionStats{}, err
 	}
-	return snap.dailyDimension(dimension, pq)
+	return snap.dailyDimension(dimension, pq, granularity...)
 }
 func (s *Source) Models(ctx context.Context, pq stats.PeriodQuery) (stats.ModelStats, error) {
 	snap, err := s.snapshotFor(ctx, pq)

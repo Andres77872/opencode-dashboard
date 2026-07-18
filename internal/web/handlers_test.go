@@ -422,6 +422,20 @@ func TestParsePeriodQuery_allPresetsPassthrough(t *testing.T) {
 	}
 }
 
+func TestParsePeriodQuery_rejectsUnknownPreset(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?period=bogus", nil)
+	_, apierr := parsePeriodQuery(req)
+	if apierr == nil {
+		t.Fatal("expected API error for unsupported preset")
+	}
+	if apierr.Code != http.StatusBadRequest {
+		t.Fatalf("error code = %d, want %d", apierr.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(apierr.Message, "invalid period") {
+		t.Fatalf("error message = %q, want invalid period", apierr.Message)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // End-to-end: handler routes call parsePeriodQuery and return 400 on bad input
 // ---------------------------------------------------------------------------

@@ -105,7 +105,7 @@ func TestMessageProcessingModeRoundTrip(t *testing.T) {
 	if _, err := store.DailyDimension(ctx, "claude", "processing_mode", pq); err == nil {
 		t.Error("non-Codex DailyDimension(processing_mode) succeeded, want a deterministic source-specific error")
 	}
-	if gap := gapDimensionRows("claude", "processing_mode", []stats.MessageEntry{other}, nil); len(gap) != 0 {
+	if gap := gapDimensionRows("claude", "processing_mode", stats.GranularityDay, []stats.MessageEntry{other}, nil); len(gap) != 0 {
 		t.Errorf("non-Codex gap processing-mode buckets = %#v, want none", gap)
 	}
 }
@@ -128,7 +128,7 @@ func TestProcessingModeDailyDimensionMatchesGapAggregation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DailyDimension(processing_mode): %v", err)
 	}
-	gap := gapDimensionRows("codex", "processing_mode", messages, nil)
+	gap := gapDimensionRows("codex", "processing_mode", stats.GranularityDay, messages, nil)
 	assertModeDimensionTotals(t, cached.Days, map[string]modeDimensionTotals{
 		"fast":     {messages: 2, sessions: 2, cost: 3, input: 30, output: 5},
 		"standard": {messages: 1, sessions: 1, cost: 3, input: 30, output: 4},

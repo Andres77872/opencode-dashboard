@@ -48,7 +48,7 @@ func (s *analyticsTestSource) Overview(context.Context, stats.PeriodQuery) (stat
 func (s *analyticsTestSource) Daily(context.Context, stats.PeriodQuery, ...stats.Granularity) (stats.DailyStats, error) {
 	return s.daily, nil
 }
-func (s *analyticsTestSource) DailyDimension(context.Context, string, stats.PeriodQuery) (stats.DailyDimensionStats, error) {
+func (s *analyticsTestSource) DailyDimension(context.Context, string, stats.PeriodQuery, ...stats.Granularity) (stats.DailyDimensionStats, error) {
 	return s.dimension, nil
 }
 func (s *analyticsTestSource) Models(context.Context, stats.PeriodQuery) (stats.ModelStats, error) {

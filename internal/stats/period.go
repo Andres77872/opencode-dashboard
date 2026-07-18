@@ -144,6 +144,38 @@ func explicitPeriodWindow(from, to time.Time) PeriodWindow {
 	}
 }
 
+// hourBucketLayout is the Date key layout for hourly trend buckets. Daily and
+// DailyDimension both emit it so hour-grained series merge across endpoints.
+const hourBucketLayout = "2006-01-02T15:04:05Z"
+
+// ResolveGranularity returns the effective trend bucket granularity for a
+// period query: an explicit granularity always wins; otherwise "1d" and the
+// hour presets bucket hourly and everything else buckets daily. Every trend
+// producer (Daily, DailyDimension, the cache, and the snapshot sources)
+// resolves through this single rule so grouped views bucket identically.
+func ResolveGranularity(pq PeriodQuery, granularity ...Granularity) Granularity {
+	if len(granularity) > 0 && granularity[0] != "" {
+		return granularity[0]
+	}
+	if pq.Period == "1d" {
+		return GranularityHour
+	}
+	if _, ok := parseHourPreset(pq.Period); ok {
+		return GranularityHour
+	}
+	return GranularityDay
+}
+
+// BucketKey formats t as its trend bucket's Date key: the UTC calendar day
+// (YYYY-MM-DD) for day granularity, the UTC hour's timestamp for hour
+// granularity. Matches the keys Daily emits in both granularities.
+func BucketKey(t time.Time, gran Granularity) string {
+	if gran == GranularityHour {
+		return t.UTC().Truncate(time.Hour).Format(hourBucketLayout)
+	}
+	return t.UTC().Format("2006-01-02")
+}
+
 // hourPresetRegex matches hour-preset strings like "1h", "6h", "72h".
 var hourPresetRegex = regexp.MustCompile(`^(\d+)h$`)
 

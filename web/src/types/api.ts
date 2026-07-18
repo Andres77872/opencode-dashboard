@@ -255,6 +255,8 @@ export interface ProjectStats extends SourceTagged {
 export interface DimensionDayStats extends SourceTagged {
   date: string
   dimension_key: string
+  /** Present when a dimension needs provider-level disambiguation. */
+  provider_id?: string
   sessions: number
   messages: number
   cost: number
@@ -265,6 +267,7 @@ export interface DailyDimensionStats extends SourceTagged {
   days: DimensionDayStats[]
   dimension: string
   period: string
+  granularity: Granularity
 }
 
 export interface ProjectDetail extends SourceTagged {
@@ -451,7 +454,7 @@ export interface SourceLoadError {
 
 export interface SourceDimensionError {
   source_id: SourceID
-  dimension: 'models' | 'tools' | 'projects' | 'trend'
+  dimension: 'models' | 'tools' | 'projects' | 'trend' | 'model_trend'
 }
 
 export interface AllSourcesOverview {
@@ -460,9 +463,18 @@ export interface AllSourcesOverview {
   messages_per_session: number
   tokens_per_message: AvgTokenStats
   token_distribution: TokenStats
+  /** Empty on the web source-grouped cold path; populated by the lazy model payload. */
   top_models: ModelEntry[]
   top_projects: ProjectEntry[]
   top_tools: ToolEntry[]
+  errors?: SourceLoadError[]
+  partial_errors?: SourceDimensionError[]
+}
+
+/** Lean response returned by GET /api/v1/overview/all?dimension=model. */
+export interface AllSourcesModelUsage {
+  model_usage: ModelEntry[]
+  model_trend: DimensionDayStats[]
   errors?: SourceLoadError[]
   partial_errors?: SourceDimensionError[]
 }

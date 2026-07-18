@@ -84,171 +84,44 @@ func TestDailyStatsGranularity(t *testing.T) {
 	}
 }
 
-// TestDailyGranularityLogic tests the granularity auto-hour logic without a database fixture.
-// These are unit-level logic tests for the Daily function's variadic parameter handling.
-func TestDailyGranularityLogic(t *testing.T) {
-	t.Run("no granularity with 1d returns hourly", func(t *testing.T) {
-		// Simulate the function signature behavior: empty variadic = no granularity
-		fn := func(period string, granularity ...Granularity) Granularity {
-			explicit := false
-			if len(granularity) > 0 && granularity[0] != "" {
-				explicit = true
+// TestResolveGranularity exercises the single shared auto-hour rule used by
+// Daily, DailyDimension, the cache, and every snapshot source.
+func TestResolveGranularity(t *testing.T) {
+	tests := []struct {
+		name        string
+		pq          PeriodQuery
+		granularity []Granularity
+		want        Granularity
+	}{
+		{name: "no granularity with 1d returns hourly", pq: PeriodQuery{Period: "1d"}, want: GranularityHour},
+		{name: "granularity=day with 1d returns daily", pq: PeriodQuery{Period: "1d"}, granularity: []Granularity{GranularityDay}, want: GranularityDay},
+		{name: "granularity=hour with 7d returns hourly", pq: PeriodQuery{Period: "7d"}, granularity: []Granularity{GranularityHour}, want: GranularityHour},
+		{name: "empty string granularity treated as no-explicit", pq: PeriodQuery{Period: "1d"}, granularity: []Granularity{Granularity("")}, want: GranularityHour},
+		{name: "no granularity with 7d returns daily", pq: PeriodQuery{Period: "7d"}, want: GranularityDay},
+		{name: "no granularity with 24h returns hourly", pq: PeriodQuery{Period: "24h"}, want: GranularityHour},
+		{name: "no granularity with 72h returns hourly", pq: PeriodQuery{Period: "72h"}, want: GranularityHour},
+		{name: "granularity=day with 24h returns daily (explicit override)", pq: PeriodQuery{Period: "24h"}, granularity: []Granularity{GranularityDay}, want: GranularityDay},
+		{name: "explicit range defaults to daily", pq: PeriodQuery{From: "2026-07-01", To: "2026-07-10"}, want: GranularityDay},
+		{name: "empty query defaults to daily", pq: PeriodQuery{}, want: GranularityDay},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ResolveGranularity(tt.pq, tt.granularity...); got != tt.want {
+				t.Errorf("ResolveGranularity(%+v, %v) = %q, want %q", tt.pq, tt.granularity, got, tt.want)
 			}
-			if period == "1d" && !explicit {
-				return GranularityHour
-			}
-			return GranularityDay
-		}
+		})
+	}
+}
 
-		if g := fn("1d"); g != GranularityHour {
-			t.Errorf("no granularity + 1d: got %q, want %q", g, GranularityHour)
-		}
-	})
-
-	t.Run("granularity=day with 1d returns daily", func(t *testing.T) {
-		fn := func(period string, granularity ...Granularity) Granularity {
-			explicit := false
-			var gran Granularity
-			if len(granularity) > 0 && granularity[0] != "" {
-				gran = granularity[0]
-				explicit = true
-			}
-			if period == "1d" && !explicit {
-				return GranularityHour
-			}
-			if gran == GranularityHour {
-				return GranularityHour
-			}
-			return GranularityDay
-		}
-
-		if g := fn("1d", GranularityDay); g != GranularityDay {
-			t.Errorf("granularity=day + 1d: got %q, want %q", g, GranularityDay)
-		}
-	})
-
-	t.Run("granularity=hour with 7d returns hourly", func(t *testing.T) {
-		fn := func(period string, granularity ...Granularity) Granularity {
-			explicit := false
-			var gran Granularity
-			if len(granularity) > 0 && granularity[0] != "" {
-				gran = granularity[0]
-				explicit = true
-			}
-			if period == "1d" && !explicit {
-				return GranularityHour
-			}
-			if gran == GranularityHour {
-				return GranularityHour
-			}
-			return GranularityDay
-		}
-
-		if g := fn("7d", GranularityHour); g != GranularityHour {
-			t.Errorf("granularity=hour + 7d: got %q, want %q", g, GranularityHour)
-		}
-	})
-
-	t.Run("empty string granularity treated as no-explicit", func(t *testing.T) {
-		// This simulates what the handler used to do (passing "")
-		fn := func(period string, granularity ...Granularity) Granularity {
-			explicit := false
-			if len(granularity) > 0 && granularity[0] != "" {
-				explicit = true
-			}
-			if period == "1d" && !explicit {
-				return GranularityHour
-			}
-			return GranularityDay
-		}
-
-		// Empty string passed as variadic should be treated as NOT explicit
-		if g := fn("1d", Granularity("")); g != GranularityHour {
-			t.Errorf("empty granularity + 1d: got %q, want %q (auto-hour)", g, GranularityHour)
-		}
-	})
-
-	t.Run("no granularity with 7d returns daily", func(t *testing.T) {
-		fn := func(period string, granularity ...Granularity) Granularity {
-			explicit := false
-			if len(granularity) > 0 && granularity[0] != "" {
-				explicit = true
-			}
-			if period == "1d" && !explicit {
-				return GranularityHour
-			}
-			return GranularityDay
-		}
-
-		if g := fn("7d"); g != GranularityDay {
-			t.Errorf("no granularity + 7d: got %q, want %q", g, GranularityDay)
-		}
-	})
-
-	t.Run("no granularity with 24h returns hourly", func(t *testing.T) {
-		fn := func(period string, granularity ...Granularity) Granularity {
-			explicit := false
-			if len(granularity) > 0 && granularity[0] != "" {
-				explicit = true
-			}
-			if period == "1d" && !explicit {
-				return GranularityHour
-			}
-			if _, ok := parseHourPreset(period); ok && !explicit {
-				return GranularityHour
-			}
-			return GranularityDay
-		}
-
-		if g := fn("24h"); g != GranularityHour {
-			t.Errorf("no granularity + 24h: got %q, want %q", g, GranularityHour)
-		}
-	})
-
-	t.Run("no granularity with 72h returns hourly", func(t *testing.T) {
-		fn := func(period string, granularity ...Granularity) Granularity {
-			explicit := false
-			if len(granularity) > 0 && granularity[0] != "" {
-				explicit = true
-			}
-			if period == "1d" && !explicit {
-				return GranularityHour
-			}
-			if _, ok := parseHourPreset(period); ok && !explicit {
-				return GranularityHour
-			}
-			return GranularityDay
-		}
-
-		if g := fn("72h"); g != GranularityHour {
-			t.Errorf("no granularity + 72h: got %q, want %q", g, GranularityHour)
-		}
-	})
-
-	t.Run("granularity=day with 24h returns daily (explicit override)", func(t *testing.T) {
-		fn := func(period string, granularity ...Granularity) Granularity {
-			explicit := false
-			var gran Granularity
-			if len(granularity) > 0 && granularity[0] != "" {
-				gran = granularity[0]
-				explicit = true
-			}
-			if period == "1d" && !explicit {
-				return GranularityHour
-			}
-			if _, ok := parseHourPreset(period); ok && !explicit {
-				return GranularityHour
-			}
-			if gran == GranularityHour {
-				return GranularityHour
-			}
-			return GranularityDay
-		}
-
-		if g := fn("24h", GranularityDay); g != GranularityDay {
-			t.Errorf("granularity=day + 24h: got %q, want %q", g, GranularityDay)
-		}
-	})
+// TestBucketKey proves day and hour keys share the exact formats Daily emits.
+func TestBucketKey(t *testing.T) {
+	at := time.Date(2026, 7, 18, 5, 42, 13, 0, time.UTC)
+	if got := BucketKey(at, GranularityDay); got != "2026-07-18" {
+		t.Errorf("BucketKey(day) = %q, want %q", got, "2026-07-18")
+	}
+	if got := BucketKey(at, GranularityHour); got != "2026-07-18T05:00:00Z" {
+		t.Errorf("BucketKey(hour) = %q, want %q", got, "2026-07-18T05:00:00Z")
+	}
 }
 
 // TestDailyDimensionValidDimensions validates dimension constant values.

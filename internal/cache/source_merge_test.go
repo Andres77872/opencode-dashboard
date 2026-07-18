@@ -402,7 +402,10 @@ func TestMergeModelsDedupesSpanningSession(t *testing.T) {
 	gap := gapData{msgs: []stats.MessageEntry{
 		msgIn("b", "s1", base.Add(-2*time.Hour), 0.02),
 	}}
-	merged, err := cached.mergeModels(ctx, sp, c, gap)
+	merged, err := cached.mergeModels(ctx, sp, c, stats.ModelStats{Models: []stats.ModelEntry{{
+		ModelID: "gpt-test", ProviderID: "openai", Sessions: 1, Messages: 1,
+		Cost: 0.02, Tokens: stats.TokenStats{Input: 10, Output: 5},
+	}}}, gap)
 	if err != nil {
 		t.Fatal(err)
 	}

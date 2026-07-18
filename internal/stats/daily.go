@@ -23,32 +23,7 @@ func DailyString(ctx context.Context, db *store.Store, period string, granularit
 }
 
 func Daily(ctx context.Context, db *store.Store, pq PeriodQuery, granularity ...Granularity) (DailyStats, error) {
-	// Determine if granularity was explicitly provided (vs. handler passing empty or not at all)
-	var gran Granularity
-	explicit := false
-	if len(granularity) > 0 && granularity[0] != "" {
-		gran = granularity[0]
-		explicit = true
-	}
-
-	// Get the period string for the auto-hour heuristic. Only applies for preset mode.
-	period := pq.Period
-	if period == "" && pq.From != "" {
-		period = "custom"
-	}
-
-	// Auto-hour for 1d by default (no explicit granularity override)
-	if period == "1d" && !explicit {
-		return dailyHourly(ctx, db, pq)
-	}
-
-	// Explicit hour override (for any period including 1d — multi-day hourly supported)
-	if gran == GranularityHour {
-		return dailyHourly(ctx, db, pq)
-	}
-
-	// Auto-hour for hour presets (1h, 6h, 12h, 24h, 72h) when no explicit granularity
-	if _, ok := parseHourPreset(period); ok && !explicit {
+	if ResolveGranularity(pq, granularity...) == GranularityHour {
 		return dailyHourly(ctx, db, pq)
 	}
 
@@ -509,9 +484,21 @@ var validDimensions = map[string]string{
 	"project": "$.projectID",
 }
 
-// DailyDimension returns per-day, per-dimension stats grouped by the given dimension field.
-// Supported dimensions: "model" (JSON_EXTRACT $.modelID), "tool" ($.tool), "project" ($.projectID).
-func DailyDimension(ctx context.Context, db *store.Store, dimension string, pq PeriodQuery) (DailyDimensionStats, error) {
+// TrendBucketSQL renders the SQL expression that formats a millisecond epoch
+// column into its trend bucket key, matching BucketKey's output for the given
+// granularity.
+func TrendBucketSQL(column string, gran Granularity) string {
+	if gran == GranularityHour {
+		return "STRFTIME('%Y-%m-%dT%H:00:00Z', " + column + " / 1000, 'unixepoch')"
+	}
+	return "DATE(" + column + " / 1000, 'unixepoch')"
+}
+
+// DailyDimension returns per-bucket, per-dimension stats grouped by the given
+// dimension field. Supported dimensions: "model" (JSON_EXTRACT $.modelID),
+// "tool" ($.tool), "project" ($.projectID). Buckets follow the same
+// ResolveGranularity rule as Daily, so both trends always share one time axis.
+func DailyDimension(ctx context.Context, db *store.Store, dimension string, pq PeriodQuery, granularity ...Granularity) (DailyDimensionStats, error) {
 	path, ok := validDimensions[dimension]
 	if !ok {
 		return DailyDimensionStats{}, fmt.Errorf("invalid dimension %q: supported values are model, tool, project", dimension)
@@ -522,10 +509,12 @@ func DailyDimension(ctx context.Context, db *store.Store, dimension string, pq P
 		return DailyDimensionStats{}, err
 	}
 
+	gran := ResolveGranularity(pq, granularity...)
+	bucket := TrendBucketSQL("m.time_created", gran)
 	query := fmt.Sprintf(`
 		SELECT
-			DATE(m.time_created / 1000, 'unixepoch') AS day,
-			JSON_EXTRACT(m.data, '%s') AS dim,
+			%[2]s AS day,
+			JSON_EXTRACT(m.data, '%[1]s') AS dim,
 			COUNT(DISTINCT m.session_id) AS sessions,
 			COUNT(*) AS messages,
 			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.cost') AS REAL)), 0) AS total_cost,
@@ -541,7 +530,62 @@ func DailyDimension(ctx context.Context, db *store.Store, dimension string, pq P
 			AND m.time_created >= ? AND m.time_created < ?
 		GROUP BY day, dim
 		ORDER BY day ASC, total_cost DESC
-	`, path)
+	`, path, bucket)
+	if dimension == "model" {
+		// OpenCode may overwrite message.data.tokens after every agent step.
+		// Models treats step-finish parts as the canonical additive usage for a
+		// message and falls back to message.data.tokens only when no such part
+		// exists. Keep the daily model trend on that exact same basis.
+		query = fmt.Sprintf(`
+			WITH filtered_messages AS MATERIALIZED (
+				SELECT
+					id,
+					session_id,
+					time_created,
+					JSON_EXTRACT(data, '$.modelID') AS model_id,
+					COALESCE(CAST(JSON_EXTRACT(data, '$.cost') AS REAL), 0) AS cost,
+					COALESCE(CAST(JSON_EXTRACT(data, '$.tokens.input') AS INTEGER), 0) AS input,
+					COALESCE(CAST(JSON_EXTRACT(data, '$.tokens.output') AS INTEGER), 0) AS output,
+					COALESCE(CAST(JSON_EXTRACT(data, '$.tokens.reasoning') AS INTEGER), 0) AS reasoning,
+					COALESCE(CAST(JSON_EXTRACT(data, '$.tokens.cache.read') AS INTEGER), 0) AS cache_read,
+					COALESCE(CAST(JSON_EXTRACT(data, '$.tokens.cache.write') AS INTEGER), 0) AS cache_write
+				FROM message
+				WHERE JSON_EXTRACT(data, '$.role') = 'assistant'
+					AND JSON_EXTRACT(data, '$.modelID') IS NOT NULL
+					AND JSON_EXTRACT(data, '$.modelID') != ''
+					AND time_created >= ? AND time_created < ?
+			),
+			step_usage AS MATERIALIZED (
+				SELECT
+					p.message_id,
+					SUM(COALESCE(JSON_EXTRACT(p.data, '$.tokens.input'), 0)) AS input,
+					SUM(COALESCE(JSON_EXTRACT(p.data, '$.tokens.output'), 0)) AS output,
+					SUM(COALESCE(JSON_EXTRACT(p.data, '$.tokens.reasoning'), 0)) AS reasoning,
+					SUM(COALESCE(JSON_EXTRACT(p.data, '$.tokens.cache.read'), 0)) AS cache_read,
+					SUM(COALESCE(JSON_EXTRACT(p.data, '$.tokens.cache.write'), 0)) AS cache_write
+				FROM filtered_messages m
+				CROSS JOIN part p
+				WHERE p.message_id = m.id
+					AND JSON_EXTRACT(p.data, '$.type') = 'step-finish'
+				GROUP BY p.message_id
+			)
+			SELECT
+				%s AS day,
+				m.model_id AS dim,
+				COUNT(DISTINCT m.session_id) AS sessions,
+				COUNT(*) AS messages,
+				COALESCE(SUM(m.cost), 0) AS total_cost,
+				COALESCE(SUM(COALESCE(step.input, m.input)), 0) AS input_tokens,
+				COALESCE(SUM(COALESCE(step.output, m.output)), 0) AS output_tokens,
+				COALESCE(SUM(COALESCE(step.reasoning, m.reasoning)), 0) AS reasoning_tokens,
+				COALESCE(SUM(COALESCE(step.cache_read, m.cache_read)), 0) AS cache_read_tokens,
+				COALESCE(SUM(COALESCE(step.cache_write, m.cache_write)), 0) AS cache_write_tokens
+			FROM filtered_messages m
+			LEFT JOIN step_usage step ON step.message_id = m.id
+			GROUP BY day, dim
+			ORDER BY day ASC, total_cost DESC
+		`, bucket)
+	}
 
 	rows, err := db.DB().QueryContext(ctx, query, pw.StartMs, pw.EndMs)
 	if err != nil {
@@ -606,8 +650,9 @@ func DailyDimension(ctx context.Context, db *store.Store, dimension string, pq P
 		periodLabel = "from_" + pq.From
 	}
 	return DailyDimensionStats{
-		Days:      days,
-		Dimension: dimension,
-		Period:    periodLabel,
+		Days:        days,
+		Dimension:   dimension,
+		Period:      periodLabel,
+		Granularity: gran,
 	}, nil
 }

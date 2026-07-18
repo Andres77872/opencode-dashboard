@@ -83,7 +83,7 @@ function getDailyModels(period: string, signal?: AbortSignal, sourceId?: SourceI
 // locally requested processing tier and must not receive an unsupported query.
 function getDailyProcessingModes(period: string, signal?: AbortSignal, sourceId?: SourceID): Promise<DailyDimensionStats> {
   if (sourceId !== 'codex') {
-    return Promise.resolve({ source_id: sourceId, days: [], dimension: 'processing_mode', period })
+    return Promise.resolve({ source_id: sourceId, days: [], dimension: 'processing_mode', period, granularity: 'day' as const })
   }
   return getDailyDimension('processing_mode', period, signal, sourceId)
 }
@@ -421,35 +421,31 @@ export function DailyView() {
     },
     { key: 'sessions', header: 'Sessions', numeric: true, render: (d) => formatInteger(d.sessions) },
     { key: 'messages', header: 'Messages', numeric: true, render: (d) => formatInteger(d.messages) },
-    // Per-model message history — only at day granularity since the
-    // dimension endpoint buckets by day, not hour.
-    ...(data.granularity !== 'hour'
-      ? [
-          {
-            key: 'models',
-            header: 'Models · messages',
-            wrap: true,
-            render: (d: DayStats) => {
-              const rows = modelsByDate.get(d.date) ?? []
-              if (rows.length === 0) return <span style={{ color: 'var(--fg-faint)' }}>—</span>
-              const shown = rows.slice(0, DAILY_MODELS_SHOWN)
-              const hidden = rows.length - shown.length
-              const fullBreakdown = rows.map((r) => `${r.dimension_key}: ${formatInteger(r.messages)} messages`).join('\n')
-              return (
-                <span title={fullBreakdown} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-                  {shown.map((r) => (
-                    <span key={r.dimension_key} style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
-                      <span style={{ font: '400 11px/1.3 var(--font-mono)', color: 'var(--fg-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.dimension_key}</span>
-                      <span style={{ font: '600 11px/1.3 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{formatInteger(r.messages)}</span>
-                    </span>
-                  ))}
-                  {hidden > 0 && <span style={{ font: '400 11px/1.3 var(--font-ui)', color: 'var(--fg-faint)' }}>+{hidden} more</span>}
-                </span>
-              )
-            },
-          } satisfies Column<DayStats>,
-        ]
-      : []),
+    // Per-model message history — the dimension endpoint buckets with the
+    // same granularity as the daily series, so keys match in hourly mode too.
+    {
+      key: 'models',
+      header: 'Models · messages',
+      wrap: true,
+      render: (d: DayStats) => {
+        const rows = modelsByDate.get(d.date) ?? []
+        if (rows.length === 0) return <span style={{ color: 'var(--fg-faint)' }}>—</span>
+        const shown = rows.slice(0, DAILY_MODELS_SHOWN)
+        const hidden = rows.length - shown.length
+        const fullBreakdown = rows.map((r) => `${r.dimension_key}: ${formatInteger(r.messages)} messages`).join('\n')
+        return (
+          <span title={fullBreakdown} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+            {shown.map((r) => (
+              <span key={r.dimension_key} style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
+                <span style={{ font: '400 11px/1.3 var(--font-mono)', color: 'var(--fg-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.dimension_key}</span>
+                <span style={{ font: '600 11px/1.3 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{formatInteger(r.messages)}</span>
+              </span>
+            ))}
+            {hidden > 0 && <span style={{ font: '400 11px/1.3 var(--font-ui)', color: 'var(--fg-faint)' }}>+{hidden} more</span>}
+          </span>
+        )
+      },
+    },
     {
       key: 'tokens',
       header: 'Tokens',

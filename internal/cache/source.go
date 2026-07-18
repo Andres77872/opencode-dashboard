@@ -184,14 +184,8 @@ func (s *CachedSource) Overview(ctx context.Context, pq stats.PeriodQuery) (stat
 
 func (s *CachedSource) Daily(ctx context.Context, pq stats.PeriodQuery, granularity ...stats.Granularity) (stats.DailyStats, error) {
 	s.ensureFresh(ctx)
-	// Resolve granularity once so the cache and live halves agree (mirrors
-	// Store.Daily's auto-hour rule).
-	gran := stats.GranularityDay
-	if len(granularity) > 0 && granularity[0] != "" {
-		gran = granularity[0]
-	} else if pq.Period == "1d" || isHourPeriod(pq.Period) {
-		gran = stats.GranularityHour
-	}
+	// Resolve granularity once so the cache and live halves agree.
+	gran := stats.ResolveGranularity(pq, granularity...)
 	sp, err := s.split(ctx, pq)
 	if err != nil {
 		return stats.DailyStats{}, err
@@ -210,27 +204,30 @@ func (s *CachedSource) Daily(ctx context.Context, pq stats.PeriodQuery, granular
 	return s.mergeDaily(ctx, sp, gran, c, gap)
 }
 
-func (s *CachedSource) DailyDimension(ctx context.Context, dimension string, pq stats.PeriodQuery) (stats.DailyDimensionStats, error) {
+func (s *CachedSource) DailyDimension(ctx context.Context, dimension string, pq stats.PeriodQuery, granularity ...stats.Granularity) (stats.DailyDimensionStats, error) {
 	s.ensureFresh(ctx)
+	// Resolve granularity once so the cache and live halves bucket identically
+	// (the live gap query only carries time bounds, not the period preset).
+	gran := stats.ResolveGranularity(pq, granularity...)
 	sp, err := s.split(ctx, pq)
 	if err != nil {
 		return stats.DailyDimensionStats{}, err
 	}
 	if !sp.hasCache {
-		return s.live.DailyDimension(ctx, dimension, sp.livePQ)
+		return s.live.DailyDimension(ctx, dimension, sp.livePQ, gran)
 	}
-	c, err := s.store.DailyDimension(ctx, s.sourceID(), dimension, sp.cachePQ)
+	c, err := s.store.DailyDimension(ctx, s.sourceID(), dimension, sp.cachePQ, gran)
 	if err != nil || !sp.hasLive {
 		return c, err
 	}
 	label := periodLabel(pq)
-	if dimension == "tool" {
-		gapDim, err := s.live.DailyDimension(ctx, dimension, sp.livePQ)
+	if dimension == "tool" || dimension == "model" {
+		gapDim, err := s.live.DailyDimension(ctx, dimension, sp.livePQ, gran)
 		if err != nil {
 			s.degradeGap(err)
 			gapDim = stats.DailyDimensionStats{}
 		}
-		return mergeDailyDimension(s.sourceID(), dimension, label, c, gapDim.Days, gapDim.CostStatus, gapDim.CostProvenance), nil
+		return mergeDailyDimension(s.sourceID(), dimension, label, gran, c, gapDim.Days, gapDim.CostStatus, gapDim.CostProvenance), nil
 	}
 	gap, err := fetchGapMessages(ctx, s.live, sp.livePQ)
 	if err != nil {
@@ -248,13 +245,13 @@ func (s *CachedSource) DailyDimension(ctx context.Context, dimension string, pq 
 			}
 		}
 	}
-	rows := gapDimensionRows(s.sourceID(), dimension, gap.msgs, projectOf)
+	rows := gapDimensionRows(s.sourceID(), dimension, gran, gap.msgs, projectOf)
 	gapAgg := newBucketAgg()
 	for _, entry := range gap.msgs {
 		gapAgg.cost2.add(entry)
 	}
 	gapStatus, gapProv := gapAgg.cost2.result()
-	return mergeDailyDimension(s.sourceID(), dimension, label, c, rows, gapStatus, gapProv), nil
+	return mergeDailyDimension(s.sourceID(), dimension, label, gran, c, rows, gapStatus, gapProv), nil
 }
 
 func (s *CachedSource) Models(ctx context.Context, pq stats.PeriodQuery) (stats.ModelStats, error) {
@@ -270,11 +267,20 @@ func (s *CachedSource) Models(ctx context.Context, pq stats.PeriodQuery) (stats.
 	if err != nil || !sp.hasLive {
 		return c, err
 	}
+	gapModels, err := s.live.Models(ctx, sp.livePQ)
+	if err != nil {
+		s.degradeGap(err)
+		return c, nil
+	}
+	// ModelStats does not expose the contributing session ids. Fetch the small
+	// recent message window as well so sessions spanning the cache cutoff can
+	// still be de-duplicated without using message-level tokens for usage.
 	gap, err := fetchGapMessages(ctx, s.live, sp.livePQ)
 	if err != nil {
-		gap = s.degradeGap(err)
+		s.degradeGap(err)
+		return c, nil
 	}
-	return s.mergeModels(ctx, sp, c, gap)
+	return s.mergeModels(ctx, sp, c, gapModels, gap)
 }
 
 func (s *CachedSource) Tools(ctx context.Context, pq stats.PeriodQuery) (stats.ToolStats, error) {

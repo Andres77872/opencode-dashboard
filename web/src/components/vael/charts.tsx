@@ -1,7 +1,7 @@
 /* Vael charts — pure SVG, calm + exact. AreaChart, StackedBars, Donut,
    BudgetRing, Heatmap. Ported from the Vael ui_kit (replaces Recharts). */
-import { useLayoutEffect, useRef, useState } from 'react'
-import type { CSSProperties, MouseEvent, RefObject } from 'react'
+import { useCallback, useRef, useState } from 'react'
+import type { CSSProperties, MouseEvent } from 'react'
 
 export function niceMax(v: number): number {
   if (v <= 0) return 1
@@ -11,18 +11,23 @@ export function niceMax(v: number): number {
   return step * mag
 }
 
-/** Observe an element's width; returns [ref, width]. Attach ref to a block element. */
-export function useWidth(initial = 600): [RefObject<HTMLDivElement | null>, number] {
-  const ref = useRef<HTMLDivElement>(null)
+/** Observe an element's width; returns [ref, width]. Attach ref to a block element.
+    The ref is a callback ref so the observer follows the element across
+    conditional renders — views mount a loading skeleton first, and an effect
+    that only checked ref.current once would never see the real chart node. */
+export function useWidth(initial = 600): [(node: HTMLDivElement | null) => void, number] {
   const [w, setW] = useState(initial)
-  useLayoutEffect(() => {
-    if (!ref.current || typeof ResizeObserver === 'undefined') return
+  const roRef = useRef<ResizeObserver | null>(null)
+  const ref = useCallback((node: HTMLDivElement | null) => {
+    roRef.current?.disconnect()
+    roRef.current = null
+    if (!node || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver((entries) => {
       const cw = entries[0].contentRect.width
       if (cw) setW(Math.round(cw))
     })
-    ro.observe(ref.current)
-    return () => ro.disconnect()
+    ro.observe(node)
+    roRef.current = ro
   }, [])
   return [ref, w]
 }
@@ -159,16 +164,21 @@ export interface StackedBarsProps {
   width?: number
   height?: number
   valueFmt?: (v: number) => string
+  /** Optional formatter for the combined Total tooltip row. This lets callers
+      qualify a heterogeneous aggregate without changing individual segments. */
+  totalValueFmt?: (v: number) => string
   /** Metric name shown as an uppercase eyebrow in the hover tooltip (e.g. "Tokens"),
       so it's always clear which metric the bars represent. */
   label?: string
   /** Overlay a combined-total trend line and a Total tooltip row. The Total is the
       per-day sum of the stacked segments on screen; shown for every metric. */
   showTotal?: boolean
+  /** Concise screen-reader description of the plotted dimensions and metric. */
+  ariaLabel?: string
 }
 
 /** Per-day stacked bars (one segment per source) with total trend line and hover breakdown tooltip. @category Charts */
-export function StackedBars({ days = [], keys = [], width = 600, height = 220, valueFmt = (v) => String(v), label, showTotal = true }: StackedBarsProps) {
+export function StackedBars({ days = [], keys = [], width = 600, height = 220, valueFmt = (v) => String(v), totalValueFmt = valueFmt, label, showTotal = true, ariaLabel }: StackedBarsProps) {
   const [hi, setHi] = useState(-1)
   const padL = 48
   const padR = 14
@@ -193,7 +203,15 @@ export function StackedBars({ days = [], keys = [], width = 600, height = 220, v
 
   return (
     <div style={{ position: 'relative', width }}>
-      <svg width={width} height={height} onMouseMove={onMove} onMouseLeave={() => setHi(-1)} style={{ display: 'block' }}>
+      <svg
+        width={width}
+        height={height}
+        role={ariaLabel ? 'img' : undefined}
+        aria-label={ariaLabel}
+        onMouseMove={onMove}
+        onMouseLeave={() => setHi(-1)}
+        style={{ display: 'block' }}
+      >
         {Array.from({ length: ticks + 1 }).map((_, i) => {
           const v = (max / ticks) * i
           return (
@@ -288,7 +306,7 @@ export function StackedBars({ days = [], keys = [], width = 600, height = 220, v
             <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--border-subtle)' }}>
               <span style={{ width: 8 }} />
               <span style={{ font: '600 12px/1 var(--font-ui)', color: 'var(--fg-secondary)', flex: 1 }}>Total</span>
-              <span style={{ font: '600 12px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{valueFmt(totals[hi])}</span>
+              <span style={{ font: '600 12px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{totalValueFmt(totals[hi])}</span>
             </div>
           )}
         </div>
@@ -320,10 +338,12 @@ export interface DonutProps {
   activeIndex?: number | null
   /** Reports the hovered segment index (or null) so a parent can sync the legend. */
   onHoverIndex?: (i: number | null) => void
+  /** Concise screen-reader description of the distribution. */
+  ariaLabel?: string
 }
 
 /** Share-of-total donut with center stat, hover tooltip, and optional external legend cross-highlight. @category Charts */
-export function Donut({ segments = [], size = 150, thickness = 16, centerTop = '', centerBottom = '', activeIndex, onHoverIndex }: DonutProps) {
+export function Donut({ segments = [], size = 150, thickness = 16, centerTop = '', centerBottom = '', activeIndex, onHoverIndex, ariaLabel }: DonutProps) {
   const [hovInternal, setHovInternal] = useState<number | null>(null)
   const total = segments.reduce((s, x) => s + x.value, 0) || 1
   const r = (size - thickness) / 2
@@ -362,7 +382,13 @@ export function Donut({ segments = [], size = 150, thickness = 16, centerTop = '
   const act = active != null && active >= 0 && active < segments.length ? segments[active] : null
   return (
     <div style={{ position: 'relative', width: size, height: size }} onMouseMove={onMove} onMouseLeave={() => report(null)}>
-      <svg width={size} height={size} style={{ transform: 'rotate(-90deg)', overflow: 'visible' }}>
+      <svg
+        width={size}
+        height={size}
+        role={ariaLabel ? 'img' : undefined}
+        aria-label={ariaLabel}
+        style={{ transform: 'rotate(-90deg)', overflow: 'visible' }}
+      >
         <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--ink-700)" strokeWidth={thickness} />
         {segments.map((s, i) => {
           const frac = s.value / total

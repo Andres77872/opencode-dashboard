@@ -37,7 +37,8 @@ type AllSourcesOverview struct {
 	TokenDistribution stats.TokenStats `json:"token_distribution"`
 	// Top signals merged across sources, ranked by a cost-neutral metric (tokens /
 	// invocations) so real vs estimated dollars are never compared. Each entry keeps
-	// its own SourceID and its own cost.
+	// its own SourceID and its own cost. TopModels is a JSON-safe empty slice when
+	// AggregateOptions.SkipModels defers that dimension to AggregateModelUsage.
 	TopModels   []stats.ModelEntry   `json:"top_models"`
 	TopProjects []stats.ProjectEntry `json:"top_projects"`
 	TopTools    []stats.ToolEntry    `json:"top_tools"`
@@ -81,6 +82,120 @@ type AggregateOptions struct {
 	IncludeTrend     bool          // also fetch Daily() per source and attach to SourceOverview.Trend
 	TopN             int           // cap for top signals; <=0 -> defaultAggregateTopN
 	PerSourceTimeout time.Duration // per-source fetch bound; <=0 -> defaultPerSourceFetchTimeout
+	// SkipModels avoids the comparatively expensive model ranking scan. It is
+	// used by the web Overview's source-grouped cold path; model totals are
+	// available from AggregateModelUsage when the user selects that dimension.
+	// The zero value preserves model rankings for existing TUI/agent callers.
+	SkipModels bool
+}
+
+// AllSourcesModelUsage is the lean model-dimension payload used when the
+// Overview switches its Usage cards from source to model. It intentionally
+// omits the regular overview totals and top tools/projects: the browser already
+// has those from the base Overview request, and recomputing them would make a
+// model switch repeat several expensive scans on large databases.
+type AllSourcesModelUsage struct {
+	ModelUsage    []stats.ModelEntry        `json:"model_usage"`
+	ModelTrend    []stats.DimensionDayStats `json:"model_trend"`
+	Errors        []SourceLoadError         `json:"errors,omitempty"`
+	PartialErrors []SourceDimensionError    `json:"partial_errors,omitempty"`
+}
+
+type ModelUsageOptions struct {
+	IncludeTrend     bool
+	PerSourceTimeout time.Duration
+}
+
+// AggregateModelUsage fetches only the two dimensions needed by the model
+// Usage visualization. Sources run concurrently; Models and DailyDimension run
+// sequentially within a source because several adapters share one SQLite
+// connection. Every returned row is source-tagged to preserve cost provenance.
+func AggregateModelUsage(ctx context.Context, reg *Registry, pq stats.PeriodQuery, opts ModelUsageOptions) (AllSourcesModelUsage, error) {
+	result := AllSourcesModelUsage{
+		ModelUsage: []stats.ModelEntry{},
+		ModelTrend: []stats.DimensionDayStats{},
+	}
+	if reg == nil {
+		return result, nil
+	}
+
+	perSourceTimeout := opts.PerSourceTimeout
+	if perSourceTimeout <= 0 {
+		perSourceTimeout = defaultPerSourceFetchTimeout
+	}
+	srcs := reg.Available(ctx)
+	type modelRaw struct {
+		info      SourceInfo
+		models    []stats.ModelEntry
+		trend     []stats.DimensionDayStats
+		modelsErr error
+		trendErr  error
+	}
+	raws := make([]modelRaw, len(srcs))
+	var wg sync.WaitGroup
+	for i, src := range srcs {
+		wg.Add(1)
+		go func(i int, src Source) {
+			defer wg.Done()
+			raws[i].info = src.Info(ctx)
+			call := func(fn func(context.Context) error) error {
+				cctx, cancel := context.WithTimeout(ctx, perSourceTimeout)
+				defer cancel()
+				return fn(cctx)
+			}
+			raws[i].modelsErr = call(func(c context.Context) error {
+				models, err := src.Models(c, pq)
+				if err == nil {
+					raws[i].models = models.Models
+				}
+				return err
+			})
+			if opts.IncludeTrend {
+				raws[i].trendErr = call(func(c context.Context) error {
+					daily, err := src.DailyDimension(c, "model", pq)
+					if err == nil {
+						raws[i].trend = daily.Days
+					}
+					return err
+				})
+			}
+		}(i, src)
+	}
+	wg.Wait()
+
+	for i := range raws {
+		raw := &raws[i]
+		id := string(raw.info.ID)
+		if raw.modelsErr != nil && (!opts.IncludeTrend || raw.trendErr != nil) {
+			result.Errors = append(result.Errors, SourceLoadError{SourceID: id, Message: raw.modelsErr.Error()})
+			continue
+		}
+		if raw.modelsErr != nil {
+			result.PartialErrors = append(result.PartialErrors, SourceDimensionError{SourceID: id, Dimension: "models"})
+		}
+		if raw.trendErr != nil {
+			result.PartialErrors = append(result.PartialErrors, SourceDimensionError{SourceID: id, Dimension: "model_trend"})
+		}
+		for j := range raw.models {
+			raw.models[j].SourceID = id
+		}
+		for j := range raw.trend {
+			raw.trend[j].SourceID = id
+		}
+		result.ModelUsage = append(result.ModelUsage, raw.models...)
+		result.ModelTrend = append(result.ModelTrend, raw.trend...)
+	}
+	result.ModelUsage = topModels(result.ModelUsage, 0)
+	sort.SliceStable(result.ModelTrend, func(i, j int) bool {
+		if result.ModelTrend[i].Date != result.ModelTrend[j].Date {
+			return result.ModelTrend[i].Date < result.ModelTrend[j].Date
+		}
+		if result.ModelTrend[i].SourceID != result.ModelTrend[j].SourceID {
+			return result.ModelTrend[i].SourceID < result.ModelTrend[j].SourceID
+		}
+		return result.ModelTrend[i].Dimension < result.ModelTrend[j].Dimension
+	})
+	return result, nil
 }
 
 // AggregateOverview fans out to every available source, calls its existing
@@ -156,14 +271,16 @@ func AggregateOverview(ctx context.Context, reg *Registry, pq stats.PeriodQuery,
 
 			// Top-signal sources are best-effort: a failure here degrades to no
 			// rows for that dimension rather than dropping the whole source.
-			if err := call(func(c context.Context) error {
-				models, err := src.Models(c, pq)
-				if err == nil {
-					raws[i].models = models.Models
+			if !opts.SkipModels {
+				if err := call(func(c context.Context) error {
+					models, err := src.Models(c, pq)
+					if err == nil {
+						raws[i].models = models.Models
+					}
+					return err
+				}); err != nil {
+					raws[i].partial = append(raws[i].partial, "models")
 				}
-				return err
-			}); err != nil {
-				raws[i].partial = append(raws[i].partial, "models")
 			}
 			if err := call(func(c context.Context) error {
 				tools, err := src.Tools(c, pq)

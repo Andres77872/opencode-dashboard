@@ -2,7 +2,6 @@ package stats
 
 import (
 	"context"
-	"database/sql"
 
 	"opencode-dashboard/internal/store"
 )
@@ -26,81 +25,42 @@ func Overview(ctx context.Context, store *store.Store, pq PeriodQuery) (Overview
 
 	db := store.DB()
 
-	// Session count filtered by period
-	var sessions int64
-	err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM session WHERE time_created >= ? AND time_created < ?", startMs, endMs).Scan(&sessions)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			sessions = 0
-		} else {
-			return result, err
-		}
-	}
-	result.Sessions = sessions
-
-	// Message count filtered by period
-	var messages int64
-	err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM message WHERE time_created >= ? AND time_created < ?", startMs, endMs).Scan(&messages)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			messages = 0
-		} else {
-			return result, err
-		}
-	}
-	result.Messages = messages
-
-	// Token/cost sums filtered by period
-	query := `
-		SELECT 
-			COALESCE(SUM(json_extract(data, '$.cost')), 0) as total_cost,
-			COALESCE(SUM(json_extract(data, '$.tokens.input')), 0) as total_input,
-			COALESCE(SUM(json_extract(data, '$.tokens.output')), 0) as total_output,
-			COALESCE(SUM(json_extract(data, '$.tokens.reasoning')), 0) as total_reasoning,
-			COALESCE(SUM(json_extract(data, '$.tokens.cache.read')), 0) as total_cache_read,
-			COALESCE(SUM(json_extract(data, '$.tokens.cache.write')), 0) as total_cache_write
-		FROM message
-		WHERE json_extract(data, '$.role') = 'assistant'
-			AND time_created >= ? AND time_created < ?
-	`
-
-	var cost float64
-	var input, output, reasoning, cacheRead, cacheWrite int64
-	err = db.QueryRowContext(ctx, query, startMs, endMs).Scan(&cost, &input, &output, &reasoning, &cacheRead, &cacheWrite)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			cost = 0
-			input, output, reasoning, cacheRead, cacheWrite = 0, 0, 0, 0, 0
-		} else {
-			return result, err
-		}
-	}
-
-	result.Cost = cost
-	result.Tokens.Input = input
-	result.Tokens.Output = output
-	result.Tokens.Reasoning = reasoning
-	result.Tokens.Cache.Read = cacheRead
-	result.Tokens.Cache.Write = cacheWrite
-
-	// Active days filtered by period
-	var daysCount int
+	// Count active sessions, messages, active days, and assistant usage in one
+	// range scan. Sessions/days are activity-based so live OpenCode results use
+	// the same semantics as the cache and the other source adapters: a session
+	// created before the range still counts when it has a message in the range.
+	// The old path also scanned message once for COUNT(*) and again for usage,
+	// doubling I/O on the largest table during a cold overview load.
 	err = db.QueryRowContext(ctx, `
-		SELECT COUNT(DISTINCT DATE(time_created / 1000, 'unixepoch'))
-		FROM session
+		SELECT
+			COUNT(DISTINCT session_id),
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.cost'), 0) ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.input'), 0) ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.output'), 0) ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.reasoning'), 0) ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.cache.read'), 0) ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.cache.write'), 0) ELSE 0 END), 0),
+			COUNT(DISTINCT DATE(time_created / 1000, 'unixepoch'))
+		FROM message
 		WHERE time_created >= ? AND time_created < ?
-	`, startMs, endMs).Scan(&daysCount)
+	`, startMs, endMs).Scan(
+		&result.Sessions,
+		&result.Messages,
+		&result.Cost,
+		&result.Tokens.Input,
+		&result.Tokens.Output,
+		&result.Tokens.Reasoning,
+		&result.Tokens.Cache.Read,
+		&result.Tokens.Cache.Write,
+		&result.Days,
+	)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			daysCount = 0
-		} else {
-			return result, err
-		}
+		return result, err
 	}
-	result.Days = daysCount
 
-	if daysCount > 0 {
-		result.CostPerDay = cost / float64(daysCount)
+	if result.Days > 0 {
+		result.CostPerDay = result.Cost / float64(result.Days)
 	} else {
 		result.CostPerDay = 0
 	}
