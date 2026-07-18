@@ -85,6 +85,52 @@ func TestSyncJobContinuesPastFailingSource(t *testing.T) {
 	}
 }
 
+func TestSyncRebuildAlwaysTargetsAllSources(t *testing.T) {
+	ctx := context.Background()
+	cache := newTestCacheRuntime(t)
+	registry := source.NewRegistry(source.SourceOpenCode)
+	cache.registry = registry
+
+	failing := &failingTestSource{}
+	codexSrc := codex.New(codex.Options{CodexHome: codexFixtureHome(), PathSource: "test fixture"})
+	cache.rememberSource(failing)
+	cache.rememberSource(codexSrc)
+	if err := registry.Register(failing); err != nil {
+		t.Fatalf("register failing source: %v", err)
+	}
+	if err := registry.Register(codexSrc); err != nil {
+		t.Fatalf("register codex source: %v", err)
+	}
+
+	status, err := cache.Sync(ctx, string(source.SourceCodex), "rebuild")
+	if err != nil {
+		t.Fatalf("Sync(codex, rebuild) failed to start: %v", err)
+	}
+	if status.Sync == nil {
+		t.Fatalf("sync job did not start: %#v", status)
+	}
+	if status.Sync.Target != "all" {
+		t.Fatalf("rebuild target = %q, want %q (rebuild must cover the whole database)", status.Sync.Target, "all")
+	}
+	if status.Sync.Total != 2 {
+		t.Fatalf("rebuild total = %d, want 2 (every registered source)", status.Sync.Total)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err = cache.Status(ctx)
+		if err != nil {
+			t.Fatalf("Status() failed: %v", err)
+		}
+		if status.Sync != nil && !status.Sync.Running {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if status.Sync == nil || status.Sync.Running {
+		t.Fatalf("sync job never finished: %#v", status.Sync)
+	}
+}
+
 type failingTestSource struct{}
 
 func (s *failingTestSource) Info(context.Context) source.SourceInfo {

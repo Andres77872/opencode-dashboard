@@ -1022,6 +1022,11 @@ func (c *cacheRuntime) Sync(ctx context.Context, selected string, modeValue stri
 	if err != nil {
 		return web.CacheStatusResponse{}, err
 	}
+	// Rebuild is a whole-database operation: it always clears and rebuilds
+	// every source, regardless of any source filter the caller sent.
+	if mode == usagecache.SyncModeRebuild {
+		selected = ""
+	}
 	cutoff := usagecache.DefaultSafeCutoff(time.Now().UTC())
 	c.mu.Lock()
 	if c.job.Running {
