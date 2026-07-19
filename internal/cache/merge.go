@@ -136,8 +136,6 @@ type gapData struct {
 	total      int64
 }
 
-const gapPageSize = 100
-
 func fetchGapMessages(ctx context.Context, live sourceReader, pq stats.PeriodQuery) (gapData, error) {
 	// Live sources do not implement model filtering: fetch the gap unfiltered
 	// and apply the predicate in Go.
@@ -145,7 +143,7 @@ func fetchGapMessages(ctx context.Context, live sourceReader, pq stats.PeriodQue
 	pq.Model, pq.Provider = "", ""
 	var g gapData
 	for page := 1; ; page++ {
-		list, err := live.Messages(ctx, pq, page, gapPageSize, syncSort)
+		list, err := live.Messages(ctx, pq, page, syncPageSize, syncSort)
 		if err != nil {
 			return gapData{}, err
 		}
@@ -172,7 +170,7 @@ func fetchGapMessages(ctx context.Context, live sourceReader, pq stats.PeriodQue
 }
 
 func fetchGapSessions(ctx context.Context, live sourceReader, query stats.SessionQuery) ([]stats.SessionEntry, error) {
-	query.PageSize = gapPageSize
+	query.PageSize = syncPageSize
 	if query.Sort == "" {
 		query.Sort = stats.SessionSortOldest
 	}

@@ -48,6 +48,12 @@ const (
 	// timeout, while large database sources can take many pages and run for
 	// substantially longer than this in aggregate.
 	collectCallTimeout = 5 * time.Minute
+	// syncPageSize sizes bulk page reads from live sources: the generic sync
+	// fallback and the gap-merge live fetches. Sources accept up to
+	// stats.MaxPageSize per page; larger pages mean fewer repeated
+	// count/sort/scan passes per collection. Web-facing pagination keeps its
+	// own tighter clamps and is unaffected.
+	syncPageSize = 1000
 )
 
 var syncSort = stats.MessageSort{Field: stats.MessageSortTime, Direction: stats.MessageSortAsc}
@@ -1487,7 +1493,7 @@ func collectConsolidationSource(ctx context.Context, bulk source.ConsolidationSo
 
 func collectSessions(ctx context.Context, src source.Source, sourceID string, window syncWindow, progress func(SyncProgress)) (map[string]cachedSession, error) {
 	result := make(map[string]cachedSession)
-	query := stats.SessionQuery{PageSize: 100, Sort: stats.SessionSortOldest, Period: "all"}
+	query := stats.SessionQuery{PageSize: syncPageSize, Sort: stats.SessionSortOldest, Period: "all"}
 	if !window.Cutoff.IsZero() {
 		query.ToTime = window.Cutoff.UTC()
 	}
@@ -1564,10 +1570,10 @@ func collectMessagesAndTools(ctx context.Context, src source.Source, sourceID st
 	var seen int64
 	pq := periodForWindow(window)
 	for page := 1; ; page++ {
-		// One deadline covers the page query and its at-most-100 detail
-		// lookups. The next page receives a fresh budget.
+		// One deadline covers the page query and its at-most-syncPageSize
+		// detail lookups. The next page receives a fresh budget.
 		pageCtx, cancel := context.WithTimeout(ctx, collectCallTimeout)
-		list, err := src.Messages(pageCtx, pq, page, 100, syncSort)
+		list, err := src.Messages(pageCtx, pq, page, syncPageSize, syncSort)
 		if err != nil {
 			cancel()
 			return nil, nil, summary, fmt.Errorf("cache collect messages: %w", err)

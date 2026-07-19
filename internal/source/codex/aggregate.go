@@ -329,8 +329,8 @@ func (s *snapshot) messages(pq stats.PeriodQuery, page, limit int, sortSpec stat
 	}
 	sortMessages(messages, sortSpec)
 	page, limit = normalizePage(page, limit, 50)
-	if limit > 100 {
-		limit = 100
+	if limit > stats.MaxPageSize {
+		limit = stats.MaxPageSize
 	}
 	start := (page - 1) * limit
 	end := start + limit

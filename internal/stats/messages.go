@@ -9,6 +9,11 @@ import (
 	"opencode-dashboard/internal/store"
 )
 
+// MaxPageSize caps a single page of message-list results across sources.
+// Internal bulk readers (cache sync and gap-merge) page near this scale; the
+// web layer applies its own tighter per-request clamps before reaching here.
+const MaxPageSize = 1500
+
 // MessagesByPeriod returns a paginated list of messages across all sessions
 // within the specified time period. Messages are ordered by creation time descending.
 // MessagesByPeriodString is a backward-compatible wrapper that accepts a string period.
@@ -36,8 +41,8 @@ func MessagesByPeriod(ctx context.Context, s *store.Store, pq PeriodQuery, page,
 	if limit < 1 {
 		limit = 50
 	}
-	if limit > 100 {
-		limit = 100
+	if limit > MaxPageSize {
+		limit = MaxPageSize
 	}
 	offset := (page - 1) * limit
 
