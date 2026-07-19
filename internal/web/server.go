@@ -41,10 +41,14 @@ func NewServerWithServices(addr string, registry *source.Registry, logger *slog.
 	return NewServerWithAssistant(addr, registry, logger, cache, quotas, nil)
 }
 
-// NewServerWithAssistant is the complete web service constructor. Older
-// constructors remain source-compatible for TUI/tests and simply omit the
-// optional web-only analytics assistant.
 func NewServerWithAssistant(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager, quotas QuotaService, assistant AssistantService) *http.Server {
+	return NewServerWithChatLog(addr, registry, logger, cache, quotas, assistant, nil)
+}
+
+// NewServerWithChatLog is the complete web service constructor. Older
+// constructors remain source-compatible for TUI/tests and simply omit the
+// optional web-only analytics assistant and its durable chat log.
+func NewServerWithChatLog(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager, quotas QuotaService, assistant AssistantService, chatlog AssistantChatStore) *http.Server {
 	if addr == "" {
 		addr = defaultAddr
 	}
@@ -58,7 +62,7 @@ func NewServerWithAssistant(addr string, registry *source.Registry, logger *slog
 	srv := &Server{
 		Addr:     addr,
 		Registry: registry,
-		handlers: NewHandlersWithAssistant(registry, cache, quotas, assistant, logger),
+		handlers: NewHandlersWithChatLog(registry, cache, quotas, assistant, chatlog, logger),
 		mux:      http.NewServeMux(),
 	}
 
@@ -101,6 +105,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/assistant/status", s.handlers.AssistantStatus)
 	s.mux.HandleFunc("POST "+apiV1Prefix+"/assistant/chat", s.handlers.AssistantChat)
 	s.mux.HandleFunc("POST "+apiV1Prefix+"/assistant/chat/stream", s.handlers.AssistantChatStream)
+	s.mux.HandleFunc("GET "+apiV1Prefix+"/assistant/sessions", s.handlers.AssistantSessions)
+	s.mux.HandleFunc("GET "+apiV1Prefix+"/assistant/sessions/{id}", s.handlers.AssistantSessionByID)
+	s.mux.HandleFunc("DELETE "+apiV1Prefix+"/assistant/sessions/{id}", s.handlers.AssistantSessionDelete)
 	s.mux.HandleFunc("GET /health", s.healthHandler)
 }
 
@@ -123,7 +130,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 		}
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		if r.Method == http.MethodOptions {

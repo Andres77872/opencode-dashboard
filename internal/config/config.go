@@ -169,6 +169,13 @@ func DefaultClaudeRateLimitsPath() string {
 	return filepath.Join(XDGDataHome(), DashboardAppName, "claude-rate-limits.json")
 }
 
+// DefaultAssistantChatDBPath is the durable analytics-assistant chat history
+// database. It lives next to the cache DB so `uninstall` removes it too, but
+// unlike the cache it is never rebuilt from sources.
+func DefaultAssistantChatDBPath() string {
+	return filepath.Join(XDGDataHome(), DashboardAppName, "assistant-chat.sqlite")
+}
+
 // DefaultOpenCodeAuthPath is opencode's credential store, the fallback source
 // for the MiniMax coding-plan API key when EnvMiniMaxAPIKey is unset.
 func DefaultOpenCodeAuthPath() string {

@@ -19,9 +19,12 @@ import (
 // from scratch, and the normal consolidation flow re-collects everything in
 // the background while reads fall back to the live sources.
 //
-// v5 matches the last version written by the retired migration ladder, so
-// existing up-to-date caches are adopted without a rebuild.
-const schemaVersion = 5
+// v6 drops the columns, tables, and indexes no consumer reads (synthesized
+// session titles and project names denormalized onto message_index, the
+// write-only hourly_tool_usage rollup, hourly_usage project dims) and adds
+// the tool_index(source_id, message_id) index the incremental-fill delete
+// needs.
+const schemaVersion = 6
 
 // schemaSQL is the complete current schema, applied in one transaction to a
 // fresh (or just-rebuilt) database. It must always describe the exact shape
@@ -74,7 +77,6 @@ CREATE TABLE IF NOT EXISTS message_index (
 	source_id TEXT NOT NULL,
 	message_id TEXT NOT NULL,
 	session_id TEXT NOT NULL,
-	session_title TEXT NOT NULL,
 	role TEXT NOT NULL,
 	time_created_ms INTEGER NOT NULL,
 	cost REAL NOT NULL DEFAULT 0,
@@ -93,7 +95,6 @@ CREATE TABLE IF NOT EXISTS message_index (
 	cost_status TEXT,
 	cost_provenance_json TEXT,
 	project_id TEXT,
-	project_name TEXT,
 	service_tier TEXT,
 	processing_mode TEXT,
 	model_input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -105,12 +106,9 @@ CREATE TABLE IF NOT EXISTS message_index (
 );
 
 CREATE TABLE IF NOT EXISTS tool_index (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	source_id TEXT NOT NULL,
 	message_id TEXT NOT NULL,
 	session_id TEXT NOT NULL,
-	project_id TEXT,
-	project_name TEXT,
 	time_created_ms INTEGER NOT NULL,
 	tool_name TEXT NOT NULL,
 	status TEXT
@@ -119,12 +117,9 @@ CREATE TABLE IF NOT EXISTS tool_index (
 CREATE TABLE IF NOT EXISTS hourly_usage (
 	source_id TEXT NOT NULL,
 	bucket_start_ms INTEGER NOT NULL,
-	project_id TEXT NOT NULL,
-	project_name TEXT NOT NULL,
 	model_id TEXT NOT NULL,
 	provider_id TEXT NOT NULL,
 	role TEXT NOT NULL,
-	sessions INTEGER NOT NULL DEFAULT 0,
 	messages INTEGER NOT NULL DEFAULT 0,
 	cost REAL NOT NULL DEFAULT 0,
 	input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -132,19 +127,8 @@ CREATE TABLE IF NOT EXISTS hourly_usage (
 	reasoning_tokens INTEGER NOT NULL DEFAULT 0,
 	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
 	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-	PRIMARY KEY (source_id, bucket_start_ms, project_id, model_id, provider_id, role)
-);
-
-CREATE TABLE IF NOT EXISTS hourly_tool_usage (
-	source_id TEXT NOT NULL,
-	bucket_start_ms INTEGER NOT NULL,
-	tool_name TEXT NOT NULL,
-	invocations INTEGER NOT NULL DEFAULT 0,
-	successes INTEGER NOT NULL DEFAULT 0,
-	failures INTEGER NOT NULL DEFAULT 0,
-	sessions INTEGER NOT NULL DEFAULT 0,
-	PRIMARY KEY (source_id, bucket_start_ms, tool_name)
-);
+	PRIMARY KEY (source_id, bucket_start_ms, model_id, provider_id, role)
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS overview_hourly (
 	source_id TEXT NOT NULL,
@@ -157,7 +141,7 @@ CREATE TABLE IF NOT EXISTS overview_hourly (
 	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
 	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (source_id, bucket_start_ms)
-);
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS overview_hourly_sessions (
 	source_id TEXT NOT NULL,
@@ -196,13 +180,10 @@ CREATE TABLE IF NOT EXISTS hourly_model_cost (
 CREATE INDEX IF NOT EXISTS idx_message_index_source_time ON message_index(source_id, time_created_ms);
 CREATE INDEX IF NOT EXISTS idx_message_index_source_session ON message_index(source_id, session_id);
 CREATE INDEX IF NOT EXISTS idx_message_index_source_project ON message_index(source_id, project_id);
-CREATE INDEX IF NOT EXISTS idx_message_index_source_model ON message_index(source_id, model_id, provider_id);
 CREATE INDEX IF NOT EXISTS idx_message_index_source_processing_mode ON message_index(source_id, role, processing_mode, time_created_ms);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_project ON sessions(source_id, project_id);
 CREATE INDEX IF NOT EXISTS idx_tool_index_source_time ON tool_index(source_id, time_created_ms);
-CREATE INDEX IF NOT EXISTS idx_tool_index_source_name ON tool_index(source_id, tool_name);
-CREATE INDEX IF NOT EXISTS idx_hourly_usage_source_bucket ON hourly_usage(source_id, bucket_start_ms);
-CREATE INDEX IF NOT EXISTS idx_hourly_tool_usage_source_bucket ON hourly_tool_usage(source_id, bucket_start_ms);
+CREATE INDEX IF NOT EXISTS idx_tool_index_source_message ON tool_index(source_id, message_id);
 `
 
 // schemaState is what ensureSchemaVersion inspects before deciding between

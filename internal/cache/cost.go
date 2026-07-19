@@ -56,16 +56,82 @@ func (s *Store) costSummary(ctx context.Context, sourceID string, startMs, endMs
 	return s.costSummaryWhere(ctx, sourceID, startMs, endMs, "", nil)
 }
 
-func (s *Store) costSummaryForModel(ctx context.Context, sourceID, modelID, providerID string, startMs, endMs int64) (stats.CostStatus, *stats.CostProvenance) {
-	return s.costSummaryWhere(ctx, sourceID, startMs, endMs, "AND COALESCE(model_id, '') = ? AND COALESCE(provider_id, '') = ?", []any{modelID, providerID})
+// costSummaryByKey aggregates assistant cost-status counts grouped by keyExpr
+// in a single pass, replacing per-row costSummaryWhere round-trips.
+func (s *Store) costSummaryByKey(ctx context.Context, sourceID, keyExpr string, startMs, endMs int64, extra string, extraArgs []any) (map[string]*costCounts, error) {
+	query := `
+		SELECT ` + keyExpr + `, COALESCE(cost_status, ''), COUNT(*)
+		FROM message_index
+		WHERE source_id = ? AND role = 'assistant' AND time_created_ms >= ? AND time_created_ms < ? ` + extra + `
+		GROUP BY 1, 2
+	`
+	args := append([]any{sourceID, startMs, endMs}, extraArgs...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byKey := make(map[string]*costCounts)
+	for rows.Next() {
+		var key, statusText string
+		var count int64
+		if err := rows.Scan(&key, &statusText, &count); err != nil {
+			return nil, err
+		}
+		counts := byKey[key]
+		if counts == nil {
+			counts = &costCounts{}
+			byKey[key] = counts
+		}
+		counts.add(stats.CostStatus(statusText), count)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return byKey, nil
 }
 
-func (s *Store) costSummaryForProject(ctx context.Context, sourceID, projectID string, startMs, endMs int64) (stats.CostStatus, *stats.CostProvenance) {
-	return s.costSummaryWhere(ctx, sourceID, startMs, endMs, "AND COALESCE(project_id, '') = ?", []any{projectID})
+// costSummariesForSessions batches per-session cost summaries for ids,
+// chunking the IN clause like the other id-list helpers.
+func (s *Store) costSummariesForSessions(ctx context.Context, sourceID string, startMs, endMs int64, ids []string) (map[string]*costCounts, error) {
+	result := make(map[string]*costCounts)
+	for _, chunk := range chunkStrings(ids, sessionIDChunk) {
+		extra := ` AND session_id IN (` + inPlaceholders(len(chunk)) + `)`
+		extraArgs := make([]any, 0, len(chunk))
+		for _, id := range chunk {
+			extraArgs = append(extraArgs, id)
+		}
+		byKey, err := s.costSummaryByKey(ctx, sourceID, "session_id", startMs, endMs, extra, extraArgs)
+		if err != nil {
+			return nil, err
+		}
+		for id, counts := range byKey {
+			result[id] = counts
+		}
+	}
+	return result, nil
 }
 
-func (s *Store) costSummaryForSession(ctx context.Context, sourceID, sessionID string, startMs, endMs int64) (stats.CostStatus, *stats.CostProvenance) {
-	return s.costSummaryWhere(ctx, sourceID, startMs, endMs, "AND session_id = ?", []any{sessionID})
+// attachSessionCostSummaries fills per-session cost metadata for entries in
+// one batched pass over the window.
+func (s *Store) attachSessionCostSummaries(ctx context.Context, sourceID string, startMs, endMs int64, entries []stats.SessionEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		ids = append(ids, entry.ID)
+	}
+	summaries, err := s.costSummariesForSessions(ctx, sourceID, startMs, endMs, ids)
+	if err != nil {
+		return err
+	}
+	for i := range entries {
+		if counts := summaries[entries[i].ID]; counts != nil {
+			entries[i].CostStatus, entries[i].CostProvenance = counts.result()
+		}
+	}
+	return nil
 }
 
 func (s *Store) costSummaryWhere(ctx context.Context, sourceID string, startMs, endMs int64, extra string, extraArgs []any) (stats.CostStatus, *stats.CostProvenance) {

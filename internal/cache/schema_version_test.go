@@ -53,9 +53,14 @@ func TestOpenFreshDatabaseStampsSchemaVersion(t *testing.T) {
 			t.Errorf("dead table %s exists in a fresh database", dead)
 		}
 	}
+	for _, dead := range []string{"hourly_tool_usage"} {
+		if tableExists(t, store.db, dead) {
+			t.Errorf("dead table %s exists in a fresh database", dead)
+		}
+	}
 	for _, live := range []string{
 		"source_state", "projects", "sessions", "message_index", "tool_index",
-		"hourly_usage", "hourly_tool_usage", "overview_hourly",
+		"hourly_usage", "overview_hourly",
 		"overview_hourly_sessions", "overview_hourly_cost",
 		"hourly_model_sessions", "hourly_model_cost",
 	} {
@@ -105,8 +110,8 @@ func seedConsolidatedRows(t *testing.T, store *Store) {
 	if _, err := store.db.Exec(fmt.Sprintf(`
 		INSERT INTO source_state (source_id, label, kind, source_info_json, fingerprint, status, last_synced_ms, last_safe_cutoff_ms, fresh_through_ms, data_version)
 		VALUES ('codex', 'Codex', 'jsonl', '{}', 'current-fp', 'ready', %d, 1700000000000, 1700000000000, %d);
-		INSERT INTO message_index (source_id, message_id, session_id, session_title, role, time_created_ms, input_tokens)
-		VALUES ('codex', 'codex:s1:t1:r0', 's1', 'title', 'assistant', 1690000000000, 42);
+		INSERT INTO message_index (source_id, message_id, session_id, role, time_created_ms, input_tokens)
+		VALUES ('codex', 'codex:s1:t1:r0', 's1', 'assistant', 1690000000000, 42);
 	`, time.Now().UnixMilli(), dataVersion)); err != nil {
 		t.Fatalf("seed consolidated rows: %v", err)
 	}

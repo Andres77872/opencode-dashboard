@@ -604,8 +604,6 @@ type messageRow struct {
 type toolRow struct {
 	MessageID   string
 	SessionID   string
-	ProjectID   string
-	ProjectName string
 	TimeCreated time.Time
 	Name        string
 	Status      string
@@ -684,9 +682,6 @@ func (s *Store) replaceSource(ctx context.Context, payload sourcePayload, cutoff
 	if err := rebuildHourlyUsage(ctx, tx, sourceID); err != nil {
 		return err
 	}
-	if err := rebuildHourlyToolUsage(ctx, tx, sourceID); err != nil {
-		return err
-	}
 	if err := rebuildOverviewHourly(ctx, tx, sourceID); err != nil {
 		return err
 	}
@@ -750,9 +745,6 @@ func (s *Store) fillSource(ctx context.Context, payload sourcePayload, since, cu
 	if err := refreshHourlyUsage(ctx, tx, sourceID, sinceMs); err != nil {
 		return err
 	}
-	if err := refreshHourlyToolUsage(ctx, tx, sourceID, sinceMs); err != nil {
-		return err
-	}
 	if err := refreshOverviewHourly(ctx, tx, sourceID, sinceMs); err != nil {
 		return err
 	}
@@ -766,7 +758,6 @@ func deleteSourceRows(ctx context.Context, tx *sql.Tx, sourceID string) error {
 		"overview_hourly_cost",
 		"overview_hourly_sessions",
 		"overview_hourly",
-		"hourly_tool_usage",
 		"hourly_usage",
 		"tool_index",
 		"message_index",
@@ -874,18 +865,17 @@ func insertSessions(ctx context.Context, tx *sql.Tx, sourceID string, rows []ses
 func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []messageRow) error {
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO message_index(
-			source_id, message_id, session_id, session_title, role, time_created_ms,
+			source_id, message_id, session_id, role, time_created_ms,
 			cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens,
 			cache_write_tokens, model_input_tokens, model_output_tokens,
 			model_reasoning_tokens, model_cache_read_tokens, model_cache_write_tokens,
 			model_id, provider_id, service_tier, processing_mode,
 			agent, is_subagent,
 			folded_assistant_calls, folded_tool_calls, folded_token_updates,
-			cost_status, cost_provenance_json, project_id, project_name
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			cost_status, cost_provenance_json, project_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_id, message_id) DO UPDATE SET
 			session_id = excluded.session_id,
-			session_title = excluded.session_title,
 			role = excluded.role,
 			time_created_ms = excluded.time_created_ms,
 			cost = excluded.cost,
@@ -910,8 +900,7 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 			folded_token_updates = excluded.folded_token_updates,
 			cost_status = excluded.cost_status,
 			cost_provenance_json = excluded.cost_provenance_json,
-			project_id = excluded.project_id,
-			project_name = excluded.project_name
+			project_id = excluded.project_id
 	`)
 	if err != nil {
 		return err
@@ -935,13 +924,13 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 			return err
 		}
 		if _, err := stmt.ExecContext(ctx,
-			sourceID, entry.ID, entry.SessionID, entry.SessionTitle, entry.Role, entry.TimeCreated.UTC().UnixMilli(),
+			sourceID, entry.ID, entry.SessionID, entry.Role, entry.TimeCreated.UTC().UnixMilli(),
 			entry.Cost, tokens.Input, tokens.Output, tokens.Reasoning, tokens.Cache.Read, tokens.Cache.Write,
 			modelTokens.Input, modelTokens.Output, modelTokens.Reasoning, modelTokens.Cache.Read, modelTokens.Cache.Write,
 			nullEmpty(entry.ModelID), nullEmpty(entry.ProviderID), nullEmpty(entry.ServiceTier), nullEmpty(string(entry.ProcessingMode)),
 			nullEmpty(entry.Agent), boolInt(entry.IsSubagent),
 			entry.FoldedAssistantCalls, entry.FoldedToolCalls, entry.FoldedTokenUpdates,
-			string(entry.CostStatus), prov, row.ProjectID, row.ProjectName,
+			string(entry.CostStatus), prov, row.ProjectID,
 		); err != nil {
 			return fmt.Errorf("insert message %s: %w", entry.ID, err)
 		}
@@ -951,8 +940,8 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 
 func insertTools(ctx context.Context, tx *sql.Tx, sourceID string, rows []toolRow) error {
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO tool_index(source_id, message_id, session_id, project_id, project_name, time_created_ms, tool_name, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO tool_index(source_id, message_id, session_id, time_created_ms, tool_name, status)
+		VALUES (?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -962,7 +951,7 @@ func insertTools(ctx context.Context, tx *sql.Tx, sourceID string, rows []toolRo
 		if row.Name == "" {
 			continue
 		}
-		if _, err := stmt.ExecContext(ctx, sourceID, row.MessageID, row.SessionID, row.ProjectID, row.ProjectName, row.TimeCreated.UTC().UnixMilli(), row.Name, nullEmpty(row.Status)); err != nil {
+		if _, err := stmt.ExecContext(ctx, sourceID, row.MessageID, row.SessionID, row.TimeCreated.UTC().UnixMilli(), row.Name, nullEmpty(row.Status)); err != nil {
 			return fmt.Errorf("insert tool %s: %w", row.Name, err)
 		}
 	}
@@ -1132,19 +1121,16 @@ func rebuildHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string) error 
 	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO hourly_usage(
-			source_id, bucket_start_ms, project_id, project_name, model_id, provider_id, role,
-			sessions, messages, cost, input_tokens, output_tokens, reasoning_tokens,
+			source_id, bucket_start_ms, model_id, provider_id, role,
+			messages, cost, input_tokens, output_tokens, reasoning_tokens,
 			cache_read_tokens, cache_write_tokens
 		)
 		SELECT
 			source_id,
 			(time_created_ms / 3600000) * 3600000 AS bucket_start_ms,
-			COALESCE(project_id, ''),
-			COALESCE(project_name, ''),
 			COALESCE(model_id, ''),
 			COALESCE(provider_id, ''),
 			role,
-			COUNT(DISTINCT session_id),
 			COUNT(*),
 			COALESCE(SUM(cost), 0),
 			COALESCE(SUM(model_input_tokens), 0),
@@ -1153,8 +1139,8 @@ func rebuildHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string) error 
 			COALESCE(SUM(model_cache_read_tokens), 0),
 			COALESCE(SUM(model_cache_write_tokens), 0)
 		FROM message_index
-		WHERE source_id = ?
-		GROUP BY source_id, bucket_start_ms, project_id, project_name, model_id, provider_id, role
+		WHERE source_id = ? AND role = 'assistant' AND COALESCE(model_id, '') != ''
+		GROUP BY source_id, bucket_start_ms, model_id, provider_id, role
 	`, sourceID)
 	if err != nil {
 		return fmt.Errorf("rebuild hourly usage: %w", err)
@@ -1182,19 +1168,16 @@ func refreshHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string, sinceM
 	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO hourly_usage(
-			source_id, bucket_start_ms, project_id, project_name, model_id, provider_id, role,
-			sessions, messages, cost, input_tokens, output_tokens, reasoning_tokens,
+			source_id, bucket_start_ms, model_id, provider_id, role,
+			messages, cost, input_tokens, output_tokens, reasoning_tokens,
 			cache_read_tokens, cache_write_tokens
 		)
 		SELECT
 			source_id,
 			(time_created_ms / 3600000) * 3600000 AS bucket_start_ms,
-			COALESCE(project_id, ''),
-			COALESCE(project_name, ''),
 			COALESCE(model_id, ''),
 			COALESCE(provider_id, ''),
 			role,
-			COUNT(DISTINCT session_id),
 			COUNT(*),
 			COALESCE(SUM(cost), 0),
 			COALESCE(SUM(model_input_tokens), 0),
@@ -1203,64 +1186,11 @@ func refreshHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string, sinceM
 			COALESCE(SUM(model_cache_read_tokens), 0),
 			COALESCE(SUM(model_cache_write_tokens), 0)
 		FROM message_index
-		WHERE source_id = ? AND time_created_ms >= ?
-		GROUP BY source_id, bucket_start_ms, project_id, project_name, model_id, provider_id, role
+		WHERE source_id = ? AND time_created_ms >= ? AND role = 'assistant' AND COALESCE(model_id, '') != ''
+		GROUP BY source_id, bucket_start_ms, model_id, provider_id, role
 	`, sourceID, bucketMs)
 	if err != nil {
 		return fmt.Errorf("refresh hourly usage: %w", err)
-	}
-	return nil
-}
-
-func rebuildHourlyToolUsage(ctx context.Context, tx *sql.Tx, sourceID string) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM hourly_tool_usage WHERE source_id = ?`, sourceID); err != nil {
-		return err
-	}
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO hourly_tool_usage(
-			source_id, bucket_start_ms, tool_name, invocations, successes, failures, sessions
-		)
-		SELECT
-			source_id,
-			(time_created_ms / 3600000) * 3600000 AS bucket_start_ms,
-			tool_name,
-			COUNT(*),
-			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END),
-			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END),
-			COUNT(DISTINCT session_id)
-		FROM tool_index
-		WHERE source_id = ?
-		GROUP BY source_id, bucket_start_ms, tool_name
-	`, sourceID)
-	if err != nil {
-		return fmt.Errorf("rebuild hourly tool usage: %w", err)
-	}
-	return nil
-}
-
-func refreshHourlyToolUsage(ctx context.Context, tx *sql.Tx, sourceID string, sinceMs int64) error {
-	bucketMs := hourBucketStartMs(sinceMs)
-	if _, err := tx.ExecContext(ctx, `DELETE FROM hourly_tool_usage WHERE source_id = ? AND bucket_start_ms >= ?`, sourceID, bucketMs); err != nil {
-		return err
-	}
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO hourly_tool_usage(
-			source_id, bucket_start_ms, tool_name, invocations, successes, failures, sessions
-		)
-		SELECT
-			source_id,
-			(time_created_ms / 3600000) * 3600000 AS bucket_start_ms,
-			tool_name,
-			COUNT(*),
-			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END),
-			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END),
-			COUNT(DISTINCT session_id)
-		FROM tool_index
-		WHERE source_id = ? AND time_created_ms >= ?
-		GROUP BY source_id, bucket_start_ms, tool_name
-	`, sourceID, bucketMs)
-	if err != nil {
-		return fmt.Errorf("refresh hourly tool usage: %w", err)
 	}
 	return nil
 }
@@ -1538,8 +1468,6 @@ func collectConsolidationSource(ctx context.Context, bulk source.ConsolidationSo
 			tools = append(tools, toolRow{
 				MessageID:   entry.ID,
 				SessionID:   entry.SessionID,
-				ProjectID:   session.ProjectID,
-				ProjectName: session.ProjectName,
 				TimeCreated: entry.TimeCreated,
 				Name:        tool.Name,
 				Status:      tool.Status,
@@ -1682,8 +1610,6 @@ func collectMessagesAndTools(ctx context.Context, src source.Source, sourceID st
 				tools = append(tools, toolRow{
 					MessageID:   entry.ID,
 					SessionID:   entry.SessionID,
-					ProjectID:   session.ProjectID,
-					ProjectName: session.ProjectName,
 					TimeCreated: entry.TimeCreated,
 					Name:        part.Tool,
 					Status:      part.State.Status,

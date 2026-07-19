@@ -696,3 +696,108 @@ func TestBrowserContextIsValidatedAndNeverGetsSystemAuthority(t *testing.T) {
 		t.Fatalf("browser context was not isolated as untrusted user data: %s", request.Messages[1])
 	}
 }
+
+func TestServiceRecordsToolCallsWithInputAndOutput(t *testing.T) {
+	base := &scriptedAgentClient{responses: []*ChatResponse{
+		assistantResponse(t, "tool_calls", "", []ToolCall{functionToolCall("provider-call", "list_sources", ``)}, nil),
+		assistantResponse(t, "stop", "Final answer.", nil, nil),
+	}}
+	client := &streamingAgentClient{scriptedAgentClient: base, chunks: [][]string{nil, {"Final answer."}}}
+	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
+	var events []StreamEvent
+	result, err := service.ChatStream(context.Background(), oneUserMessage("Report."), func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(result.ToolCalls))
+	}
+	record := result.ToolCalls[0]
+	if record.Name != "list_sources" || record.CallID != "tool-1" || !record.OK {
+		t.Fatalf("tool call record = %#v", record)
+	}
+	if string(record.Arguments) != "{}" {
+		t.Fatalf("normalized arguments = %s, want {}", record.Arguments)
+	}
+	if !json.Valid(record.Result) || !strings.Contains(string(record.Result), `"ok":true`) {
+		t.Fatalf("tool call result = %s", record.Result)
+	}
+	if record.DurationMS < 0 {
+		t.Fatalf("tool call duration = %d", record.DurationMS)
+	}
+
+	var start, finish *StreamEvent
+	for i := range events {
+		switch events[i].Type {
+		case StreamEventToolStart:
+			start = &events[i]
+		case StreamEventToolFinish:
+			finish = &events[i]
+		}
+	}
+	if start == nil || string(start.Arguments) != "{}" {
+		t.Fatalf("tool start event = %#v", start)
+	}
+	if finish == nil || finish.OK == nil || !*finish.OK || !json.Valid(finish.Result) {
+		t.Fatalf("tool finish event = %#v", finish)
+	}
+	if !strings.Contains(string(finish.Result), `"ok":true`) {
+		t.Fatalf("tool finish result = %s", finish.Result)
+	}
+}
+
+func TestServiceUsesInjectedHistoryKeyAcrossInstances(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	first := NewService(ServiceOptions{
+		Client:     &scriptedAgentClient{responses: []*ChatResponse{assistantResponse(t, "stop", "First report.", nil, nil)}},
+		Registry:   source.NewRegistry(source.SourceOpenCode),
+		HistoryKey: key,
+	})
+	result, err := first.Chat(context.Background(), oneUserMessage("Report once."))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A second service instance with the same key — a restarted server — must
+	// accept history signed by the first instance.
+	second := NewService(ServiceOptions{
+		Client:     &scriptedAgentClient{responses: []*ChatResponse{assistantResponse(t, "stop", "Second report.", nil, nil)}},
+		Registry:   source.NewRegistry(source.SourceOpenCode),
+		HistoryKey: key,
+	})
+	input := ChatInput{ConsentVersion: PrivacyConsentVersion, Messages: []BrowserMessage{
+		{Role: "user", Content: "Report once."},
+		result.Message,
+		{Role: "user", Content: "Follow up."},
+	}}
+	if _, err := second.Chat(context.Background(), input); err != nil {
+		t.Fatalf("restarted service rejected persisted history: %v", err)
+	}
+
+	third := NewService(ServiceOptions{
+		Client:   &scriptedAgentClient{responses: []*ChatResponse{assistantResponse(t, "stop", "Third report.", nil, nil)}},
+		Registry: source.NewRegistry(source.SourceOpenCode),
+	})
+	if _, err := third.Chat(context.Background(), input); !errors.Is(err, ErrInvalidChat) {
+		t.Fatalf("random-key service accepted foreign signature: %v", err)
+	}
+}
+
+func TestValidateChatInputSessionID(t *testing.T) {
+	valid := oneUserMessage("Report.")
+	valid.SessionID = "cs_0123456789abcdef0123456789abcdef"
+	if err := ValidateChatInput(valid); err != nil {
+		t.Fatalf("valid session id rejected: %v", err)
+	}
+	for _, sessionID := range []string{"has space", "semi;colon", strings.Repeat("a", 65), "../etc"} {
+		input := oneUserMessage("Report.")
+		input.SessionID = sessionID
+		if err := ValidateChatInput(input); !errors.Is(err, ErrInvalidChat) {
+			t.Errorf("session id %q accepted: %v", sessionID, err)
+		}
+	}
+}

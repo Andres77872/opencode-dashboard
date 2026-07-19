@@ -386,7 +386,7 @@ export function SessionsView() {
           </span>
           <input
             type="text"
-            placeholder="Search sessions…"
+            placeholder="Search title, project, or session id…"
             value={searchText}
             onChange={handleSearchChange}
             style={{

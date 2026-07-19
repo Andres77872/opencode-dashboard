@@ -13,11 +13,14 @@ import (
 	"time"
 
 	"opencode-dashboard/internal/analyticsagent"
+	"opencode-dashboard/internal/chatstore"
 )
 
 const maxAssistantRequestBytes = 64 << 10
 
 const assistantStatusTimeout = 4 * time.Second
+
+const maxAssistantSessionList = 100
 
 type AssistantService interface {
 	Status(context.Context) analyticsagent.Status
@@ -28,6 +31,17 @@ type AssistantService interface {
 // that only support the legacy buffered endpoint remain source compatible.
 type AssistantStreamingService interface {
 	ChatStream(context.Context, analyticsagent.ChatInput, func(analyticsagent.StreamEvent) error) (analyticsagent.ChatResult, error)
+}
+
+// AssistantChatStore is the optional durable log for assistant conversations.
+// When absent, chat still works statelessly and the session endpoints report
+// persistence as unavailable.
+type AssistantChatStore interface {
+	AppendTurn(context.Context, chatstore.Turn) (string, error)
+	ListSessions(context.Context, int) ([]chatstore.Session, error)
+	GetSession(context.Context, string) (*chatstore.SessionDetail, error)
+	DeleteSession(context.Context, string) (bool, error)
+	SessionExists(context.Context, string) (bool, error)
 }
 
 func (h *Handlers) AssistantStatus(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +56,15 @@ func (h *Handlers) AssistantStatus(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		status = h.assistant.Status(ctx)
 	}
+	status.SessionsPersisted = h.chatlog != nil
 	writeJSONNoStore(w, http.StatusOK, status)
+}
+
+// assistantChatResponseBody extends the canonical chat result with the id of
+// the persisted session the turn was appended to (empty without persistence).
+type assistantChatResponseBody struct {
+	analyticsagent.ChatResult
+	SessionID string `json:"session_id,omitempty"`
 }
 
 func (h *Handlers) AssistantChat(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +85,9 @@ func (h *Handlers) AssistantChat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.checkAssistantChatSession(w, r.Context(), input.SessionID) {
+		return
+	}
 
 	result, err := h.assistant.Chat(r.Context(), input)
 	if err != nil {
@@ -70,7 +95,131 @@ func (h *Handlers) AssistantChat(w http.ResponseWriter, r *http.Request) {
 		writeAssistantServiceError(w, err)
 		return
 	}
-	writeJSONNoStore(w, http.StatusOK, result)
+	sessionID := h.persistAssistantTurn(r.Context(), input, result)
+	writeJSONNoStore(w, http.StatusOK, assistantChatResponseBody{ChatResult: result, SessionID: sessionID})
+}
+
+// checkAssistantChatSession rejects turns addressed to a session that cannot
+// be appended to, before any provider work happens.
+func (h *Handlers) checkAssistantChatSession(w http.ResponseWriter, ctx context.Context, sessionID string) bool {
+	if sessionID == "" {
+		return true
+	}
+	if h.chatlog == nil {
+		writeAssistantError(w, http.StatusBadRequest, "assistant chat persistence is unavailable")
+		return false
+	}
+	exists, err := h.chatlog.SessionExists(ctx, sessionID)
+	if err != nil {
+		h.logger.Error("assistant chat session lookup failed", "error", err)
+		writeAssistantError(w, http.StatusInternalServerError, "assistant chat session lookup failed")
+		return false
+	}
+	if !exists {
+		writeAssistantError(w, http.StatusNotFound, "assistant chat session not found")
+		return false
+	}
+	return true
+}
+
+// persistAssistantTurn appends the completed exchange to the durable chat log.
+// Persistence failures are logged and never fail the chat itself.
+func (h *Handlers) persistAssistantTurn(ctx context.Context, input analyticsagent.ChatInput, result analyticsagent.ChatResult) string {
+	if h.chatlog == nil || len(input.Messages) == 0 {
+		return ""
+	}
+	prompt := input.Messages[len(input.Messages)-1]
+	if prompt.Role != "user" {
+		return ""
+	}
+	toolCalls := make([]chatstore.ToolCall, 0, len(result.ToolCalls))
+	for index, call := range result.ToolCalls {
+		toolCalls = append(toolCalls, chatstore.ToolCall{
+			Index: index, Name: call.Name,
+			Arguments: call.Arguments, Result: call.Result,
+			OK: call.OK, DurationMS: call.DurationMS,
+		})
+	}
+	// The chat may have been canceled-adjacent; persist with a background-safe
+	// context so a browser disconnect after completion cannot lose the turn.
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	sessionID, err := h.chatlog.AppendTurn(persistCtx, chatstore.Turn{
+		SessionID:          input.SessionID,
+		Provider:           "minimax",
+		Model:              result.Model,
+		UserContent:        prompt.Content,
+		AssistantContent:   result.Message.Content,
+		AssistantSignature: result.Message.Signature,
+		ToolCalls:          toolCalls,
+	})
+	if err != nil {
+		h.logger.Error("assistant chat turn was not persisted", "error", err)
+		return ""
+	}
+	return sessionID
+}
+
+func (h *Handlers) AssistantSessions(w http.ResponseWriter, r *http.Request) {
+	if rejectNonlocalAssistantOrigin(w, r) {
+		return
+	}
+	if h.chatlog == nil {
+		writeAssistantError(w, http.StatusServiceUnavailable, "assistant chat persistence is unavailable")
+		return
+	}
+	sessions, err := h.chatlog.ListSessions(r.Context(), maxAssistantSessionList)
+	if err != nil {
+		h.logger.Error("assistant chat sessions listing failed", "error", err)
+		writeAssistantError(w, http.StatusInternalServerError, "assistant chat sessions are unavailable")
+		return
+	}
+	writeJSONNoStore(w, http.StatusOK, struct {
+		Sessions []chatstore.Session `json:"sessions"`
+	}{Sessions: sessions})
+}
+
+func (h *Handlers) AssistantSessionByID(w http.ResponseWriter, r *http.Request) {
+	if rejectNonlocalAssistantOrigin(w, r) {
+		return
+	}
+	if h.chatlog == nil {
+		writeAssistantError(w, http.StatusServiceUnavailable, "assistant chat persistence is unavailable")
+		return
+	}
+	detail, err := h.chatlog.GetSession(r.Context(), r.PathValue("id"))
+	if errors.Is(err, chatstore.ErrSessionNotFound) {
+		writeAssistantError(w, http.StatusNotFound, "assistant chat session not found")
+		return
+	}
+	if err != nil {
+		h.logger.Error("assistant chat session load failed", "error", err)
+		writeAssistantError(w, http.StatusInternalServerError, "assistant chat session is unavailable")
+		return
+	}
+	writeJSONNoStore(w, http.StatusOK, detail)
+}
+
+func (h *Handlers) AssistantSessionDelete(w http.ResponseWriter, r *http.Request) {
+	if rejectNonlocalAssistantOrigin(w, r) {
+		return
+	}
+	if h.chatlog == nil {
+		writeAssistantError(w, http.StatusServiceUnavailable, "assistant chat persistence is unavailable")
+		return
+	}
+	deleted, err := h.chatlog.DeleteSession(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.logger.Error("assistant chat session delete failed", "error", err)
+		writeAssistantError(w, http.StatusInternalServerError, "assistant chat session delete failed")
+		return
+	}
+	if !deleted {
+		writeAssistantError(w, http.StatusNotFound, "assistant chat session not found")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // AssistantChatStream runs the same bounded report loop as AssistantChat while
@@ -99,6 +248,9 @@ func (h *Handlers) AssistantChatStream(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.checkAssistantChatSession(w, r.Context(), input.SessionID) {
+		return
+	}
 
 	stream := newAssistantNDJSONStream(w)
 	result, err := streaming.ChatStream(r.Context(), input, stream.forward)
@@ -116,6 +268,7 @@ func (h *Handlers) AssistantChatStream(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	sessionID := h.persistAssistantTurn(r.Context(), input, result)
 
 	if err := stream.start(result.Model); err != nil {
 		return
@@ -128,11 +281,17 @@ func (h *Handlers) AssistantChatStream(w http.ResponseWriter, r *http.Request) {
 	if toolsUsed == nil {
 		toolsUsed = make([]string, 0)
 	}
+	toolCalls := result.ToolCalls
+	if toolCalls == nil {
+		toolCalls = make([]analyticsagent.ToolCallRecord, 0)
+	}
 	_ = stream.write(assistantStreamCompleteFrame{
 		Type:      "complete",
 		Message:   result.Message,
 		Model:     model,
 		ToolsUsed: toolsUsed,
+		ToolCalls: toolCalls,
+		SessionID: sessionID,
 	})
 }
 
@@ -169,19 +328,24 @@ type assistantNDJSONStream struct {
 }
 
 type assistantStreamProgressFrame struct {
-	Type   string `json:"type"`
-	Delta  string `json:"delta,omitempty"`
-	CallID string `json:"call_id,omitempty"`
-	Name   string `json:"name,omitempty"`
-	OK     *bool  `json:"ok,omitempty"`
-	Model  string `json:"model,omitempty"`
+	Type       string          `json:"type"`
+	Delta      string          `json:"delta,omitempty"`
+	CallID     string          `json:"call_id,omitempty"`
+	Name       string          `json:"name,omitempty"`
+	OK         *bool           `json:"ok,omitempty"`
+	Model      string          `json:"model,omitempty"`
+	Arguments  json.RawMessage `json:"arguments,omitempty"`
+	Result     json.RawMessage `json:"result,omitempty"`
+	DurationMS int64           `json:"duration_ms,omitempty"`
 }
 
 type assistantStreamCompleteFrame struct {
-	Type      string                        `json:"type"`
-	Message   analyticsagent.BrowserMessage `json:"message"`
-	Model     string                        `json:"model"`
-	ToolsUsed []string                      `json:"tools_used"`
+	Type      string                          `json:"type"`
+	Message   analyticsagent.BrowserMessage   `json:"message"`
+	Model     string                          `json:"model"`
+	ToolsUsed []string                        `json:"tools_used"`
+	ToolCalls []analyticsagent.ToolCallRecord `json:"tool_calls"`
+	SessionID string                          `json:"session_id,omitempty"`
 }
 
 type assistantStreamErrorFrame struct {
@@ -243,7 +407,7 @@ func (s *assistantNDJSONStream) forward(event analyticsagent.StreamEvent) error 
 		if err := s.start(event.Model); err != nil {
 			return err
 		}
-		return s.write(assistantStreamProgressFrame{Type: event.Type, CallID: event.CallID, Name: event.Name})
+		return s.write(assistantStreamProgressFrame{Type: event.Type, CallID: event.CallID, Name: event.Name, Arguments: safeFrameJSON(event.Arguments)})
 	case analyticsagent.StreamEventToolFinish:
 		if strings.TrimSpace(event.CallID) == "" || strings.TrimSpace(event.Name) == "" || event.OK == nil {
 			return errors.New("invalid assistant tool-finish stream event")
@@ -251,10 +415,19 @@ func (s *assistantNDJSONStream) forward(event analyticsagent.StreamEvent) error 
 		if err := s.start(event.Model); err != nil {
 			return err
 		}
-		return s.write(assistantStreamProgressFrame{Type: event.Type, CallID: event.CallID, Name: event.Name, OK: event.OK})
+		return s.write(assistantStreamProgressFrame{Type: event.Type, CallID: event.CallID, Name: event.Name, OK: event.OK, Result: safeFrameJSON(event.Result), DurationMS: event.DurationMS})
 	default:
 		return errors.New("invalid assistant stream event")
 	}
+}
+
+// safeFrameJSON keeps NDJSON frames well-formed even if an upstream event
+// carries malformed raw JSON: invalid payloads are dropped, never emitted.
+func safeFrameJSON(value json.RawMessage) json.RawMessage {
+	if len(value) == 0 || !json.Valid(value) {
+		return nil
+	}
+	return value
 }
 
 func assistantServiceError(err error) (int, string) {

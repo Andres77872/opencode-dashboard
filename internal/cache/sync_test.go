@@ -185,8 +185,8 @@ func TestFirstSyncPrunesLegacyUnfinalizedRows(t *testing.T) {
 	// Simulate a pre-v4 cache: a mirrored un-finalized row beyond the cutoff
 	// and a stale fingerprint.
 	if _, err := store.db.ExecContext(ctx, `
-		INSERT INTO message_index (source_id, message_id, session_id, session_title, role, time_created_ms, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens)
-		VALUES (?, 'legacy-unfinalized', 'session-1', 't', 'assistant', ?, 0.5, 1, 1, 0, 0, 0)
+		INSERT INTO message_index (source_id, message_id, session_id, role, time_created_ms, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens)
+		VALUES (?, 'legacy-unfinalized', 'session-1', 'assistant', ?, 0.5, 1, 1, 0, 0, 0)
 	`, syncFakeSourceID, base.Add(-1*time.Hour).UnixMilli()); err != nil {
 		t.Fatalf("seed legacy row: %v", err)
 	}

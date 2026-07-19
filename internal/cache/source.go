@@ -130,6 +130,16 @@ func (s *CachedSource) runFill(done chan struct{}) {
 	s.freshMu.Unlock()
 }
 
+// rejectLiveOnlyFilter refuses model/provider-filtered reads when the whole
+// window would be served live: live sources do not implement the predicate,
+// so honoring the request would silently return unfiltered data.
+func (s *CachedSource) rejectLiveOnlyFilter(pq stats.PeriodQuery) error {
+	if filterFromPQ(pq).active() {
+		return fmt.Errorf("model/provider filters need consolidated cache data; source %q has not been consolidated yet", s.sourceID())
+	}
+	return nil
+}
+
 func (s *CachedSource) sourceID() string {
 	if s == nil {
 		return ""
@@ -169,6 +179,9 @@ func (s *CachedSource) Overview(ctx context.Context, pq stats.PeriodQuery) (stat
 		return stats.OverviewStats{}, err
 	}
 	if !sp.hasCache {
+		if err := s.rejectLiveOnlyFilter(pq); err != nil {
+			return stats.OverviewStats{}, err
+		}
 		return s.live.Overview(ctx, sp.livePQ)
 	}
 	c, err := s.store.Overview(ctx, s.sourceID(), sp.cachePQ)
@@ -191,6 +204,9 @@ func (s *CachedSource) Daily(ctx context.Context, pq stats.PeriodQuery, granular
 		return stats.DailyStats{}, err
 	}
 	if !sp.hasCache {
+		if err := s.rejectLiveOnlyFilter(pq); err != nil {
+			return stats.DailyStats{}, err
+		}
 		return s.live.Daily(ctx, sp.livePQ, gran)
 	}
 	c, err := s.store.Daily(ctx, s.sourceID(), sp.cachePQ, gran)
@@ -421,6 +437,9 @@ func (s *CachedSource) Messages(ctx context.Context, pq stats.PeriodQuery, page,
 		return stats.MessageList{}, err
 	}
 	if !sp.hasCache {
+		if err := s.rejectLiveOnlyFilter(pq); err != nil {
+			return stats.MessageList{}, err
+		}
 		return s.live.Messages(ctx, sp.livePQ, page, limit, sort)
 	}
 	if !sp.hasLive {

@@ -80,8 +80,8 @@ func TestCORSMiddleware(t *testing.T) {
 				t.Error("Access-Control-Allow-Origin must never be a wildcard: the API is unauthenticated")
 			}
 
-			if w.Header().Get("Access-Control-Allow-Methods") != "GET, POST, OPTIONS" {
-				t.Errorf("Access-Control-Allow-Methods = %q, want %q", w.Header().Get("Access-Control-Allow-Methods"), "GET, POST, OPTIONS")
+			if w.Header().Get("Access-Control-Allow-Methods") != "GET, POST, DELETE, OPTIONS" {
+				t.Errorf("Access-Control-Allow-Methods = %q, want %q", w.Header().Get("Access-Control-Allow-Methods"), "GET, POST, DELETE, OPTIONS")
 			}
 		})
 	}

@@ -127,13 +127,15 @@ func (s *Store) distinctSessionOverlap(ctx context.Context, sourceID string, sta
 	return total, nil
 }
 
-// hasActivity reports whether any cached message falls inside [startMs, endMs).
-func (s *Store) hasActivity(ctx context.Context, sourceID string, startMs, endMs int64) (bool, error) {
+// hasActivity reports whether any cached message matching extraWhere falls
+// inside [startMs, endMs).
+func (s *Store) hasActivity(ctx context.Context, sourceID string, startMs, endMs int64, extraWhere string, extraArgs []any) (bool, error) {
 	if endMs <= startMs {
 		return false, nil
 	}
 	var one int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM message_index WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ? LIMIT 1`, sourceID, startMs, endMs).Scan(&one)
+	args := append([]any{sourceID, startMs, endMs}, extraArgs...)
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM message_index WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?`+extraWhere+` LIMIT 1`, args...).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -150,8 +152,10 @@ func (s *Store) messagesTotal(ctx context.Context, sourceID string, pq stats.Per
 		return 0, err
 	}
 	startMs, endMs := w.ms()
+	msgWhere, msgArgs := filterFromPQ(pq).messageWhere()
+	args := append([]any{sourceID, startMs, endMs}, msgArgs...)
 	var total int64
-	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM message_index WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?`, sourceID, startMs, endMs).Scan(&total)
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM message_index WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?`+msgWhere, args...).Scan(&total)
 	return total, err
 }
 
@@ -170,18 +174,20 @@ func (s *Store) messagesSlice(ctx context.Context, sourceID string, pq stats.Per
 		return nil, err
 	}
 	startMs, endMs := w.ms()
+	msgWhere, msgArgs := filterFromPQ(pq).messageWhere()
+	args := append(append([]any{sourceID, startMs, endMs}, msgArgs...), limit, offset)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			message_id, session_id, session_title, role, time_created_ms, cost,
+			message_id, session_id, role, time_created_ms, cost,
 			input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens,
 			COALESCE(model_id, ''), COALESCE(provider_id, ''),
 			COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent,
 			folded_assistant_calls, folded_tool_calls, folded_token_updates, COALESCE(cost_status, ''), cost_provenance_json
 		FROM message_index
-		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?
+		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?`+msgWhere+`
 		ORDER BY `+messageOrderBy(sortSpec)+`
 		LIMIT ? OFFSET ?
-	`, sourceID, startMs, endMs, limit, offset)
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -220,48 +226,16 @@ func (s *Store) sessionWindowRows(ctx context.Context, sourceID string, query st
 		return 0, nil, nil, err
 	}
 	startMs, endMs := w.ms()
-	filter := strings.ToLower(strings.TrimSpace(query.Filter))
-	filterLike := "%" + filter + "%"
-	args := []any{sourceID, startMs, endMs, filter, filterLike, filterLike}
-	where := `
-		m.source_id = ? AND m.time_created_ms >= ? AND m.time_created_ms < ?
-		AND (? = '' OR LOWER(COALESCE(ss.title, '')) LIKE ? OR LOWER(COALESCE(ss.project_name, '')) LIKE ?)
-	`
-	if query.ProjectID != "" {
-		where += ` AND ss.project_id = ?`
-		args = append(args, query.ProjectID)
-	}
+	spec := newSessionListSpec(sourceID, startMs, endMs, query)
 
-	countQuery := `SELECT COUNT(*) FROM (SELECT ss.session_id FROM sessions ss JOIN message_index m ON m.source_id = ss.source_id AND m.session_id = ss.session_id WHERE ` + where + ` GROUP BY ss.session_id)`
+	countQuery, countArgs := spec.countQuery()
 	var total int64
-	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
 		return 0, nil, nil, err
 	}
 
-	order := "MIN(ss.time_created_ms) DESC"
-	switch query.Sort {
-	case stats.SessionSortOldest:
-		order = "MIN(ss.time_created_ms) ASC"
-	case stats.SessionSortCost:
-		order = "SUM(m.cost) DESC, MIN(ss.time_created_ms) DESC"
-	case stats.SessionSortMessages:
-		order = "COUNT(m.message_id) DESC, MIN(ss.time_created_ms) DESC"
-	}
 	selectRows := func(extra string, extraArgs []any, rowLimit int) ([]stats.SessionEntry, error) {
-		listQuery := `
-			SELECT
-				ss.session_id, ss.title, COALESCE(ss.project_id, ''), COALESCE(ss.project_name, ''),
-				MIN(ss.time_created_ms), MAX(ss.time_updated_ms), COUNT(m.message_id), COALESCE(SUM(m.cost), 0)
-			FROM sessions ss
-			JOIN message_index m ON m.source_id = ss.source_id AND m.session_id = ss.session_id
-			WHERE ` + where + extra + `
-			GROUP BY ss.session_id
-			ORDER BY ` + order
-		listArgs := append(append([]any{}, args...), extraArgs...)
-		if rowLimit > 0 {
-			listQuery += ` LIMIT ?`
-			listArgs = append(listArgs, rowLimit)
-		}
+		listQuery, listArgs := spec.listQuery(extra, extraArgs, rowLimit, 0)
 		rows, err := s.db.QueryContext(ctx, listQuery, listArgs...)
 		if err != nil {
 			return nil, err
@@ -277,7 +251,6 @@ func (s *Store) sessionWindowRows(ctx context.Context, sourceID string, query st
 			}
 			entry.TimeCreated = time.UnixMilli(createdMs).UTC()
 			entry.TimeUpdated = time.UnixMilli(updatedMs).UTC()
-			entry.CostStatus, entry.CostProvenance = s.costSummaryForSession(ctx, sourceID, entry.ID, startMs, endMs)
 			entries = append(entries, entry)
 		}
 		return entries, rows.Err()
@@ -300,6 +273,23 @@ func (s *Store) sessionWindowRows(ctx context.Context, sourceID string, query st
 		}
 		for _, entry := range entries {
 			byID[entry.ID] = entry
+		}
+	}
+	if err := s.attachSessionCostSummaries(ctx, sourceID, startMs, endMs, ranked); err != nil {
+		return 0, nil, nil, err
+	}
+	extraIDs := make([]string, 0, len(byID))
+	for id := range byID {
+		extraIDs = append(extraIDs, id)
+	}
+	summaries, err := s.costSummariesForSessions(ctx, sourceID, startMs, endMs, extraIDs)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	for id, entry := range byID {
+		if counts := summaries[id]; counts != nil {
+			entry.CostStatus, entry.CostProvenance = counts.result()
+			byID[id] = entry
 		}
 	}
 	return total, ranked, byID, nil

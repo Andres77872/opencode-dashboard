@@ -34,6 +34,7 @@ function completeEvent(content = 'Résumé 😀') {
     message: { role: 'assistant', content, signature: 'signed-response' },
     model: 'MiniMax-M3',
     tools_used: ['get_daily_usage'],
+    tool_calls: [],
   } as const
 }
 
@@ -56,6 +57,42 @@ test('parses every event shape into the discriminated stream union', () => {
     events.map((event, index) => parseAssistantStreamEvent(JSON.stringify(event), index + 1)),
     events,
   )
+})
+
+test('parses tool input/output, per-call durations, session ids, and canonical tool_calls', () => {
+  const toolStart = {
+    type: 'tool_start',
+    call_id: 'call-1',
+    name: 'get_overview',
+    arguments: { source: 'opencode', period: '7d' },
+  }
+  const toolFinish = {
+    type: 'tool_finish',
+    call_id: 'call-1',
+    name: 'get_overview',
+    ok: true,
+    result: { ok: true, data: { sessions: 4 } },
+    duration_ms: 32,
+  }
+  const complete = {
+    type: 'complete',
+    message: { role: 'assistant', content: 'Report.', signature: 'signed' },
+    model: 'MiniMax-M3',
+    tools_used: ['get_overview'],
+    tool_calls: [{
+      call_id: 'call-1',
+      name: 'get_overview',
+      ok: true,
+      arguments: { source: 'opencode', period: '7d' },
+      result: { ok: true, data: { sessions: 4 } },
+      duration_ms: 32,
+    }],
+    session_id: 'cs_0123456789abcdef0123456789abcdef',
+  }
+
+  assert.deepEqual(parseAssistantStreamEvent(JSON.stringify(toolStart)), toolStart)
+  assert.deepEqual(parseAssistantStreamEvent(JSON.stringify(toolFinish)), toolFinish)
+  assert.deepEqual(parseAssistantStreamEvent(JSON.stringify(complete)), complete)
 })
 
 test('decodes arbitrary network and multi-byte UTF-8 chunk boundaries incrementally', async () => {
@@ -127,8 +164,12 @@ test('rejects malformed, unknown, and structurally invalid records', () => {
     JSON.stringify({ type: 'start', model: '' }),
     JSON.stringify({ type: 'content_delta', delta: 7 }),
     JSON.stringify({ type: 'content_reset', extra: true }),
+    JSON.stringify({ type: 'tool_start', call_id: 'call-1', name: 'tool', unexpected: true }),
     JSON.stringify({ type: 'tool_finish', call_id: 'call-1', name: 'tool', ok: 'yes' }),
+    JSON.stringify({ type: 'tool_finish', call_id: 'call-1', name: 'tool', ok: true, duration_ms: 'fast' }),
     JSON.stringify({ ...completeEvent(), tools_used: [''] }),
+    JSON.stringify({ ...completeEvent(), session_id: '' }),
+    JSON.stringify({ ...completeEvent(), tool_calls: [{ name: 'missing-fields' }] }),
     JSON.stringify({ type: 'error', message: '' }),
   ]
 

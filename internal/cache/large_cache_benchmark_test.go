@@ -67,7 +67,71 @@ func TestLargeCacheRollupParity(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertModelTrendParity(t, legacyTrend, rollupTrend)
+
+			legacyDaily, err := legacyCachedDaily(ctx, store, sourceID, pq)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rollupDaily, err := store.Daily(ctx, sourceID, pq)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertDailyParity(t, legacyDaily, rollupDaily)
+
+			sq := stats.SessionQuery{Period: period, PageSize: 100}
+			legacySessions, err := legacyCachedSessions(ctx, store, sourceID, sq)
+			if err != nil {
+				t.Fatal(err)
+			}
+			newSessions, err := store.Sessions(ctx, sourceID, sq)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertSessionParity(t, legacySessions, newSessions)
 		})
+	}
+}
+
+func assertDailyParity(t *testing.T, want, got stats.DailyStats) {
+	t.Helper()
+	if len(want.Days) != len(got.Days) {
+		t.Errorf("daily row count legacy=%d rollup=%d", len(want.Days), len(got.Days))
+		return
+	}
+	for i, legacy := range want.Days {
+		rollup := got.Days[i]
+		if legacy.Date != rollup.Date || legacy.Sessions != rollup.Sessions || legacy.Messages != rollup.Messages || legacy.Tokens != rollup.Tokens || !closeCost(legacy.Cost, rollup.Cost) {
+			t.Errorf("day %s mismatch\nlegacy: %#v\nrollup: %#v", legacy.Date, legacy, rollup)
+		}
+		assertCostParity(t, legacy.CostStatus, legacy.CostProvenance, rollup.CostStatus, rollup.CostProvenance)
+	}
+	assertCostParity(t, want.CostStatus, want.CostProvenance, got.CostStatus, got.CostProvenance)
+}
+
+// assertSessionParity compares by id (not order) because the legacy and new
+// queries have no deterministic tiebreak for equal sort keys.
+func assertSessionParity(t *testing.T, want, got stats.SessionList) {
+	t.Helper()
+	if want.Total != got.Total {
+		t.Errorf("session total legacy=%d new=%d", want.Total, got.Total)
+	}
+	if len(want.Sessions) != len(got.Sessions) {
+		t.Errorf("session row count legacy=%d new=%d", len(want.Sessions), len(got.Sessions))
+	}
+	byID := make(map[string]stats.SessionEntry, len(got.Sessions))
+	for _, entry := range got.Sessions {
+		byID[entry.ID] = entry
+	}
+	for _, legacy := range want.Sessions {
+		entry, ok := byID[legacy.ID]
+		if !ok {
+			t.Errorf("new sessions missing %q", legacy.ID)
+			continue
+		}
+		if legacy.MessageCount != entry.MessageCount || !closeCost(legacy.Cost, entry.Cost) || !legacy.TimeCreated.Equal(entry.TimeCreated) {
+			t.Errorf("session %q mismatch\nlegacy: %#v\nnew: %#v", legacy.ID, legacy, entry)
+		}
+		assertCostParity(t, legacy.CostStatus, legacy.CostProvenance, entry.CostStatus, entry.CostProvenance)
 	}
 }
 
@@ -229,6 +293,35 @@ func BenchmarkLargeCacheRollups(b *testing.B) {
 				}
 			}
 		})
+		b.Run(period+"/daily_legacy", func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				if _, err := legacyCachedDaily(ctx, store, sourceID, pq); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run(period+"/daily_rollup", func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				if _, err := store.Daily(ctx, sourceID, pq); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		sq := stats.SessionQuery{Period: period, PageSize: 100}
+		b.Run(period+"/sessions_legacy", func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				if _, err := legacyCachedSessions(ctx, store, sourceID, sq); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run(period+"/sessions_new", func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				if _, err := store.Sessions(ctx, sourceID, sq); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
@@ -345,6 +438,160 @@ func legacyCachedModelTrend(ctx context.Context, store *Store, sourceID, period 
 		SourceID: sourceID, Days: days, Dimension: "model", Period: period,
 		CostStatus: status, CostProvenance: provenance,
 	}, nil
+}
+
+// legacyCachedDaily is the pre-rollup dailyDay implementation: a per-message
+// window scan plus one full-calendar-day cost summary per day. On cached data
+// with day-aligned window starts (30d/all) its output matches the rollup path
+// exactly, because the cache holds no rows at/after the finality cutoff.
+func legacyCachedDaily(ctx context.Context, store *Store, sourceID string, pq stats.PeriodQuery) (stats.DailyStats, error) {
+	w, err := store.periodWindow(ctx, sourceID, pq)
+	if err != nil {
+		return stats.DailyStats{}, err
+	}
+	startMs, endMs := w.ms()
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT
+			DATE(time_created_ms / 1000, 'unixepoch') AS day,
+			COUNT(DISTINCT session_id),
+			COUNT(*),
+			COALESCE(SUM(cost), 0),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(reasoning_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0),
+			COALESCE(SUM(cache_write_tokens), 0)
+		FROM message_index
+		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?
+		GROUP BY day
+	`, sourceID, startMs, endMs)
+	if err != nil {
+		return stats.DailyStats{}, err
+	}
+	byDay := make(map[string]stats.DayStats)
+	scanErr := func() error {
+		defer rows.Close()
+		for rows.Next() {
+			var d stats.DayStats
+			d.SourceID = sourceID
+			var cacheRead, cacheWrite int64
+			if err := rows.Scan(&d.Date, &d.Sessions, &d.Messages, &d.Cost, &d.Tokens.Input, &d.Tokens.Output, &d.Tokens.Reasoning, &cacheRead, &cacheWrite); err != nil {
+				return err
+			}
+			d.Tokens.Cache.Read = cacheRead
+			d.Tokens.Cache.Write = cacheWrite
+			byDay[d.Date] = d
+		}
+		return rows.Err()
+	}()
+	if scanErr != nil {
+		return stats.DailyStats{}, scanErr
+	}
+	for key, d := range byDay {
+		dayStart := dayStartMs(key)
+		d.CostStatus, d.CostProvenance, err = legacyCostSummaryWhere(ctx, store, sourceID, dayStart, dayStart+24*int64(time.Hour/time.Millisecond), "", nil)
+		if err != nil {
+			return stats.DailyStats{}, err
+		}
+		byDay[key] = d
+	}
+	days := make([]stats.DayStats, 0)
+	for t := utcDay(w.start); t.Before(w.end); t = t.AddDate(0, 0, 1) {
+		key := t.Format("2006-01-02")
+		if d, ok := byDay[key]; ok {
+			days = append(days, d)
+		} else {
+			days = append(days, stats.DayStats{SourceID: sourceID, Date: key})
+		}
+	}
+	status, provenance, err := legacyCostSummary(ctx, store, sourceID, startMs, endMs)
+	if err != nil {
+		return stats.DailyStats{}, err
+	}
+	return stats.DailyStats{SourceID: sourceID, Days: days, Granularity: stats.GranularityDay, CostStatus: status, CostProvenance: provenance}, nil
+}
+
+// legacyCachedSessions is the pre-rewrite Sessions implementation: sessions
+// joined to per-message rows before grouping, plus one cost summary query per
+// returned session.
+func legacyCachedSessions(ctx context.Context, store *Store, sourceID string, query stats.SessionQuery) (stats.SessionList, error) {
+	if query.Page < 1 {
+		query.Page = 1
+	}
+	if query.PageSize < 1 {
+		query.PageSize = 20
+	}
+	if query.PageSize > 100 {
+		query.PageSize = 100
+	}
+	pq := stats.PeriodQuery{Period: query.Period, From: query.From, To: query.To, FromTime: query.FromTime, ToTime: query.ToTime}
+	w, err := store.periodWindow(ctx, sourceID, pq)
+	if err != nil {
+		return stats.SessionList{}, err
+	}
+	startMs, endMs := w.ms()
+	args := []any{sourceID, startMs, endMs}
+	where := `m.source_id = ? AND m.time_created_ms >= ? AND m.time_created_ms < ?`
+	if query.ProjectID != "" {
+		where += ` AND ss.project_id = ?`
+		args = append(args, query.ProjectID)
+	}
+	countQuery := `SELECT COUNT(*) FROM (SELECT ss.session_id FROM sessions ss JOIN message_index m ON m.source_id = ss.source_id AND m.session_id = ss.session_id WHERE ` + where + ` GROUP BY ss.session_id)`
+	var total int64
+	if err := store.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return stats.SessionList{}, err
+	}
+	order := "MIN(ss.time_created_ms) DESC"
+	switch query.Sort {
+	case stats.SessionSortOldest:
+		order = "MIN(ss.time_created_ms) ASC"
+	case stats.SessionSortCost:
+		order = "SUM(m.cost) DESC, MIN(ss.time_created_ms) DESC"
+	case stats.SessionSortMessages:
+		order = "COUNT(m.message_id) DESC, MIN(ss.time_created_ms) DESC"
+	}
+	listQuery := `
+		SELECT
+			ss.session_id, ss.title, COALESCE(ss.project_id, ''), COALESCE(ss.project_name, ''),
+			MIN(ss.time_created_ms), MAX(ss.time_updated_ms), COUNT(m.message_id), COALESCE(SUM(m.cost), 0)
+		FROM sessions ss
+		JOIN message_index m ON m.source_id = ss.source_id AND m.session_id = ss.session_id
+		WHERE ` + where + `
+		GROUP BY ss.session_id
+		ORDER BY ` + order + `
+		LIMIT ? OFFSET ?
+	`
+	listArgs := append(append([]any{}, args...), query.PageSize, (query.Page-1)*query.PageSize)
+	rows, err := store.db.QueryContext(ctx, listQuery, listArgs...)
+	if err != nil {
+		return stats.SessionList{}, err
+	}
+	entries := make([]stats.SessionEntry, 0)
+	scanErr := func() error {
+		defer rows.Close()
+		for rows.Next() {
+			var entry stats.SessionEntry
+			var createdMs, updatedMs int64
+			entry.SourceID = sourceID
+			if err := rows.Scan(&entry.ID, &entry.Title, &entry.ProjectID, &entry.ProjectName, &createdMs, &updatedMs, &entry.MessageCount, &entry.Cost); err != nil {
+				return err
+			}
+			entry.TimeCreated = time.UnixMilli(createdMs).UTC()
+			entry.TimeUpdated = time.UnixMilli(updatedMs).UTC()
+			entries = append(entries, entry)
+		}
+		return rows.Err()
+	}()
+	if scanErr != nil {
+		return stats.SessionList{}, scanErr
+	}
+	for i := range entries {
+		entries[i].CostStatus, entries[i].CostProvenance, err = legacyCostSummaryWhere(ctx, store, sourceID, startMs, endMs, "AND session_id = ?", []any{entries[i].ID})
+		if err != nil {
+			return stats.SessionList{}, err
+		}
+	}
+	return stats.SessionList{SourceID: sourceID, Sessions: entries, Total: total, Page: query.Page, PageSize: query.PageSize}, nil
 }
 
 func legacyCostSummaryForModel(ctx context.Context, store *Store, sourceID, modelID, providerID string, startMs, endMs int64) (stats.CostStatus, *stats.CostProvenance, error) {

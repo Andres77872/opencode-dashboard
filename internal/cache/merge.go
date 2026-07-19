@@ -139,6 +139,10 @@ type gapData struct {
 const gapPageSize = 100
 
 func fetchGapMessages(ctx context.Context, live sourceReader, pq stats.PeriodQuery) (gapData, error) {
+	// Live sources do not implement model filtering: fetch the gap unfiltered
+	// and apply the predicate in Go.
+	f := filterFromPQ(pq)
+	pq.Model, pq.Provider = "", ""
 	var g gapData
 	for page := 1; ; page++ {
 		list, err := live.Messages(ctx, pq, page, gapPageSize, syncSort)
@@ -150,6 +154,9 @@ func fetchGapMessages(ctx context.Context, live sourceReader, pq stats.PeriodQue
 			g.total = list.Total
 		}
 		for _, entry := range list.Messages {
+			if !f.matches(entry) {
+				continue
+			}
 			if entry.CostStatus == "" && entry.Role == "assistant" {
 				entry.CostStatus = list.CostStatus
 				entry.CostProvenance = list.CostProvenance
@@ -350,7 +357,10 @@ func (s *CachedSource) mergeOverview(ctx context.Context, sp splitWindows, c sta
 	addTokens(&out.Tokens, agg.tokens)
 
 	startMs, endMs := sp.cacheWindowMs()
-	overlap, err := s.store.distinctSessionOverlap(ctx, s.sourceID(), startMs, endMs, agg.sessionIDs(), "", nil)
+	// The cache-side dedup checks must see the same filtered population as
+	// the merged halves.
+	msgWhere, msgArgs := filterFromPQ(sp.cachePQ).messageWhere()
+	overlap, err := s.store.distinctSessionOverlap(ctx, s.sourceID(), startMs, endMs, agg.sessionIDs(), msgWhere, msgArgs)
 	if err != nil {
 		return out, err
 	}
@@ -364,7 +374,7 @@ func (s *CachedSource) mergeOverview(ctx context.Context, sp splitWindows, c sta
 		if startMs > lo {
 			lo = startMs
 		}
-		active, err := s.store.hasActivity(ctx, s.sourceID(), lo, endMs)
+		active, err := s.store.hasActivity(ctx, s.sourceID(), lo, endMs, msgWhere, msgArgs)
 		if err != nil {
 			return out, err
 		}
@@ -491,7 +501,8 @@ func (s *CachedSource) mergeDaily(ctx context.Context, sp splitWindows, gran sta
 			if startMs > lo {
 				lo = startMs
 			}
-			overlap, err := s.store.distinctSessionOverlap(ctx, sourceID, lo, endMs, b.sessionIDs(), "", nil)
+			msgWhere, msgArgs := filterFromPQ(sp.cachePQ).messageWhere()
+			overlap, err := s.store.distinctSessionOverlap(ctx, sourceID, lo, endMs, b.sessionIDs(), msgWhere, msgArgs)
 			if err != nil {
 				return out, err
 			}

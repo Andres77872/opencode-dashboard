@@ -24,6 +24,8 @@ import type {
 import type {
   AssistantChatRequest,
   AssistantChatResponse,
+  AssistantChatSessionDetail,
+  AssistantChatSessionListResponse,
   AssistantStatusResponse,
   AssistantStreamCompleteEvent,
   AssistantStreamEvent,
@@ -162,8 +164,28 @@ export function syncCache(sourceId?: SourceID, mode: CacheSyncMode = 'incrementa
   })
 }
 
-export function getOverview(period: string, signal?: AbortSignal, sourceId?: SourceID) {
-  return request<OverviewStats>(buildUrl('/api/v1/overview', period, undefined, sourceId), { signal })
+/**
+ * Optional model/provider filter for overview, daily, and messages requests.
+ * Only cache-backed reads honor it; filtered token totals are model-attributed.
+ */
+export interface ModelFilterParams {
+  model?: string
+  provider?: string
+}
+
+function withModelFilter(
+  extra: Record<string, string> | undefined,
+  filter?: ModelFilterParams,
+): Record<string, string> | undefined {
+  if (!filter?.model && !filter?.provider) return extra
+  const params = { ...(extra ?? {}) }
+  if (filter.model) params.model = filter.model
+  if (filter.provider) params.provider = filter.provider
+  return params
+}
+
+export function getOverview(period: string, signal?: AbortSignal, sourceId?: SourceID, filter?: ModelFilterParams) {
+  return request<OverviewStats>(buildUrl('/api/v1/overview', period, withModelFilter(undefined, filter), sourceId), { signal })
 }
 
 // getOverviewAll fetches the cross-source aggregate. It deliberately takes no
@@ -189,8 +211,8 @@ export function getOverviewAllModels(period: string, signal?: AbortSignal) {
   )
 }
 
-export function getDaily(period: string, signal?: AbortSignal, sourceId?: SourceID) {
-  return request<DailyStats>(buildUrl('/api/v1/daily', period, undefined, sourceId), { signal })
+export function getDaily(period: string, signal?: AbortSignal, sourceId?: SourceID, filter?: ModelFilterParams) {
+  return request<DailyStats>(buildUrl('/api/v1/daily', period, withModelFilter(undefined, filter), sourceId), { signal })
 }
 
 export function getModels(period: string, signal?: AbortSignal, sourceId?: SourceID) {
@@ -279,7 +301,7 @@ export function getSessionDetail(id: string, signal?: AbortSignal, sourceId?: So
   return request<SessionDetail>(buildDetailUrl(`/api/v1/sessions/${encodeURIComponent(id)}`, sourceId), { signal })
 }
 
-export function getMessages(period: string, page: number, limit: number, sort?: string, signal?: AbortSignal, sourceId?: SourceID) {
+export function getMessages(period: string, page: number, limit: number, sort?: string, signal?: AbortSignal, sourceId?: SourceID, filter?: ModelFilterParams) {
   const extraParams: Record<string, string> = {
     page: String(page),
     limit: String(limit),
@@ -289,7 +311,7 @@ export function getMessages(period: string, page: number, limit: number, sort?: 
     extraParams.sort = sort
   }
 
-  return request<MessageList>(buildUrl('/api/v1/messages', period, extraParams, sourceId), { signal })
+  return request<MessageList>(buildUrl('/api/v1/messages', period, withModelFilter(extraParams, filter), sourceId), { signal })
 }
 
 export function getMessageDetail(id: string, signal?: AbortSignal, sourceId?: SourceID) {
@@ -302,6 +324,24 @@ export function getQuotas(signal?: AbortSignal) {
 
 export function getAssistantStatus(signal?: AbortSignal) {
   return request<AssistantStatusResponse>('/api/v1/assistant/status', { signal })
+}
+
+export function getAssistantSessions(signal?: AbortSignal) {
+  return request<AssistantChatSessionListResponse>('/api/v1/assistant/sessions', { signal })
+}
+
+export function getAssistantSession(id: string, signal?: AbortSignal) {
+  return request<AssistantChatSessionDetail>(`/api/v1/assistant/sessions/${encodeURIComponent(id)}`, { signal })
+}
+
+export async function deleteAssistantSession(id: string, signal?: AbortSignal) {
+  const response = await fetch(resolveUrl(`/api/v1/assistant/sessions/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+    signal,
+  })
+  if (!response.ok) {
+    throw new ApiClientError(await parseError(response), response.status)
+  }
 }
 
 export function sendAssistantChat(payload: AssistantChatRequest, signal?: AbortSignal) {

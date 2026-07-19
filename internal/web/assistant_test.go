@@ -10,11 +10,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"opencode-dashboard/internal/analyticsagent"
+	"opencode-dashboard/internal/chatstore"
 	"opencode-dashboard/internal/source"
 )
 
@@ -712,5 +714,248 @@ func TestAssistantPromptIsNotLogged(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), sentinel) {
 		t.Fatalf("prompt leaked to request log: %s", logs.String())
+	}
+}
+
+func assistantTestServerWithChatLog(t *testing.T, service AssistantService) (*http.Server, *chatstore.Store) {
+	t.Helper()
+	store, err := chatstore.Open(context.Background(), filepath.Join(t.TempDir(), "assistant-chat.sqlite"))
+	if err != nil {
+		t.Fatalf("open chat store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	server := NewServerWithChatLog("", source.NewRegistry(source.SourceOpenCode), slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, service, store)
+	return server, store
+}
+
+func TestAssistantChatStreamPersistsTurnWithToolCalls(t *testing.T) {
+	okValue := true
+	service := &fakeAssistantService{
+		streamEvents: []analyticsagent.StreamEvent{
+			{Type: analyticsagent.StreamEventToolStart, CallID: "tool-1", Name: "get_overview", Arguments: json.RawMessage(`{"source":"opencode"}`)},
+			{Type: analyticsagent.StreamEventToolFinish, CallID: "tool-1", Name: "get_overview", OK: &okValue, Result: json.RawMessage(`{"ok":true,"data":{}}`), DurationMS: 25},
+			{Type: analyticsagent.StreamEventContentDelta, Delta: "Report body."},
+		},
+		streamResult: analyticsagent.ChatResult{
+			Message:   analyticsagent.BrowserMessage{Role: "assistant", Content: "Report body.", Signature: "sig"},
+			Model:     "MiniMax-M3",
+			ToolsUsed: []string{"get_overview"},
+			ToolCalls: []analyticsagent.ToolCallRecord{{
+				CallID: "tool-1", Name: "get_overview",
+				Arguments: json.RawMessage(`{"source":"opencode"}`),
+				Result:    json.RawMessage(`{"ok":true,"data":{}}`),
+				OK:        true, DurationMS: 25,
+			}},
+		},
+	}
+	server, store := assistantTestServerWithChatLog(t, service)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/assistant/chat/stream", strings.NewReader(validAssistantBody("Summarize.")))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := &flushCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
+	server.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	var sessionID string
+	var sawToolStartArgs, sawToolFinishResult bool
+	scanner := bufio.NewScanner(bytes.NewReader(recorder.Body.Bytes()))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var frame map[string]any
+		if err := json.Unmarshal([]byte(line), &frame); err != nil {
+			t.Fatalf("frame %q: %v", line, err)
+		}
+		switch frame["type"] {
+		case "tool_start":
+			if arguments, ok := frame["arguments"].(map[string]any); ok && arguments["source"] == "opencode" {
+				sawToolStartArgs = true
+			}
+		case "tool_finish":
+			if result, ok := frame["result"].(map[string]any); ok && result["ok"] == true {
+				sawToolFinishResult = true
+			}
+			if frame["duration_ms"] != float64(25) {
+				t.Fatalf("tool_finish duration = %v", frame["duration_ms"])
+			}
+		case "complete":
+			sessionID, _ = frame["session_id"].(string)
+			calls, ok := frame["tool_calls"].([]any)
+			if !ok || len(calls) != 1 {
+				t.Fatalf("complete tool_calls = %v", frame["tool_calls"])
+			}
+		}
+	}
+	if !sawToolStartArgs || !sawToolFinishResult {
+		t.Fatalf("tool frames missing arguments/result: args=%v result=%v body=%s", sawToolStartArgs, sawToolFinishResult, recorder.Body.String())
+	}
+	if !chatstore.IsValidSessionID(sessionID) {
+		t.Fatalf("complete frame session_id = %q", sessionID)
+	}
+
+	detail, err := store.GetSession(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if len(detail.Messages) != 2 {
+		t.Fatalf("persisted messages = %d, want 2", len(detail.Messages))
+	}
+	if detail.Messages[0].Content != "Summarize." || detail.Messages[1].Content != "Report body." {
+		t.Fatalf("persisted contents = %q, %q", detail.Messages[0].Content, detail.Messages[1].Content)
+	}
+	if detail.Messages[1].Signature != "sig" {
+		t.Fatalf("persisted signature = %q", detail.Messages[1].Signature)
+	}
+	toolCalls := detail.Messages[1].ToolCalls
+	if len(toolCalls) != 1 || toolCalls[0].Name != "get_overview" || !toolCalls[0].OK {
+		t.Fatalf("persisted tool calls = %+v", toolCalls)
+	}
+	if string(toolCalls[0].Arguments) != `{"source":"opencode"}` || !strings.Contains(string(toolCalls[0].Result), `"ok":true`) {
+		t.Fatalf("persisted tool IO = %s / %s", toolCalls[0].Arguments, toolCalls[0].Result)
+	}
+
+	// A follow-up turn addressed to the same session must append to it.
+	followBody, _ := json.Marshal(analyticsagent.ChatInput{
+		ConsentVersion: analyticsagent.PrivacyConsentVersion,
+		SessionID:      sessionID,
+		Messages: []analyticsagent.BrowserMessage{
+			{Role: "user", Content: "Follow up."},
+		},
+	})
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/assistant/chat/stream", bytes.NewReader(followBody))
+	request.Header.Set("Content-Type", "application/json")
+	recorder = &flushCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
+	server.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("follow-up status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	detail, err = store.GetSession(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("GetSession follow-up: %v", err)
+	}
+	if len(detail.Messages) != 4 {
+		t.Fatalf("messages after follow-up = %d, want 4", len(detail.Messages))
+	}
+}
+
+func TestAssistantChatStreamRejectsUnknownSessionBeforeService(t *testing.T) {
+	service := &fakeAssistantService{}
+	server, _ := assistantTestServerWithChatLog(t, service)
+	body, _ := json.Marshal(analyticsagent.ChatInput{
+		ConsentVersion: analyticsagent.PrivacyConsentVersion,
+		SessionID:      "cs_00000000000000000000000000000000",
+		Messages:       []analyticsagent.BrowserMessage{{Role: "user", Content: "Hi."}},
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/assistant/chat/stream", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", recorder.Code)
+	}
+	if service.streamCalls != 0 {
+		t.Fatalf("service was invoked %d times for a missing session", service.streamCalls)
+	}
+}
+
+func TestAssistantSessionEndpointsListGetDelete(t *testing.T) {
+	service := &fakeAssistantService{}
+	server, store := assistantTestServerWithChatLog(t, service)
+	sessionID, err := store.AppendTurn(context.Background(), chatstore.Turn{
+		UserContent: "How is usage?", AssistantContent: "Usage report.", AssistantSignature: "sig",
+		Model: "MiniMax-M3", Provider: "minimax",
+		ToolCalls: []chatstore.ToolCall{{Name: "list_sources", Arguments: json.RawMessage(`{}`), Result: json.RawMessage(`{"ok":true}`), OK: true}},
+	})
+	if err != nil {
+		t.Fatalf("AppendTurn: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/sessions", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list status = %d", recorder.Code)
+	}
+	if cache := recorder.Header().Get("Cache-Control"); cache != "no-store" {
+		t.Fatalf("list Cache-Control = %q", cache)
+	}
+	var listing struct {
+		Sessions []chatstore.Session `json:"sessions"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &listing); err != nil {
+		t.Fatalf("decode listing: %v", err)
+	}
+	if len(listing.Sessions) != 1 || listing.Sessions[0].ID != sessionID || listing.Sessions[0].Title != "How is usage?" {
+		t.Fatalf("listing = %+v", listing)
+	}
+
+	recorder = httptest.NewRecorder()
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/sessions/"+sessionID, nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("get status = %d", recorder.Code)
+	}
+	var detail chatstore.SessionDetail
+	if err := json.Unmarshal(recorder.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if len(detail.Messages) != 2 || len(detail.Messages[1].ToolCalls) != 1 {
+		t.Fatalf("detail = %+v", detail)
+	}
+
+	recorder = httptest.NewRecorder()
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/sessions/cs_00000000000000000000000000000000", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("missing get status = %d", recorder.Code)
+	}
+
+	recorder = httptest.NewRecorder()
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/api/v1/assistant/sessions/"+sessionID, nil))
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d", recorder.Code)
+	}
+	recorder = httptest.NewRecorder()
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/api/v1/assistant/sessions/"+sessionID, nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("repeat delete status = %d", recorder.Code)
+	}
+}
+
+func TestAssistantSessionEndpointsWithoutStoreAreUnavailable(t *testing.T) {
+	server := assistantTestServer(&fakeAssistantService{status: analyticsagent.Status{Available: true}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, endpoint := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/v1/assistant/sessions"},
+		{http.MethodGet, "/api/v1/assistant/sessions/cs_00000000000000000000000000000000"},
+		{http.MethodDelete, "/api/v1/assistant/sessions/cs_00000000000000000000000000000000"},
+	} {
+		recorder := httptest.NewRecorder()
+		server.Handler.ServeHTTP(recorder, httptest.NewRequest(endpoint.method, endpoint.path, nil))
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s %s status = %d, want 503", endpoint.method, endpoint.path, recorder.Code)
+		}
+	}
+
+	// Status reports persistence availability so the UI can hide history.
+	recorder := httptest.NewRecorder()
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/status", nil))
+	if !strings.Contains(recorder.Body.String(), `"sessions_persisted":false`) {
+		t.Fatalf("status body = %s", recorder.Body.String())
+	}
+}
+
+func TestAssistantSessionsRejectNonlocalOrigin(t *testing.T) {
+	service := &fakeAssistantService{}
+	server, _ := assistantTestServerWithChatLog(t, service)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/assistant/sessions", nil)
+	request.Header.Set("Origin", "https://evil.example")
+	recorder := httptest.NewRecorder()
+	server.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", recorder.Code)
 	}
 }

@@ -18,6 +18,7 @@ type Handlers struct {
 	cache     CacheManager
 	quotas    QuotaService
 	assistant AssistantService
+	chatlog   AssistantChatStore
 	logger    *slog.Logger
 }
 
@@ -34,10 +35,14 @@ func NewHandlersWithServices(registry *source.Registry, cache CacheManager, quot
 }
 
 func NewHandlersWithAssistant(registry *source.Registry, cache CacheManager, quotas QuotaService, assistant AssistantService, logger *slog.Logger) *Handlers {
+	return NewHandlersWithChatLog(registry, cache, quotas, assistant, nil, logger)
+}
+
+func NewHandlersWithChatLog(registry *source.Registry, cache CacheManager, quotas QuotaService, assistant AssistantService, chatlog AssistantChatStore, logger *slog.Logger) *Handlers {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handlers{registry: registry, cache: cache, quotas: quotas, assistant: assistant, logger: logger}
+	return &Handlers{registry: registry, cache: cache, quotas: quotas, assistant: assistant, chatlog: chatlog, logger: logger}
 }
 
 func (h *Handlers) Sources(w http.ResponseWriter, r *http.Request) {
@@ -68,9 +73,10 @@ func (h *Handlers) Overview(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w)
 		return
 	}
+	applyModelFilterParams(r, &pq)
 	result, err := selected.Overview(ctx, pq)
 	if err != nil {
-		if strings.Contains(err.Error(), "invalid period") {
+		if strings.Contains(err.Error(), "invalid period") || strings.Contains(err.Error(), "model/provider filter") {
 			BadRequest(err.Error()).Write(w)
 			return
 		}
@@ -78,6 +84,14 @@ func (h *Handlers) Overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// applyModelFilterParams reads the optional model/provider filter params.
+// Only Overview, Daily, and Messages support them; other endpoints ignore
+// unknown params as usual.
+func applyModelFilterParams(r *http.Request, pq *stats.PeriodQuery) {
+	pq.Model = strings.TrimSpace(r.URL.Query().Get("model"))
+	pq.Provider = strings.TrimSpace(r.URL.Query().Get("provider"))
 }
 
 // OverviewAll returns the cross-source aggregated dashboard. Unlike Overview,
@@ -138,10 +152,16 @@ func (h *Handlers) Daily(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	applyModelFilterParams(r, &pq)
+
 	// Check for dimension query param — if present, route to dimension endpoint.
 	// The granularity param behaves exactly as it does for the plain daily
 	// route: explicit hour/day wins, otherwise the period's auto rule applies.
 	if dim := r.URL.Query().Get("dimension"); dim != "" {
+		if pq.Model != "" || pq.Provider != "" {
+			BadRequest("model/provider filters cannot be combined with dimension").Write(w)
+			return
+		}
 		var result stats.DailyDimensionStats
 		var err error
 		switch r.URL.Query().Get("granularity") {
@@ -182,7 +202,7 @@ func (h *Handlers) Daily(w http.ResponseWriter, r *http.Request) {
 		result, err = selected.Daily(ctx, pq)
 	}
 	if err != nil {
-		if strings.Contains(err.Error(), "invalid period") {
+		if strings.Contains(err.Error(), "invalid period") || strings.Contains(err.Error(), "model/provider filter") {
 			BadRequest(err.Error()).Write(w)
 			return
 		}
@@ -545,6 +565,7 @@ func (h *Handlers) Messages(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w)
 		return
 	}
+	applyModelFilterParams(r, &pq)
 	page := parseIntQuery(r, "page", 1, maxPageQuery)
 	limit := parseIntQuery(r, "limit", 50, maxLimitQuery)
 	sort := stats.ParseMessageSort(r.URL.Query().Get("sort"))
@@ -555,7 +576,7 @@ func (h *Handlers) Messages(w http.ResponseWriter, r *http.Request) {
 			InternalError("database schema invalid").Write(w)
 			return
 		}
-		if strings.Contains(err.Error(), "invalid period") {
+		if strings.Contains(err.Error(), "invalid period") || strings.Contains(err.Error(), "model/provider filter") {
 			BadRequest(err.Error()).Write(w)
 			return
 		}

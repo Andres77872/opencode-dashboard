@@ -63,6 +63,25 @@ type dailyArgs struct {
 	Limit       int    `json:"limit,omitempty"`
 }
 
+type dimensionTrendArgs struct {
+	Source      string `json:"source"`
+	Dimension   string `json:"dimension"`
+	Period      string `json:"period,omitempty"`
+	From        string `json:"from,omitempty"`
+	To          string `json:"to,omitempty"`
+	Granularity string `json:"granularity,omitempty"`
+	Limit       int    `json:"limit,omitempty"`
+}
+
+type sessionUsageArgs struct {
+	Source string `json:"source"`
+	Period string `json:"period,omitempty"`
+	From   string `json:"from,omitempty"`
+	To     string `json:"to,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	Sort   string `json:"sort,omitempty"`
+}
+
 type aggregateArgs struct {
 	Period       string `json:"period,omitempty"`
 	From         string `json:"from,omitempty"`
@@ -105,6 +124,16 @@ func (r *ToolRegistry) Definitions() []ToolDefinition {
 			Parameters:  rawSchema(`{"type":"object","properties":{"source":{"type":"string"},"period":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"granularity":{"type":"string","enum":["day","hour"]},"limit":{"type":"integer","minimum":1,"maximum":1000}},"required":["source"],"additionalProperties":false}`),
 		},
 		{
+			Name:        "get_usage_trend_by_dimension",
+			Description: "Get a bounded daily or hourly time series for one explicit source grouped by model, tool, or project. Best for questions about which dimension member grew, shrank, or spiked over time.",
+			Parameters:  rawSchema(`{"type":"object","properties":{"source":{"type":"string"},"dimension":{"type":"string","enum":["model","tool","project"]},"period":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"granularity":{"type":"string","enum":["day","hour"]},"limit":{"type":"integer","minimum":1,"maximum":1000}},"required":["source","dimension"],"additionalProperties":false}`),
+		},
+		{
+			Name:        "get_session_usage",
+			Description: "Rank coding sessions for one explicit source by recency, cost, or message volume using process-scoped opaque session references and aggregate metrics. Session titles, prompts, and transcripts are never returned.",
+			Parameters:  rawSchema(`{"type":"object","properties":{"source":{"type":"string"},"period":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":50},"sort":{"type":"string","enum":["newest","oldest","cost","messages"]}},"required":["source"],"additionalProperties":false}`),
+		},
+		{
 			Name:        "get_model_usage",
 			Description: "Rank models for one explicit source by their aggregate usage metrics and source-specific cost provenance.",
 			Parameters:  rawSchema(sourcePeriodSchema(true)),
@@ -136,7 +165,9 @@ func rawSchema(value string) json.RawMessage {
 
 func isAnalyticsToolName(name string) bool {
 	switch name {
-	case "list_sources", "get_overview", "get_cross_source_overview", "get_daily_usage", "get_model_usage", "get_tool_usage", "get_project_usage":
+	case "list_sources", "get_overview", "get_cross_source_overview", "get_daily_usage",
+		"get_usage_trend_by_dimension", "get_session_usage",
+		"get_model_usage", "get_tool_usage", "get_project_usage":
 		return true
 	default:
 		return false
@@ -265,6 +296,72 @@ func (r *ToolRegistry) execute(ctx context.Context, name string, arguments json.
 			return nil, errors.New("daily usage query failed")
 		}
 		return safeDailyFrom(result, limit, r.projectRefKey), nil
+	case "get_usage_trend_by_dimension":
+		var args dimensionTrendArgs
+		if err := decodeStrict(arguments, &args); err != nil {
+			return nil, err
+		}
+		dimension := strings.TrimSpace(args.Dimension)
+		if dimension != "model" && dimension != "tool" && dimension != "project" {
+			return nil, invalidInput("dimension must be model, tool, or project")
+		}
+		selected, pq, err := r.resolve(ctx, args.Source, periodArgs{Period: args.Period, From: args.From, To: args.To})
+		if err != nil {
+			return nil, err
+		}
+		limit, err := validatedLimit(args.Limit, defaultDailyLimit, maxDailyLimit)
+		if err != nil {
+			return nil, err
+		}
+		granularity := stats.Granularity(args.Granularity)
+		if granularity != "" && granularity != stats.GranularityDay && granularity != stats.GranularityHour {
+			return nil, invalidInput("granularity must be day or hour")
+		}
+		bucketGranularity := string(granularity)
+		if bucketGranularity == "" {
+			bucketGranularity = automaticTrendGranularity(args.Period)
+		}
+		if err := validateBucketWindow(periodArgs{Period: args.Period, From: args.From, To: args.To}, bucketGranularity, maxDailyLimit); err != nil {
+			return nil, err
+		}
+		var result stats.DailyDimensionStats
+		if granularity == "" {
+			result, err = selected.DailyDimension(ctx, dimension, pq)
+		} else {
+			result, err = selected.DailyDimension(ctx, dimension, pq, granularity)
+		}
+		if err != nil {
+			return nil, errors.New("dimension trend query failed")
+		}
+		return safeDimensionTrendFrom(result, dimension, limit, r.projectRefKey), nil
+	case "get_session_usage":
+		var args sessionUsageArgs
+		if err := decodeStrict(arguments, &args); err != nil {
+			return nil, err
+		}
+		sort := strings.TrimSpace(args.Sort)
+		switch sort {
+		case "", "newest", "oldest", "cost", "messages":
+		default:
+			return nil, invalidInput("sort must be newest, oldest, cost, or messages")
+		}
+		selected, pq, err := r.resolve(ctx, args.Source, periodArgs{Period: args.Period, From: args.From, To: args.To})
+		if err != nil {
+			return nil, err
+		}
+		limit, err := validatedLimit(args.Limit, defaultListLimit, maxListLimit)
+		if err != nil {
+			return nil, err
+		}
+		result, err := selected.Sessions(ctx, stats.SessionQuery{
+			Page: 1, PageSize: limit,
+			Sort:   stats.ParseSessionSort(sort),
+			Period: pq.Period, From: pq.From, To: pq.To,
+		})
+		if err != nil {
+			return nil, errors.New("session usage query failed")
+		}
+		return safeSessionsFrom(result, limit, r.projectRefKey), nil
 	case "get_model_usage":
 		var args sourcePeriodArgs
 		if err := decodeStrict(arguments, &args); err != nil {
@@ -800,6 +897,117 @@ func safeToolFrom(value stats.ToolEntry, key []byte) safeTool {
 		SourceID: safeSourceRef(key, value.SourceID), Name: safeOutboundIdentifier(key, "tool", value.Name),
 		Invocations: value.Invocations, Successes: value.Successes, Failures: value.Failures, Sessions: value.Sessions,
 	}
+}
+
+type safeDimensionTrend struct {
+	SourceID       string              `json:"source_id"`
+	Dimension      string              `json:"dimension"`
+	Granularity    stats.Granularity   `json:"granularity"`
+	Entries        []safeDimensionDay  `json:"entries"`
+	Truncated      bool                `json:"truncated,omitempty"`
+	CostStatus     stats.CostStatus    `json:"cost_status,omitempty"`
+	CostProvenance *safeCostProvenance `json:"cost_provenance,omitempty"`
+}
+
+type safeDimensionDay struct {
+	Date           string              `json:"date"`
+	DimensionKey   string              `json:"dimension_key"`
+	Sessions       int64               `json:"sessions"`
+	Messages       int64               `json:"messages"`
+	Cost           float64             `json:"cost"`
+	Tokens         stats.TokenStats    `json:"tokens"`
+	CostStatus     stats.CostStatus    `json:"cost_status,omitempty"`
+	CostProvenance *safeCostProvenance `json:"cost_provenance,omitempty"`
+}
+
+func safeDimensionTrendFrom(value stats.DailyDimensionStats, dimension string, limit int, key []byte) safeDimensionTrend {
+	rawDays, truncated := lastItems(value.Days, limit)
+	entries := make([]safeDimensionDay, 0, len(rawDays))
+	for _, day := range rawDays {
+		sourceID := day.SourceID
+		if sourceID == "" {
+			sourceID = value.SourceID
+		}
+		dimensionKey := ""
+		switch dimension {
+		case "model":
+			dimensionKey = safeOutboundIdentifier(key, "model", day.Dimension)
+		case "tool":
+			dimensionKey = safeOutboundIdentifier(key, "tool", day.Dimension)
+		default:
+			dimensionKey = opaqueProjectRef(key, sourceID, day.Dimension)
+		}
+		entries = append(entries, safeDimensionDay{
+			Date: safeDate(day.Date), DimensionKey: dimensionKey,
+			Sessions: day.Sessions, Messages: day.Messages, Cost: day.Cost, Tokens: day.Tokens,
+			CostStatus: safeCostStatus(day.CostStatus), CostProvenance: safeProvenance(day.CostProvenance, key),
+		})
+	}
+	granularity := value.Granularity
+	if granularity != stats.GranularityDay && granularity != stats.GranularityHour {
+		granularity = stats.GranularityDay
+	}
+	return safeDimensionTrend{
+		SourceID: safeSourceRef(key, value.SourceID), Dimension: dimension, Granularity: granularity,
+		Entries: entries, Truncated: truncated,
+		CostStatus: safeCostStatus(value.CostStatus), CostProvenance: safeProvenance(value.CostProvenance, key),
+	}
+}
+
+type safeSessionList struct {
+	SourceID       string              `json:"source_id"`
+	Sessions       []safeSession       `json:"sessions"`
+	TotalSessions  int64               `json:"total_sessions"`
+	Truncated      bool                `json:"truncated,omitempty"`
+	CostStatus     stats.CostStatus    `json:"cost_status,omitempty"`
+	CostProvenance *safeCostProvenance `json:"cost_provenance,omitempty"`
+}
+
+type safeSession struct {
+	Rank           int                 `json:"rank"`
+	SessionRef     string              `json:"session_ref"`
+	ProjectRef     string              `json:"project_ref,omitempty"`
+	StartedAt      string              `json:"started_at,omitempty"`
+	LastActiveAt   string              `json:"last_active_at,omitempty"`
+	Messages       int64               `json:"messages"`
+	Cost           float64             `json:"cost"`
+	CostStatus     stats.CostStatus    `json:"cost_status,omitempty"`
+	CostProvenance *safeCostProvenance `json:"cost_provenance,omitempty"`
+}
+
+func safeSessionsFrom(value stats.SessionList, limit int, key []byte) safeSessionList {
+	rawSessions, truncated := firstItems(value.Sessions, limit)
+	result := safeSessionList{
+		SourceID: safeSourceRef(key, value.SourceID), TotalSessions: value.Total,
+		Truncated:  truncated || value.Total > int64(len(rawSessions)),
+		CostStatus: safeCostStatus(value.CostStatus), CostProvenance: safeProvenance(value.CostProvenance, key),
+	}
+	for i, session := range rawSessions {
+		sourceID := session.SourceID
+		if sourceID == "" {
+			sourceID = value.SourceID
+		}
+		projectRef := ""
+		if session.ProjectID != "" {
+			projectRef = opaqueProjectRef(key, sourceID, session.ProjectID)
+		}
+		result.Sessions = append(result.Sessions, safeSession{
+			Rank:       i + 1,
+			SessionRef: opaqueValueRef(key, "session", sourceID+"\x00"+session.ID),
+			ProjectRef: projectRef,
+			StartedAt:  safeSessionTime(session.TimeCreated), LastActiveAt: safeSessionTime(session.TimeUpdated),
+			Messages: session.MessageCount, Cost: session.Cost,
+			CostStatus: safeCostStatus(session.CostStatus), CostProvenance: safeProvenance(session.CostProvenance, key),
+		})
+	}
+	return result
+}
+
+func safeSessionTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return safeDate(value.UTC().Format(time.RFC3339))
 }
 
 type safeProjectList struct {

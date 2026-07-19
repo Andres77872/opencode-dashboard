@@ -14,6 +14,7 @@ export interface AssistantStatusResponse {
   privacy_notice: string
   consent_version: string
   capabilities: string[]
+  sessions_persisted: boolean
 }
 
 export interface AssistantRequestContext {
@@ -27,12 +28,28 @@ export interface AssistantChatRequest {
   messages: AssistantMessage[]
   context?: AssistantRequestContext
   consent_version: string
+  session_id?: string
+}
+
+/**
+ * One analytics tool invocation in a completed turn: the validated input
+ * arguments and the safe result envelope the model received.
+ */
+export interface AssistantToolCall {
+  call_id: string
+  name: string
+  arguments?: unknown
+  result?: unknown
+  ok: boolean
+  duration_ms?: number
 }
 
 export interface AssistantChatResponse {
   message: AssistantMessage & { role: 'assistant'; signature: string }
   model: string
   tools_used: string[]
+  tool_calls?: AssistantToolCall[]
+  session_id?: string
 }
 
 export interface AssistantStreamStartEvent {
@@ -53,6 +70,7 @@ export interface AssistantStreamToolStartEvent {
   type: 'tool_start'
   call_id: string
   name: string
+  arguments?: unknown
 }
 
 export interface AssistantStreamToolFinishEvent {
@@ -60,6 +78,8 @@ export interface AssistantStreamToolFinishEvent {
   call_id: string
   name: string
   ok: boolean
+  result?: unknown
+  duration_ms?: number
 }
 
 export interface AssistantStreamCompleteEvent {
@@ -67,6 +87,8 @@ export interface AssistantStreamCompleteEvent {
   message: AssistantMessage & { role: 'assistant'; signature: string }
   model: string
   tools_used: string[]
+  tool_calls: AssistantToolCall[]
+  session_id?: string
 }
 
 export interface AssistantStreamErrorEvent {
@@ -82,3 +104,43 @@ export type AssistantStreamEvent =
   | AssistantStreamToolFinishEvent
   | AssistantStreamCompleteEvent
   | AssistantStreamErrorEvent
+
+/** A persisted assistant conversation summary from the server chat log. */
+export interface AssistantChatSessionSummary {
+  id: string
+  title: string
+  provider?: string
+  model?: string
+  created_ms: number
+  updated_ms: number
+  message_count: number
+}
+
+export interface AssistantChatSessionListResponse {
+  sessions: AssistantChatSessionSummary[]
+}
+
+/** One persisted tool invocation stored with an assistant message. */
+export interface AssistantChatStoredToolCall {
+  index: number
+  name: string
+  arguments?: unknown
+  result?: unknown
+  ok: boolean
+  duration_ms: number
+}
+
+export interface AssistantChatStoredMessage {
+  id: number
+  role: AssistantRole
+  content: string
+  signature?: string
+  model?: string
+  created_ms: number
+  tool_calls?: AssistantChatStoredToolCall[]
+}
+
+export interface AssistantChatSessionDetail {
+  session: AssistantChatSessionSummary
+  messages: AssistantChatStoredMessage[]
+}

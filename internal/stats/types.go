@@ -249,8 +249,12 @@ func ParseSessionSort(s string) SessionSortMode {
 }
 
 type SessionQuery struct {
-	Page      int
-	PageSize  int
+	Page     int
+	PageSize int
+	// Filter is a case-insensitive substring match on title, project name,
+	// or session id. Cached rows carry synthesized titles ("Session <id>"),
+	// so title text is only matched in the recent live window; older sessions
+	// match by project name or session id.
 	Filter    string
 	ProjectID string // exact project ID filter, empty = no filter
 	Sort      SessionSortMode
@@ -274,6 +278,15 @@ type PeriodQuery struct {
 	Period string // preset: "1h", "6h", "12h", "24h", "72h", "1d", "7d", "14d", "30d", "1y", "all"
 	From   string // ISO 8601 date "2006-01-02". When From is set, Period is ignored.
 	To     string // ISO 8601 date "2006-01-02". Optional — empty = now in server timezone.
+
+	// Model/Provider restrict Overview, Daily, and Messages to assistant
+	// messages attributed to one model (and optionally one provider). Only the
+	// cache-backed read path honors them — sources without a consolidated
+	// cache reject filtered requests. Filtered token totals are the
+	// model-attributed token sums (the same accounting the Models endpoint
+	// reports), not the display totals unfiltered Overview uses.
+	Model    string
+	Provider string
 
 	// FromTime/ToTime are internal time-precision window bounds used by the
 	// cache consolidation and gap-merge layers. Zero = unset. A non-zero

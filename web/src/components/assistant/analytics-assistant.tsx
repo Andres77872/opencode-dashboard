@@ -15,7 +15,13 @@ import { useLocation } from 'react-router-dom'
 import { Icon } from '../vael/icon'
 import { Markdown } from './markdown'
 import { useDashboardContext } from '../layout/dashboard-context'
-import { getAssistantStatus, streamAssistantChat } from '../../lib/api'
+import {
+  deleteAssistantSession,
+  getAssistantSession,
+  getAssistantSessions,
+  getAssistantStatus,
+  streamAssistantChat,
+} from '../../lib/api'
 import {
   clampAssistantPosition,
   defaultAssistantPosition,
@@ -28,10 +34,12 @@ import {
 import { usePeriodState } from '../../lib/use-period-state'
 import { boundAssistantHistory } from '../../lib/assistant-history'
 import type {
+  AssistantChatSessionSummary,
   AssistantMessage,
   AssistantRequestContext,
   AssistantStatusResponse,
   AssistantStreamEvent,
+  AssistantToolCall,
 } from '../../types/assistant'
 
 const PANEL_ID = 'analytics-assistant-panel'
@@ -50,7 +58,6 @@ const QUICK_PROMPTS = [
 
 interface DisplayMessage extends AssistantMessage {
   id: number
-  toolsUsed?: string[]
   streaming?: boolean
   toolActivities?: StreamToolActivity[]
 }
@@ -59,6 +66,9 @@ interface StreamToolActivity {
   id: string
   name: string
   status: 'running' | 'complete' | 'failed'
+  arguments?: unknown
+  result?: unknown
+  durationMs?: number
 }
 
 interface DragState {
@@ -112,6 +122,41 @@ function providerLabel(value: string): string {
   return value.trim().toLowerCase() === 'minimax' ? 'MiniMax' : value
 }
 
+function formatToolJSON(value: unknown): string {
+  if (value === undefined) return ''
+  try {
+    return JSON.stringify(value, null, 2) ?? ''
+  } catch {
+    return String(value)
+  }
+}
+
+function formatDuration(durationMs?: number): string {
+  if (durationMs === undefined || durationMs < 0) return ''
+  if (durationMs < 1000) return `${durationMs} ms`
+  return `${(durationMs / 1000).toFixed(durationMs < 10_000 ? 1 : 0)} s`
+}
+
+function formatSessionTime(updatedMs: number): string {
+  const elapsed = Date.now() - updatedMs
+  if (elapsed < 60_000) return 'just now'
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)} min ago`
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)} h ago`
+  return new Date(updatedMs).toLocaleDateString()
+}
+
+/** Maps a completed turn's canonical tool calls onto display activities. */
+function activitiesFromToolCalls(calls: AssistantToolCall[]): StreamToolActivity[] {
+  return calls.map((call) => ({
+    id: call.call_id,
+    name: call.name,
+    status: call.ok ? 'complete' : 'failed',
+    arguments: call.arguments,
+    result: call.result,
+    durationMs: call.duration_ms,
+  }))
+}
+
 function AssistantGlyph({ size = 20 }: { size?: number }) {
   return (
     <span className="analytics-assistant-glyph" aria-hidden="true">
@@ -124,17 +169,20 @@ function AssistantGlyph({ size = 20 }: { size?: number }) {
 function HeaderButton({
   label,
   icon,
+  active,
   onClick,
 }: {
   label: string
-  icon: 'refresh' | 'chevron-down' | 'x'
+  icon: 'refresh' | 'chevron-down' | 'x' | 'clock'
+  active?: boolean
   onClick: () => void
 }) {
   return (
     <button
       type="button"
-      className="analytics-assistant-header-button"
+      className={`analytics-assistant-header-button${active ? ' active' : ''}`}
       aria-label={label}
+      aria-pressed={active}
       title={label}
       onClick={onClick}
     >
@@ -180,9 +228,64 @@ function PrivacyDisclosure({
   )
 }
 
+function ToolCallCard({ tool }: { tool: StreamToolActivity }) {
+  const [expanded, setExpanded] = useState(false)
+  const argumentsJSON = formatToolJSON(tool.arguments)
+  const resultJSON = formatToolJSON(tool.result)
+  const expandable = argumentsJSON !== '' || resultJSON !== ''
+  const duration = formatDuration(tool.durationMs)
+  const statusLabel = tool.status === 'running' ? 'Running' : tool.status === 'complete' ? 'Complete' : 'Failed'
+  return (
+    <div className={`analytics-assistant-tool-call ${tool.status}`}>
+      <button
+        type="button"
+        className="analytics-assistant-tool-call-header"
+        onClick={() => expandable && setExpanded((current) => !current)}
+        aria-expanded={expandable ? expanded : undefined}
+        disabled={!expandable}
+        title={expandable ? 'Show tool input and output' : undefined}
+      >
+        <span className="analytics-assistant-tool-state" aria-hidden="true">
+          {tool.status === 'running'
+            ? <i />
+            : <Icon name={tool.status === 'complete' ? 'check' : 'x'} size={11} />}
+        </span>
+        <Icon name="wrench" size={12} />
+        <span className="analytics-assistant-tool-name">{humanizeToolName(tool.name)}</span>
+        <small>
+          {statusLabel}
+          {duration && tool.status !== 'running' ? ` · ${duration}` : ''}
+        </small>
+        {expandable && (
+          <span className="analytics-assistant-tool-chevron" aria-hidden="true">
+            <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={13} />
+          </span>
+        )}
+      </button>
+      {expanded && expandable && (
+        <div className="analytics-assistant-tool-io">
+          {argumentsJSON !== '' && (
+            <div>
+              <span className="analytics-assistant-tool-io-label">Input</span>
+              <pre>{argumentsJSON}</pre>
+            </div>
+          )}
+          {resultJSON !== '' && (
+            <div>
+              <span className="analytics-assistant-tool-io-label">Output</span>
+              <pre>{resultJSON}</pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function MessageRow({ message }: { message: DisplayMessage }) {
   const assistant = message.role === 'assistant'
   const hasContent = message.content.length > 0
+  const toolActivities = assistant ? message.toolActivities ?? [] : []
   return (
     <article
       className={`analytics-assistant-message ${assistant ? 'assistant' : 'user'}${message.streaming ? ' streaming' : ''}`}
@@ -192,6 +295,11 @@ function MessageRow({ message }: { message: DisplayMessage }) {
         <span>{assistant ? 'Analytics assistant' : 'You'}</span>
         {message.streaming && <span className="analytics-assistant-stream-label">Live</span>}
       </div>
+      {toolActivities.length > 0 && (
+        <div className="analytics-assistant-tool-activity" aria-label="Analytics tool activity">
+          {toolActivities.map((tool) => <ToolCallCard key={tool.id} tool={tool} />)}
+        </div>
+      )}
       {hasContent && (
         <div className={`analytics-assistant-message-content${assistant ? ' markdown' : ''}`}>
           {assistant ? (
@@ -201,33 +309,11 @@ function MessageRow({ message }: { message: DisplayMessage }) {
           )}
         </div>
       )}
-      {assistant && message.toolActivities && message.toolActivities.length > 0 && (
-        <div className="analytics-assistant-tool-activity" aria-label="Live analytics tool activity">
-          {message.toolActivities.map((tool) => (
-            <div key={tool.id} className={`analytics-assistant-tool-call ${tool.status}`}>
-              <span className="analytics-assistant-tool-state" aria-hidden="true">
-                {tool.status === 'running'
-                  ? <i />
-                  : <Icon name={tool.status === 'complete' ? 'check' : 'x'} size={11} />}
-              </span>
-              <Icon name="wrench" size={12} />
-              <span>{humanizeToolName(tool.name)}</span>
-              <small>{tool.status === 'running' ? 'Running' : tool.status === 'complete' ? 'Complete' : 'Failed'}</small>
-            </div>
-          ))}
-        </div>
-      )}
-      {message.streaming && !hasContent && (!message.toolActivities || message.toolActivities.length === 0) && (
+      {message.streaming && !hasContent && toolActivities.length === 0 && (
         <div className="analytics-assistant-thinking compact" role="status">
           <AssistantGlyph size={15} />
           <span>Starting the report</span>
           <i /><i /><i />
-        </div>
-      )}
-      {assistant && message.toolsUsed && message.toolsUsed.length > 0 && (
-        <div className="analytics-assistant-tools" aria-label="Analytics tools used">
-          <Icon name="wrench" size={12} />
-          {message.toolsUsed.map((tool) => <span key={tool}>{humanizeToolName(tool)}</span>)}
         </div>
       )}
     </article>
@@ -251,6 +337,67 @@ function Welcome({ onPrompt }: { onPrompt: (prompt: string) => void }) {
   )
 }
 
+function SessionHistory({
+  sessions,
+  loading,
+  error,
+  activeSessionId,
+  onSelect,
+  onDelete,
+  onClose,
+}: {
+  sessions: AssistantChatSessionSummary[]
+  loading: boolean
+  error: string | null
+  activeSessionId: string | null
+  onSelect: (id: string) => void
+  onDelete: (id: string) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="analytics-assistant-history" aria-label="Saved conversations">
+      <div className="analytics-assistant-history-header">
+        <Icon name="clock" size={14} />
+        <strong>Saved conversations</strong>
+        <button type="button" className="analytics-assistant-history-close" onClick={onClose}>Back to chat</button>
+      </div>
+      {loading && <p className="analytics-assistant-history-empty">Loading saved conversations…</p>}
+      {!loading && error && <p className="analytics-assistant-history-empty error">{error}</p>}
+      {!loading && !error && sessions.length === 0 && (
+        <p className="analytics-assistant-history-empty">No saved conversations yet. Completed chats are saved automatically.</p>
+      )}
+      {!loading && !error && sessions.length > 0 && (
+        <ul className="analytics-assistant-history-list">
+          {sessions.map((session) => (
+            <li key={session.id} className={session.id === activeSessionId ? 'active' : undefined}>
+              <button
+                type="button"
+                className="analytics-assistant-history-item"
+                onClick={() => onSelect(session.id)}
+                title={session.title}
+              >
+                <span className="analytics-assistant-history-title">{session.title}</span>
+                <span className="analytics-assistant-history-meta">
+                  {formatSessionTime(session.updated_ms)} · {session.message_count} messages
+                </span>
+              </button>
+              <button
+                type="button"
+                className="analytics-assistant-history-delete"
+                aria-label={`Delete conversation ${session.title}`}
+                title="Delete conversation"
+                onClick={() => onDelete(session.id)}
+              >
+                <Icon name="x" size={13} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 export function AnalyticsAssistant() {
   const location = useLocation()
   const periodState = usePeriodState()
@@ -264,6 +411,11 @@ export function AnalyticsAssistant() {
   const [liveMessage, setLiveMessage] = useState('')
   const [completedAnnouncement, setCompletedAnnouncement] = useState('')
   const [dragging, setDragging] = useState(false)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historySessions, setHistorySessions] = useState<AssistantChatSessionSummary[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const launcherRef = useRef<HTMLButtonElement>(null)
   const privacyContinueRef = useRef<HTMLButtonElement>(null)
@@ -273,6 +425,7 @@ export function AnalyticsAssistant() {
   const followStreamRef = useRef(true)
   const dragRef = useRef<DragState | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const historyAbortRef = useRef<AbortController | null>(null)
   const pendingPromptRef = useRef<{ id: number; responseID: number; content: string } | null>(null)
   const requestIDRef = useRef(0)
   const messageIDRef = useRef(1)
@@ -319,6 +472,7 @@ export function AnalyticsAssistant() {
   useEffect(() => () => {
     requestIDRef.current += 1
     abortRef.current?.abort()
+    historyAbortRef.current?.abort()
   }, [])
 
   const context = useMemo<AssistantRequestContext>(() => {
@@ -331,6 +485,7 @@ export function AnalyticsAssistant() {
     }
   }, [location.pathname, periodState, selectedSourceId])
   const consentAccepted = preferences.privacyAcceptedVersion === status?.consent_version
+  const sessionsPersisted = status?.sessions_persisted === true
 
   const clampToPanel = useCallback((position: AssistantPosition): AssistantPosition => {
     const element = panelRef.current
@@ -499,6 +654,8 @@ export function AnalyticsAssistant() {
     setDraft('')
     setError(null)
     setCompletedAnnouncement('')
+    setSessionId(null)
+    setHistoryOpen(false)
     followStreamRef.current = true
     setLiveMessage('New conversation started.')
   }, [stopRequest])
@@ -512,6 +669,92 @@ export function AnalyticsAssistant() {
       currentViewport(),
     )
     setPreferences((current) => ({ ...current, position: next }))
+  }, [])
+
+  const refreshHistory = useCallback(() => {
+    historyAbortRef.current?.abort()
+    const controller = new AbortController()
+    historyAbortRef.current = controller
+    setHistoryLoading(true)
+    setHistoryError(null)
+    getAssistantSessions(controller.signal)
+      .then((response) => {
+        if (controller.signal.aborted) return
+        setHistorySessions(response.sessions)
+        setHistoryLoading(false)
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted) return
+        setHistoryError(caught instanceof Error ? caught.message : 'Saved conversations are unavailable.')
+        setHistoryLoading(false)
+      })
+  }, [])
+
+  const toggleHistory = useCallback(() => {
+    setHistoryOpen((open) => {
+      if (!open) refreshHistory()
+      return !open
+    })
+  }, [refreshHistory])
+
+  const loadSession = useCallback((id: string) => {
+    if (abortRef.current) stopRequest('')
+    historyAbortRef.current?.abort()
+    const controller = new AbortController()
+    historyAbortRef.current = controller
+    setHistoryLoading(true)
+    setHistoryError(null)
+    getAssistantSession(id, controller.signal)
+      .then((detail) => {
+        if (controller.signal.aborted) return
+        const restored: DisplayMessage[] = detail.messages.map((message) => ({
+          id: messageIDRef.current++,
+          role: message.role,
+          content: message.content,
+          signature: message.signature,
+          toolActivities: message.tool_calls?.map((call) => ({
+            id: `saved-${message.id}-${call.index}`,
+            name: call.name,
+            status: call.ok ? 'complete' as const : 'failed' as const,
+            arguments: call.arguments,
+            result: call.result,
+            durationMs: call.duration_ms,
+          })),
+        }))
+        setMessages(restored)
+        setSessionId(detail.session.id)
+        setError(null)
+        setHistoryOpen(false)
+        setHistoryLoading(false)
+        followStreamRef.current = true
+        setLiveMessage(`Loaded conversation: ${detail.session.title}`)
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted) return
+        setHistoryError(caught instanceof Error ? caught.message : 'The conversation could not be loaded.')
+        setHistoryLoading(false)
+      })
+  }, [stopRequest])
+
+  const removeSession = useCallback((id: string) => {
+    historyAbortRef.current?.abort()
+    const controller = new AbortController()
+    historyAbortRef.current = controller
+    deleteAssistantSession(id, controller.signal)
+      .then(() => {
+        if (controller.signal.aborted) return
+        setHistorySessions((current) => current.filter((session) => session.id !== id))
+        setSessionId((current) => {
+          if (current !== id) return current
+          setMessages([])
+          return null
+        })
+        setLiveMessage('Conversation deleted.')
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted) return
+        setHistoryError(caught instanceof Error ? caught.message : 'The conversation could not be deleted.')
+      })
   }, [])
 
   const submitPrompt = useCallback(async (rawPrompt: string) => {
@@ -533,11 +776,13 @@ export function AnalyticsAssistant() {
     const requestMessages = boundAssistantHistory(
       [...messages, userMessage].map(({ role, content, signature }) => ({ role, content, signature })),
     )
+    const requestSessionID = sessionId ?? undefined
     const controller = new AbortController()
     const requestID = ++requestIDRef.current
     abortRef.current = controller
     pendingPromptRef.current = { id: userMessage.id, responseID: assistantMessage.id, content: prompt }
     followStreamRef.current = true
+    setHistoryOpen(false)
     setMessages((current) => [...current, userMessage, assistantMessage])
     setDraft('')
     setError(null)
@@ -574,7 +819,7 @@ export function AnalyticsAssistant() {
               ...message,
               toolActivities: [
                 ...(message.toolActivities ?? []).filter((tool) => tool.id !== event.call_id),
-                { id: event.call_id, name: event.name, status: 'running' },
+                { id: event.call_id, name: event.name, status: 'running', arguments: event.arguments },
               ],
             }))
             setLiveMessage(`Running ${humanizeToolName(event.name)}…`)
@@ -584,7 +829,12 @@ export function AnalyticsAssistant() {
               ...message,
               toolActivities: (message.toolActivities ?? []).map((tool) => (
                 tool.id === event.call_id
-                  ? { ...tool, status: event.ok ? 'complete' : 'failed' }
+                  ? {
+                      ...tool,
+                      status: event.ok ? 'complete' : 'failed',
+                      result: event.result ?? tool.result,
+                      durationMs: event.duration_ms ?? tool.durationMs,
+                    }
                   : tool
               )),
             }))
@@ -602,18 +852,30 @@ export function AnalyticsAssistant() {
         messages: requestMessages,
         context,
         consent_version: status.consent_version,
+        session_id: requestSessionID,
       }, onStreamEvent, controller.signal)
       if (controller.signal.aborted || requestID !== requestIDRef.current) return
       const content = response.message.content
       if (!content.trim()) throw new Error('The analytics assistant returned an empty response.')
       pendingPromptRef.current = null
-      setMessages((current) => current.map((message) => message.id === assistantMessage.id ? {
-        id: assistantMessage.id,
-        role: 'assistant',
-        content,
-        signature: response.message.signature,
-        toolsUsed: response.tools_used.filter((tool) => tool.trim() !== ''),
-      } : message))
+      setMessages((current) => current.map((message) => {
+        if (message.id !== assistantMessage.id) return message
+        // Canonical tool records replace live activities so restored and live
+        // conversations render identically; fall back to the streamed ones.
+        const toolActivities = response.tool_calls.length > 0
+          ? activitiesFromToolCalls(response.tool_calls)
+          : (message.toolActivities ?? []).map((tool) => (
+              tool.status === 'running' ? { ...tool, status: 'complete' as const } : tool
+            ))
+        return {
+          id: assistantMessage.id,
+          role: 'assistant',
+          content,
+          signature: response.message.signature,
+          toolActivities,
+        }
+      }))
+      if (response.session_id) setSessionId(response.session_id)
       setCompletedAnnouncement(`Analytics assistant: ${content}`)
       setLiveMessage(`Response complete with ${response.model || status?.model || 'the configured model'}.`)
     } catch (caught) {
@@ -629,7 +891,7 @@ export function AnalyticsAssistant() {
         setSending(false)
       }
     }
-  }, [consentAccepted, context, messages, sending, status])
+  }, [consentAccepted, context, messages, sending, sessionId, status])
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -731,6 +993,14 @@ export function AnalyticsAssistant() {
           {messages.length > 0 && (
             <button type="button" className="analytics-assistant-new-chat" onClick={resetConversation}>New chat</button>
           )}
+          {consentAccepted && sessionsPersisted && (
+            <HeaderButton
+              label={historyOpen ? 'Hide saved conversations' : 'Show saved conversations'}
+              icon="clock"
+              active={historyOpen}
+              onClick={toggleHistory}
+            />
+          )}
           <HeaderButton label="Reset assistant position" icon="refresh" onClick={resetPosition} />
           <HeaderButton
             label="Minimize analytics assistant"
@@ -747,6 +1017,16 @@ export function AnalyticsAssistant() {
           onAccept={() => setPreferences((current) => ({ ...current, privacyAcceptedVersion: status.consent_version }))}
           onCancel={() => setPreferences((current) => ({ ...current, minimized: true }))}
           continueRef={privacyContinueRef}
+        />
+      ) : historyOpen ? (
+        <SessionHistory
+          sessions={historySessions}
+          loading={historyLoading}
+          error={historyError}
+          activeSessionId={sessionId}
+          onSelect={loadSession}
+          onDelete={removeSession}
+          onClose={() => setHistoryOpen(false)}
         />
       ) : (
         <>

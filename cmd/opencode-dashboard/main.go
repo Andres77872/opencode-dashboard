@@ -25,6 +25,7 @@ import (
 
 	"opencode-dashboard/internal/analyticsagent"
 	usagecache "opencode-dashboard/internal/cache"
+	"opencode-dashboard/internal/chatstore"
 	"opencode-dashboard/internal/config"
 	"opencode-dashboard/internal/quota"
 	"opencode-dashboard/internal/source"
@@ -235,10 +236,18 @@ func cmdWeb(args []string) error {
 		KimiHome:           kimiSelection.Path,
 		MiniMaxAuthPath:    config.DefaultOpenCodeAuthPath(),
 	})
-	assistantService := newWebAnalyticsAgent(registry, logger)
+	chatLog := openAssistantChatStore(ctx, logger)
+	if chatLog != nil {
+		defer chatLog.Close()
+	}
+	assistantService := newWebAnalyticsAgent(registry, logger, chatLog)
 
 	addr := web.DefaultHost + ":" + strconv.Itoa(*port)
-	server := web.NewServerWithAssistant(addr, registry, logger, cacheRuntime, quotaService, assistantService)
+	var chatLogService web.AssistantChatStore
+	if chatLog != nil {
+		chatLogService = chatLog
+	}
+	server := web.NewServerWithChatLog(addr, registry, logger, cacheRuntime, quotaService, assistantService, chatLogService)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)
@@ -308,9 +317,20 @@ func cmdWeb(args []string) error {
 	return nil
 }
 
+// openAssistantChatStore opens the durable assistant chat history database.
+// Failures are logged and disable persistence without breaking the assistant.
+func openAssistantChatStore(ctx context.Context, logger *slog.Logger) *chatstore.Store {
+	store, err := chatstore.Open(ctx, config.DefaultAssistantChatDBPath())
+	if err != nil {
+		logger.Warn("analytics assistant: chat history persistence is disabled", "error", err)
+		return nil
+	}
+	return store
+}
+
 // newWebAnalyticsAgent intentionally appears only in cmdWeb wiring. The TUI
 // remains fully local/offline and never constructs an outbound LLM client.
-func newWebAnalyticsAgent(registry *source.Registry, logger *slog.Logger) *analyticsagent.Service {
+func newWebAnalyticsAgent(registry *source.Registry, logger *slog.Logger, chatLog *chatstore.Store) *analyticsagent.Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -319,8 +339,19 @@ func newWebAnalyticsAgent(registry *source.Registry, logger *slog.Logger) *analy
 		logger.Warn("analytics assistant: invalid timeout override; using the default", "error", timeoutErr)
 		runTimeout = 0
 	}
+	// A persisted signing key keeps saved conversation history replayable
+	// across restarts; without it, signatures rotate with the process.
+	var historyKey []byte
+	if chatLog != nil {
+		var keyErr error
+		historyKey, keyErr = chatLog.HistoryKey(context.Background())
+		if keyErr != nil {
+			logger.Warn("analytics assistant: persisted history key unavailable; conversations will not survive restarts", "error", keyErr)
+			historyKey = nil
+		}
+	}
 	serviceWithoutClient := func() *analyticsagent.Service {
-		return analyticsagent.NewService(analyticsagent.ServiceOptions{Registry: registry, RunTimeout: runTimeout})
+		return analyticsagent.NewService(analyticsagent.ServiceOptions{Registry: registry, RunTimeout: runTimeout, HistoryKey: historyKey})
 	}
 	key, err := config.ResolveMiniMaxAPIKey(config.DefaultOpenCodeAuthPath())
 	if err != nil {
@@ -340,7 +371,7 @@ func newWebAnalyticsAgent(registry *source.Registry, logger *slog.Logger) *analy
 		logger.Warn("analytics assistant: MiniMax client configuration is invalid")
 		return serviceWithoutClient()
 	}
-	return analyticsagent.NewService(analyticsagent.ServiceOptions{Client: client, Registry: registry, RunTimeout: runTimeout})
+	return analyticsagent.NewService(analyticsagent.ServiceOptions{Client: client, Registry: registry, RunTimeout: runTimeout, HistoryKey: historyKey})
 }
 
 func cmdTUI(args []string) error {

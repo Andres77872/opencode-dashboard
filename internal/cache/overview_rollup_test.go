@@ -187,7 +187,7 @@ func TestIncrementalFillRefreshesOnlyChangedSuffix(t *testing.T) {
 
 	// Protect every historical aggregate table. A former full rebuild would
 	// fire one of these triggers during the incremental fill.
-	for _, table := range []string{"hourly_usage", "hourly_tool_usage", "overview_hourly", "overview_hourly_sessions", "overview_hourly_cost", "hourly_model_sessions", "hourly_model_cost"} {
+	for _, table := range []string{"hourly_usage", "overview_hourly", "overview_hourly_sessions", "overview_hourly_cost", "hourly_model_sessions", "hourly_model_cost"} {
 		trigger := "protect_" + table
 		if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER `+trigger+` BEFORE DELETE ON `+table+`
 			WHEN OLD.bucket_start_ms < `+itoa64(oldCutoff.UnixMilli())+`
@@ -200,8 +200,8 @@ func TestIncrementalFillRefreshesOnlyChangedSuffix(t *testing.T) {
 	if _, err := store.db.ExecContext(ctx, `
 		INSERT INTO sessions(source_id, session_id, title, time_created_ms, time_updated_ms)
 		VALUES (?, 'ghost', 'ghost', ?, ?);
-		INSERT INTO message_index(source_id, message_id, session_id, session_title, role, time_created_ms)
-		VALUES (?, 'ghost', 'ghost', 'ghost', 'assistant', ?)
+		INSERT INTO message_index(source_id, message_id, session_id, role, time_created_ms)
+		VALUES (?, 'ghost', 'ghost', 'assistant', ?)
 	`, string(rollupTestSourceID), oldCutoff.UnixMilli(), oldCutoff.UnixMilli(), string(rollupTestSourceID), oldCutoff.Add(5*time.Minute).UnixMilli()); err != nil {
 		t.Fatalf("seed stale suffix row: %v", err)
 	}

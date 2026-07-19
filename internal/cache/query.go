@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"opencode-dashboard/internal/stats"
@@ -23,7 +22,12 @@ func (s *Store) Overview(ctx context.Context, sourceID string, pq stats.PeriodQu
 		return stats.OverviewStats{}, err
 	}
 	startMs, endMs := w.ms()
-	result, err := s.overviewFromRollups(ctx, sourceID, startMs, endMs)
+	var result stats.OverviewStats
+	if f := filterFromPQ(pq); f.active() {
+		result, err = s.overviewFromModelRollups(ctx, sourceID, startMs, endMs, f)
+	} else {
+		result, err = s.overviewFromRollups(ctx, sourceID, startMs, endMs)
+	}
 	if err != nil {
 		return result, err
 	}
@@ -41,47 +45,16 @@ func (s *Store) Daily(ctx context.Context, sourceID string, pq stats.PeriodQuery
 		return stats.DailyStats{}, err
 	}
 	if gran == stats.GranularityHour {
-		return s.dailyHourly(ctx, sourceID, w)
+		return s.dailyHourly(ctx, sourceID, w, filterFromPQ(pq))
 	}
-	return s.dailyDay(ctx, sourceID, w)
+	return s.dailyDay(ctx, sourceID, w, filterFromPQ(pq))
 }
 
-func (s *Store) dailyDay(ctx context.Context, sourceID string, w window) (stats.DailyStats, error) {
+func (s *Store) dailyDay(ctx context.Context, sourceID string, w window, f modelFilter) (stats.DailyStats, error) {
 	startMs, endMs := w.ms()
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			DATE(time_created_ms / 1000, 'unixepoch') AS day,
-			COUNT(DISTINCT session_id),
-			COUNT(*),
-			COALESCE(SUM(cost), 0),
-			COALESCE(SUM(input_tokens), 0),
-			COALESCE(SUM(output_tokens), 0),
-			COALESCE(SUM(reasoning_tokens), 0),
-			COALESCE(SUM(cache_read_tokens), 0),
-			COALESCE(SUM(cache_write_tokens), 0)
-		FROM message_index
-		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?
-		GROUP BY day
-	`, sourceID, startMs, endMs)
+	parts := splitOverviewMillis(startMs, endMs)
+	byDay, err := dailyBucketStats[string](ctx, s, sourceID, parts, dayBucketExprs, f)
 	if err != nil {
-		return stats.DailyStats{}, err
-	}
-	defer rows.Close()
-
-	byDay := make(map[string]stats.DayStats)
-	for rows.Next() {
-		var d stats.DayStats
-		d.SourceID = sourceID
-		var cacheRead, cacheWrite int64
-		if err := rows.Scan(&d.Date, &d.Sessions, &d.Messages, &d.Cost, &d.Tokens.Input, &d.Tokens.Output, &d.Tokens.Reasoning, &cacheRead, &cacheWrite); err != nil {
-			return stats.DailyStats{}, err
-		}
-		d.Tokens.Cache.Read = cacheRead
-		d.Tokens.Cache.Write = cacheWrite
-		d.CostStatus, d.CostProvenance = s.costSummary(ctx, sourceID, dayStartMs(d.Date), dayStartMs(d.Date)+int64(24*time.Hour/time.Millisecond))
-		byDay[d.Date] = d
-	}
-	if err := rows.Err(); err != nil {
 		return stats.DailyStats{}, err
 	}
 
@@ -89,58 +62,36 @@ func (s *Store) dailyDay(ctx context.Context, sourceID string, w window) (stats.
 	for t := utcDay(w.start); t.Before(w.end); t = t.AddDate(0, 0, 1) {
 		key := t.Format("2006-01-02")
 		if d, ok := byDay[key]; ok {
-			days = append(days, d)
+			d.Date = key
+			days = append(days, *d)
 		} else {
 			days = append(days, stats.DayStats{SourceID: sourceID, Date: key})
 		}
 	}
-	status, provenance := s.costSummary(ctx, sourceID, startMs, endMs)
+	status, provenance, err := s.dailyListCostSummary(ctx, sourceID, parts, f)
+	if err != nil {
+		return stats.DailyStats{}, err
+	}
 	return stats.DailyStats{SourceID: sourceID, Days: days, Granularity: stats.GranularityDay, CostStatus: status, CostProvenance: provenance}, nil
 }
 
-func (s *Store) dailyHourly(ctx context.Context, sourceID string, w window) (stats.DailyStats, error) {
+func (s *Store) dailyListCostSummary(ctx context.Context, sourceID string, parts overviewWindowParts, f modelFilter) (stats.CostStatus, *stats.CostProvenance, error) {
+	if f.active() {
+		return s.modelCostSummary(ctx, sourceID, parts, f)
+	}
+	return s.overviewCostSummary(ctx, sourceID, parts)
+}
+
+func (s *Store) dailyHourly(ctx context.Context, sourceID string, w window, f modelFilter) (stats.DailyStats, error) {
 	start := w.start.UTC().Truncate(time.Hour)
 	end := w.end.UTC()
 	if !end.After(start) {
 		end = start.Add(time.Hour)
 	}
 	startMs, endMs := start.UnixMilli(), end.UnixMilli()
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			(time_created_ms / 3600000) * 3600000 AS bucket,
-			COUNT(DISTINCT session_id),
-			COUNT(*),
-			COALESCE(SUM(cost), 0),
-			COALESCE(SUM(input_tokens), 0),
-			COALESCE(SUM(output_tokens), 0),
-			COALESCE(SUM(reasoning_tokens), 0),
-			COALESCE(SUM(cache_read_tokens), 0),
-			COALESCE(SUM(cache_write_tokens), 0)
-		FROM message_index
-		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?
-		GROUP BY bucket
-	`, sourceID, startMs, endMs)
+	parts := splitOverviewMillis(startMs, endMs)
+	byHour, err := dailyBucketStats[int64](ctx, s, sourceID, parts, hourBucketExprs, f)
 	if err != nil {
-		return stats.DailyStats{}, err
-	}
-	defer rows.Close()
-
-	byHour := make(map[int64]stats.DayStats)
-	for rows.Next() {
-		var bucket int64
-		var d stats.DayStats
-		d.SourceID = sourceID
-		var cacheRead, cacheWrite int64
-		if err := rows.Scan(&bucket, &d.Sessions, &d.Messages, &d.Cost, &d.Tokens.Input, &d.Tokens.Output, &d.Tokens.Reasoning, &cacheRead, &cacheWrite); err != nil {
-			return stats.DailyStats{}, err
-		}
-		d.Date = time.UnixMilli(bucket).UTC().Format("2006-01-02T15:04:05Z")
-		d.Tokens.Cache.Read = cacheRead
-		d.Tokens.Cache.Write = cacheWrite
-		d.CostStatus, d.CostProvenance = s.costSummary(ctx, sourceID, bucket, bucket+int64(time.Hour/time.Millisecond))
-		byHour[bucket] = d
-	}
-	if err := rows.Err(); err != nil {
 		return stats.DailyStats{}, err
 	}
 
@@ -148,12 +99,16 @@ func (s *Store) dailyHourly(ctx context.Context, sourceID string, w window) (sta
 	for t := start; t.Before(end); t = t.Add(time.Hour) {
 		bucket := t.UnixMilli()
 		if d, ok := byHour[bucket]; ok {
-			days = append(days, d)
+			d.Date = t.Format("2006-01-02T15:04:05Z")
+			days = append(days, *d)
 		} else {
 			days = append(days, stats.DayStats{SourceID: sourceID, Date: t.Format("2006-01-02T15:04:05Z")})
 		}
 	}
-	status, provenance := s.costSummary(ctx, sourceID, startMs, endMs)
+	status, provenance, err := s.dailyListCostSummary(ctx, sourceID, parts, f)
+	if err != nil {
+		return stats.DailyStats{}, err
+	}
 	return stats.DailyStats{SourceID: sourceID, Days: days, Granularity: stats.GranularityHour, CostStatus: status, CostProvenance: provenance}, nil
 }
 
@@ -362,7 +317,7 @@ func (s *Store) Projects(ctx context.Context, sourceID string, pq stats.PeriodQu
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			COALESCE(m.project_id, ''),
-			COALESCE(MAX(m.project_name), ''),
+			COALESCE(MAX(p.project_name), ''),
 			COUNT(DISTINCT m.session_id),
 			COUNT(*),
 			COALESCE(SUM(m.cost), 0),
@@ -372,6 +327,7 @@ func (s *Store) Projects(ctx context.Context, sourceID string, pq stats.PeriodQu
 			COALESCE(SUM(m.cache_read_tokens), 0),
 			COALESCE(SUM(m.cache_write_tokens), 0)
 		FROM message_index m
+		LEFT JOIN projects p ON p.source_id = m.source_id AND p.project_id = m.project_id
 		WHERE m.source_id = ? AND m.time_created_ms >= ? AND m.time_created_ms < ?
 		GROUP BY m.project_id
 		ORDER BY COALESCE(SUM(m.cost), 0) DESC
@@ -393,11 +349,19 @@ func (s *Store) Projects(ctx context.Context, sourceID string, pq stats.PeriodQu
 		}
 		entry.Tokens.Cache.Read = cacheRead
 		entry.Tokens.Cache.Write = cacheWrite
-		entry.CostStatus, entry.CostProvenance = s.costSummaryForProject(ctx, sourceID, entry.ProjectID, startMs, endMs)
 		projects = append(projects, entry)
 	}
 	if err := rows.Err(); err != nil {
 		return stats.ProjectStats{}, err
+	}
+	summaries, err := s.costSummaryByKey(ctx, sourceID, "COALESCE(project_id, '')", startMs, endMs, "", nil)
+	if err != nil {
+		return stats.ProjectStats{}, err
+	}
+	for i := range projects {
+		if counts := summaries[projects[i].ProjectID]; counts != nil {
+			projects[i].CostStatus, projects[i].CostProvenance = counts.result()
+		}
 	}
 	status, provenance := s.costSummary(ctx, sourceID, startMs, endMs)
 	return stats.ProjectStats{SourceID: sourceID, Projects: projects, CostStatus: status, CostProvenance: provenance}, nil
@@ -441,7 +405,13 @@ func (s *Store) ProjectByID(ctx context.Context, sourceID, id string, pq stats.P
 	if err != nil {
 		return nil, err
 	}
-	detail.CostStatus, detail.CostProvenance = s.costSummaryForProject(ctx, sourceID, id, startMs, endMs)
+	summaries, err := s.costSummaryByKey(ctx, sourceID, "COALESCE(project_id, '')", startMs, endMs, "AND COALESCE(project_id, '') = ?", []any{id})
+	if err != nil {
+		return nil, err
+	}
+	if counts := summaries[id]; counts != nil {
+		detail.CostStatus, detail.CostProvenance = counts.result()
+	}
 	detail.TotalSessions, detail.RecentSessions, err = s.recentProjectSessions(ctx, sourceID, id, page, limit)
 	if err != nil {
 		return nil, err
@@ -468,47 +438,15 @@ func (s *Store) Sessions(ctx context.Context, sourceID string, query stats.Sessi
 		return stats.SessionList{}, err
 	}
 	startMs, endMs := w.ms()
-	filter := strings.ToLower(strings.TrimSpace(query.Filter))
-	filterLike := "%" + filter + "%"
+	spec := newSessionListSpec(sourceID, startMs, endMs, query)
 
-	args := []any{sourceID, startMs, endMs, filter, filterLike, filterLike}
-	where := `
-		m.source_id = ? AND m.time_created_ms >= ? AND m.time_created_ms < ?
-		AND (? = '' OR LOWER(COALESCE(ss.title, '')) LIKE ? OR LOWER(COALESCE(ss.project_name, '')) LIKE ?)
-	`
-	if query.ProjectID != "" {
-		where += ` AND ss.project_id = ?`
-		args = append(args, query.ProjectID)
-	}
-
-	countQuery := `SELECT COUNT(*) FROM (SELECT ss.session_id FROM sessions ss JOIN message_index m ON m.source_id = ss.source_id AND m.session_id = ss.session_id WHERE ` + where + ` GROUP BY ss.session_id)`
+	countQuery, countArgs := spec.countQuery()
 	var total int64
-	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
 		return stats.SessionList{}, err
 	}
 
-	order := "MIN(ss.time_created_ms) DESC"
-	switch query.Sort {
-	case stats.SessionSortOldest:
-		order = "MIN(ss.time_created_ms) ASC"
-	case stats.SessionSortCost:
-		order = "SUM(m.cost) DESC, MIN(ss.time_created_ms) DESC"
-	case stats.SessionSortMessages:
-		order = "COUNT(m.message_id) DESC, MIN(ss.time_created_ms) DESC"
-	}
-	listQuery := `
-		SELECT
-			ss.session_id, ss.title, COALESCE(ss.project_id, ''), COALESCE(ss.project_name, ''),
-			MIN(ss.time_created_ms), MAX(ss.time_updated_ms), COUNT(m.message_id), COALESCE(SUM(m.cost), 0)
-		FROM sessions ss
-		JOIN message_index m ON m.source_id = ss.source_id AND m.session_id = ss.session_id
-		WHERE ` + where + `
-		GROUP BY ss.session_id
-		ORDER BY ` + order + `
-		LIMIT ? OFFSET ?
-	`
-	listArgs := append([]any{}, args...)
-	listArgs = append(listArgs, query.PageSize, (query.Page-1)*query.PageSize)
+	listQuery, listArgs := spec.listQuery("", nil, query.PageSize, (query.Page-1)*query.PageSize)
 	rows, err := s.db.QueryContext(ctx, listQuery, listArgs...)
 	if err != nil {
 		return stats.SessionList{}, err
@@ -524,10 +462,12 @@ func (s *Store) Sessions(ctx context.Context, sourceID string, query stats.Sessi
 		}
 		entry.TimeCreated = time.UnixMilli(createdMs).UTC()
 		entry.TimeUpdated = time.UnixMilli(updatedMs).UTC()
-		entry.CostStatus, entry.CostProvenance = s.costSummaryForSession(ctx, sourceID, entry.ID, startMs, endMs)
 		entries = append(entries, entry)
 	}
 	if err := rows.Err(); err != nil {
+		return stats.SessionList{}, err
+	}
+	if err := s.attachSessionCostSummaries(ctx, sourceID, startMs, endMs, entries); err != nil {
 		return stats.SessionList{}, err
 	}
 	status, provenance := s.costSummary(ctx, sourceID, startMs, endMs)
@@ -549,22 +489,25 @@ func (s *Store) Messages(ctx context.Context, sourceID string, pq stats.PeriodQu
 		return stats.MessageList{}, err
 	}
 	startMs, endMs := w.ms()
+	msgWhere, msgArgs := filterFromPQ(pq).messageWhere()
 	var total int64
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM message_index WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?`, sourceID, startMs, endMs).Scan(&total); err != nil {
+	countArgs := append([]any{sourceID, startMs, endMs}, msgArgs...)
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM message_index WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?`+msgWhere, countArgs...).Scan(&total); err != nil {
 		return stats.MessageList{}, err
 	}
+	listArgs := append(append([]any{sourceID, startMs, endMs}, msgArgs...), limit, (page-1)*limit)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			message_id, session_id, session_title, role, time_created_ms, cost,
+			message_id, session_id, role, time_created_ms, cost,
 			input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens,
 			COALESCE(model_id, ''), COALESCE(provider_id, ''),
 			COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent,
 			folded_assistant_calls, folded_tool_calls, folded_token_updates, COALESCE(cost_status, ''), cost_provenance_json
 		FROM message_index
-		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?
+		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?`+msgWhere+`
 		ORDER BY `+messageOrderBy(sortSpec)+`
 		LIMIT ? OFFSET ?
-	`, sourceID, startMs, endMs, limit, (page-1)*limit)
+	`, listArgs...)
 	if err != nil {
 		return stats.MessageList{}, err
 	}
@@ -672,13 +615,16 @@ func scanMessageEntry(rows interface {
 	var prov sql.NullString
 	entry.SourceID = sourceID
 	if err := rows.Scan(
-		&entry.ID, &entry.SessionID, &entry.SessionTitle, &entry.Role, &createdMs, &entry.Cost,
+		&entry.ID, &entry.SessionID, &entry.Role, &createdMs, &entry.Cost,
 		&input, &output, &reasoning, &cacheRead, &cacheWrite,
 		&entry.ModelID, &entry.ProviderID, &entry.ServiceTier, &entry.ProcessingMode, &entry.Agent, &isSubagent,
 		&entry.FoldedAssistantCalls, &entry.FoldedToolCalls, &entry.FoldedTokenUpdates, &entry.CostStatus, &prov,
 	); err != nil {
 		return entry, err
 	}
+	// The cache never stores titles; the same synthesized value the writer
+	// used to store is derived at scan time instead.
+	entry.SessionTitle = safeSessionTitle(sourceID, entry.SessionID)
 	entry.TimeCreated = time.UnixMilli(createdMs).UTC()
 	entry.IsSubagent = isSubagent == 1
 	if entry.Role == "assistant" || input+output+reasoning+cacheRead+cacheWrite > 0 {
@@ -701,7 +647,7 @@ func scanMessageEntry(rows interface {
 func (s *Store) MessageByID(ctx context.Context, sourceID, id string) (*stats.MessageEntry, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
-			message_id, session_id, session_title, role, time_created_ms, cost,
+			message_id, session_id, role, time_created_ms, cost,
 			input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens,
 			COALESCE(model_id, ''), COALESCE(provider_id, ''),
 			COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent,

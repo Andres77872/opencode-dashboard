@@ -1,6 +1,7 @@
 import type {
   AssistantStreamCompleteEvent,
   AssistantStreamEvent,
+  AssistantToolCall,
 } from '../types/assistant'
 
 type AssistantStreamEventHandler = (event: AssistantStreamEvent) => void
@@ -35,8 +36,25 @@ function hasExactKeys(value: JSONRecord, expected: readonly string[]): boolean {
   return keys.length === expected.length && expected.every((key) => Object.hasOwn(value, key))
 }
 
+/** Requires every listed required key, and rejects keys outside required+optional. */
+function hasOnlyKeys(value: JSONRecord, required: readonly string[], optional: readonly string[]): boolean {
+  if (!required.every((key) => Object.hasOwn(value, key))) return false
+  return Object.keys(value).every((key) => required.includes(key) || optional.includes(key))
+}
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim() !== ''
+}
+
+function isValidToolCall(value: unknown): value is AssistantToolCall & JSONRecord {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ['call_id', 'name', 'ok'], ['arguments', 'result', 'duration_ms']) &&
+    isNonEmptyString(value.call_id) &&
+    isNonEmptyString(value.name) &&
+    typeof value.ok === 'boolean' &&
+    (value.duration_ms === undefined || typeof value.duration_ms === 'number')
+  )
 }
 
 function invalidEvent(lineNumber: number, message: string): AssistantStreamProtocolError {
@@ -77,28 +95,41 @@ export function parseAssistantStreamEvent(line: string, lineNumber = 1): Assista
 
     case 'tool_start':
       if (
-        !hasExactKeys(value, ['type', 'call_id', 'name']) ||
+        !hasOnlyKeys(value, ['type', 'call_id', 'name'], ['arguments']) ||
         !isNonEmptyString(value.call_id) ||
         !isNonEmptyString(value.name)
       ) {
         throw invalidEvent(lineNumber, 'tool_start requires non-empty call_id and name fields')
       }
-      return { type: 'tool_start', call_id: value.call_id, name: value.name }
+      return {
+        type: 'tool_start',
+        call_id: value.call_id,
+        name: value.name,
+        ...(value.arguments !== undefined ? { arguments: value.arguments } : {}),
+      }
 
     case 'tool_finish':
       if (
-        !hasExactKeys(value, ['type', 'call_id', 'name', 'ok']) ||
+        !hasOnlyKeys(value, ['type', 'call_id', 'name', 'ok'], ['result', 'duration_ms']) ||
         !isNonEmptyString(value.call_id) ||
         !isNonEmptyString(value.name) ||
-        typeof value.ok !== 'boolean'
+        typeof value.ok !== 'boolean' ||
+        (value.duration_ms !== undefined && typeof value.duration_ms !== 'number')
       ) {
         throw invalidEvent(lineNumber, 'tool_finish requires non-empty call_id and name fields and a boolean ok')
       }
-      return { type: 'tool_finish', call_id: value.call_id, name: value.name, ok: value.ok }
+      return {
+        type: 'tool_finish',
+        call_id: value.call_id,
+        name: value.name,
+        ok: value.ok,
+        ...(value.result !== undefined ? { result: value.result } : {}),
+        ...(typeof value.duration_ms === 'number' ? { duration_ms: value.duration_ms } : {}),
+      }
 
     case 'complete': {
       if (
-        !hasExactKeys(value, ['type', 'message', 'model', 'tools_used']) ||
+        !hasOnlyKeys(value, ['type', 'message', 'model', 'tools_used'], ['tool_calls', 'session_id']) ||
         !isRecord(value.message) ||
         !hasExactKeys(value.message, ['role', 'content', 'signature']) ||
         value.message.role !== 'assistant' ||
@@ -106,10 +137,14 @@ export function parseAssistantStreamEvent(line: string, lineNumber = 1): Assista
         !isNonEmptyString(value.message.signature) ||
         !isNonEmptyString(value.model) ||
         !Array.isArray(value.tools_used) ||
-        !value.tools_used.every(isNonEmptyString)
+        !value.tools_used.every(isNonEmptyString) ||
+        (value.session_id !== undefined && !isNonEmptyString(value.session_id)) ||
+        (value.tool_calls !== undefined &&
+          (!Array.isArray(value.tool_calls) || !value.tool_calls.every(isValidToolCall)))
       ) {
-        throw invalidEvent(lineNumber, 'complete contains an invalid assistant message, model, or tools_used list')
+        throw invalidEvent(lineNumber, 'complete contains an invalid assistant message, model, tools_used, tool_calls, or session_id')
       }
+      const toolCalls = Array.isArray(value.tool_calls) ? value.tool_calls.filter(isValidToolCall) : []
       return {
         type: 'complete',
         message: {
@@ -119,6 +154,15 @@ export function parseAssistantStreamEvent(line: string, lineNumber = 1): Assista
         },
         model: value.model,
         tools_used: [...value.tools_used],
+        tool_calls: toolCalls.map((call) => ({
+          call_id: call.call_id,
+          name: call.name,
+          ok: call.ok,
+          ...(call.arguments !== undefined ? { arguments: call.arguments } : {}),
+          ...(call.result !== undefined ? { result: call.result } : {}),
+          ...(typeof call.duration_ms === 'number' ? { duration_ms: call.duration_ms } : {}),
+        })),
+        ...(typeof value.session_id === 'string' ? { session_id: value.session_id } : {}),
       }
     }
 
