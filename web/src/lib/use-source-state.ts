@@ -96,6 +96,32 @@ const PENDING_SOURCE_INFO: Partial<Record<SourceID, SourceInfo>> = {
       redaction: true,
     },
   },
+  qwen_code: {
+    id: 'qwen_code',
+    label: 'Qwen Code',
+    kind: 'jsonl',
+    available: false,
+    default: false,
+    read_only: true,
+    local_only: true,
+    capabilities: [],
+    warnings: ['Qwen Code chat transcripts are plaintext local files and may contain sensitive prompt, reasoning, path, and tool-output content.'],
+    diagnostics: {
+      status: 'unavailable',
+      reason: 'Qwen Code source is not registered by this backend yet.',
+    },
+    cost_policy: {
+      status: 'estimated_api_equivalent',
+      currency: 'USD',
+      note: 'Qwen Code costs are estimated API-equivalent values, not actual coding-plan or Token Plan spend.',
+    },
+    privacy: {
+      plaintext_transcripts: true,
+      read_only: true,
+      local_only: true,
+      redaction: true,
+    },
+  },
 }
 
 export function getPendingSourceInfo(sourceId: SourceID): SourceInfo | null {
@@ -122,8 +148,9 @@ function getSourceStateError(rawSourceParam: string | null, requestedSourceId: S
   }
 
   if (!sourceInfo) {
-    if (requestedSourceId === 'claude_code' || requestedSourceId === 'codex' || requestedSourceId === 'kimi_code') {
-      const label = requestedSourceId === 'codex' ? 'Codex' : requestedSourceId === 'kimi_code' ? 'Kimi Code' : 'Claude Code'
+    if (requestedSourceId === 'claude_code' || requestedSourceId === 'codex' || requestedSourceId === 'kimi_code' || requestedSourceId === 'qwen_code') {
+      const label =
+        requestedSourceId === 'codex' ? 'Codex' : requestedSourceId === 'kimi_code' ? 'Kimi Code' : requestedSourceId === 'qwen_code' ? 'Qwen Code' : 'Claude Code'
       return {
         kind: 'unavailable',
         message: `${label} is not registered by the backend yet. OpenCode remains available, but this selected ${label} view has no data source to query.`,

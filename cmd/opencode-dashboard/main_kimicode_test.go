@@ -38,10 +38,10 @@ func TestBuildWebRegistryRegistersKimiCodeAsStartupSource(t *testing.T) {
 		"",
 		config.PathSelection{Path: filepath.Join(missingRoot, "missing-codex"), Source: "test missing Codex"},
 		"",
-		kimiRegistrySelection{
+		extraRegistrySelection{kimi: &homeRegistrySelection{
 			selection:    config.PathSelection{Path: kimiHome, Source: "test Kimi fixture"},
 			explicitHome: kimiHome,
-		},
+		}},
 	)
 	if err != nil {
 		t.Fatalf("buildWebRegistry(): %v", err)
@@ -92,10 +92,10 @@ func TestBuildWebRegistryKeepsConfiguredUnavailableKimiVisible(t *testing.T) {
 		"",
 		config.PathSelection{Path: filepath.Join(root, "missing-codex"), Source: "test missing Codex"},
 		"",
-		kimiRegistrySelection{
+		extraRegistrySelection{kimi: &homeRegistrySelection{
 			selection:    config.PathSelection{Path: missingKimi, Source: "--kimi-home"},
 			explicitHome: missingKimi,
-		},
+		}},
 	)
 	if err != nil {
 		t.Fatalf("buildWebRegistry(): %v", err)

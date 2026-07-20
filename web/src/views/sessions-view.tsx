@@ -444,7 +444,7 @@ export function SessionsView() {
             icon="folder"
             title="No sessions recorded yet"
             description={
-              selectedSourceId === 'claude_code' || selectedSourceId === 'kimi_code'
+              selectedSourceId === 'claude_code' || selectedSourceId === 'kimi_code' || selectedSourceId === 'qwen_code'
                 ? `No persisted ${sourceLabel} sessions were found in readable local transcripts for this window.`
                 : `This view stays empty until ${sourceLabel} contains session rows for this range.`
             }

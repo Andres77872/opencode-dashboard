@@ -2,7 +2,7 @@
 
 > Local analytics for your AI coding-assistant usage — one binary, web or terminal, works offline by default.
 
-See your usage across **OpenCode**, **Claude Code**, **Codex**, and **Kimi Code** — sessions, costs, tokens, models, tools, projects, and messages — through a web dashboard or a terminal UI. Source files are never modified, and normal dashboard views remain local. The optional MiniMax web assistant is the explicit exception: when enabled and used, it sends the chat and requested aggregate metrics to MiniMax to produce reports and insights.
+See your usage across **OpenCode**, **Claude Code**, **Codex**, **Kimi Code**, and **Qwen Code** — sessions, costs, tokens, models, tools, projects, and messages — through a web dashboard or a terminal UI. Source files are never modified, and normal dashboard views remain local. The optional MiniMax web assistant is the explicit exception: when enabled and used, it sends the chat and requested aggregate metrics to MiniMax to produce reports and insights.
 
 ## Overview
 
@@ -11,7 +11,7 @@ See your usage across **OpenCode**, **Claude Code**, **Codex**, and **Kimi Code*
 - **Web dashboard** — browser SPA served at `http://127.0.0.1:7450`
 - **TUI dashboard** — terminal interface built with Bubble Tea
 
-It supports four data sources, all read **read-only** and **local-only**:
+It supports five data sources, all read **read-only** and **local-only**:
 
 | Source | ID | Storage | Default location |
 |--------|----|---------|------------------|
@@ -19,6 +19,7 @@ It supports four data sources, all read **read-only** and **local-only**:
 | Claude Code | `claude_code` | JSONL transcripts | `~/.claude` |
 | Codex | `codex` | JSONL transcripts | `~/.codex` |
 | Kimi Code | `kimi_code` | Session state + agent wire JSONL | `~/.kimi-code` |
+| Qwen Code | `qwen_code` | Chat transcripts + token-usage JSONL | `~/.qwen` |
 
 Most views are scoped to one selected source. The **Overview** is the exception: it merges every available source into combined totals plus a per-source breakdown. You can switch the active source and time range live in both interfaces. No OpenCode (or other) server needs to be running, and at least one source's local data is all that's required. The dashboard creates `~/.local/share/opencode-dashboard/usage-cache.sqlite` by default; an empty cache is consolidated by a background sync at startup while views are served live from raw data. Once a source is cached, views load from the cache and the gap since the finality cutoff (six hours behind the last sync) is automatically re-mirrored from raw content when the source changes, so recent activity is never missing. The web UI also offers an explicit incremental resync and a clear-and-rebuild action.
 
@@ -32,10 +33,11 @@ Each source is detected automatically and exposed with its own capabilities, dia
 | Claude Code | `jsonl` | `--claude-home` → `CLAUDE_CONFIG_DIR` → `~/.claude` | `mixed` — reported when present, else computed from a bundled pricing snapshot, else missing |
 | Codex | `jsonl` | `--codex-home` → `OPENCODE_DASHBOARD_CODEX_HOME` → `~/.codex` | `estimated_api_equivalent` — estimated USD from official API per-token rates, **not** actual billed spend |
 | Kimi Code | `jsonl` | `--kimi-home` → `KIMI_CODE_HOME` → `~/.kimi-code` | `estimated_api_equivalent` — estimated from official Kimi API prices, **not** actual membership or coding-plan spend |
+| Qwen Code | `jsonl` | `--qwen-home` → `QWEN_CODE_HOME` → `~/.qwen` | `estimated_api_equivalent` — estimated from Alibaba Cloud Model Studio list prices, **not** actual coding-plan or Token Plan spend; unpriced models stay `missing` |
 
 ### Cross-source costs
 
-The Overview deliberately does **not** present a single combined cost number. OpenCode reports real dollars, Codex and Kimi Code report estimated API-equivalent values, and Claude Code is mixed — summing them would be misleading. Costs are always shown per source with each source's own provenance, while additive metrics (sessions, messages, tokens, days) are combined. Cross-source "top" signals (models, projects, tools) are ranked by a cost-neutral metric (tokens / invocations) so real and estimated dollars are never compared.
+The Overview deliberately does **not** present a single combined cost number. OpenCode reports real dollars, Codex, Kimi Code, and Qwen Code report estimated API-equivalent values, and Claude Code is mixed — summing them would be misleading. Costs are always shown per source with each source's own provenance, while additive metrics (sessions, messages, tokens, days) are combined. Cross-source "top" signals (models, projects, tools) are ranked by a cost-neutral metric (tokens / invocations) so real and estimated dollars are never compared.
 
 ### Codex requested processing mode
 
@@ -79,6 +81,32 @@ Managed Kimi Code aliases follow the current official model table: `kimi-code/k3
 
 Sources: [Kimi Code model configuration](https://www.kimi.com/code/docs/en/kimi-code/models.html), [Kimi K2.5 pricing](https://platform.kimi.ai/docs/pricing/chat-k25), [Kimi K2.6 pricing](https://platform.kimi.ai/docs/pricing/chat-k26), [Kimi K2.7 Code pricing](https://platform.kimi.ai/docs/pricing/chat-k27-code), and [Kimi K3 pricing](https://platform.kimi.ai/docs/pricing/chat-k3).
 
+### Qwen Code accounting
+
+Qwen Code (the [qwen-code CLI](https://github.com/QwenLM/qwen-code)) records the same API request in up to three local stores, and the adapter reconciles them so every request is counted exactly once:
+
+- **Chat transcripts** (`projects/<sanitized-cwd>/chats/<session>.jsonl`) are the backbone: user prompts, assistant messages with per-request `usageMetadata`, reasoning parts, and `functionCall`/`tool_result` pairs matched by call ID.
+- **Telemetry echoes** (`system`/`ui_telemetry` `api_response` events in the same transcript) duplicate the assistant records' token counts; events that match an assistant record are folded away, and the remainder — auxiliary requests only telemetry saw, such as the managed memory-extractor subagent — become their own request rows with agent attribution.
+- **The token-usage log** (`usage/token-usage-YYYY-MM.jsonl`, one line per successful API call since qwen-code v0.19.0) fills whatever the transcripts missed, including whole sessions with no transcript; `usage_record.jsonl` supplies the project path for those synthesized sessions.
+
+Token counters overlap in the raw data (`cachedTokens ⊆ inputTokens` always; `thoughtsTokens ⊆ outputTokens` on the OpenAI-compatible `openai`/`qwen-oauth` auth paths, additive on Gemini-native auth). The adapter maps them into the dashboard's disjoint buckets — uncached input, cache reads, output excluding reasoning, and reasoning — using the auth type recorded next to each request. Failed API calls carry no token usage and are not counted as requests.
+
+### Qwen model pricing catalog
+
+The bundled snapshot uses Alibaba Cloud Model Studio international list prices (promotional discounts not applied). Tiered-context models use their base tier; longer contexts are billed higher upstream, so those estimates are conservative lower bounds.
+
+| Model | Cache hit | Input | Output |
+|-------|-----------|-------|--------|
+| `qwen3.7-max` | $0.25 | $2.50 | $7.50 |
+| `qwen3.7-plus` | $0.04 | $0.40 | $1.60 |
+| `qwen3-coder-plus` | $0.10 | $1.00 | $5.00 |
+| `qwen3-max` | $0.24 | $1.20 | $6.00 |
+| `qwen3.8-max-preview` | — | — | — |
+
+`qwen3.8-max-preview` has no public per-token list price (it is sold through Token Plan bundles), so its cost is reported as `missing` rather than guessed — as is any unknown or custom-endpoint model. The qwen-oauth alias `coder-model` maps to the current mainline coder model (`qwen3.7-max`).
+
+Sources: [Model Studio pricing](https://www.alibabacloud.com/help/en/model-studio/model-pricing), [qwen-code token usage service](https://github.com/QwenLM/qwen-code/blob/main/packages/core/src/services/tokenUsageService.ts).
+
 ### Privacy
 
 - **Read-only source history** — no transcript, session file, source database, or source configuration is ever written to or mutated. The Kimi quota monitor may refresh Kimi's OAuth credential file using the same atomic flow and cross-process lock as Kimi Code itself; it does not alter session history.
@@ -86,7 +114,7 @@ Sources: [Kimi Code model configuration](https://www.kimi.com/code/docs/en/kimi-
 - **Dashboard cache** — aggregate metadata is stored in `~/.local/share/opencode-dashboard/usage-cache.sqlite` by default; override with `--cache-db` or `OPENCODE_DASHBOARD_CACHE_DB`.
 - **Self-maintaining consolidation** — an empty cache is built by a background sync at startup (views serve live raw data meanwhile); a ready cache re-mirrors recent raw activity on read, so cached views stay complete through now. The web top bar database action opens a sync panel with status, progress, last update, logs, incremental resync, and clear-and-rebuild.
 - **No cached transcripts** — raw conversation text, reasoning text, tool input, tool output, and patches are not stored in the dashboard cache.
-- **Plaintext transcripts** — Claude Code, Codex, and Kimi Code JSONL data is local plaintext and may contain prompts, reasoning, tool output, file paths, patches, and secrets.
+- **Plaintext transcripts** — Claude Code, Codex, Kimi Code, and Qwen Code JSONL data is local plaintext and may contain prompts, reasoning, tool output, file paths, patches, and secrets.
 - **Redaction** — config previews (`/api/v1/config`) redact obvious secrets before display.
 
 ## Quota tracking
@@ -134,7 +162,7 @@ Set `OPENCODE_DASHBOARD_MINIMAX_API_KEY`, restart `opencode-dashboard web`, and 
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| At least one source | — | OpenCode DB, Claude Code (`~/.claude`), Codex (`~/.codex`), or Kimi Code (`~/.kimi-code`) data on disk |
+| At least one source | — | OpenCode DB, Claude Code (`~/.claude`), Codex (`~/.codex`), Kimi Code (`~/.kimi-code`), or Qwen Code (`~/.qwen`) data on disk |
 | Go | 1.26+ | Only required to build from source |
 
 ## Installation
@@ -231,6 +259,7 @@ opencode-dashboard web --channel beta           # Channel-specific OpenCode DB
 opencode-dashboard web --claude-home ~/.claude  # Explicit Claude Code home
 opencode-dashboard web --codex-home ~/.codex    # Explicit Codex home
 opencode-dashboard web --kimi-home ~/.kimi-code # Explicit Kimi Code home
+opencode-dashboard web --qwen-home ~/.qwen      # Explicit Qwen Code home
 opencode-dashboard web --cache-db /tmp/usage.db # Explicit dashboard cache
 opencode-dashboard web --rebuild-cache          # Remove dashboard cache before start
 opencode-dashboard web --no-cache               # Start without dashboard cache
@@ -243,6 +272,7 @@ opencode-dashboard web --no-open                # Don't auto-open the browser
 opencode-dashboard tui                       # Interactive terminal UI
 opencode-dashboard tui --source claude_code  # Start on Claude Code
 opencode-dashboard tui --source kimi_code    # Start on Kimi Code
+opencode-dashboard tui --source qwen_code    # Start on Qwen Code
 opencode-dashboard tui --channel latest      # Channel-specific OpenCode DB
 opencode-dashboard tui --rebuild-cache       # Remove dashboard cache before start
 opencode-dashboard tui --no-cache            # Start without dashboard cache
@@ -272,10 +302,11 @@ Key bindings:
 | `--port <n>` | `web` | Localhost port to bind (default `7450`) |
 | `--db <path>` | `web`, `tui` | Explicit OpenCode SQLite database path |
 | `--channel <c>` | `web`, `tui` | Resolve a channel-specific OpenCode DB (`stable`/`latest`/`beta`/custom) |
-| `--source <id>` | `web`, `tui` | Initial source: `opencode`, `claude_code`, `codex`, or `kimi_code` (default `opencode`) |
+| `--source <id>` | `web`, `tui` | Initial source: `opencode`, `claude_code`, `codex`, `kimi_code`, or `qwen_code` (default `opencode`) |
 | `--claude-home <dir>` | `web`, `tui` | Claude Code config directory |
 | `--codex-home <dir>` | `web`, `tui` | Codex config directory |
 | `--kimi-home <dir>` | `web`, `tui` | Kimi Code home directory |
+| `--qwen-home <dir>` | `web`, `tui` | Qwen Code home directory |
 | `--cache-db <path>` | `web`, `tui` | Dashboard-owned SQLite cache path |
 | `--rebuild-cache` | `web`, `tui` | Delete the dashboard cache before start |
 | `--no-cache` | `web`, `tui` | Run against live sources without using the dashboard cache |
@@ -332,7 +363,7 @@ opencode-dashboard uninstall --force      # Remove without confirmation
 
 ## API endpoints
 
-The web command also serves a JSON API under `/api/v1`. Most endpoints accept a `?source=<id>` parameter (`opencode`, `claude_code`, `codex`, or `kimi_code`; omitted values use the API compatibility default, `opencode`) and a time-range parameter — either `?period=<preset>` or an explicit `?from=YYYY-MM-DD&to=YYYY-MM-DD` (defaults to `7d`). The web client sends its startup-selected source explicitly.
+The web command also serves a JSON API under `/api/v1`. Most endpoints accept a `?source=<id>` parameter (`opencode`, `claude_code`, `codex`, `kimi_code`, or `qwen_code`; omitted values use the API compatibility default, `opencode`) and a time-range parameter — either `?period=<preset>` or an explicit `?from=YYYY-MM-DD&to=YYYY-MM-DD` (defaults to `7d`). The web client sends its startup-selected source explicitly.
 
 | Endpoint | Description | Notable params |
 |----------|-------------|----------------|

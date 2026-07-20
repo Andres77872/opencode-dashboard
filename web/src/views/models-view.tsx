@@ -129,7 +129,7 @@ function compareRows(key: SortKey, a: ModelRow, b: ModelRow): number {
 }
 
 function getEmptyWindowCopy(period: string, sourceLabel: string, sourceId: SourceID): string {
-  if (sourceId === 'claude_code' || sourceId === 'kimi_code') {
+  if (sourceId === 'claude_code' || sourceId === 'kimi_code' || sourceId === 'qwen_code') {
     return `No ${sourceLabel} assistant model usage was found in readable local transcripts for this window.`
   }
   if (period === 'all') {

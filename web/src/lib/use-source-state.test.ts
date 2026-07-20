@@ -35,6 +35,16 @@ test('provides generic pending source metadata for transcript-backed sources', (
   assert.equal(kimi?.privacy?.redaction, true)
   assert.equal(kimi?.cost_policy?.status, 'estimated_api_equivalent')
   assert.match(kimi?.cost_policy?.note ?? '', /not actual membership/i)
+
+  const qwen = getPendingSourceInfo('qwen_code')
+  assert.equal(qwen?.id, 'qwen_code')
+  assert.equal(qwen?.label, 'Qwen Code')
+  assert.equal(qwen?.available, false)
+  assert.equal(qwen?.kind, 'jsonl')
+  assert.equal(qwen?.privacy?.plaintext_transcripts, true)
+  assert.equal(qwen?.privacy?.redaction, true)
+  assert.equal(qwen?.cost_policy?.status, 'estimated_api_equivalent')
+  assert.match(qwen?.cost_policy?.note ?? '', /not actual coding-plan or token plan spend/i)
 })
 
 test('does not fabricate pending metadata for OpenCode', () => {

@@ -46,6 +46,10 @@ func sourceFingerprint(ctx context.Context, info source.SourceInfo) (string, err
 		if err := hashKimiFiles(ctx, h, info.Path); err != nil {
 			return "", err
 		}
+	case source.SourceQwenCode:
+		if err := hashQwenFiles(ctx, h, info.Path); err != nil {
+			return "", err
+		}
 	default:
 		fmt.Fprintf(h, "diagnostics=%d:%d\n", info.Diagnostics.ScannedFiles, info.Diagnostics.MalformedLines)
 	}
@@ -184,6 +188,39 @@ func hashKimiFiles(ctx context.Context, h hashWriter, home string) error {
 			return false, nil
 		}
 	})
+}
+
+func hashQwenFiles(ctx context.Context, h hashWriter, home string) error {
+	// Qwen Code analytics data spans chat transcripts, the monthly token-usage
+	// logs, and the per-session usage record file.
+	chatsRoot := filepath.Join(home, "projects")
+	if err := hashWalk(ctx, h, chatsRoot, func(path string, d os.DirEntry) (bool, error) {
+		if d.IsDir() {
+			switch strings.ToLower(d.Name()) {
+			case "memory", "tool-results":
+				return false, filepath.SkipDir
+			}
+			return false, nil
+		}
+		name := d.Name()
+		if !strings.EqualFold(filepath.Ext(name), ".jsonl") || strings.HasSuffix(name, ".runtime.json") {
+			return false, nil
+		}
+		return filepath.Base(filepath.Dir(path)) == "chats", nil
+	}); err != nil {
+		return err
+	}
+	usageRoot := filepath.Join(home, "usage")
+	if err := hashWalk(ctx, h, usageRoot, func(path string, d os.DirEntry) (bool, error) {
+		if d.IsDir() {
+			return false, nil
+		}
+		name := d.Name()
+		return strings.HasPrefix(name, "token-usage-") && strings.EqualFold(filepath.Ext(name), ".jsonl"), nil
+	}); err != nil {
+		return err
+	}
+	return hashFileIfExists(h, home, filepath.Join(home, "usage_record.jsonl"))
 }
 
 func hashWalk(ctx context.Context, h hashWriter, root string, include func(string, os.DirEntry) (bool, error)) error {

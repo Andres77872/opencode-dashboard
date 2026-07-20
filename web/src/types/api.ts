@@ -3,7 +3,7 @@ export interface CacheStats {
   write: number
 }
 
-export const SOURCE_ID_VALUES = ['opencode', 'claude_code', 'codex', 'kimi_code'] as const
+export const SOURCE_ID_VALUES = ['opencode', 'claude_code', 'codex', 'kimi_code', 'qwen_code'] as const
 
 export type SourceID = (typeof SOURCE_ID_VALUES)[number]
 

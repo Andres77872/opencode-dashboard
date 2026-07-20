@@ -686,7 +686,7 @@ export function DailyView() {
               icon="calendar"
               title={`No ${bucketUnit} activity yet`}
               description={
-                selectedSourceId === 'claude_code' || selectedSourceId === 'kimi_code'
+                selectedSourceId === 'claude_code' || selectedSourceId === 'kimi_code' || selectedSourceId === 'qwen_code'
                   ? `No persisted ${sourceLabel} transcript activity was found in this selected window.`
                   : `Zero-filled window until ${sourceLabel} records sessions and messages in this period.`
               }

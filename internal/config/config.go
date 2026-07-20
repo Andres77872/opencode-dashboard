@@ -13,6 +13,7 @@ const (
 	EnvClaudeConfigDir = "CLAUDE_CONFIG_DIR"
 	EnvCodexHome       = "OPENCODE_DASHBOARD_CODEX_HOME"
 	EnvKimiCodeHome    = "KIMI_CODE_HOME"
+	EnvQwenCodeHome    = "QWEN_CODE_HOME"
 	EnvMiniMaxAPIKey   = "OPENCODE_DASHBOARD_MINIMAX_API_KEY"
 
 	AppName          = "opencode"
@@ -22,6 +23,7 @@ const (
 	SourceClaudeCode = "claude_code"
 	SourceCodex      = "codex"
 	SourceKimiCode   = "kimi_code"
+	SourceQwenCode   = "qwen_code"
 
 	DefaultDBName       = "opencode.db"
 	LatestChannelDBName = "opencode-latest.db"
@@ -36,6 +38,7 @@ type Config struct {
 	claudeHome string
 	codexHome  string
 	kimiHome   string
+	qwenHome   string
 }
 
 type PathSelection struct {
@@ -93,6 +96,14 @@ func WithKimiHome(path string) Option {
 	}
 }
 
+func WithQwenHome(path string) Option {
+	return func(c *Config) {
+		if path != "" {
+			c.qwenHome = path
+		}
+	}
+}
+
 func New(opts ...Option) *Config {
 	c := &Config{}
 	for _, opt := range opts {
@@ -140,6 +151,14 @@ func (c *Config) KimiHome() string {
 
 func (c *Config) KimiHomeSource() string {
 	return ResolveKimiHome(c.kimiHome).Source
+}
+
+func (c *Config) QwenHome() string {
+	return ResolveQwenHome(c.qwenHome).Path
+}
+
+func (c *Config) QwenHomeSource() string {
+	return ResolveQwenHome(c.qwenHome).Source
 }
 
 func (c *Config) ConfigPath() string {
@@ -216,6 +235,14 @@ func DefaultKimiHomePath() string {
 	return filepath.Join(home, ".kimi-code")
 }
 
+func DefaultQwenHomePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	return filepath.Join(home, ".qwen")
+}
+
 func ResolveOpenCodeDB(flagDB string, channel string) (PathSelection, error) {
 	if flagDB != "" && channel != "" {
 		return PathSelection{}, fmt.Errorf("use either --db or --channel, not both")
@@ -270,6 +297,18 @@ func ResolveKimiHome(flagHome string) PathSelection {
 	}
 
 	return PathSelection{Path: DefaultKimiHomePath(), Source: "$HOME/.kimi-code"}
+}
+
+func ResolveQwenHome(flagHome string) PathSelection {
+	if flagHome != "" {
+		return PathSelection{Path: flagHome, Source: "--qwen-home"}
+	}
+
+	if envHome := os.Getenv(EnvQwenCodeHome); envHome != "" {
+		return PathSelection{Path: envHome, Source: EnvQwenCodeHome}
+	}
+
+	return PathSelection{Path: DefaultQwenHomePath(), Source: "$HOME/.qwen"}
 }
 
 func ChannelDBPath(channel string) string {

@@ -1,0 +1,53 @@
+{
+  "id": "qwen-modelstudio-pricing-2026-07-19",
+  "retrieved_at": "2026-07-19T00:00:00Z",
+  "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+  "currency": "USD",
+  "models": {
+    "qwen3.7-max": {
+      "display_name": "Qwen3.7 Max",
+      "context_tokens": 262144,
+      "input_per_million": 2.5,
+      "cache_hit_input_per_million": 0.25,
+      "output_per_million": 7.5,
+      "availability_note": "International Model Studio list price; promotional discounts not applied"
+    },
+    "qwen3.7-plus": {
+      "display_name": "Qwen3.7 Plus",
+      "context_tokens": 1048576,
+      "input_per_million": 0.4,
+      "cache_hit_input_per_million": 0.04,
+      "output_per_million": 1.6,
+      "availability_note": "Non-thinking 0-256K tier list price; longer contexts are billed higher"
+    },
+    "qwen3-coder-plus": {
+      "display_name": "Qwen3 Coder Plus",
+      "context_tokens": 1048576,
+      "input_per_million": 1.0,
+      "cache_hit_input_per_million": 0.1,
+      "output_per_million": 5.0,
+      "availability_note": "0-32K context tier list price; longer contexts are billed higher; cache-hit rate estimated at 10% of input"
+    },
+    "qwen3-max": {
+      "display_name": "Qwen3 Max",
+      "context_tokens": 262144,
+      "input_per_million": 1.2,
+      "cache_hit_input_per_million": 0.24,
+      "output_per_million": 6.0,
+      "availability_note": "0-32K context tier list price; longer contexts are billed higher; cache-hit rate estimated at 20% of input"
+    },
+    "qwen3.8-max-preview": {
+      "display_name": "Qwen3.8 Max Preview",
+      "context_tokens": 262144,
+      "input_per_million": 0,
+      "cache_hit_input_per_million": 0,
+      "output_per_million": 0,
+      "availability_note": "No public per-token list price as of 2026-07-19 (sold via Token Plan bundles only); cost is reported as missing"
+    }
+  },
+  "aliases": {
+    "coder-model": "qwen3.7-max",
+    "qwen-max": "qwen3-max",
+    "qwen-coder-plus": "qwen3-coder-plus"
+  }
+}

@@ -31,6 +31,9 @@ export function getEmptyHistoryCopy(sourceId: SourceID, sourceLabel: string): st
   if (sourceId === 'kimi_code') {
     return 'No Kimi Code API requests were found in readable local wire logs for this Daily window.'
   }
+  if (sourceId === 'qwen_code') {
+    return 'No Qwen Code API requests were found in readable local transcripts or usage logs for this Daily window.'
+  }
 
   return `No ${sourceLabel} messages recorded for this Daily window yet.`
 }

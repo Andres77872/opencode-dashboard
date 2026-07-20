@@ -18,6 +18,7 @@ export const VENDORS: Record<SourceID, VendorMeta> = {
   claude_code: { id: 'claude_code', name: 'Claude Code', short: 'Claude', mono: 'C', color: 'var(--vendor-claude)' },
   codex: { id: 'codex', name: 'Codex', short: 'Codex', mono: 'Cx', color: 'var(--vendor-codex)' },
   kimi_code: { id: 'kimi_code', name: 'Kimi Code', short: 'Kimi', mono: 'K', color: 'var(--vendor-kimi)' },
+  qwen_code: { id: 'qwen_code', name: 'Qwen Code', short: 'Qwen', mono: 'Q', color: 'var(--vendor-qwen)' },
 }
 
 export function vendorMeta(id?: SourceID): VendorMeta {
