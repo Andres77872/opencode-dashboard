@@ -45,6 +45,17 @@ func rollupUserMessage(id, sessionID string, at time.Time) messageRow {
 	}
 }
 
+func accountedRollupMessage(id, sessionID string, at time.Time, modelID string, trace stats.RequestTrace, usage stats.UsageStatus) messageRow {
+	row := rollupMessage(id, sessionID, at, 1, 1, modelID, "provider", stats.CostReported)
+	row.Entry.RequestTrace = trace
+	row.Entry.UsageStatus = usage
+	if usage == stats.UsageStatusUnavailable {
+		row.Entry.Cost = 0
+		row.Entry.Tokens = nil
+	}
+	return row
+}
+
 func rollupPayload(messages []messageRow) sourcePayload {
 	sessions := map[string]time.Time{}
 	for _, message := range messages {
@@ -128,6 +139,169 @@ func TestOverviewAndModelRollupsKeepPartialEdgesExact(t *testing.T) {
 		if day.Dimension == "m2" && (day.Sessions != 1 || day.Messages != 2 || day.Cost != 9) {
 			t.Errorf("m2 trend = %#v, want 1 session, 2 messages and $9", day)
 		}
+	}
+}
+
+func TestRequestAccountingSurvivesHourlyRollupsAndDetailReads(t *testing.T) {
+	ctx := context.Background()
+	store := openRollupTestStore(t)
+	base := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	payload := rollupPayload([]messageRow{
+		rollupUserMessage("prompt", "s1", base.Add(5*time.Minute)),
+		accountedRollupMessage("recorded-observed", "s1", base.Add(10*time.Minute), "m1", stats.RequestTraceObserved, stats.UsageStatusRecorded),
+		accountedRollupMessage("recorded-inferred", "s1", base.Add(20*time.Minute), "m1", stats.RequestTraceInferred, stats.UsageStatusRecorded),
+		accountedRollupMessage("recovered", "s2", base.Add(70*time.Minute), "m2", stats.RequestTraceObserved, stats.UsageStatusRecovered),
+		accountedRollupMessage("unavailable", "s3", base.Add(130*time.Minute), "m2", stats.RequestTraceObserved, stats.UsageStatusUnavailable),
+	})
+	if err := store.replaceSource(ctx, payload, base.Add(4*time.Hour)); err != nil {
+		t.Fatalf("replaceSource() failed: %v", err)
+	}
+
+	pq := stats.PeriodQuery{FromTime: base, ToTime: base.Add(4 * time.Hour)}
+	overview, err := store.Overview(ctx, string(rollupTestSourceID), pq)
+	if err != nil {
+		t.Fatalf("Overview() failed: %v", err)
+	}
+	assertRequestAccounting(t, "overview", overview.Requests, overview.RequestAccounting, 2, 1, 1, stats.TraceCoverageMixed)
+	if overview.Messages != 5 {
+		t.Errorf("overview messages = %d, want transcript count 5", overview.Messages)
+	}
+
+	daily, err := store.Daily(ctx, string(rollupTestSourceID), pq)
+	if err != nil {
+		t.Fatalf("Daily() failed: %v", err)
+	}
+	if len(daily.Days) != 1 {
+		t.Fatalf("daily rows = %#v, want one day", daily.Days)
+	}
+	assertRequestAccounting(t, "daily row", daily.Days[0].Requests, daily.Days[0].RequestAccounting, 2, 1, 1, stats.TraceCoverageMixed)
+	assertRequestAccounting(t, "daily total", overview.Requests, daily.RequestAccounting, 2, 1, 1, stats.TraceCoverageMixed)
+
+	filtered, err := store.Overview(ctx, string(rollupTestSourceID), stats.PeriodQuery{
+		FromTime: base, ToTime: base.Add(4 * time.Hour), Model: "m1",
+	})
+	if err != nil {
+		t.Fatalf("filtered Overview() failed: %v", err)
+	}
+	assertRequestAccounting(t, "filtered overview", filtered.Requests, filtered.RequestAccounting, 2, 0, 0, stats.TraceCoverageMixed)
+	if filtered.Messages != 2 {
+		t.Errorf("filtered overview messages = %d, want two native assistant rows", filtered.Messages)
+	}
+
+	entry, err := store.MessageByID(ctx, string(rollupTestSourceID), "unavailable")
+	if err != nil {
+		t.Fatalf("MessageByID() failed: %v", err)
+	}
+	if entry == nil || entry.RequestTrace != stats.RequestTraceObserved || entry.UsageStatus != stats.UsageStatusUnavailable || entry.Tokens != nil {
+		t.Errorf("cached unavailable request = %#v, want observed/unavailable with unknown tokens", entry)
+	}
+	detail, err := store.SessionByID(ctx, string(rollupTestSourceID), "s2")
+	if err != nil {
+		t.Fatalf("SessionByID() failed: %v", err)
+	}
+	if detail == nil || len(detail.Messages) != 1 || detail.Messages[0].RequestTrace != stats.RequestTraceObserved || detail.Messages[0].UsageStatus != stats.UsageStatusRecovered {
+		t.Errorf("cached session request provenance = %#v, want observed/recovered", detail)
+	}
+}
+
+func TestEmptyKimiCacheWindowReportsUnknownTraceCoverage(t *testing.T) {
+	ctx := context.Background()
+	store := openRollupTestStore(t)
+	from := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	pq := stats.PeriodQuery{FromTime: from, ToTime: from.Add(time.Hour)}
+	overview, err := store.Overview(ctx, "kimi_code", pq)
+	if err != nil {
+		t.Fatalf("Overview() failed: %v", err)
+	}
+	if overview.RequestAccounting == nil || overview.RequestAccounting.TraceCoverage != stats.TraceCoverageUnknown {
+		t.Errorf("empty Kimi overview accounting = %#v, want unknown", overview.RequestAccounting)
+	}
+	daily, err := store.Daily(ctx, "kimi_code", pq, stats.GranularityHour)
+	if err != nil {
+		t.Fatalf("Daily() failed: %v", err)
+	}
+	if daily.RequestAccounting == nil || daily.RequestAccounting.TraceCoverage != stats.TraceCoverageUnknown {
+		t.Errorf("empty Kimi daily accounting = %#v, want unknown", daily.RequestAccounting)
+	}
+}
+
+func TestRequestProvenanceSurvivesCacheReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "usage-cache.sqlite")
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open() failed: %v", err)
+	}
+	base := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	request := accountedRollupMessage("legacy-request", "s1", base.Add(10*time.Minute), "m1", stats.RequestTraceInferred, stats.UsageStatusRecorded)
+	request.Entry.CostStatus = stats.CostEstimatedAPIEquivalent
+	request.Entry.CostProvenance = &stats.CostProvenance{
+		Status: stats.CostEstimatedAPIEquivalent, Currency: "USD", ComputedCount: 1,
+		PricingSnapshotID: "kimi-pricing-v-test", PricingSource: "https://example.test/kimi-pricing",
+		Note: "Kimi API-equivalent test estimate",
+	}
+	payload := rollupPayload([]messageRow{request})
+	payload.Info.ID = source.SourceKimiCode
+	payload.Info.CostPolicy = source.CostPolicy{
+		Status: string(stats.CostEstimatedAPIEquivalent), Currency: "USD",
+		PricingSnapshotID: "kimi-pricing-v-test", PricingSource: "https://example.test/kimi-pricing",
+		Note: "Kimi API-equivalent test estimate",
+	}
+	if err := store.replaceSource(ctx, payload, base.Add(time.Hour)); err != nil {
+		t.Fatalf("replaceSource() failed: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() failed: %v", err)
+	}
+
+	store, err = Open(ctx, path)
+	if err != nil {
+		t.Fatalf("reopen cache: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	pq := stats.PeriodQuery{FromTime: base, ToTime: base.Add(time.Hour)}
+	overview, err := store.Overview(ctx, string(source.SourceKimiCode), pq)
+	if err != nil {
+		t.Fatalf("Overview() after reopen failed: %v", err)
+	}
+	assertRequestAccounting(t, "reopened overview", overview.Requests, overview.RequestAccounting, 1, 0, 0, stats.TraceCoverageSuccessfulOnly)
+	assertCachedPricingProvenance(t, "reopened overview", overview.CostProvenance)
+	daily, err := store.Daily(ctx, string(source.SourceKimiCode), pq)
+	if err != nil || len(daily.Days) != 1 {
+		t.Fatalf("Daily() after reopen = %#v, %v", daily, err)
+	}
+	assertCachedPricingProvenance(t, "reopened daily total", daily.CostProvenance)
+	assertCachedPricingProvenance(t, "reopened daily row", daily.Days[0].CostProvenance)
+	models, err := store.Models(ctx, string(source.SourceKimiCode), pq)
+	if err != nil || len(models.Models) != 1 {
+		t.Fatalf("Models() after reopen = %#v, %v", models, err)
+	}
+	assertCachedPricingProvenance(t, "reopened model total", models.CostProvenance)
+	assertCachedPricingProvenance(t, "reopened model row", models.Models[0].CostProvenance)
+	entry, err := store.MessageByID(ctx, string(source.SourceKimiCode), "legacy-request")
+	if err != nil {
+		t.Fatalf("MessageByID() after reopen failed: %v", err)
+	}
+	if entry == nil || entry.RequestTrace != stats.RequestTraceInferred || entry.UsageStatus != stats.UsageStatusRecorded {
+		t.Errorf("reopened message provenance = %#v, want inferred/recorded", entry)
+	}
+}
+
+func assertCachedPricingProvenance(t *testing.T, label string, provenance *stats.CostProvenance) {
+	t.Helper()
+	if provenance == nil || provenance.PricingSnapshotID != "kimi-pricing-v-test" ||
+		provenance.PricingSource != "https://example.test/kimi-pricing" ||
+		provenance.Note != "Kimi API-equivalent test estimate" {
+		t.Errorf("%s cost provenance = %#v, want pinned snapshot/source/note", label, provenance)
+	}
+}
+
+func assertRequestAccounting(t *testing.T, label string, requests int64, accounting *stats.RequestAccounting, recorded, recovered, unavailable int64, coverage stats.TraceCoverage) {
+	t.Helper()
+	if requests != recorded+recovered+unavailable || accounting == nil ||
+		accounting.UsageRecorded != recorded || accounting.UsageRecovered != recovered ||
+		accounting.UsageUnavailable != unavailable || accounting.TraceCoverage != coverage {
+		t.Errorf("%s request accounting = requests %d / %#v, want %d recorded, %d recovered, %d unavailable, %s", label, requests, accounting, recorded, recovered, unavailable, coverage)
 	}
 }
 

@@ -21,11 +21,13 @@ func (s *snapshot) overview(pq stats.PeriodQuery) (stats.OverviewStats, error) {
 		return stats.OverviewStats{}, err
 	}
 	cost, tokens, status, provenance := aggregateCostProvenance(messages)
+	requests, accounting := aggregateRequestAccounting(messages)
 	days := uniqueDays(messages)
 	result := stats.OverviewStats{
 		SourceID: kimiSourceID, Sessions: int64(len(uniqueSessions(messages))),
-		Messages: int64(len(messages)), Cost: cost, Tokens: tokens, Days: len(days),
+		Messages: int64(len(messages)), Requests: requests, Cost: cost, Tokens: tokens, Days: len(days),
 		CostStatus: status, CostProvenance: provenance,
+		RequestAccounting: accounting,
 	}
 	if result.Days > 0 {
 		result.CostPerDay = cost / float64(result.Days)
@@ -58,16 +60,20 @@ func (s *snapshot) daily(pq stats.PeriodQuery, granularity ...stats.Granularity)
 			continue
 		}
 		cost, tokens, status, provenance := aggregateCostProvenance(group)
+		requests, accounting := aggregateRequestAccounting(group)
 		days = append(days, stats.DayStats{
 			SourceID: kimiSourceID, Date: key, Sessions: int64(len(uniqueSessions(group))),
-			Messages: int64(len(group)), Cost: cost, Tokens: tokens,
+			Messages: int64(len(group)), Requests: requests, Cost: cost, Tokens: tokens,
 			CostStatus: status, CostProvenance: provenance,
+			RequestAccounting: accounting,
 		})
 	}
 	_, _, status, provenance := aggregateCostProvenance(messages)
+	_, accounting := aggregateRequestAccounting(messages)
 	return stats.DailyStats{
 		SourceID: kimiSourceID, Days: days, Granularity: gran,
 		CostStatus: status, CostProvenance: provenance,
+		RequestAccounting: accounting,
 	}, nil
 }
 
@@ -373,6 +379,7 @@ func (s *snapshot) sessionByID(id string) *stats.SessionDetail {
 			ProviderID: msg.Entry.ProviderID, Agent: msg.Entry.Agent,
 			IsSubagent: msg.Entry.IsSubagent, CostStatus: msg.Entry.CostStatus,
 			CostProvenance: cloneProvenance(msg.Entry.CostProvenance),
+			RequestTrace:   msg.Entry.RequestTrace, UsageStatus: msg.Entry.UsageStatus,
 		})
 	}
 	cost, tokens, status, provenance := aggregateCostProvenance(session.Messages)
@@ -383,6 +390,37 @@ func (s *snapshot) sessionByID(id string) *stats.SessionDetail {
 		TotalCost: cost, TotalTokens: tokens, MessageCount: int64(len(messages)),
 		CostStatus: status, CostProvenance: provenance,
 	}
+}
+
+func aggregateRequestAccounting(messages []*messageRecord) (int64, *stats.RequestAccounting) {
+	var requests, recorded, recovered, unavailable, observed, inferred, unknown int64
+	for _, message := range messages {
+		if message == nil || message.Entry.Role != "assistant" {
+			continue
+		}
+		requests++
+		switch message.Entry.UsageStatus {
+		case stats.UsageStatusRecorded:
+			recorded++
+		case stats.UsageStatusRecovered:
+			recovered++
+		case stats.UsageStatusUnavailable:
+			unavailable++
+		}
+		switch message.Entry.RequestTrace {
+		case stats.RequestTraceObserved:
+			observed++
+		case stats.RequestTraceInferred:
+			inferred++
+		default:
+			unknown++
+		}
+	}
+	accounting := stats.NewRequestAccounting(recorded, recovered, unavailable, observed, inferred, unknown)
+	if accounting == nil {
+		accounting = &stats.RequestAccounting{TraceCoverage: stats.TraceCoverageUnknown}
+	}
+	return requests, accounting
 }
 
 func (s *snapshot) messages(pq stats.PeriodQuery, page, limit int, sortSpec stats.MessageSort) (stats.MessageList, error) {

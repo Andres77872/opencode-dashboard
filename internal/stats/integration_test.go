@@ -47,6 +47,9 @@ func TestOverviewWithFixture(t *testing.T) {
 	if overview.Messages <= 0 {
 		t.Errorf("Overview.Messages = %d, want > 0", overview.Messages)
 	}
+	if overview.Requests <= 0 || overview.Requests > overview.Messages {
+		t.Errorf("Overview.Requests = %d, want assistant-only count in (0, messages=%d]", overview.Requests, overview.Messages)
+	}
 
 	// Total cost should be positive
 	if overview.Cost <= 0 {

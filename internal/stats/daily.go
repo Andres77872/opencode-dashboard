@@ -73,6 +73,7 @@ func Daily(ctx context.Context, db *store.Store, pq PeriodQuery, granularity ...
 	for date, stats := range messageStats {
 		if entry, ok := dayMap[date]; ok {
 			entry.Messages = stats.Messages
+			entry.Requests = stats.Requests
 			entry.Cost = stats.Cost
 			entry.Tokens = stats.Tokens
 			dayMap[date] = entry
@@ -143,6 +144,7 @@ func queryEarliestActivityDate(ctx context.Context, db *store.Store) (time.Time,
 
 type dayMessageStats struct {
 	Messages int64
+	Requests int64
 	Cost     float64
 	Tokens   TokenStats
 }
@@ -181,6 +183,7 @@ func queryMessageStatsByDay(ctx context.Context, db *store.Store, startMs, endMs
 		SELECT
 			DATE(m.time_created / 1000, 'unixepoch') as day,
 			COUNT(*) as message_count,
+			COALESCE(SUM(CASE WHEN JSON_EXTRACT(m.data, '$.role') = 'assistant' THEN 1 ELSE 0 END), 0) as request_count,
 			COALESCE(SUM(
 				CASE 
 					WHEN JSON_EXTRACT(m.data, '$.role') = 'assistant' 
@@ -243,6 +246,7 @@ func queryMessageStatsByDay(ctx context.Context, db *store.Store, startMs, endMs
 		if err := rows.Scan(
 			&day,
 			&stats.Messages,
+			&stats.Requests,
 			&stats.Cost,
 			&stats.Tokens.Input,
 			&stats.Tokens.Output,
@@ -339,6 +343,7 @@ func dailyHourly(ctx context.Context, db *store.Store, pq PeriodQuery) (DailySta
 	for hour, stats := range messageStats {
 		if entry, ok := hourMap[hour]; ok {
 			entry.Messages = stats.Messages
+			entry.Requests = stats.Requests
 			entry.Cost = stats.Cost
 			entry.Tokens = stats.Tokens
 			hourMap[hour] = entry
@@ -392,6 +397,7 @@ func queryMessageStatsByHour(ctx context.Context, db *store.Store, startTime, en
 		SELECT 
 			STRFTIME('%Y-%m-%dT%H:00:00Z', DATETIME(m.time_created / 1000, 'unixepoch')) as hour,
 			COUNT(*) as message_count,
+			COALESCE(SUM(CASE WHEN JSON_EXTRACT(m.data, '$.role') = 'assistant' THEN 1 ELSE 0 END), 0) as request_count,
 			COALESCE(SUM(
 				CASE 
 					WHEN JSON_EXTRACT(m.data, '$.role') = 'assistant' 
@@ -457,6 +463,7 @@ func queryMessageStatsByHour(ctx context.Context, db *store.Store, startTime, en
 		if err := rows.Scan(
 			&hour,
 			&stats.Messages,
+			&stats.Requests,
 			&stats.Cost,
 			&stats.Tokens.Input,
 			&stats.Tokens.Output,

@@ -89,6 +89,10 @@ type provider interface {
 	quota(ctx context.Context) ProviderQuota
 }
 
+type quotaTimeoutProvider interface {
+	quotaTimeout() time.Duration
+}
+
 // Service aggregates quota from all providers.
 type Service struct {
 	providers []provider
@@ -126,7 +130,11 @@ func (s *Service) Quotas(ctx context.Context) Response {
 		wg.Add(1)
 		go func(i int, p provider) {
 			defer wg.Done()
-			providerCtx, cancel := context.WithTimeout(ctx, s.timeout)
+			timeout := s.timeout
+			if override, ok := p.(quotaTimeoutProvider); ok {
+				timeout = override.quotaTimeout()
+			}
+			providerCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			results[i] = p.quota(providerCtx)
 		}(i, p)

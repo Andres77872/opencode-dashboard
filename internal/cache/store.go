@@ -875,11 +875,11 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 			cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens,
 			cache_write_tokens, model_input_tokens, model_output_tokens,
 			model_reasoning_tokens, model_cache_read_tokens, model_cache_write_tokens,
-			model_id, provider_id, service_tier, processing_mode,
+			model_id, provider_id, service_tier, processing_mode, request_trace, usage_status,
 			agent, is_subagent,
 			folded_assistant_calls, folded_tool_calls, folded_token_updates,
 			cost_status, cost_provenance_json, project_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_id, message_id) DO UPDATE SET
 			session_id = excluded.session_id,
 			role = excluded.role,
@@ -899,6 +899,8 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 			provider_id = excluded.provider_id,
 			service_tier = excluded.service_tier,
 			processing_mode = excluded.processing_mode,
+			request_trace = excluded.request_trace,
+			usage_status = excluded.usage_status,
 			agent = excluded.agent,
 			is_subagent = excluded.is_subagent,
 			folded_assistant_calls = excluded.folded_assistant_calls,
@@ -934,6 +936,7 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 			entry.Cost, tokens.Input, tokens.Output, tokens.Reasoning, tokens.Cache.Read, tokens.Cache.Write,
 			modelTokens.Input, modelTokens.Output, modelTokens.Reasoning, modelTokens.Cache.Read, modelTokens.Cache.Write,
 			nullEmpty(entry.ModelID), nullEmpty(entry.ProviderID), nullEmpty(entry.ServiceTier), nullEmpty(string(entry.ProcessingMode)),
+			nullEmpty(string(entry.RequestTrace)), nullEmpty(string(entry.UsageStatus)),
 			nullEmpty(entry.Agent), boolInt(entry.IsSubagent),
 			entry.FoldedAssistantCalls, entry.FoldedToolCalls, entry.FoldedTokenUpdates,
 			string(entry.CostStatus), prov, row.ProjectID,
@@ -1128,7 +1131,8 @@ func rebuildHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string) error 
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO hourly_usage(
 			source_id, bucket_start_ms, model_id, provider_id, role,
-			messages, cost, input_tokens, output_tokens, reasoning_tokens,
+			messages, requests, usage_recorded, usage_recovered, usage_unavailable,
+			trace_observed, trace_inferred, cost, input_tokens, output_tokens, reasoning_tokens,
 			cache_read_tokens, cache_write_tokens
 		)
 		SELECT
@@ -1138,6 +1142,12 @@ func rebuildHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string) error 
 			COALESCE(provider_id, ''),
 			role,
 			COUNT(*),
+			SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'recorded' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'recovered' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'unavailable' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN request_trace = 'observed' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN request_trace = 'inferred' THEN 1 ELSE 0 END),
 			COALESCE(SUM(cost), 0),
 			COALESCE(SUM(model_input_tokens), 0),
 			COALESCE(SUM(model_output_tokens), 0),
@@ -1175,7 +1185,8 @@ func refreshHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string, sinceM
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO hourly_usage(
 			source_id, bucket_start_ms, model_id, provider_id, role,
-			messages, cost, input_tokens, output_tokens, reasoning_tokens,
+			messages, requests, usage_recorded, usage_recovered, usage_unavailable,
+			trace_observed, trace_inferred, cost, input_tokens, output_tokens, reasoning_tokens,
 			cache_read_tokens, cache_write_tokens
 		)
 		SELECT
@@ -1185,6 +1196,12 @@ func refreshHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string, sinceM
 			COALESCE(provider_id, ''),
 			role,
 			COUNT(*),
+			SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'recorded' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'recovered' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'unavailable' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN request_trace = 'observed' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN request_trace = 'inferred' THEN 1 ELSE 0 END),
 			COALESCE(SUM(cost), 0),
 			COALESCE(SUM(model_input_tokens), 0),
 			COALESCE(SUM(model_output_tokens), 0),
@@ -1240,13 +1257,21 @@ func insertOverviewHourly(ctx context.Context, tx *sql.Tx, sourceID string, buck
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO overview_hourly(
-			source_id, bucket_start_ms, messages, cost, input_tokens, output_tokens,
+			source_id, bucket_start_ms, messages, requests,
+			usage_recorded, usage_recovered, usage_unavailable, trace_observed, trace_inferred,
+			cost, input_tokens, output_tokens,
 			reasoning_tokens, cache_read_tokens, cache_write_tokens
 		)
 		SELECT
 			source_id,
 			(time_created_ms / 3600000) * 3600000,
 			COUNT(*),
+			SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN role = 'assistant' AND usage_status = 'recorded' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN role = 'assistant' AND usage_status = 'recovered' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN role = 'assistant' AND usage_status = 'unavailable' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN role = 'assistant' AND request_trace = 'observed' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN role = 'assistant' AND request_trace = 'inferred' THEN 1 ELSE 0 END),
 			COALESCE(SUM(cost), 0),
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),

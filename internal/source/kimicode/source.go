@@ -95,7 +95,8 @@ func (s *Source) Info(ctx context.Context) source.SourceInfo {
 			Status:            string(stats.CostEstimatedAPIEquivalent),
 			Currency:          "USD",
 			PricingSnapshotID: s.pricingSnapshotID(ctx),
-			Note:              "Kimi Code costs are estimated API-equivalent values, not actual membership or coding-plan spend",
+			PricingSource:     s.loadPricing(ctx).Source,
+			Note:              apiEquivalentNote,
 		},
 		Privacy: source.PrivacyInfo{
 			PlaintextTranscripts: true,
@@ -447,6 +448,7 @@ func (s *Source) parseSessions(ctx context.Context, sessions []sessionFiles, dia
 		}
 		diag.MalformedLines += parseDiag.MalformedLines
 		diag.UnsupportedEvents += parseDiag.UnsupportedEvents
+		diag.Reason = appendReason(diag.Reason, parseDiag.Reason)
 		parsed = append(parsed, session)
 	}
 	return normalizeSessions(s.opts.KimiHome, parsed, s.loadPricing(ctx), finalizeDiagnostics(diag)), nil

@@ -100,7 +100,7 @@ func assertDailyParity(t *testing.T, want, got stats.DailyStats) {
 	}
 	for i, legacy := range want.Days {
 		rollup := got.Days[i]
-		if legacy.Date != rollup.Date || legacy.Sessions != rollup.Sessions || legacy.Messages != rollup.Messages || legacy.Tokens != rollup.Tokens || !closeCost(legacy.Cost, rollup.Cost) {
+		if legacy.Date != rollup.Date || legacy.Sessions != rollup.Sessions || legacy.Messages != rollup.Messages || legacy.Requests != rollup.Requests || legacy.Tokens != rollup.Tokens || !closeCost(legacy.Cost, rollup.Cost) {
 			t.Errorf("day %s mismatch\nlegacy: %#v\nrollup: %#v", legacy.Date, legacy, rollup)
 		}
 		assertCostParity(t, legacy.CostStatus, legacy.CostProvenance, rollup.CostStatus, rollup.CostProvenance)
@@ -137,7 +137,7 @@ func assertSessionParity(t *testing.T, want, got stats.SessionList) {
 
 func assertOverviewParity(t *testing.T, want, got stats.OverviewStats) {
 	t.Helper()
-	if want.Sessions != got.Sessions || want.Messages != got.Messages || want.Tokens != got.Tokens || want.Days != got.Days || !closeCost(want.Cost, got.Cost) {
+	if want.Sessions != got.Sessions || want.Messages != got.Messages || want.Requests != got.Requests || want.Tokens != got.Tokens || want.Days != got.Days || !closeCost(want.Cost, got.Cost) {
 		t.Errorf("overview rollup mismatch\nlegacy: %#v\nrollup: %#v", want, got)
 	}
 	assertCostParity(t, want.CostStatus, want.CostProvenance, got.CostStatus, got.CostProvenance)
@@ -334,7 +334,9 @@ func legacyCachedOverview(ctx context.Context, store *Store, sourceID string, pq
 	var result stats.OverviewStats
 	err = store.db.QueryRowContext(ctx, `
 		SELECT
-			COUNT(DISTINCT session_id), COUNT(*), COALESCE(SUM(cost), 0),
+			COUNT(DISTINCT session_id), COUNT(*),
+			COALESCE(SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(cost), 0),
 			COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
 			COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(cache_write_tokens), 0),
@@ -342,7 +344,7 @@ func legacyCachedOverview(ctx context.Context, store *Store, sourceID string, pq
 		FROM message_index
 		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?
 	`, sourceID, startMs, endMs).Scan(
-		&result.Sessions, &result.Messages, &result.Cost, &result.Tokens.Input,
+		&result.Sessions, &result.Messages, &result.Requests, &result.Cost, &result.Tokens.Input,
 		&result.Tokens.Output, &result.Tokens.Reasoning, &result.Tokens.Cache.Read,
 		&result.Tokens.Cache.Write, &result.Days,
 	)
@@ -455,6 +457,7 @@ func legacyCachedDaily(ctx context.Context, store *Store, sourceID string, pq st
 			DATE(time_created_ms / 1000, 'unixepoch') AS day,
 			COUNT(DISTINCT session_id),
 			COUNT(*),
+			COALESCE(SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(cost), 0),
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
@@ -475,7 +478,7 @@ func legacyCachedDaily(ctx context.Context, store *Store, sourceID string, pq st
 			var d stats.DayStats
 			d.SourceID = sourceID
 			var cacheRead, cacheWrite int64
-			if err := rows.Scan(&d.Date, &d.Sessions, &d.Messages, &d.Cost, &d.Tokens.Input, &d.Tokens.Output, &d.Tokens.Reasoning, &cacheRead, &cacheWrite); err != nil {
+			if err := rows.Scan(&d.Date, &d.Sessions, &d.Messages, &d.Requests, &d.Cost, &d.Tokens.Input, &d.Tokens.Output, &d.Tokens.Reasoning, &cacheRead, &cacheWrite); err != nil {
 				return err
 			}
 			d.Tokens.Cache.Read = cacheRead

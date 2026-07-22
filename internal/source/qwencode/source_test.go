@@ -56,6 +56,9 @@ func TestQwenCodeReconcilesTranscriptsTelemetryAndUsageLog(t *testing.T) {
 	if overview.Sessions != 2 || overview.Messages != 4 {
 		t.Errorf("overview sessions/messages = %d/%d, want 2/4 (user + assistant + subagent + usage-only)", overview.Sessions, overview.Messages)
 	}
+	if overview.Requests != 3 {
+		t.Errorf("overview requests = %d, want 3 assistant/API-request rows without the user prompt", overview.Requests)
+	}
 	if overview.Tokens.Input != 1000 || overview.Tokens.Output != 170 ||
 		overview.Tokens.Reasoning != 60 || overview.Tokens.Cache.Read != 700 || overview.Tokens.Cache.Write != 0 {
 		t.Errorf("token totals = %#v, want overlap-free sums across all three stores", overview.Tokens)

@@ -2,7 +2,7 @@
 
 > Local analytics for your AI coding-assistant usage — one binary, web or terminal, works offline by default.
 
-See your usage across **OpenCode**, **Claude Code**, **Codex**, **Kimi Code**, and **Qwen Code** — sessions, costs, tokens, models, tools, projects, and messages — through a web dashboard or a terminal UI. Source files are never modified, and normal dashboard views remain local. The optional MiniMax web assistant is the explicit exception: when enabled and used, it sends the chat and requested aggregate metrics to MiniMax to produce reports and insights.
+See your usage across **OpenCode**, **Claude Code**, **Codex**, **Kimi Code**, and **Qwen Code** — sessions, outbound requests, costs, tokens, models, tools, projects, and transcript messages — through a web dashboard or a terminal UI. Source files are never modified, and normal dashboard views remain local. The optional MiniMax web assistant is the explicit exception: when enabled and used, it sends the chat and requested aggregate metrics to MiniMax to produce reports and insights.
 
 ## Overview
 
@@ -37,7 +37,7 @@ Each source is detected automatically and exposed with its own capabilities, dia
 
 ### Cross-source costs
 
-The Overview deliberately does **not** present a single combined cost number. OpenCode reports real dollars, Codex, Kimi Code, and Qwen Code report estimated API-equivalent values, and Claude Code is mixed — summing them would be misleading. Costs are always shown per source with each source's own provenance, while additive metrics (sessions, messages, tokens, days) are combined. Cross-source "top" signals (models, projects, tools) are ranked by a cost-neutral metric (tokens / invocations) so real and estimated dollars are never compared.
+The Overview deliberately does **not** present a single combined cost number. OpenCode reports real dollars, Codex, Kimi Code, and Qwen Code report estimated API-equivalent values, and Claude Code is mixed — summing them would be misleading. Costs are always shown per source with each source's own provenance, while additive metrics (sessions, requests, messages, tokens, days) are combined. A **request** is an outbound assistant/API attempt and excludes user prompts; **messages** remain the transcript/history count. Cross-source "top" signals (models, projects, tools) are ranked by a cost-neutral metric (tokens / invocations) so real and estimated dollars are never compared.
 
 ### Codex requested processing mode
 
@@ -56,18 +56,27 @@ This distinction matters because OpenAI's [Priority processing guide](https://de
 
 ### Kimi Code wire accounting
 
-Kimi Code sessions are read from `sessions/<workspace>/<session>/state.json` and every `agents/<agent>/wire.jsonl`. The adapter:
+Kimi Code sessions are read from `sessions/<workspace>/<session>/state.json`. Both layouts are supported: v1 state documents with string or epoch timestamps and fields such as `workDir`, and the [v2 session metadata schema](https://github.com/MoonshotAI/kimi-code/blob/main/packages/agent-core-v2/src/session/sessionMetadata/sessionMetadata.ts) with `version`, `cwd`, title, fork, parent/swarm, labels, and agent metadata. When a state document lacks a usable directory, the adapter falls back through `cwd`, `workDir`, `custom.cwd`, and the workspace entry in `session_index.jsonl`.
 
-- counts visible `turn.prompt` / user-origin messages and one assistant row per `llm.request`;
-- uses `usage.record` as the canonical per-request token record, avoiding the duplicate usage embedded in `step.end`;
+`agents/main/wire.jsonl` is authoritative for the main conversation, and every other `agents/<agent>/wire.jsonl` is additive. Foreground, background, nested, and `independent` agents all contribute to one combined session/overview total; there is intentionally no main-versus-subagent split. A root `wire.jsonl` is used only when no main wire exists and it contains canonical agent records. Old UI-only root logs and root logs shadowed by a main wire are diagnosed but do not fabricate usage.
+
+The adapter:
+
+- counts visible user-origin prompts as transcript messages and every `llm.request` as its own outbound request, including normal calls, retries, resends, compaction calls, failures, and unfinished attempts;
+- uses `usage.record` as canonical token evidence and can recover a missing record from `step.end.usage`; a later canonical record replaces the recovered value;
+- treats consecutive standalone usage records as separate legacy successful requests instead of overwriting them;
 - maps `inputOther`, `inputCacheRead`, `inputCacheCreation`, and `output` into the dashboard's disjoint token buckets;
-- pairs `tool.call` and `tool.result` by `toolCallId`;
-- rolls subagent activity into its parent session while preserving agent attribution; and
+- pairs `tool.call` and `tool.result` by `toolCallId`, preserves genuine user-slash skill/plugin prompts, and excludes system-triggered subagent tasks, background steering, injections, and model-triggered activation;
+- attributes agent display metadata from the wire profile while rolling every agent type into the parent session; and
 - starts accounting after the last durable `forked` marker, so copied parent history is not counted again in forked sessions.
+
+Kimi Code releases before 0.23.1 can contain usage records without durable `llm.request` traces. For those logs the dashboard infers one successful request per standalone usage record and marks trace coverage `successful_only` or `mixed`; failed attempts that Kimi never persisted cannot be reconstructed. For traced requests without usage evidence, request count is known but tokens and cost are **unknown, never zero**. Aggregates expose `usage_recorded`, `usage_recovered`, `usage_unavailable`, and trace coverage, while request detail exposes observed/inferred trace and recorded/recovered/unavailable usage provenance.
+
+Kimi does not persist a separate reasoning-token counter. Its reported generated-token value remains in `tokens.output`; the dashboard does not synthesize a reasoning estimate.
 
 ### Kimi model pricing catalog
 
-The bundled snapshot uses Kimi's official per-million-token API prices. Cache creation is priced as a cache miss because the public tables expose cache-hit and cache-miss input rates. These values are an API-equivalent estimate for Kimi Code transcript usage.
+The bundled snapshot uses Kimi's official per-million-token API prices. Cache creation is priced as a cache miss because the public tables expose cache-hit and cache-miss input rates. These values are an API-equivalent estimate for requests with persisted usage evidence, including usage recovered from `step.end`; they are not actual membership/coding-plan spend. Requests without usage evidence have unknown cost and are never priced as zero.
 
 | Canonical API model | Context | Cache hit | Input cache miss | Output |
 |---------------------|---------|-----------|------------------|--------|
@@ -128,7 +137,7 @@ Besides historical usage, the dashboard shows the **remaining subscription quota
 | Kimi Code | automatic after `kimi login` | The same managed `/usages` surface used by Kimi Code's official [`/usage` command](https://www.kimi.com/code/docs/en/kimi-code-cli/reference/slash-commands.html) is called with the OAuth credential under `$KIMI_CODE_HOME/credentials/`. Short-lived access tokens are refreshed through Kimi's official OAuth flow, using Kimi Code's `oauth/<credential>.lock` protocol to avoid refresh-token races with a running CLI. |
 | MiniMax | API key | MiniMax's documented `token_plan/remains` endpoint, called with the key from `OPENCODE_DASHBOARD_MINIMAX_API_KEY` or, as a fallback, opencode's auth store (`~/.local/share/opencode/auth.json`, entry `minimax-coding-plan`). |
 
-The Kimi collector follows the official open-source [managed usage client](https://github.com/MoonshotAI/kimi-code/blob/main/packages/oauth/src/managed-usage.ts) and [OAuth refresh manager](https://github.com/MoonshotAI/kimi-code/blob/main/packages/oauth/src/oauth-manager.ts), including scoped credentials for custom `KIMI_CODE_BASE_URL` / OAuth environments.
+The Kimi collector follows the official open-source [managed usage client](https://github.com/MoonshotAI/kimi-code/blob/main/packages/oauth/src/managed-usage.ts) and [OAuth refresh manager](https://github.com/MoonshotAI/kimi-code/blob/main/packages/oauth/src/oauth-manager.ts), including scoped credentials for custom `KIMI_CODE_BASE_URL` / OAuth environments. Usage calls use an 8-second request timeout; refresh and cross-process locking share a 30-second budget. Refresh retries transient transport, 429, and selected 5xx failures with bounded backoff, re-reads credentials after peer rotation, and atomically tombstones only a confirmed `invalid_grant` revocation. Redirects remain blocked and a stale last-good quota stays visible after transient failure.
 
 ### Claude setup on a new machine
 
@@ -154,7 +163,7 @@ Codex and Claude quota only refresh while their CLI is running; the dashboard ma
 
 The web dashboard can expose a floating, draggable report assistant backed by MiniMax M3. It appears only when a server-side MiniMax key is configured and MiniMax's authenticated model list contains the exact `MiniMax-M3` model. There is no fallback to an older model, and the TUI does not initialize the agent.
 
-The agent loop and every analytics tool run in the Go backend. Assistant prose streams into the chat while it is generated, and privacy-safe tool cards show each allowlisted analytics tool as it starts and finishes. The browser never receives the MiniMax credential, tool arguments/results, or provider reasoning, and never calls MiniMax directly. Tools are read-only and aggregate-only: raw transcripts, prompts, reasoning, patches, tool payloads, configs, secrets, paths, and session details are outside the allowlist. Project results use process-scoped keyed pseudonyms before being sent externally, and cross-source costs remain separated by provenance.
+The agent loop and every analytics tool run in the Go backend. Assistant prose streams into the chat while it is generated, and privacy-safe tool cards show each allowlisted analytics tool as it starts and finishes. The browser never receives the MiniMax credential, tool arguments/results, or provider reasoning, and never calls MiniMax directly. Tools are read-only and aggregate-only: raw transcripts, prompts, reasoning, patches, tool payloads, configs, secrets, paths, and session details are outside the allowlist. Project results use process-scoped keyed pseudonyms before being sent externally, and cross-source costs remain separated by provenance. The assistant uses `requests` for outbound-attempt questions, keeps `messages` for transcript semantics, and must disclose Kimi trace/usage gaps instead of interpreting unavailable tokens or cost as zero.
 
 Set `OPENCODE_DASHBOARD_MINIMAX_API_KEY`, restart `opencode-dashboard web`, and open the floating assistant. The first-use UI discloses that assistant messages and requested aggregates leave the machine. A complete run is limited to 60 seconds by default; `OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` accepts `10s` through `2m`. See [the architecture, tool contracts, loop limits, and privacy model](docs/analytics-assistant.md).
 
@@ -368,9 +377,9 @@ The web command also serves a JSON API under `/api/v1`. Most endpoints accept a 
 | Endpoint | Description | Notable params |
 |----------|-------------|----------------|
 | `GET /api/v1/sources` | Registered sources, availability, and capabilities | — |
-| `GET /api/v1/overview` | Aggregate metrics for one source | `source`, period |
-| `GET /api/v1/overview/all` | Cross-source merged overview; a lean all-model usage payload when `dimension=model` | period, `trend=true`, `top=<n>`, `dimension=source\|model` |
-| `GET /api/v1/daily` | Time-series breakdown | `granularity=hour\|day`, `dimension=model\|tool\|project\|processing_mode` (last is Codex), period |
+| `GET /api/v1/overview` | Aggregate sessions, requests, transcript messages, tokens, cost, and optional Kimi request coverage for one source | `source`, period |
+| `GET /api/v1/overview/all` | Cross-source merged additive totals (including requests); a lean all-model usage payload when `dimension=model` | period, `trend=true`, `top=<n>`, `dimension=source\|model` |
+| `GET /api/v1/daily` | Time-series request/message/token/cost breakdown | `granularity=hour\|day`, `dimension=model\|tool\|project\|processing_mode` (last is Codex), period |
 | `GET /api/v1/models` | Model usage statistics | `source`, period |
 | `GET /api/v1/tools` | Tool invocation statistics | `source`, period |
 | `GET /api/v1/projects` | Per-project aggregation | `source`, period |
@@ -401,8 +410,8 @@ Both web and TUI expose the same seven surfaces:
 
 | Surface | Description |
 |---------|-------------|
-| Overview | Combined totals plus cross-source Usage charts switchable between source and model |
-| Daily | Time series, auto hour/day granularity, with per-dimension breakdowns |
+| Overview | Combined sessions, requests, transcript messages, and tokens plus cross-source Usage charts switchable between source and model |
+| Daily | Request/message time series, auto hour/day granularity, with per-dimension breakdowns and transcript history |
 | Models | Usage by model and provider |
 | Tools | Tool invocation counts and patterns |
 | Projects | Per-project aggregation, with project detail drill-down |

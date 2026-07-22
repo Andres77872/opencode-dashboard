@@ -34,6 +34,9 @@ func (s *Store) Overview(ctx context.Context, sourceID string, pq stats.PeriodQu
 	if result.Days > 0 {
 		result.CostPerDay = result.Cost / float64(result.Days)
 	}
+	policy := s.cachedCostPolicy(ctx, sourceID)
+	result.CostProvenance = applyCachedCostPolicy(sourceID, result.CostStatus, result.CostProvenance, policy)
+	result.RequestAccounting = requestAccountingForSource(sourceID, result.RequestAccounting)
 	return result, nil
 }
 
@@ -44,10 +47,21 @@ func (s *Store) Daily(ctx context.Context, sourceID string, pq stats.PeriodQuery
 	if err != nil {
 		return stats.DailyStats{}, err
 	}
+	var result stats.DailyStats
 	if gran == stats.GranularityHour {
-		return s.dailyHourly(ctx, sourceID, w, filterFromPQ(pq))
+		result, err = s.dailyHourly(ctx, sourceID, w, filterFromPQ(pq))
+	} else {
+		result, err = s.dailyDay(ctx, sourceID, w, filterFromPQ(pq))
 	}
-	return s.dailyDay(ctx, sourceID, w, filterFromPQ(pq))
+	if err == nil {
+		policy := s.cachedCostPolicy(ctx, sourceID)
+		result.CostProvenance = applyCachedCostPolicy(sourceID, result.CostStatus, result.CostProvenance, policy)
+		for i := range result.Days {
+			result.Days[i].CostProvenance = applyCachedCostPolicy(sourceID, result.Days[i].CostStatus, result.Days[i].CostProvenance, policy)
+		}
+		result.RequestAccounting = requestAccountingForSource(sourceID, result.RequestAccounting)
+	}
+	return result, err
 }
 
 func (s *Store) dailyDay(ctx context.Context, sourceID string, w window, f modelFilter) (stats.DailyStats, error) {
@@ -72,7 +86,7 @@ func (s *Store) dailyDay(ctx context.Context, sourceID string, w window, f model
 	if err != nil {
 		return stats.DailyStats{}, err
 	}
-	return stats.DailyStats{SourceID: sourceID, Days: days, Granularity: stats.GranularityDay, CostStatus: status, CostProvenance: provenance}, nil
+	return stats.DailyStats{SourceID: sourceID, Days: days, Granularity: stats.GranularityDay, CostStatus: status, CostProvenance: provenance, RequestAccounting: dailyRequestAccounting(sourceID, days)}, nil
 }
 
 func (s *Store) dailyListCostSummary(ctx context.Context, sourceID string, parts overviewWindowParts, f modelFilter) (stats.CostStatus, *stats.CostProvenance, error) {
@@ -109,7 +123,22 @@ func (s *Store) dailyHourly(ctx context.Context, sourceID string, w window, f mo
 	if err != nil {
 		return stats.DailyStats{}, err
 	}
-	return stats.DailyStats{SourceID: sourceID, Days: days, Granularity: stats.GranularityHour, CostStatus: status, CostProvenance: provenance}, nil
+	return stats.DailyStats{SourceID: sourceID, Days: days, Granularity: stats.GranularityHour, CostStatus: status, CostProvenance: provenance, RequestAccounting: dailyRequestAccounting(sourceID, days)}, nil
+}
+
+func dailyRequestAccounting(sourceID string, days []stats.DayStats) *stats.RequestAccounting {
+	parts := make([]*stats.RequestAccounting, 0, len(days))
+	for i := range days {
+		parts = append(parts, days[i].RequestAccounting)
+	}
+	return requestAccountingForSource(sourceID, stats.MergeRequestAccounting(parts...))
+}
+
+func requestAccountingForSource(sourceID string, accounting *stats.RequestAccounting) *stats.RequestAccounting {
+	if accounting == nil && sourceID == "kimi_code" {
+		return &stats.RequestAccounting{TraceCoverage: stats.TraceCoverageUnknown}
+	}
+	return accounting
 }
 
 func (s *Store) DailyDimension(ctx context.Context, sourceID, dimension string, pq stats.PeriodQuery, granularity ...stats.Granularity) (stats.DailyDimensionStats, error) {
@@ -120,21 +149,31 @@ func (s *Store) DailyDimension(ctx context.Context, sourceID, dimension string, 
 	}
 	startMs, endMs := w.ms()
 	label := periodLabel(pq)
+	var result stats.DailyDimensionStats
 	switch dimension {
 	case "model":
-		return s.dailyModelDimensionFromRollups(ctx, sourceID, label, gran, startMs, endMs)
+		result, err = s.dailyModelDimensionFromRollups(ctx, sourceID, label, gran, startMs, endMs)
 	case "project":
-		return s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(project_id, '')", label, gran, startMs, endMs)
+		result, err = s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(project_id, '')", label, gran, startMs, endMs)
 	case "processing_mode":
 		if sourceID != "codex" {
 			return stats.DailyDimensionStats{}, fmt.Errorf("invalid dimension %q for source %q: supported only for codex", dimension, sourceID)
 		}
-		return s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(NULLIF(processing_mode, ''), 'unknown')", label, gran, startMs, endMs)
+		result, err = s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(NULLIF(processing_mode, ''), 'unknown')", label, gran, startMs, endMs)
 	case "tool":
-		return s.dailyToolDimension(ctx, sourceID, dimension, label, gran, startMs, endMs)
+		result, err = s.dailyToolDimension(ctx, sourceID, dimension, label, gran, startMs, endMs)
 	default:
 		return stats.DailyDimensionStats{}, fmt.Errorf("invalid dimension %q: supported values are model, tool, project, processing_mode", dimension)
 	}
+	if err != nil {
+		return result, err
+	}
+	policy := s.cachedCostPolicy(ctx, sourceID)
+	result.CostProvenance = applyCachedCostPolicy(sourceID, result.CostStatus, result.CostProvenance, policy)
+	for i := range result.Days {
+		result.Days[i].CostProvenance = applyCachedCostPolicy(sourceID, result.Days[i].CostStatus, result.Days[i].CostProvenance, policy)
+	}
+	return result, nil
 }
 
 func (s *Store) dailyMessageDimension(ctx context.Context, sourceID, dimension, expr, period string, gran stats.Granularity, startMs, endMs int64) (stats.DailyDimensionStats, error) {
@@ -271,7 +310,16 @@ func (s *Store) Models(ctx context.Context, sourceID string, pq stats.PeriodQuer
 		return stats.ModelStats{}, err
 	}
 	startMs, endMs := w.ms()
-	return s.modelsFromRollups(ctx, sourceID, startMs, endMs)
+	result, err := s.modelsFromRollups(ctx, sourceID, startMs, endMs)
+	if err != nil {
+		return result, err
+	}
+	policy := s.cachedCostPolicy(ctx, sourceID)
+	result.CostProvenance = applyCachedCostPolicy(sourceID, result.CostStatus, result.CostProvenance, policy)
+	for i := range result.Models {
+		result.Models[i].CostProvenance = applyCachedCostPolicy(sourceID, result.Models[i].CostStatus, result.Models[i].CostProvenance, policy)
+	}
+	return result, nil
 }
 
 func (s *Store) Tools(ctx context.Context, sourceID string, pq stats.PeriodQuery) (stats.ToolStats, error) {
@@ -364,6 +412,11 @@ func (s *Store) Projects(ctx context.Context, sourceID string, pq stats.PeriodQu
 		}
 	}
 	status, provenance := s.costSummary(ctx, sourceID, startMs, endMs)
+	policy := s.cachedCostPolicy(ctx, sourceID)
+	provenance = applyCachedCostPolicy(sourceID, status, provenance, policy)
+	for i := range projects {
+		projects[i].CostProvenance = applyCachedCostPolicy(sourceID, projects[i].CostStatus, projects[i].CostProvenance, policy)
+	}
 	return stats.ProjectStats{SourceID: sourceID, Projects: projects, CostStatus: status, CostProvenance: provenance}, nil
 }
 
@@ -412,6 +465,7 @@ func (s *Store) ProjectByID(ctx context.Context, sourceID, id string, pq stats.P
 	if counts := summaries[id]; counts != nil {
 		detail.CostStatus, detail.CostProvenance = counts.result()
 	}
+	detail.CostProvenance = applyCachedCostPolicy(sourceID, detail.CostStatus, detail.CostProvenance, s.cachedCostPolicy(ctx, sourceID))
 	detail.TotalSessions, detail.RecentSessions, err = s.recentProjectSessions(ctx, sourceID, id, page, limit)
 	if err != nil {
 		return nil, err
@@ -471,6 +525,11 @@ func (s *Store) Sessions(ctx context.Context, sourceID string, query stats.Sessi
 		return stats.SessionList{}, err
 	}
 	status, provenance := s.costSummary(ctx, sourceID, startMs, endMs)
+	policy := s.cachedCostPolicy(ctx, sourceID)
+	provenance = applyCachedCostPolicy(sourceID, status, provenance, policy)
+	for i := range entries {
+		entries[i].CostProvenance = applyCachedCostPolicy(sourceID, entries[i].CostStatus, entries[i].CostProvenance, policy)
+	}
 	return stats.SessionList{SourceID: sourceID, Sessions: entries, Total: total, Page: query.Page, PageSize: query.PageSize, CostStatus: status, CostProvenance: provenance}, nil
 }
 
@@ -502,7 +561,8 @@ func (s *Store) Messages(ctx context.Context, sourceID string, pq stats.PeriodQu
 			input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens,
 			COALESCE(model_id, ''), COALESCE(provider_id, ''),
 			COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent,
-			folded_assistant_calls, folded_tool_calls, folded_token_updates, COALESCE(cost_status, ''), cost_provenance_json
+			folded_assistant_calls, folded_tool_calls, folded_token_updates, COALESCE(cost_status, ''), cost_provenance_json,
+			COALESCE(request_trace, ''), COALESCE(usage_status, '')
 		FROM message_index
 		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?`+msgWhere+`
 		ORDER BY `+messageOrderBy(sortSpec)+`
@@ -524,6 +584,7 @@ func (s *Store) Messages(ctx context.Context, sourceID string, pq stats.PeriodQu
 		return stats.MessageList{}, err
 	}
 	status, provenance := s.costSummary(ctx, sourceID, startMs, endMs)
+	provenance = applyCachedCostPolicy(sourceID, status, provenance, s.cachedCostPolicy(ctx, sourceID))
 	return stats.MessageList{SourceID: sourceID, Messages: messages, Total: total, Page: page, PageSize: limit, CostStatus: status, CostProvenance: provenance}, nil
 }
 
@@ -560,7 +621,7 @@ func (s *Store) SessionByID(ctx context.Context, sourceID, id string) (*stats.Se
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT message_id, role, time_created_ms, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, COALESCE(model_id, ''), COALESCE(provider_id, ''), COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent, COALESCE(cost_status, ''), cost_provenance_json
+		SELECT message_id, role, time_created_ms, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, COALESCE(model_id, ''), COALESCE(provider_id, ''), COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent, COALESCE(cost_status, ''), cost_provenance_json, COALESCE(request_trace, ''), COALESCE(usage_status, '')
 		FROM message_index
 		WHERE source_id = ? AND session_id = ?
 		ORDER BY time_created_ms ASC, message_id ASC
@@ -577,12 +638,12 @@ func (s *Store) SessionByID(ctx context.Context, sourceID, id string) (*stats.Se
 		var isSubagent int
 		var msgProv sql.NullString
 		msg.SourceID = sourceID
-		if err := rows.Scan(&msg.ID, &msg.Role, &msgMs, &msg.Cost, &input, &output, &reasoning, &cacheRead, &cacheWrite, &msg.ModelID, &msg.ProviderID, &msg.ServiceTier, &msg.ProcessingMode, &msg.Agent, &isSubagent, &msg.CostStatus, &msgProv); err != nil {
+		if err := rows.Scan(&msg.ID, &msg.Role, &msgMs, &msg.Cost, &input, &output, &reasoning, &cacheRead, &cacheWrite, &msg.ModelID, &msg.ProviderID, &msg.ServiceTier, &msg.ProcessingMode, &msg.Agent, &isSubagent, &msg.CostStatus, &msgProv, &msg.RequestTrace, &msg.UsageStatus); err != nil {
 			return nil, err
 		}
 		msg.TimeCreated = time.UnixMilli(msgMs).UTC()
 		msg.IsSubagent = isSubagent == 1
-		if msg.Role == "assistant" || input+output+reasoning+cacheRead+cacheWrite > 0 {
+		if msg.UsageStatus != stats.UsageStatusUnavailable && (msg.Role == "assistant" || input+output+reasoning+cacheRead+cacheWrite > 0) {
 			msg.Tokens = &stats.TokenStats{Input: input, Output: output, Reasoning: reasoning, Cache: stats.CacheStats{Read: cacheRead, Write: cacheWrite}}
 		}
 		if msgProv.Valid && msgProv.String != "" {
@@ -602,6 +663,7 @@ func (s *Store) SessionByID(ctx context.Context, sourceID, id string) (*stats.Se
 		return nil, err
 	}
 	detail.MessageCount = int64(len(detail.Messages))
+	detail.CostProvenance = applyCachedCostPolicy(sourceID, detail.CostStatus, detail.CostProvenance, s.cachedCostPolicy(ctx, sourceID))
 	return &detail, nil
 }
 
@@ -619,6 +681,7 @@ func scanMessageEntry(rows interface {
 		&input, &output, &reasoning, &cacheRead, &cacheWrite,
 		&entry.ModelID, &entry.ProviderID, &entry.ServiceTier, &entry.ProcessingMode, &entry.Agent, &isSubagent,
 		&entry.FoldedAssistantCalls, &entry.FoldedToolCalls, &entry.FoldedTokenUpdates, &entry.CostStatus, &prov,
+		&entry.RequestTrace, &entry.UsageStatus,
 	); err != nil {
 		return entry, err
 	}
@@ -627,7 +690,7 @@ func scanMessageEntry(rows interface {
 	entry.SessionTitle = safeSessionTitle(sourceID, entry.SessionID)
 	entry.TimeCreated = time.UnixMilli(createdMs).UTC()
 	entry.IsSubagent = isSubagent == 1
-	if entry.Role == "assistant" || input+output+reasoning+cacheRead+cacheWrite > 0 {
+	if entry.UsageStatus != stats.UsageStatusUnavailable && (entry.Role == "assistant" || input+output+reasoning+cacheRead+cacheWrite > 0) {
 		entry.Tokens = &stats.TokenStats{
 			Input:     input,
 			Output:    output,
@@ -651,7 +714,8 @@ func (s *Store) MessageByID(ctx context.Context, sourceID, id string) (*stats.Me
 			input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens,
 			COALESCE(model_id, ''), COALESCE(provider_id, ''),
 			COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent,
-			folded_assistant_calls, folded_tool_calls, folded_token_updates, COALESCE(cost_status, ''), cost_provenance_json
+			folded_assistant_calls, folded_tool_calls, folded_token_updates, COALESCE(cost_status, ''), cost_provenance_json,
+			COALESCE(request_trace, ''), COALESCE(usage_status, '')
 		FROM message_index
 		WHERE source_id = ? AND message_id = ?
 	`, sourceID, id)

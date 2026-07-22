@@ -108,6 +108,20 @@ func oneUserMessage(content string) ChatInput {
 	return ChatInput{ConsentVersion: PrivacyConsentVersion, Messages: []BrowserMessage{{Role: "user", Content: content}}}
 }
 
+func TestReportSystemPromptDefinesRequestAndKimiCompletenessSemantics(t *testing.T) {
+	for _, want := range []string{
+		"Use requests—not messages",
+		"usage_unavailable",
+		"successful_only",
+		"does not persist a separate reasoning-token counter",
+		"estimated API-equivalent",
+	} {
+		if !strings.Contains(reportSystemPrompt, want) {
+			t.Errorf("system prompt is missing %q", want)
+		}
+	}
+}
+
 func TestServiceStatusRequiresExactM3Availability(t *testing.T) {
 	available := NewService(ServiceOptions{Client: &scriptedAgentClient{}, Registry: source.NewRegistry(source.SourceOpenCode)}).Status(context.Background())
 	if !available.Available || available.Provider != "minimax" || available.Model != MiniMaxM3Model || available.PrivacyNotice == "" || available.ConsentVersion != PrivacyConsentVersion {

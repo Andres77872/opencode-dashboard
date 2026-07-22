@@ -22,7 +22,7 @@ func (s *snapshot) overview(pq stats.PeriodQuery) (stats.OverviewStats, error) {
 	}
 	cost, tokens, status, provenance := aggregateCostProvenance(messages)
 	days := uniqueDays(messages)
-	result := stats.OverviewStats{SourceID: codexSourceID, Sessions: int64(len(uniqueSessions(messages))), Messages: int64(len(messages)), Cost: cost, Tokens: tokens, Days: len(days), CostStatus: status, CostProvenance: provenance}
+	result := stats.OverviewStats{SourceID: codexSourceID, Sessions: int64(len(uniqueSessions(messages))), Messages: int64(len(messages)), Requests: countRequestRows(messages), Cost: cost, Tokens: tokens, Days: len(days), CostStatus: status, CostProvenance: provenance}
 	if result.Days > 0 {
 		result.CostPerDay = cost / float64(result.Days)
 	}
@@ -54,7 +54,7 @@ func (s *snapshot) daily(pq stats.PeriodQuery, granularity ...stats.Granularity)
 			continue
 		}
 		cost, tokens, status, provenance := aggregateCostProvenance(group)
-		days = append(days, stats.DayStats{SourceID: codexSourceID, Date: key, Sessions: int64(len(uniqueSessions(group))), Messages: int64(len(group)), Cost: cost, Tokens: tokens, CostStatus: status, CostProvenance: provenance})
+		days = append(days, stats.DayStats{SourceID: codexSourceID, Date: key, Sessions: int64(len(uniqueSessions(group))), Messages: int64(len(group)), Requests: countRequestRows(group), Cost: cost, Tokens: tokens, CostStatus: status, CostProvenance: provenance})
 	}
 	_, _, status, provenance := aggregateCostProvenance(messages)
 	return stats.DailyStats{SourceID: codexSourceID, Days: days, Granularity: gran, CostStatus: status, CostProvenance: provenance}, nil
@@ -491,6 +491,16 @@ func parseHourPreset(period string) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func countRequestRows(messages []*messageRecord) int64 {
+	var requests int64
+	for _, msg := range messages {
+		if msg.Entry.Role == "assistant" {
+			requests++
+		}
+	}
+	return requests
 }
 
 func uniqueSessions(messages []*messageRecord) map[string]bool {

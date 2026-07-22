@@ -18,6 +18,7 @@ import (
 const (
 	kimiDefaultBaseURL = "https://api.kimi.com/coding/v1"
 	kimiTTL            = 60 * time.Second
+	kimiUsageTimeout   = 8 * time.Second
 	kimiSetupHelp      = `Run "kimi login" (or /login inside Kimi Code), then refresh quotas. Membership quota is available for the managed Kimi Code OAuth account.`
 )
 
@@ -27,11 +28,19 @@ type kimiProvider struct {
 	home   string
 	client *http.Client
 	now    func() time.Time
+	sleep  func(context.Context, time.Duration) error
 
 	mu        sync.Mutex
 	cached    *ProviderQuota
 	fetchedAt time.Time
 	lastGood  *ProviderQuota
+}
+
+func (*kimiProvider) quotaTimeout() time.Duration {
+	// Refresh/lock coordination and the usage request have independent
+	// upstream-compatible budgets. Leave a small amount of service-level
+	// slack for the local credential and config reads between them.
+	return kimiRefreshBudget + kimiUsageTimeout + time.Second
 }
 
 func (p *kimiProvider) quota(ctx context.Context) ProviderQuota {
@@ -118,8 +127,11 @@ func (p *kimiProvider) failed(empty ProviderQuota, err error) ProviderQuota {
 }
 
 func (p *kimiProvider) fetchUsage(ctx context.Context, baseURL, accessToken string) (map[string]any, error) {
+	requestCtx, cancel := context.WithTimeout(ctx, kimiUsageTimeout)
+	defer cancel()
+
 	url := strings.TrimRight(baseURL, "/") + "/usages"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build Kimi Code usage request: %w", err)
 	}
@@ -131,7 +143,11 @@ func (p *kimiProvider) fetchUsage(ctx context.Context, baseURL, accessToken stri
 
 	resp, err := credentialSafeClient(p.client).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("contact Kimi Code usage service: %w", err)
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, fmt.Errorf("contact Kimi Code usage service: %s",
+			redactKimiSecrets(err.Error(), accessToken))
 	}
 	defer resp.Body.Close()
 
@@ -170,9 +186,13 @@ func (p *kimiProvider) fetchUsage(ctx context.Context, baseURL, accessToken stri
 
 func credentialSafeClient(client *http.Client) *http.Client {
 	if client == nil {
-		client = &http.Client{Timeout: providerTimeout}
+		client = &http.Client{}
 	}
 	cloned := *client
+	// Kimi requests carry operation-specific context deadlines: 8 seconds for
+	// usage and one shared 30-second budget for refresh plus lock waiting. The
+	// generic service client's shorter timeout must not pre-empt those budgets.
+	cloned.Timeout = 0
 	cloned.Jar = nil
 	cloned.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return errors.New("redirects are disabled for credential-bearing quota requests")

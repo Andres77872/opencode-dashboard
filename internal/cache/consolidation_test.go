@@ -66,8 +66,10 @@ func TestSyncSourcePrefersConsolidationData(t *testing.T) {
 						Reasoning: 3,
 						Cache:     stats.CacheStats{Read: 5, Write: 2},
 					},
-					ModelID:    "bulk-model",
-					ProviderID: "bulk-provider",
+					ModelID:      "bulk-model",
+					ProviderID:   "bulk-provider",
+					RequestTrace: stats.RequestTraceObserved,
+					UsageStatus:  stats.UsageStatusRecovered,
 				},
 				Tools: []source.ConsolidationTool{{Name: "bulk-tool", Status: "completed"}},
 			}},
@@ -88,9 +90,21 @@ func TestSyncSourcePrefersConsolidationData(t *testing.T) {
 	if overview.Sessions != 1 || overview.Messages != 1 || overview.Cost != 0.25 {
 		t.Errorf("cached overview sessions/messages/cost = %d/%d/%v, want 1/1/0.25", overview.Sessions, overview.Messages, overview.Cost)
 	}
+	if overview.Requests != 1 || overview.RequestAccounting == nil ||
+		overview.RequestAccounting.UsageRecovered != 1 ||
+		overview.RequestAccounting.TraceCoverage != stats.TraceCoverageComplete {
+		t.Errorf("cached overview request accounting = requests %d / %#v, want one recovered observed request", overview.Requests, overview.RequestAccounting)
+	}
 	wantTokens := stats.TokenStats{Input: 11, Output: 7, Reasoning: 3, Cache: stats.CacheStats{Read: 5, Write: 2}}
 	if overview.Tokens != wantTokens {
 		t.Errorf("cached overview tokens = %#v, want %#v", overview.Tokens, wantTokens)
+	}
+	messages, err := store.Messages(ctx, consolidationOnlySourceID, period, 1, 10, stats.DefaultMessageSort())
+	if err != nil {
+		t.Fatalf("cached Messages() failed: %v", err)
+	}
+	if len(messages.Messages) != 1 || messages.Messages[0].RequestTrace != stats.RequestTraceObserved || messages.Messages[0].UsageStatus != stats.UsageStatusRecovered {
+		t.Fatalf("cached request provenance = %#v, want observed/recovered", messages.Messages)
 	}
 
 	tools, err := store.Tools(ctx, consolidationOnlySourceID, period)

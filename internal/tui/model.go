@@ -51,6 +51,7 @@ const (
 	dailyMetricCost     dailyMetric = "cost"
 	dailyMetricSessions dailyMetric = "sessions"
 	dailyMetricMessages dailyMetric = "messages"
+	dailyMetricRequests dailyMetric = "requests"
 	dailyMetricTokens   dailyMetric = "tokens"
 )
 
@@ -894,7 +895,7 @@ func (m *model) renderHelp(bodyHeight int) string {
 		m.styles.Text.Render("Daily"),
 		"  j/k       move cursor on bars",
 		"  g/G       jump top/bottom",
-		"  t         cycles cost/sessions/messages/tokens",
+		"  t         cycles cost/sessions/messages/requests/tokens",
 		"  d         toggles overall/requested-mode lens (Codex)",
 		"  Enter     open day messages overlay",
 		"",
@@ -1141,6 +1142,8 @@ func nextDailyMetric(current dailyMetric) dailyMetric {
 	case dailyMetricSessions:
 		return dailyMetricMessages
 	case dailyMetricMessages:
+		return dailyMetricRequests
+	case dailyMetricRequests:
 		return dailyMetricTokens
 	default:
 		return dailyMetricCost

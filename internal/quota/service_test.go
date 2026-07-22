@@ -20,6 +20,25 @@ func (f *fakeProvider) quota(ctx context.Context) ProviderQuota {
 	return f.result
 }
 
+type timeoutOverrideTestProvider struct {
+	timeout  time.Duration
+	observed chan time.Duration
+}
+
+func (p *timeoutOverrideTestProvider) quotaTimeout() time.Duration {
+	return p.timeout
+}
+
+func (p *timeoutOverrideTestProvider) quota(ctx context.Context) ProviderQuota {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		p.observed <- 0
+	} else {
+		p.observed <- time.Until(deadline)
+	}
+	return ProviderQuota{Provider: ProviderKimi, Status: StatusOK}
+}
+
 func TestServiceQuotasStableOrder(t *testing.T) {
 	svc := &Service{
 		now:     time.Now,
@@ -65,6 +84,29 @@ func TestServiceQuotasSlowProviderIsBounded(t *testing.T) {
 	}
 	if got.Providers[0].Status != StatusOK {
 		t.Errorf("fast provider status = %q, want ok", got.Providers[0].Status)
+	}
+}
+
+func TestServiceQuotasHonorsProviderTimeoutOverride(t *testing.T) {
+	observed := make(chan time.Duration, 1)
+	overrideProvider := &timeoutOverrideTestProvider{timeout: 500 * time.Millisecond, observed: observed}
+	svc := &Service{
+		now:       time.Now,
+		timeout:   20 * time.Millisecond,
+		providers: []provider{overrideProvider},
+	}
+
+	got := svc.Quotas(context.Background())
+	if got.Providers[0].Status != StatusOK {
+		t.Fatalf("status = %q, want ok", got.Providers[0].Status)
+	}
+	remaining := <-observed
+	if remaining < 400*time.Millisecond || remaining > overrideProvider.timeout {
+		t.Errorf("provider deadline remaining = %v, want override near %v", remaining, overrideProvider.timeout)
+	}
+	if got := (&kimiProvider{}).quotaTimeout(); got < kimiRefreshBudget+kimiUsageTimeout {
+		t.Errorf("Kimi service timeout = %v, want room for %v refresh plus %v usage",
+			got, kimiRefreshBudget, kimiUsageTimeout)
 	}
 }
 

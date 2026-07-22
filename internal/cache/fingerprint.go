@@ -171,7 +171,7 @@ func hashCodexFiles(ctx context.Context, h hashWriter, home string) error {
 
 func hashKimiFiles(ctx context.Context, h hashWriter, home string) error {
 	root := filepath.Join(home, "sessions")
-	return hashWalk(ctx, h, root, func(path string, d os.DirEntry) (bool, error) {
+	if err := hashWalk(ctx, h, root, func(path string, d os.DirEntry) (bool, error) {
 		if d.IsDir() {
 			switch strings.ToLower(d.Name()) {
 			case "logs", "plans", "media", "images":
@@ -181,13 +181,26 @@ func hashKimiFiles(ctx context.Context, h hashWriter, home string) error {
 		}
 		switch d.Name() {
 		case "state.json":
-			return strings.HasPrefix(filepath.Base(filepath.Dir(path)), "session_"), nil
+			// v2 session ids are not required to retain v1's session_ prefix.
+			// Any state document under the sessions tree can affect metadata,
+			// agent topology, or workspace attribution.
+			return true, nil
 		case "wire.jsonl":
-			return filepath.Base(filepath.Dir(filepath.Dir(path))) == "agents", nil
+			// Main, foreground/background, nested, and independent agents are
+			// all additive. Root wires are also meaningful as a fallback or a
+			// legacy-layout diagnostic, so retain every wire under a session.
+			return true, nil
+		case "session_index.jsonl":
+			return true, nil
 		default:
 			return false, nil
 		}
-	})
+	}); err != nil {
+		return err
+	}
+	// Current Kimi releases keep the workspace/session read model at the home
+	// root. It can recover cwd when state metadata does not carry one.
+	return hashFileIfExists(h, home, filepath.Join(home, "session_index.jsonl"))
 }
 
 func hashQwenFiles(ctx context.Context, h hashWriter, home string) error {

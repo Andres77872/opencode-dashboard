@@ -38,14 +38,18 @@ func dailyBucketTotals[K comparable](ctx context.Context, s *Store, sourceID str
 	if parts.hasFullHours() {
 		if f.active() {
 			selects = append(selects, `
-				SELECT `+exprs.rollup+` AS bucket, messages, cost, input_tokens, output_tokens,
+				SELECT `+exprs.rollup+` AS bucket, messages, requests,
+					usage_recorded, usage_recovered, usage_unavailable, trace_observed, trace_inferred,
+					cost, input_tokens, output_tokens,
 					reasoning_tokens, cache_read_tokens, cache_write_tokens
 				FROM hourly_usage
 				WHERE source_id = ? AND bucket_start_ms >= ? AND bucket_start_ms < ?`+rollupWhere)
 			args = append(append(args, sourceID, parts.fullStart, parts.fullEnd), rollupArgs...)
 		} else {
 			selects = append(selects, `
-				SELECT `+exprs.rollup+` AS bucket, messages, cost, input_tokens, output_tokens,
+				SELECT `+exprs.rollup+` AS bucket, messages, requests,
+					usage_recorded, usage_recovered, usage_unavailable, trace_observed, trace_inferred,
+					cost, input_tokens, output_tokens,
 					reasoning_tokens, cache_read_tokens, cache_write_tokens
 				FROM overview_hourly
 				WHERE source_id = ? AND bucket_start_ms >= ? AND bucket_start_ms < ?
@@ -56,17 +60,34 @@ func dailyBucketTotals[K comparable](ctx context.Context, s *Store, sourceID str
 	for _, edge := range parts.edges {
 		if f.active() {
 			selects = append(selects, `
-				SELECT `+exprs.msg+` AS bucket, 1, COALESCE(cost, 0), COALESCE(model_input_tokens, 0),
-					COALESCE(model_output_tokens, 0), COALESCE(model_reasoning_tokens, 0),
-					COALESCE(model_cache_read_tokens, 0), COALESCE(model_cache_write_tokens, 0)
+				SELECT `+exprs.msg+` AS bucket, 1 AS messages, 1 AS requests,
+					CASE WHEN usage_status = 'recorded' THEN 1 ELSE 0 END AS usage_recorded,
+					CASE WHEN usage_status = 'recovered' THEN 1 ELSE 0 END AS usage_recovered,
+					CASE WHEN usage_status = 'unavailable' THEN 1 ELSE 0 END AS usage_unavailable,
+					CASE WHEN request_trace = 'observed' THEN 1 ELSE 0 END AS trace_observed,
+					CASE WHEN request_trace = 'inferred' THEN 1 ELSE 0 END AS trace_inferred,
+					COALESCE(cost, 0) AS cost, COALESCE(model_input_tokens, 0) AS input_tokens,
+					COALESCE(model_output_tokens, 0) AS output_tokens,
+					COALESCE(model_reasoning_tokens, 0) AS reasoning_tokens,
+					COALESCE(model_cache_read_tokens, 0) AS cache_read_tokens,
+					COALESCE(model_cache_write_tokens, 0) AS cache_write_tokens
 				FROM message_index
 				WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?`+msgWhere)
 			args = append(append(args, sourceID, edge.start, edge.end), msgArgs...)
 		} else {
 			selects = append(selects, `
-				SELECT `+exprs.msg+` AS bucket, 1, COALESCE(cost, 0), COALESCE(input_tokens, 0),
-					COALESCE(output_tokens, 0), COALESCE(reasoning_tokens, 0),
-					COALESCE(cache_read_tokens, 0), COALESCE(cache_write_tokens, 0)
+				SELECT `+exprs.msg+` AS bucket, 1 AS messages,
+					CASE WHEN role = 'assistant' THEN 1 ELSE 0 END AS requests,
+					CASE WHEN role = 'assistant' AND usage_status = 'recorded' THEN 1 ELSE 0 END AS usage_recorded,
+					CASE WHEN role = 'assistant' AND usage_status = 'recovered' THEN 1 ELSE 0 END AS usage_recovered,
+					CASE WHEN role = 'assistant' AND usage_status = 'unavailable' THEN 1 ELSE 0 END AS usage_unavailable,
+					CASE WHEN role = 'assistant' AND request_trace = 'observed' THEN 1 ELSE 0 END AS trace_observed,
+					CASE WHEN role = 'assistant' AND request_trace = 'inferred' THEN 1 ELSE 0 END AS trace_inferred,
+					COALESCE(cost, 0) AS cost, COALESCE(input_tokens, 0) AS input_tokens,
+					COALESCE(output_tokens, 0) AS output_tokens,
+					COALESCE(reasoning_tokens, 0) AS reasoning_tokens,
+					COALESCE(cache_read_tokens, 0) AS cache_read_tokens,
+					COALESCE(cache_write_tokens, 0) AS cache_write_tokens
 				FROM message_index
 				WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?
 			`)
@@ -78,7 +99,10 @@ func dailyBucketTotals[K comparable](ctx context.Context, s *Store, sourceID str
 		return byBucket, nil
 	}
 	query := `
-		SELECT bucket, SUM(messages), COALESCE(SUM(cost), 0), COALESCE(SUM(input_tokens), 0),
+		SELECT bucket, SUM(messages), SUM(requests),
+			COALESCE(SUM(usage_recorded), 0), COALESCE(SUM(usage_recovered), 0),
+			COALESCE(SUM(usage_unavailable), 0), COALESCE(SUM(trace_observed), 0),
+			COALESCE(SUM(trace_inferred), 0), COALESCE(SUM(cost), 0), COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0), COALESCE(SUM(reasoning_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0)
 		FROM (` + strings.Join(selects, ` UNION ALL `) + `)
@@ -92,12 +116,26 @@ func dailyBucketTotals[K comparable](ctx context.Context, s *Store, sourceID str
 	for rows.Next() {
 		var bucket K
 		d := &stats.DayStats{SourceID: sourceID}
+		var usageRecorded, usageRecovered, usageUnavailable int64
+		var traceObserved, traceInferred int64
 		var cacheRead, cacheWrite int64
-		if err := rows.Scan(&bucket, &d.Messages, &d.Cost, &d.Tokens.Input, &d.Tokens.Output, &d.Tokens.Reasoning, &cacheRead, &cacheWrite); err != nil {
+		if err := rows.Scan(
+			&bucket, &d.Messages, &d.Requests,
+			&usageRecorded, &usageRecovered, &usageUnavailable, &traceObserved, &traceInferred,
+			&d.Cost, &d.Tokens.Input, &d.Tokens.Output, &d.Tokens.Reasoning, &cacheRead, &cacheWrite,
+		); err != nil {
 			return nil, fmt.Errorf("scan daily bucket totals: %w", err)
 		}
 		d.Tokens.Cache.Read = cacheRead
 		d.Tokens.Cache.Write = cacheWrite
+		unknownTrace := d.Requests - traceObserved - traceInferred
+		if unknownTrace < 0 {
+			unknownTrace = 0
+		}
+		d.RequestAccounting = stats.NewRequestAccounting(
+			usageRecorded, usageRecovered, usageUnavailable,
+			traceObserved, traceInferred, unknownTrace,
+		)
 		byBucket[bucket] = d
 	}
 	if err := rows.Err(); err != nil {

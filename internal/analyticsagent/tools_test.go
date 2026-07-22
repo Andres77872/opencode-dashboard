@@ -38,6 +38,62 @@ func TestToolDefinitionsAreAggregateOnly(t *testing.T) {
 			}
 		}
 	}
+	for _, name := range []string{"get_overview", "get_cross_source_overview", "get_daily_usage"} {
+		for _, definition := range definitions {
+			if definition.Name == name && !strings.Contains(strings.ToLower(definition.Description), "request") {
+				t.Errorf("tool %q description does not distinguish requests: %q", name, definition.Description)
+			}
+		}
+	}
+}
+
+func TestToolsExposeRequestsAndKimiAccountingCoverage(t *testing.T) {
+	src := newAnalyticsTestSource(source.SourceKimiCode, 2)
+	src.overview.CostStatus = stats.CostEstimatedAPIEquivalent
+	src.overview.CostProvenance = &stats.CostProvenance{
+		Status: stats.CostEstimatedAPIEquivalent, Currency: "USD",
+		PricingSnapshotID: "kimi-pricing-v-test",
+		PricingSource:     "https://platform.kimi.ai/docs/pricing/chat",
+		Note:              "Estimated from Kimi API list prices as an API-equivalent value. Kimi Code memberships and coding plans are not billed per transcript token, so this is not actual subscription spend.",
+		ComputedCount:     3,
+	}
+	accounting := &stats.RequestAccounting{
+		UsageRecorded: 1, UsageRecovered: 1, UsageUnavailable: 1,
+		TraceCoverage: stats.TraceCoverageMixed,
+	}
+	src.overview.Requests = 3
+	src.overview.RequestAccounting = accounting
+	src.daily.Days[0].Requests = 3
+	src.daily.Days[0].RequestAccounting = accounting
+	src.daily.RequestAccounting = accounting
+	src.daily.CostStatus = src.overview.CostStatus
+	src.daily.CostProvenance = src.overview.CostProvenance
+	src.daily.Days[0].CostStatus = src.overview.CostStatus
+	src.daily.Days[0].CostProvenance = src.overview.CostProvenance
+	registry := source.NewRegistry(source.SourceKimiCode)
+	if err := registry.Register(src); err != nil {
+		t.Fatal(err)
+	}
+	tools := NewToolRegistry(registry)
+	for _, result := range []string{
+		string(tools.Execute(context.Background(), "get_overview", json.RawMessage(`{"source":"kimi_code","period":"7d"}`))),
+		string(tools.Execute(context.Background(), "get_daily_usage", json.RawMessage(`{"source":"kimi_code","period":"7d"}`))),
+	} {
+		for _, want := range []string{
+			`"requests":3`, `"usage_recorded":1`, `"usage_recovered":1`,
+			`"usage_unavailable":1`, `"trace_coverage":"mixed"`,
+			`"pricing_source":"https://platform.kimi.ai/docs/pricing/chat"`,
+			`"note":"Estimated from Kimi API list prices as an API-equivalent value. Kimi Code memberships and coding plans are not billed per transcript token, so this is not actual subscription spend."`,
+		} {
+			if !strings.Contains(result, want) {
+				t.Errorf("result %s does not contain %s", result, want)
+			}
+		}
+	}
+	modelResult := string(tools.Execute(context.Background(), "get_model_usage", json.RawMessage(`{"source":"kimi_code","period":"7d"}`)))
+	if !strings.Contains(modelResult, `"requests":4`) || !strings.Contains(modelResult, `"messages":4`) {
+		t.Fatalf("model tool did not expose the additive request field with its compatibility alias: %s", modelResult)
+	}
 }
 
 func TestToolsResolveRegistryOnEveryCall(t *testing.T) {
@@ -162,7 +218,9 @@ func TestProviderBoundIdentifiersAreBoundedAndInjectionSafe(t *testing.T) {
 	src := newAnalyticsTestSource(source.SourceOpenCode, 3)
 	src.info.Label = malicious
 	src.info.CostPolicy.PricingSnapshotID = malicious
+	src.info.CostPolicy.PricingSource = "https://example.test/" + malicious
 	src.overview.CostProvenance.PricingSnapshotID = malicious
+	src.overview.CostProvenance.PricingSource = "https://example.test/" + malicious
 	src.models.Models[0].ModelID = malicious
 	src.models.Models[0].ProviderID = malicious
 	src.tools.Tools[0].Name = malicious
@@ -262,6 +320,9 @@ func TestCrossSourceOverviewOmitsCombinedCostAndListsUnavailableSources(t *testi
 	}
 	if _, exists := envelope.Data.Combined["cost_per_day"]; exists {
 		t.Fatalf("combined totals exposed cost_per_day: %s", result)
+	}
+	if envelope.Data.Combined["requests"] != float64(6) {
+		t.Fatalf("combined request total = %#v, want 6: %s", envelope.Data.Combined["requests"], result)
 	}
 	if len(envelope.Data.Sources) != 2 || envelope.Data.Sources[0].Overview["cost"] == nil {
 		t.Fatalf("source-specific cost/provenance missing: %s", result)

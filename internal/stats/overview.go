@@ -35,6 +35,7 @@ func Overview(ctx context.Context, store *store.Store, pq PeriodQuery) (Overview
 		SELECT
 			COUNT(DISTINCT session_id),
 			COUNT(*),
+			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.cost'), 0) ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.input'), 0) ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.output'), 0) ELSE 0 END), 0),
@@ -47,6 +48,7 @@ func Overview(ctx context.Context, store *store.Store, pq PeriodQuery) (Overview
 	`, startMs, endMs).Scan(
 		&result.Sessions,
 		&result.Messages,
+		&result.Requests,
 		&result.Cost,
 		&result.Tokens.Input,
 		&result.Tokens.Output,

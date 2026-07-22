@@ -32,6 +32,109 @@ const (
 	ProcessingModeUnknown  ProcessingMode = "unknown"
 )
 
+// RequestTrace describes whether a native assistant/API-request row came from
+// an explicit outbound-request event or had to be inferred from persisted
+// usage evidence in an older source format.
+type RequestTrace string
+
+const (
+	RequestTraceObserved RequestTrace = "observed"
+	RequestTraceInferred RequestTrace = "inferred"
+)
+
+// UsageStatus describes the strongest persisted usage evidence associated
+// with an outbound request. Unavailable is intentionally distinct from a
+// recorded zero: the source did not persist enough evidence to know its token
+// or cost totals.
+type UsageStatus string
+
+const (
+	UsageStatusRecorded    UsageStatus = "recorded"
+	UsageStatusRecovered   UsageStatus = "recovered"
+	UsageStatusUnavailable UsageStatus = "unavailable"
+)
+
+// TraceCoverage summarizes how completely a source's persisted events expose
+// outbound attempts for a requested window.
+type TraceCoverage string
+
+const (
+	TraceCoverageComplete       TraceCoverage = "complete"
+	TraceCoverageMixed          TraceCoverage = "mixed"
+	TraceCoverageSuccessfulOnly TraceCoverage = "successful_only"
+	TraceCoverageUnknown        TraceCoverage = "unknown"
+)
+
+// RequestAccounting is optional because most sources do not expose the event
+// provenance needed to distinguish persisted usage from unavailable usage.
+// Kimi Code populates it for overview and daily request totals.
+type RequestAccounting struct {
+	UsageRecorded    int64         `json:"usage_recorded"`
+	UsageRecovered   int64         `json:"usage_recovered"`
+	UsageUnavailable int64         `json:"usage_unavailable"`
+	TraceCoverage    TraceCoverage `json:"trace_coverage"`
+}
+
+// NewRequestAccounting constructs the public accounting summary from the
+// counters retained by the cache rollups. A nil result means no row in the
+// population carried request-accounting metadata, so callers can omit the
+// source-specific contract rather than imply unsupported precision.
+func NewRequestAccounting(recorded, recovered, unavailable, observed, inferred, unknown int64) *RequestAccounting {
+	hasUsageMetadata := recorded+recovered+unavailable > 0
+	hasTraceMetadata := observed+inferred > 0
+	if !hasUsageMetadata && !hasTraceMetadata {
+		return nil
+	}
+	coverage := TraceCoverageUnknown
+	switch {
+	case observed > 0 && inferred == 0 && unknown == 0:
+		coverage = TraceCoverageComplete
+	case inferred > 0 && observed == 0 && unknown == 0:
+		coverage = TraceCoverageSuccessfulOnly
+	case observed > 0 || inferred > 0:
+		coverage = TraceCoverageMixed
+	}
+	return &RequestAccounting{
+		UsageRecorded:    recorded,
+		UsageRecovered:   recovered,
+		UsageUnavailable: unavailable,
+		TraceCoverage:    coverage,
+	}
+}
+
+// MergeRequestAccounting combines summaries from disjoint populations, such
+// as daily buckets or the consolidated and live sides of a cache window.
+func MergeRequestAccounting(values ...*RequestAccounting) *RequestAccounting {
+	var result RequestAccounting
+	seen := false
+	coverage := TraceCoverage("")
+	for _, value := range values {
+		if value == nil {
+			continue
+		}
+		seen = true
+		result.UsageRecorded += value.UsageRecorded
+		result.UsageRecovered += value.UsageRecovered
+		result.UsageUnavailable += value.UsageUnavailable
+		if coverage == "" {
+			coverage = value.TraceCoverage
+		} else if coverage != value.TraceCoverage {
+			coverage = TraceCoverageMixed
+		}
+		if value.TraceCoverage == TraceCoverageMixed {
+			coverage = TraceCoverageMixed
+		}
+	}
+	if !seen {
+		return nil
+	}
+	if coverage == "" {
+		coverage = TraceCoverageUnknown
+	}
+	result.TraceCoverage = coverage
+	return &result
+}
+
 type CostProvenance struct {
 	Status            CostStatus `json:"status"`
 	Currency          string     `json:"currency,omitempty"`
@@ -58,26 +161,30 @@ type TokenStats struct {
 }
 
 type OverviewStats struct {
-	SourceID       string          `json:"source_id,omitempty"`
-	Sessions       int64           `json:"sessions"`
-	Messages       int64           `json:"messages"`
-	Cost           float64         `json:"cost"`
-	Tokens         TokenStats      `json:"tokens"`
-	CostPerDay     float64         `json:"cost_per_day"`
-	Days           int             `json:"days"`
-	CostStatus     CostStatus      `json:"cost_status,omitempty"`
-	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
+	SourceID          string             `json:"source_id,omitempty"`
+	Sessions          int64              `json:"sessions"`
+	Messages          int64              `json:"messages"`
+	Requests          int64              `json:"requests"`
+	Cost              float64            `json:"cost"`
+	Tokens            TokenStats         `json:"tokens"`
+	CostPerDay        float64            `json:"cost_per_day"`
+	Days              int                `json:"days"`
+	CostStatus        CostStatus         `json:"cost_status,omitempty"`
+	CostProvenance    *CostProvenance    `json:"cost_provenance,omitempty"`
+	RequestAccounting *RequestAccounting `json:"request_accounting,omitempty"`
 }
 
 type DayStats struct {
-	SourceID       string          `json:"source_id,omitempty"`
-	Date           string          `json:"date"`
-	Sessions       int64           `json:"sessions"`
-	Messages       int64           `json:"messages"`
-	Cost           float64         `json:"cost"`
-	Tokens         TokenStats      `json:"tokens"`
-	CostStatus     CostStatus      `json:"cost_status,omitempty"`
-	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
+	SourceID          string             `json:"source_id,omitempty"`
+	Date              string             `json:"date"`
+	Sessions          int64              `json:"sessions"`
+	Messages          int64              `json:"messages"`
+	Requests          int64              `json:"requests"`
+	Cost              float64            `json:"cost"`
+	Tokens            TokenStats         `json:"tokens"`
+	CostStatus        CostStatus         `json:"cost_status,omitempty"`
+	CostProvenance    *CostProvenance    `json:"cost_provenance,omitempty"`
+	RequestAccounting *RequestAccounting `json:"request_accounting,omitempty"`
 }
 
 type Granularity string
@@ -88,11 +195,12 @@ const (
 )
 
 type DailyStats struct {
-	SourceID       string          `json:"source_id,omitempty"`
-	Days           []DayStats      `json:"days"`
-	Granularity    Granularity     `json:"granularity"`
-	CostStatus     CostStatus      `json:"cost_status,omitempty"`
-	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
+	SourceID          string             `json:"source_id,omitempty"`
+	Days              []DayStats         `json:"days"`
+	Granularity       Granularity        `json:"granularity"`
+	CostStatus        CostStatus         `json:"cost_status,omitempty"`
+	CostProvenance    *CostProvenance    `json:"cost_provenance,omitempty"`
+	RequestAccounting *RequestAccounting `json:"request_accounting,omitempty"`
 }
 
 // DimensionDayStats represents a single day's data for a specific dimension value.
@@ -417,6 +525,8 @@ type SessionMessage struct {
 	IsSubagent     bool            `json:"is_subagent,omitempty"`
 	CostStatus     CostStatus      `json:"cost_status,omitempty"`
 	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
+	RequestTrace   RequestTrace    `json:"request_trace,omitempty"`
+	UsageStatus    UsageStatus     `json:"usage_status,omitempty"`
 }
 
 type SessionDetail struct {
@@ -494,6 +604,8 @@ type MessageEntry struct {
 	ProcessingMode ProcessingMode  `json:"processing_mode,omitempty"`
 	CostStatus     CostStatus      `json:"cost_status,omitempty"`
 	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
+	RequestTrace   RequestTrace    `json:"request_trace,omitempty"`
+	UsageStatus    UsageStatus     `json:"usage_status,omitempty"`
 
 	// Agent names the subagent type (e.g. "Explore", "Plan") when this row comes
 	// from a Claude Code subagent (Task tool) transcript. IsSubagent marks such

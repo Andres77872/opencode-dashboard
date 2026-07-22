@@ -89,14 +89,26 @@ func (s *Store) overviewFromModelRollups(ctx context.Context, sourceID string, s
 	parts := splitOverviewMillis(startMs, endMs)
 	rollupWhere, rollupArgs := f.rollupWhere()
 	msgWhere, msgArgs := f.messageWhere()
+	var usageRecorded, usageRecovered, usageUnavailable int64
+	var traceObserved, traceInferred int64
 
 	scanTotals := func(query string, args ...any) error {
-		var messages, input, output, reasoning, cacheRead, cacheWrite int64
+		var messages, requests, recorded, recovered, unavailable, observed, inferred int64
+		var input, output, reasoning, cacheRead, cacheWrite int64
 		var cost float64
-		if err := s.db.QueryRowContext(ctx, query, args...).Scan(&messages, &cost, &input, &output, &reasoning, &cacheRead, &cacheWrite); err != nil {
+		if err := s.db.QueryRowContext(ctx, query, args...).Scan(
+			&messages, &requests, &recorded, &recovered, &unavailable, &observed, &inferred,
+			&cost, &input, &output, &reasoning, &cacheRead, &cacheWrite,
+		); err != nil {
 			return err
 		}
 		result.Messages += messages
+		result.Requests += requests
+		usageRecorded += recorded
+		usageRecovered += recovered
+		usageUnavailable += unavailable
+		traceObserved += observed
+		traceInferred += inferred
 		result.Cost += cost
 		result.Tokens.Input += input
 		result.Tokens.Output += output
@@ -108,7 +120,10 @@ func (s *Store) overviewFromModelRollups(ctx context.Context, sourceID string, s
 	if parts.hasFullHours() {
 		if err := scanTotals(`
 			SELECT
-				COALESCE(SUM(messages), 0), COALESCE(SUM(cost), 0),
+				COALESCE(SUM(messages), 0), COALESCE(SUM(requests), 0),
+				COALESCE(SUM(usage_recorded), 0), COALESCE(SUM(usage_recovered), 0),
+				COALESCE(SUM(usage_unavailable), 0), COALESCE(SUM(trace_observed), 0),
+				COALESCE(SUM(trace_inferred), 0), COALESCE(SUM(cost), 0),
 				COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
 				COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(cache_read_tokens), 0),
 				COALESCE(SUM(cache_write_tokens), 0)
@@ -121,7 +136,13 @@ func (s *Store) overviewFromModelRollups(ctx context.Context, sourceID string, s
 	for _, edge := range parts.edges {
 		if err := scanTotals(`
 			SELECT
-				COUNT(*), COALESCE(SUM(cost), 0),
+				COUNT(*), COUNT(*),
+				COALESCE(SUM(CASE WHEN usage_status = 'recorded' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN usage_status = 'recovered' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN usage_status = 'unavailable' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN request_trace = 'observed' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN request_trace = 'inferred' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(cost), 0),
 				COALESCE(SUM(model_input_tokens), 0), COALESCE(SUM(model_output_tokens), 0),
 				COALESCE(SUM(model_reasoning_tokens), 0), COALESCE(SUM(model_cache_read_tokens), 0),
 				COALESCE(SUM(model_cache_write_tokens), 0)
@@ -131,6 +152,14 @@ func (s *Store) overviewFromModelRollups(ctx context.Context, sourceID string, s
 			return result, err
 		}
 	}
+	unknownTrace := result.Requests - traceObserved - traceInferred
+	if unknownTrace < 0 {
+		unknownTrace = 0
+	}
+	result.RequestAccounting = stats.NewRequestAccounting(
+		usageRecorded, usageRecovered, usageUnavailable,
+		traceObserved, traceInferred, unknownTrace,
+	)
 
 	selects := make([]string, 0, 1+len(parts.edges))
 	args := make([]any, 0)

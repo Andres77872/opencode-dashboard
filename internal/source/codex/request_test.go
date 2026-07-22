@@ -47,6 +47,9 @@ func TestCodexEmitsOneMessagePerTokenCountAPIRequest(t *testing.T) {
 	if overview.Messages != 3 {
 		t.Errorf("Overview().Messages = %d, want 3 (1 user + 2 API requests)", overview.Messages)
 	}
+	if overview.Requests != 2 {
+		t.Errorf("Overview().Requests = %d, want 2 native assistant/API requests", overview.Requests)
+	}
 	// Per-request deltas sum exactly to the turn's cumulative usage, stored as
 	// disjoint buckets (cached subtracted from input, reasoning from output).
 	if overview.Tokens.Input != 1350 || overview.Tokens.Cache.Read != 150 || overview.Tokens.Output != 50 || overview.Tokens.Reasoning != 30 {

@@ -110,17 +110,17 @@ func (r *ToolRegistry) Definitions() []ToolDefinition {
 		},
 		{
 			Name:        "get_overview",
-			Description: "Get source-specific sessions, messages, tokens, days, and source-specific cost with provenance for a validated period.",
+			Description: "Get source-specific sessions, transcript messages, outbound assistant/API requests, tokens, days, and source-specific cost with provenance for a validated period. Kimi results can include request-accounting coverage and unavailable-usage counts.",
 			Parameters:  rawSchema(sourcePeriodSchema(false)),
 		},
 		{
 			Name:        "get_cross_source_overview",
-			Description: "Compare every available source. Combined totals intentionally omit cost; source-specific costs retain provenance and must never be added together.",
+			Description: "Compare every available source, including additive outbound request totals. Combined totals intentionally omit cost; source-specific costs retain provenance and must never be added together.",
 			Parameters:  rawSchema(`{"type":"object","properties":{"period":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":25},"include_trend":{"type":"boolean"},"trend_limit":{"type":"integer","minimum":1,"maximum":1000}},"additionalProperties":false}`),
 		},
 		{
 			Name:        "get_daily_usage",
-			Description: "Get a bounded daily or hourly aggregate time series for one explicit source. Use the dedicated model, tool, and project tools for accurate dimension rankings.",
+			Description: "Get a bounded daily or hourly aggregate time series for one explicit source, including distinct transcript-message and outbound-request counts. Use requests for API-call/attempt questions. Use the dedicated model, tool, and project tools for accurate dimension rankings.",
 			Parameters:  rawSchema(`{"type":"object","properties":{"source":{"type":"string"},"period":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"granularity":{"type":"string","enum":["day","hour"]},"limit":{"type":"integer","minimum":1,"maximum":1000}},"required":["source"],"additionalProperties":false}`),
 		},
 		{
@@ -135,7 +135,7 @@ func (r *ToolRegistry) Definitions() []ToolDefinition {
 		},
 		{
 			Name:        "get_model_usage",
-			Description: "Rank models for one explicit source by their aggregate usage metrics and source-specific cost provenance.",
+			Description: "Rank models for one explicit source by outbound assistant/API requests, tokens, sessions, and source-specific cost provenance. The requests field is the unambiguous request count; messages is retained for compatibility.",
 			Parameters:  rawSchema(sourcePeriodSchema(true)),
 		},
 		{
@@ -638,15 +638,26 @@ type safeCostPolicy struct {
 	Status            string `json:"status,omitempty"`
 	Currency          string `json:"currency,omitempty"`
 	PricingSnapshotID string `json:"pricing_snapshot_id,omitempty"`
+	PricingSource     string `json:"pricing_source,omitempty"`
+	Note              string `json:"note,omitempty"`
 }
 
 type safeCostProvenance struct {
 	Status            stats.CostStatus `json:"status"`
 	Currency          string           `json:"currency,omitempty"`
 	PricingSnapshotID string           `json:"pricing_snapshot_id,omitempty"`
+	PricingSource     string           `json:"pricing_source,omitempty"`
+	Note              string           `json:"note,omitempty"`
 	MissingCount      int64            `json:"missing_count,omitempty"`
 	ComputedCount     int64            `json:"computed_count,omitempty"`
 	ReportedCount     int64            `json:"reported_count,omitempty"`
+}
+
+type safeRequestAccounting struct {
+	UsageRecorded    int64               `json:"usage_recorded"`
+	UsageRecovered   int64               `json:"usage_recovered"`
+	UsageUnavailable int64               `json:"usage_unavailable"`
+	TraceCoverage    stats.TraceCoverage `json:"trace_coverage"`
 }
 
 func (r *ToolRegistry) listSources(ctx context.Context) []safeSourceInfo {
@@ -678,28 +689,32 @@ func safeCapabilities(values []string) []string {
 }
 
 type safeOverview struct {
-	SourceID       string              `json:"source_id"`
-	Sessions       int64               `json:"sessions"`
-	Messages       int64               `json:"messages"`
-	Cost           float64             `json:"cost"`
-	Tokens         stats.TokenStats    `json:"tokens"`
-	CostPerDay     float64             `json:"cost_per_day"`
-	Days           int                 `json:"days"`
-	CostStatus     stats.CostStatus    `json:"cost_status,omitempty"`
-	CostProvenance *safeCostProvenance `json:"cost_provenance,omitempty"`
+	SourceID          string                 `json:"source_id"`
+	Sessions          int64                  `json:"sessions"`
+	Messages          int64                  `json:"messages"`
+	Requests          int64                  `json:"requests"`
+	Cost              float64                `json:"cost"`
+	Tokens            stats.TokenStats       `json:"tokens"`
+	CostPerDay        float64                `json:"cost_per_day"`
+	Days              int                    `json:"days"`
+	CostStatus        stats.CostStatus       `json:"cost_status,omitempty"`
+	CostProvenance    *safeCostProvenance    `json:"cost_provenance,omitempty"`
+	RequestAccounting *safeRequestAccounting `json:"request_accounting,omitempty"`
 }
 
 func safeOverviewFrom(value stats.OverviewStats, key []byte) safeOverview {
 	return safeOverview{
-		SourceID: safeSourceRef(key, value.SourceID), Sessions: value.Sessions, Messages: value.Messages,
+		SourceID: safeSourceRef(key, value.SourceID), Sessions: value.Sessions, Messages: value.Messages, Requests: value.Requests,
 		Cost: value.Cost, Tokens: value.Tokens, CostPerDay: value.CostPerDay, Days: value.Days,
 		CostStatus: safeCostStatus(value.CostStatus), CostProvenance: safeProvenance(value.CostProvenance, key),
+		RequestAccounting: safeRequestAccountingFrom(value.RequestAccounting),
 	}
 }
 
 type safeCombinedTotals struct {
 	Sessions int64            `json:"sessions"`
 	Messages int64            `json:"messages"`
+	Requests int64            `json:"requests"`
 	Tokens   stats.TokenStats `json:"tokens"`
 	Days     int              `json:"days"`
 }
@@ -747,7 +762,7 @@ type safeDimensionOmission struct {
 func safeCrossOverviewFrom(value source.AllSourcesOverview, trendLimit int, unavailable []string, projectRefKey []byte) safeCrossOverview {
 	result := safeCrossOverview{
 		CombinedTotals: safeCombinedTotals{
-			Sessions: value.Total.Sessions, Messages: value.Total.Messages,
+			Sessions: value.Total.Sessions, Messages: value.Total.Messages, Requests: value.Total.Requests,
 			Tokens: value.Total.Tokens, Days: value.Total.Days,
 		},
 		MessagesPerSession: value.MessagesPerSession,
@@ -792,12 +807,13 @@ func safeCrossOverviewFrom(value source.AllSourcesOverview, trendLimit int, unav
 }
 
 type safeDaily struct {
-	SourceID       string              `json:"source_id"`
-	Granularity    stats.Granularity   `json:"granularity"`
-	Days           []safeDay           `json:"days"`
-	Truncated      bool                `json:"truncated,omitempty"`
-	CostStatus     stats.CostStatus    `json:"cost_status,omitempty"`
-	CostProvenance *safeCostProvenance `json:"cost_provenance,omitempty"`
+	SourceID          string                 `json:"source_id"`
+	Granularity       stats.Granularity      `json:"granularity"`
+	Days              []safeDay              `json:"days"`
+	Truncated         bool                   `json:"truncated,omitempty"`
+	CostStatus        stats.CostStatus       `json:"cost_status,omitempty"`
+	CostProvenance    *safeCostProvenance    `json:"cost_provenance,omitempty"`
+	RequestAccounting *safeRequestAccounting `json:"request_accounting,omitempty"`
 }
 
 func safeDailyFrom(value stats.DailyStats, limit int, key []byte) safeDaily {
@@ -810,22 +826,24 @@ func safeDailyFrom(value stats.DailyStats, limit int, key []byte) safeDaily {
 	if granularity != stats.GranularityDay && granularity != stats.GranularityHour {
 		granularity = stats.GranularityDay
 	}
-	return safeDaily{SourceID: safeSourceRef(key, value.SourceID), Granularity: granularity, Days: days, Truncated: truncated, CostStatus: safeCostStatus(value.CostStatus), CostProvenance: safeProvenance(value.CostProvenance, key)}
+	return safeDaily{SourceID: safeSourceRef(key, value.SourceID), Granularity: granularity, Days: days, Truncated: truncated, CostStatus: safeCostStatus(value.CostStatus), CostProvenance: safeProvenance(value.CostProvenance, key), RequestAccounting: safeRequestAccountingFrom(value.RequestAccounting)}
 }
 
 type safeDay struct {
-	SourceID       string              `json:"source_id,omitempty"`
-	Date           string              `json:"date"`
-	Sessions       int64               `json:"sessions"`
-	Messages       int64               `json:"messages"`
-	Cost           float64             `json:"cost"`
-	Tokens         stats.TokenStats    `json:"tokens"`
-	CostStatus     stats.CostStatus    `json:"cost_status,omitempty"`
-	CostProvenance *safeCostProvenance `json:"cost_provenance,omitempty"`
+	SourceID          string                 `json:"source_id,omitempty"`
+	Date              string                 `json:"date"`
+	Sessions          int64                  `json:"sessions"`
+	Messages          int64                  `json:"messages"`
+	Requests          int64                  `json:"requests"`
+	Cost              float64                `json:"cost"`
+	Tokens            stats.TokenStats       `json:"tokens"`
+	CostStatus        stats.CostStatus       `json:"cost_status,omitempty"`
+	CostProvenance    *safeCostProvenance    `json:"cost_provenance,omitempty"`
+	RequestAccounting *safeRequestAccounting `json:"request_accounting,omitempty"`
 }
 
 func safeDayFrom(value stats.DayStats, key []byte) safeDay {
-	return safeDay{SourceID: safeSourceRef(key, value.SourceID), Date: safeDate(value.Date), Sessions: value.Sessions, Messages: value.Messages, Cost: value.Cost, Tokens: value.Tokens, CostStatus: safeCostStatus(value.CostStatus), CostProvenance: safeProvenance(value.CostProvenance, key)}
+	return safeDay{SourceID: safeSourceRef(key, value.SourceID), Date: safeDate(value.Date), Sessions: value.Sessions, Messages: value.Messages, Requests: value.Requests, Cost: value.Cost, Tokens: value.Tokens, CostStatus: safeCostStatus(value.CostStatus), CostProvenance: safeProvenance(value.CostProvenance, key), RequestAccounting: safeRequestAccountingFrom(value.RequestAccounting)}
 }
 
 type safeModelList struct {
@@ -851,6 +869,7 @@ type safeModel struct {
 	ProviderID          string               `json:"provider_id"`
 	Sessions            int64                `json:"sessions"`
 	Messages            int64                `json:"messages"`
+	Requests            int64                `json:"requests"`
 	Cost                float64              `json:"cost"`
 	Tokens              stats.TokenStats     `json:"tokens"`
 	CostStatus          stats.CostStatus     `json:"cost_status,omitempty"`
@@ -862,7 +881,7 @@ type safeModel struct {
 func safeModelFrom(value stats.ModelEntry, key []byte) safeModel {
 	return safeModel{
 		SourceID: safeSourceRef(key, value.SourceID), ModelID: safeOutboundIdentifier(key, "model", value.ModelID), ProviderID: safeOutboundIdentifier(key, "provider", value.ProviderID),
-		Sessions: value.Sessions, Messages: value.Messages, Cost: value.Cost, Tokens: value.Tokens,
+		Sessions: value.Sessions, Messages: value.Messages, Requests: value.Messages, Cost: value.Cost, Tokens: value.Tokens,
 		CostStatus: safeCostStatus(value.CostStatus), CostProvenance: safeProvenance(value.CostProvenance, key),
 		AvgTokensPerMessage: value.AvgTokensPerMessage, AvgTokensPerSession: value.AvgTokensPerSession,
 	}
@@ -1047,7 +1066,26 @@ func safeProvenance(value *stats.CostProvenance, key []byte) *safeCostProvenance
 	}
 	return &safeCostProvenance{
 		Status: safeCostStatus(value.Status), Currency: safeCurrency(value.Currency), PricingSnapshotID: safeOutboundIdentifier(key, "pricing", value.PricingSnapshotID),
+		PricingSource: safePricingSource(value.PricingSource), Note: safeCostNote(value.Note),
 		MissingCount: value.MissingCount, ComputedCount: value.ComputedCount, ReportedCount: value.ReportedCount,
+	}
+}
+
+func safeRequestAccountingFrom(value *stats.RequestAccounting) *safeRequestAccounting {
+	if value == nil {
+		return nil
+	}
+	coverage := value.TraceCoverage
+	switch coverage {
+	case stats.TraceCoverageComplete, stats.TraceCoverageMixed, stats.TraceCoverageSuccessfulOnly, stats.TraceCoverageUnknown:
+	default:
+		coverage = stats.TraceCoverageUnknown
+	}
+	return &safeRequestAccounting{
+		UsageRecorded:    value.UsageRecorded,
+		UsageRecovered:   value.UsageRecovered,
+		UsageUnavailable: value.UsageUnavailable,
+		TraceCoverage:    coverage,
 	}
 }
 
@@ -1056,6 +1094,43 @@ func safeCostPolicyFrom(value source.CostPolicy, key []byte) safeCostPolicy {
 		Status:            string(safeCostStatus(stats.CostStatus(value.Status))),
 		Currency:          safeCurrency(value.Currency),
 		PricingSnapshotID: safeOutboundIdentifier(key, "pricing", value.PricingSnapshotID),
+		PricingSource:     safePricingSource(value.PricingSource),
+		Note:              safeCostNote(value.Note),
+	}
+}
+
+func safePricingSource(value string) string {
+	value = strings.TrimSpace(value)
+	// Pricing metadata is sent to the optional external analytics provider.
+	// Only fixed public catalog URLs bundled by this application may leave the
+	// machine; arbitrary locally supplied URLs can contain private identifiers.
+	switch value {
+	case "https://platform.kimi.ai/docs/pricing/chat",
+		"https://developers.openai.com/api/docs/pricing",
+		"https://www.alibabacloud.com/help/en/model-studio/model-pricing":
+		return value
+	default:
+		return ""
+	}
+}
+
+func safeCostNote(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, strings.TrimSpace(value))
+	// Cost notes are otherwise free-form metadata and may contain private local
+	// data. Only emit the fixed Kimi accounting disclosures used by this source.
+	switch value {
+	case "Estimated from Kimi API list prices as an API-equivalent value. Kimi Code memberships and coding plans are not billed per transcript token, so this is not actual subscription spend.",
+		"Kimi Code cost is unknown because supported model pricing or request usage is unavailable",
+		"aggregate mixes estimated API-equivalent and missing Kimi Code costs",
+		"aggregate Kimi Code cost is unknown because supported model pricing or request usage is unavailable":
+		return value
+	default:
+		return ""
 	}
 }
 

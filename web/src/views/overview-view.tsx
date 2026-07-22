@@ -1,5 +1,5 @@
 /* Overview — all-sources aggregate (Vael). The Usage section can group the same
-   tokens/cost/messages metrics by source or by source-scoped model. Model data
+   tokens/cost/requests metrics by source or by source-scoped model. Model data
    is loaded lazily so the default overview stays fast. Costs are never rolled
    into a headline KPI; chart totals are only the visible stacked arithmetic. */
 import { useMemo, useState } from 'react'
@@ -29,6 +29,7 @@ import { QuotasSection } from '../components/quotas/quotas-detail'
 import { useOverviewAll } from '../lib/use-overview-all'
 import { useOverviewModelUsage } from '../lib/use-overview-model-usage'
 import { usePeriodControls } from '../lib/use-period-controls'
+import { isIncompleteRequestAccounting, requestAccountingDisclosure } from '../lib/request-accounting'
 import { getAvgTokenTotal, getTokenBreakdownItems, getTokenTotal, type TokenBreakdownItem } from '../lib/token-breakdown'
 import {
   buildCombinedDailyTotals,
@@ -54,7 +55,7 @@ import {
 import type { CostProvenance, CostStatus } from '../types/api'
 import type { ModelEntry, ProjectEntry, SourceID, SourceOverview, ToolEntry } from '../types/api'
 
-const METRIC_VALUES: TrendMetric[] = ['tokens', 'cost', 'messages']
+const METRIC_VALUES: TrendMetric[] = ['tokens', 'cost', 'requests']
 
 const GROUPING_OPTS: { value: UsageGrouping; label: string }[] = [
   { value: 'source', label: 'Source' },
@@ -102,7 +103,7 @@ function donutCostWithProvenance(value: number, status?: CostStatus, provenance?
 
 function metricFmt(metric: TrendMetric): (v: number) => string {
   if (metric === 'cost') return (v) => formatCompactCurrency(v)
-  if (metric === 'messages') return (v) => formatCompactInteger(v)
+  if (metric === 'requests') return (v) => formatCompactInteger(v)
   return (v) => formatTokenCount(v)
 }
 
@@ -209,13 +210,14 @@ export function OverviewView() {
 
   // Combined daily totals for the always-on KPI sparklines (metric-independent;
   // cost is intentionally absent — never combined across sources).
-  const { sparkLabels, tokenSpark, sessionSpark, messageSpark } = useMemo(() => {
+  const { sparkLabels, tokenSpark, sessionSpark, messageSpark, requestSpark } = useMemo(() => {
     const daily = buildCombinedDailyTotals(data?.sources ?? [])
     return {
       sparkLabels: daily.map((d) => `${formatShortDate(d.date)} · ${formatShortWeekday(d.date)}`),
       tokenSpark: daily.map((d) => d.tokens),
       sessionSpark: daily.map((d) => d.sessions),
       messageSpark: daily.map((d) => d.messages),
+      requestSpark: daily.map((d) => d.requests),
     }
   }, [data?.sources])
 
@@ -240,7 +242,8 @@ export function OverviewView() {
   }
 
   const totalTokens = getTokenTotal(data.token_distribution)
-  const activeSources = data.sources.filter((s) => s.overview.sessions > 0 || s.overview.messages > 0).length
+  const activeSources = data.sources.filter((s) => s.overview.sessions > 0 || s.overview.messages > 0 || s.overview.requests > 0).length
+  const kimiAccounting = data.sources.find((source) => source.source_id === 'kimi_code')?.overview.request_accounting
   const breakdown = getTokenBreakdownItems(data.token_distribution).filter((i) => i.value > 0)
   const breakdownTotal = breakdown.reduce((s, i) => s + i.value, 0) || 1
 
@@ -248,7 +251,7 @@ export function OverviewView() {
   // remains index-aligned in both grouping modes.
   const donutFmt = metricFmt(metric)
   const metricCopy = usageMetricCopy(metric, grouping)
-  const groupedMessageCopy = usageMetricCopy('messages', grouping)
+  const groupedRequestCopy = usageMetricCopy('requests', grouping)
   const donutTotal = donutItems.reduce((sum, item) => sum + item.value, 0)
   const aggregateCostNeedsQualifier = metric === 'cost' && donutItems.some((item) => {
     const status = getCostStatus(item.costStatus, item.costProvenance)
@@ -280,7 +283,7 @@ export function OverviewView() {
     ))
   ) {
     topModelsEmptyMessage = 'Model rankings unavailable.'
-  } else if (!currentModelUsage && data.top_models.length === 0 && data.total.messages > 0) {
+  } else if (!currentModelUsage && data.top_models.length === 0 && data.total.requests > 0) {
     topModelsEmptyMessage = 'Select Model in Usage to load rankings.'
   }
 
@@ -288,6 +291,7 @@ export function OverviewView() {
     { key: 'source', header: 'Source', render: (s) => <VendorChip id={s.source_id} /> },
     { key: 'sessions', header: 'Sessions', numeric: true, render: (s) => formatInteger(s.overview.sessions) },
     { key: 'messages', header: 'Messages', numeric: true, render: (s) => formatInteger(s.overview.messages) },
+    { key: 'requests', header: 'Requests', numeric: true, render: (s) => formatInteger(s.overview.requests) },
     { key: 'tokens', header: 'Tokens', numeric: true, render: (s) => formatTokenCount(getTokenTotal(s.overview.tokens)) },
     {
       key: 'cost',
@@ -320,6 +324,9 @@ export function OverviewView() {
       {data.errors?.map((e) => (
         <Notice key={e.source_id} tone="danger" title={`${labelFor(e.source_id)} could not be loaded`}>{e.message}</Notice>
       ))}
+      {kimiAccounting && isIncompleteRequestAccounting(kimiAccounting) && (
+        <Notice tone="warning" title="Kimi request accounting is incomplete">{requestAccountingDisclosure(kimiAccounting)}</Notice>
+      )}
       {grouping === 'model' && currentModelUsage?.errors.map((e) => (
         <Notice key={`model-${e.source_id}`} tone="warning" title={`${labelFor(e.source_id)} model usage is unavailable`}>{e.message}</Notice>
       ))}
@@ -337,6 +344,7 @@ export function OverviewView() {
         <StatCard accent label="Tokens" value={formatTokenCount(totalTokens)} title={formatInteger(totalTokens)} hint={`${formatCompactInteger(getAvgTokenTotal(data.tokens_per_message))} / message`} spark={tokenSpark} sparkLabels={sparkLabels} sparkFmt={formatTokenCount} />
         <StatCard label="Sessions" value={formatInteger(data.total.sessions)} hint={`${data.total.days} active days`} spark={sessionSpark} sparkLabels={sparkLabels} sparkFmt={formatInteger} />
         <StatCard label="Messages" value={formatInteger(data.total.messages)} hint={`${data.messages_per_session.toFixed(1)} / session`} spark={messageSpark} sparkLabels={sparkLabels} sparkFmt={formatCompactInteger} />
+        <StatCard label="Requests" value={formatInteger(data.total.requests)} hint="outbound assistant/API attempts" spark={requestSpark} sparkLabels={sparkLabels} sparkFmt={formatCompactInteger} />
         <StatCard label="Sources active" value={`${activeSources} / ${data.sources.length}`} hint="with activity in range" />
       </div>
 
@@ -348,7 +356,7 @@ export function OverviewView() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0, font: '600 15px/1.2 var(--font-ui)', color: 'var(--fg-primary)' }}>Usage</h2>
-            <span style={{ font: '400 12px/1.3 var(--font-ui)', color: 'var(--fg-muted)' }}>Tokens, cost &amp; {groupedMessageCopy.noun} grouped by {GROUPING_NOUN[grouping]}</span>
+            <span style={{ font: '400 12px/1.3 var(--font-ui)', color: 'var(--fg-muted)' }}>Tokens, cost &amp; {groupedRequestCopy.noun} grouped by {GROUPING_NOUN[grouping]}</span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
             <SegmentedControl

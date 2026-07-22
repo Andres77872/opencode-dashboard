@@ -83,23 +83,36 @@ func (s *Store) overviewFromRollups(ctx context.Context, sourceID string, startM
 
 func (s *Store) addOverviewTotals(ctx context.Context, sourceID string, parts overviewWindowParts, result *stats.OverviewStats) error {
 	type totals struct {
-		messages                                        int64
+		messages, requests                              int64
+		usageRecorded, usageRecovered, usageUnavailable int64
+		traceObserved, traceInferred                    int64
 		cost                                            float64
 		input, output, reasoning, cacheRead, cacheWrite int64
 	}
+	var accounting totals
 	add := func(row totals) {
 		result.Messages += row.messages
+		result.Requests += row.requests
 		result.Cost += row.cost
 		result.Tokens.Input += row.input
 		result.Tokens.Output += row.output
 		result.Tokens.Reasoning += row.reasoning
 		result.Tokens.Cache.Read += row.cacheRead
 		result.Tokens.Cache.Write += row.cacheWrite
+		accounting.requests += row.requests
+		accounting.usageRecorded += row.usageRecorded
+		accounting.usageRecovered += row.usageRecovered
+		accounting.usageUnavailable += row.usageUnavailable
+		accounting.traceObserved += row.traceObserved
+		accounting.traceInferred += row.traceInferred
 	}
 	scan := func(query string, args ...any) error {
 		var row totals
 		if err := s.db.QueryRowContext(ctx, query, args...).Scan(
-			&row.messages, &row.cost, &row.input, &row.output, &row.reasoning,
+			&row.messages, &row.requests,
+			&row.usageRecorded, &row.usageRecovered, &row.usageUnavailable,
+			&row.traceObserved, &row.traceInferred,
+			&row.cost, &row.input, &row.output, &row.reasoning,
 			&row.cacheRead, &row.cacheWrite,
 		); err != nil {
 			return err
@@ -110,7 +123,10 @@ func (s *Store) addOverviewTotals(ctx context.Context, sourceID string, parts ov
 	if parts.hasFullHours() {
 		if err := scan(`
 			SELECT
-				COALESCE(SUM(messages), 0), COALESCE(SUM(cost), 0),
+				COALESCE(SUM(messages), 0), COALESCE(SUM(requests), 0),
+				COALESCE(SUM(usage_recorded), 0), COALESCE(SUM(usage_recovered), 0),
+				COALESCE(SUM(usage_unavailable), 0), COALESCE(SUM(trace_observed), 0),
+				COALESCE(SUM(trace_inferred), 0), COALESCE(SUM(cost), 0),
 				COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
 				COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(cache_read_tokens), 0),
 				COALESCE(SUM(cache_write_tokens), 0)
@@ -123,7 +139,14 @@ func (s *Store) addOverviewTotals(ctx context.Context, sourceID string, parts ov
 	for _, edge := range parts.edges {
 		if err := scan(`
 			SELECT
-				COUNT(*), COALESCE(SUM(cost), 0), COALESCE(SUM(input_tokens), 0),
+				COUNT(*),
+				COALESCE(SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN role = 'assistant' AND usage_status = 'recorded' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN role = 'assistant' AND usage_status = 'recovered' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN role = 'assistant' AND usage_status = 'unavailable' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN role = 'assistant' AND request_trace = 'observed' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN role = 'assistant' AND request_trace = 'inferred' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(cost), 0), COALESCE(SUM(input_tokens), 0),
 				COALESCE(SUM(output_tokens), 0), COALESCE(SUM(reasoning_tokens), 0),
 				COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0)
 			FROM message_index
@@ -132,6 +155,14 @@ func (s *Store) addOverviewTotals(ctx context.Context, sourceID string, parts ov
 			return fmt.Errorf("read overview partial-hour totals: %w", err)
 		}
 	}
+	unknownTrace := accounting.requests - accounting.traceObserved - accounting.traceInferred
+	if unknownTrace < 0 {
+		unknownTrace = 0
+	}
+	result.RequestAccounting = stats.NewRequestAccounting(
+		accounting.usageRecorded, accounting.usageRecovered, accounting.usageUnavailable,
+		accounting.traceObserved, accounting.traceInferred, unknownTrace,
+	)
 	return nil
 }
 

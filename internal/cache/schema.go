@@ -19,12 +19,10 @@ import (
 // from scratch, and the normal consolidation flow re-collects everything in
 // the background while reads fall back to the live sources.
 //
-// v6 drops the columns, tables, and indexes no consumer reads (synthesized
-// session titles and project names denormalized onto message_index, the
-// write-only hourly_tool_usage rollup, hourly_usage project dims) and adds
-// the tool_index(source_id, message_id) index the incremental-fill delete
-// needs.
-const schemaVersion = 6
+// v7 persists outbound-request provenance and extends the hourly usage tables
+// with request and usage-coverage counters. Older caches rebuild so the new
+// totals can never silently treat missing provenance as known zeroes.
+const schemaVersion = 7
 
 // schemaSQL is the complete current schema, applied in one transaction to a
 // fresh (or just-rebuilt) database. It must always describe the exact shape
@@ -97,6 +95,8 @@ CREATE TABLE IF NOT EXISTS message_index (
 	project_id TEXT,
 	service_tier TEXT,
 	processing_mode TEXT,
+	request_trace TEXT,
+	usage_status TEXT,
 	model_input_tokens INTEGER NOT NULL DEFAULT 0,
 	model_output_tokens INTEGER NOT NULL DEFAULT 0,
 	model_reasoning_tokens INTEGER NOT NULL DEFAULT 0,
@@ -121,6 +121,12 @@ CREATE TABLE IF NOT EXISTS hourly_usage (
 	provider_id TEXT NOT NULL,
 	role TEXT NOT NULL,
 	messages INTEGER NOT NULL DEFAULT 0,
+	requests INTEGER NOT NULL DEFAULT 0,
+	usage_recorded INTEGER NOT NULL DEFAULT 0,
+	usage_recovered INTEGER NOT NULL DEFAULT 0,
+	usage_unavailable INTEGER NOT NULL DEFAULT 0,
+	trace_observed INTEGER NOT NULL DEFAULT 0,
+	trace_inferred INTEGER NOT NULL DEFAULT 0,
 	cost REAL NOT NULL DEFAULT 0,
 	input_tokens INTEGER NOT NULL DEFAULT 0,
 	output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -134,6 +140,12 @@ CREATE TABLE IF NOT EXISTS overview_hourly (
 	source_id TEXT NOT NULL,
 	bucket_start_ms INTEGER NOT NULL,
 	messages INTEGER NOT NULL DEFAULT 0,
+	requests INTEGER NOT NULL DEFAULT 0,
+	usage_recorded INTEGER NOT NULL DEFAULT 0,
+	usage_recovered INTEGER NOT NULL DEFAULT 0,
+	usage_unavailable INTEGER NOT NULL DEFAULT 0,
+	trace_observed INTEGER NOT NULL DEFAULT 0,
+	trace_inferred INTEGER NOT NULL DEFAULT 0,
 	cost REAL NOT NULL DEFAULT 0,
 	input_tokens INTEGER NOT NULL DEFAULT 0,
 	output_tokens INTEGER NOT NULL DEFAULT 0,

@@ -3,7 +3,9 @@ package quota
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -186,12 +188,332 @@ func TestKimiQuotaRefreshesExpiredOAuthCredentialUnderCompatibleLock(t *testing.
 	if info, err := os.Stat(tokenPath); err != nil || info.Mode().Perm() != 0o600 {
 		t.Errorf("credential mode = %v, err = %v; want 0600", infoMode(info), err)
 	}
+	if info, err := os.Stat(filepath.Dir(tokenPath)); err != nil || info.Mode().Perm() != 0o700 {
+		t.Errorf("credential directory mode = %v, err = %v; want 0700", infoMode(info), err)
+	}
+	if entries, err := os.ReadDir(filepath.Dir(tokenPath)); err != nil {
+		t.Errorf("read credential directory: %v", err)
+	} else {
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".kimi-code-token-") {
+				t.Errorf("atomic credential temp file remains after refresh: %s", entry.Name())
+			}
+		}
+	}
 	storageName, _ := kimiTokenStorageName(auth.OAuthKey)
 	if _, err := os.Stat(filepath.Join(home, "oauth", storageName+".lock")); !os.IsNotExist(err) {
 		t.Errorf("refresh lock remains after request (err = %v)", err)
 	}
 	if _, err := os.Stat(filepath.Join(home, "oauth", storageName)); err != nil {
 		t.Errorf("Kimi-compatible lock sentinel is missing: %v", err)
+	}
+}
+
+func TestKimiQuotaInvalidGrantOnBadRequestTombstonesCredential(t *testing.T) {
+	now := time.Date(2026, 7, 16, 18, 0, 0, 0, time.UTC)
+	const accessToken = "revoked-secret-access"
+	const refreshToken = "revoked-secret-refresh"
+	var refreshCalls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/oauth/token" {
+			t.Errorf("path = %q, want /api/oauth/token", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		refreshCalls.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error":"invalid_grant","error_description":"rejected %s and %s"}`,
+			accessToken, refreshToken)
+	}))
+	defer server.Close()
+
+	home := writeKimiQuotaHome(t, server.URL+"/coding/v1", server.URL, kimiOAuthToken{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresAt:    now.Add(-time.Minute).Unix(),
+		ExpiresIn:    900,
+		Scope:        "kimi-code",
+		TokenType:    "Bearer",
+		raw:          map[string]any{"preserved": "metadata"},
+	})
+	provider := newKimiTestProvider(home, server.Client(), func() time.Time { return now })
+	provider.sleep = noKimiTestWait
+	got := provider.quota(context.Background())
+
+	if got.Status != StatusUnavailable || got.Help == "" {
+		t.Fatalf("quota = %+v, want unavailable with login help", got)
+	}
+	if refreshCalls.Load() != 1 {
+		t.Errorf("refresh calls = %d, want invalid_grant to stop after one attempt", refreshCalls.Load())
+	}
+	if strings.Contains(got.Reason, accessToken) || strings.Contains(got.Reason, refreshToken) ||
+		!strings.Contains(got.Reason, "[redacted]") {
+		t.Errorf("reason = %q, want both OAuth secrets redacted", got.Reason)
+	}
+
+	tokenPath := kimiTestTokenPath(t, home)
+	if _, err := readKimiOAuthToken(tokenPath); !errors.Is(err, errKimiAuthRequired) {
+		t.Fatalf("read tombstone error = %v, want errKimiAuthRequired", err)
+	}
+	body, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatalf("read tombstone: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("parse tombstone: %v", err)
+	}
+	_, preserved := raw["preserved"]
+	if raw["access_token"] != "" || raw["refresh_token"] != "" ||
+		raw["expires_at"] != float64(0) || raw["expires_in"] != float64(0) ||
+		raw["scope"] != "kimi-code" || raw["token_type"] != "Bearer" || preserved {
+		t.Errorf("tombstone = %#v, want only empty token fields plus scope and type", raw)
+	}
+	if info, err := os.Stat(tokenPath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("tombstone mode = %v, err = %v; want 0600", infoMode(info), err)
+	}
+	if entries, err := os.ReadDir(filepath.Dir(tokenPath)); err != nil {
+		t.Errorf("read credential directory: %v", err)
+	} else {
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".kimi-code-token-") {
+				t.Errorf("atomic tombstone temp file remains: %s", entry.Name())
+			}
+		}
+	}
+}
+
+func TestKimiQuotaGenericUnauthorizedRefreshPreservesCredential(t *testing.T) {
+	now := time.Date(2026, 7, 16, 18, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/oauth/token" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"access_denied","error_description":"account policy requires attention"}`)
+	}))
+	defer server.Close()
+
+	home := writeKimiQuotaHome(t, server.URL+"/coding/v1", server.URL, kimiOAuthToken{
+		AccessToken:  "preserved-access",
+		RefreshToken: "preserved-refresh",
+		ExpiresAt:    now.Add(-time.Minute).Unix(),
+		ExpiresIn:    900,
+		Scope:        "kimi-code",
+		TokenType:    "Bearer",
+	})
+	provider := newKimiTestProvider(home, server.Client(), func() time.Time { return now })
+	provider.sleep = noKimiTestWait
+	got := provider.quota(context.Background())
+	if got.Status != StatusUnavailable || got.Help == "" {
+		t.Fatalf("quota = %+v, want unavailable with login help", got)
+	}
+
+	saved, err := readKimiOAuthToken(kimiTestTokenPath(t, home))
+	if err != nil {
+		t.Fatalf("read preserved credential: %v", err)
+	}
+	if saved.AccessToken != "preserved-access" || saved.RefreshToken != "preserved-refresh" {
+		t.Errorf("credential was destructively changed after generic 401: %+v", saved)
+	}
+}
+
+func TestKimiQuotaUsesPeerRefreshRotationAfterRejectedRequest(t *testing.T) {
+	now := time.Date(2026, 7, 16, 18, 0, 0, 0, time.UTC)
+	var tokenPath string
+	var refreshCalls atomic.Int64
+	var usageCalls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/oauth/token":
+			refreshCalls.Add(1)
+			peer := kimiOAuthToken{
+				AccessToken:  "peer-access",
+				RefreshToken: "peer-refresh",
+				ExpiresAt:    now.Add(time.Hour).Unix(),
+				ExpiresIn:    900,
+				Scope:        "kimi-code",
+				TokenType:    "Bearer",
+				raw:          map[string]any{},
+			}
+			if err := writeKimiOAuthToken(tokenPath, peer); err != nil {
+				t.Errorf("write peer-rotated token: %v", err)
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"invalid_grant","error_description":"old refresh token"}`)
+		case "/coding/v1/usages":
+			usageCalls.Add(1)
+			if got := r.Header.Get("Authorization"); got != "Bearer peer-access" {
+				t.Errorf("usage Authorization = %q, want peer access token", got)
+			}
+			fmt.Fprint(w, `{"usage":{"used":1,"limit":10,"name":"Weekly limit"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	home := writeKimiQuotaHome(t, server.URL+"/coding/v1", server.URL, kimiOAuthToken{
+		AccessToken:  "old-access",
+		RefreshToken: "old-refresh",
+		ExpiresAt:    now.Add(-time.Minute).Unix(),
+		ExpiresIn:    900,
+		Scope:        "kimi-code",
+		TokenType:    "Bearer",
+	})
+	tokenPath = kimiTestTokenPath(t, home)
+	provider := newKimiTestProvider(home, server.Client(), func() time.Time { return now })
+	provider.sleep = noKimiTestWait
+	got := provider.quota(context.Background())
+
+	if got.Status != StatusOK {
+		t.Fatalf("quota = %+v, want peer token recovery", got)
+	}
+	if refreshCalls.Load() != 1 || usageCalls.Load() != 1 {
+		t.Errorf("refresh/usage calls = %d/%d, want 1/1", refreshCalls.Load(), usageCalls.Load())
+	}
+	saved, err := readKimiOAuthToken(tokenPath)
+	if err != nil {
+		t.Fatalf("read peer token: %v", err)
+	}
+	if saved.AccessToken != "peer-access" || saved.RefreshToken != "peer-refresh" {
+		t.Errorf("saved peer token = %+v, want peer rotation left intact", saved)
+	}
+}
+
+func TestKimiOAuthRefreshRetriesTransientFailures(t *testing.T) {
+	now := time.Date(2026, 7, 16, 18, 0, 0, 0, time.UTC)
+	current := kimiOAuthToken{
+		AccessToken:  "secret-access",
+		RefreshToken: "secret-refresh",
+		Scope:        "kimi-code",
+		TokenType:    "Bearer",
+	}
+
+	t.Run("retryable statuses then success", func(t *testing.T) {
+		var calls atomic.Int64
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			switch calls.Add(1) {
+			case 1:
+				http.Error(w, "rate limited", http.StatusTooManyRequests)
+			case 2:
+				http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
+			default:
+				fmt.Fprint(w, `{"access_token":"new-access","refresh_token":"new-refresh","expires_in":900}`)
+			}
+		}))
+		defer server.Close()
+
+		var backoffs []time.Duration
+		provider := newKimiTestProvider("", server.Client(), func() time.Time { return now })
+		provider.sleep = func(_ context.Context, delay time.Duration) error {
+			backoffs = append(backoffs, delay)
+			return nil
+		}
+		got, err := provider.refreshKimiOAuthToken(context.Background(), server.URL, current)
+		if err != nil {
+			t.Fatalf("refresh: %v", err)
+		}
+		if got.AccessToken != "new-access" || got.RefreshToken != "new-refresh" {
+			t.Errorf("refreshed token = %+v", got)
+		}
+		assertKimiBackoffs(t, backoffs)
+		if calls.Load() != kimiRefreshMaxAttempts {
+			t.Errorf("refresh calls = %d, want %d", calls.Load(), kimiRefreshMaxAttempts)
+		}
+	})
+
+	t.Run("transport failures exhaust attempts safely", func(t *testing.T) {
+		var calls atomic.Int64
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls.Add(1)
+			return nil, fmt.Errorf("transport reflected %s and %s", current.AccessToken, current.RefreshToken)
+		})}
+		var backoffs []time.Duration
+		provider := newKimiTestProvider("", client, func() time.Time { return now })
+		provider.sleep = func(_ context.Context, delay time.Duration) error {
+			backoffs = append(backoffs, delay)
+			return nil
+		}
+		_, err := provider.refreshKimiOAuthToken(context.Background(), "https://auth.example.test", current)
+		if err == nil {
+			t.Fatal("refresh error = nil, want exhausted transport failure")
+		}
+		if calls.Load() != kimiRefreshMaxAttempts {
+			t.Errorf("refresh calls = %d, want %d", calls.Load(), kimiRefreshMaxAttempts)
+		}
+		assertKimiBackoffs(t, backoffs)
+		if strings.Contains(err.Error(), current.AccessToken) || strings.Contains(err.Error(), current.RefreshToken) ||
+			!strings.Contains(err.Error(), "[redacted]") {
+			t.Errorf("refresh error = %q, want secrets redacted", err)
+		}
+	})
+
+	for _, status := range []int{429, 500, 502, 503, 504} {
+		if !kimiRefreshStatusRetryable(status) {
+			t.Errorf("status %d should be retryable", status)
+		}
+	}
+	for _, status := range []int{400, 401, 403, 404} {
+		if kimiRefreshStatusRetryable(status) {
+			t.Errorf("status %d should not be retryable", status)
+		}
+	}
+}
+
+func TestKimiQuotaUsesRefreshAndUsageTimeoutBudgets(t *testing.T) {
+	now := time.Date(2026, 7, 16, 18, 0, 0, 0, time.UTC)
+	var refreshSeen atomic.Bool
+	var usageSeen atomic.Bool
+	client := &http.Client{
+		// The Kimi operation contexts, rather than this generic inherited
+		// timeout, must control both requests.
+		Timeout: time.Nanosecond,
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			deadline, ok := req.Context().Deadline()
+			if !ok {
+				t.Errorf("%s request has no context deadline", req.URL.Path)
+			}
+			remaining := time.Until(deadline)
+			switch req.URL.Path {
+			case "/api/oauth/token":
+				refreshSeen.Store(true)
+				if remaining < 29*time.Second || remaining > kimiRefreshBudget {
+					t.Errorf("refresh deadline remaining = %v, want about %v", remaining, kimiRefreshBudget)
+				}
+				return kimiTestHTTPResponse(req, http.StatusOK,
+					`{"access_token":"new-access","refresh_token":"new-refresh","expires_in":900}`), nil
+			case "/coding/v1/usages":
+				usageSeen.Store(true)
+				if remaining < 7*time.Second || remaining > kimiUsageTimeout {
+					t.Errorf("usage deadline remaining = %v, want about %v", remaining, kimiUsageTimeout)
+				}
+				return kimiTestHTTPResponse(req, http.StatusOK,
+					`{"usage":{"used":1,"limit":10,"name":"Weekly limit"}}`), nil
+			default:
+				return kimiTestHTTPResponse(req, http.StatusNotFound, `{}`), nil
+			}
+		}),
+	}
+
+	home := writeKimiQuotaHome(t,
+		"https://api.example.test/coding/v1",
+		"https://auth.example.test",
+		kimiOAuthToken{
+			AccessToken:  "old-access",
+			RefreshToken: "old-refresh",
+			ExpiresAt:    now.Add(-time.Minute).Unix(),
+			ExpiresIn:    900,
+		},
+	)
+	provider := newKimiTestProvider(home, client, func() time.Time { return now })
+	got := provider.quota(context.Background())
+	if got.Status != StatusOK {
+		t.Fatalf("quota = %+v, want ok", got)
+	}
+	if !refreshSeen.Load() || !usageSeen.Load() {
+		t.Errorf("refresh/usage observed = %v/%v, want both", refreshSeen.Load(), usageSeen.Load())
 	}
 }
 
@@ -394,9 +716,39 @@ func TestKimiRefreshLockUsesOfficialPathAndRecoversStaleLock(t *testing.T) {
 	if _, err := os.Stat(lockPath); err != nil {
 		t.Errorf("official lock directory %s missing: %v", lockPath, err)
 	}
+	if info, err := os.Stat(filepath.Dir(target)); err != nil || info.Mode().Perm() != 0o700 {
+		t.Errorf("OAuth lock directory mode = %v, err = %v; want 0700", infoMode(info), err)
+	}
+	if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("OAuth lock sentinel mode = %v, err = %v; want 0600", infoMode(info), err)
+	}
 	lock.release()
 	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
 		t.Errorf("lock directory exists after release (err = %v)", err)
+	}
+}
+
+func TestKimiRefreshLockHonorsContextTimeout(t *testing.T) {
+	home := t.TempDir()
+	first, err := acquireKimiRefreshLock(context.Background(), home, "kimi-code")
+	if err != nil {
+		t.Fatalf("acquire first lock: %v", err)
+	}
+	defer first.release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	second, err := acquireKimiRefreshLock(ctx, home, "kimi-code")
+	if second != nil {
+		second.release()
+		t.Fatal("second lock unexpectedly acquired")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second lock error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Errorf("lock timeout took %v, want prompt context cancellation", elapsed)
 	}
 }
 
@@ -439,6 +791,51 @@ oauth_host = %q
 		t.Fatalf("write OAuth fixture: %v", err)
 	}
 	return home
+}
+
+func kimiTestTokenPath(t *testing.T, home string) string {
+	t.Helper()
+	auth, err := resolveKimiRuntimeAuth(home)
+	if err != nil {
+		t.Fatalf("resolve Kimi auth: %v", err)
+	}
+	path, err := kimiCredentialPath(home, auth)
+	if err != nil {
+		t.Fatalf("resolve Kimi credential path: %v", err)
+	}
+	return path
+}
+
+func noKimiTestWait(context.Context, time.Duration) error {
+	return nil
+}
+
+func assertKimiBackoffs(t *testing.T, got []time.Duration) {
+	t.Helper()
+	want := []time.Duration{time.Second, 2 * time.Second}
+	if len(got) != len(want) {
+		t.Fatalf("backoffs = %v, want %v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Errorf("backoffs[%d] = %v, want %v", index, got[index], want[index])
+		}
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func kimiTestHTTPResponse(req *http.Request, status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
 }
 
 func assertKimiWindow(

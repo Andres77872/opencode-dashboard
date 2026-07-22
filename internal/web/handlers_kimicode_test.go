@@ -74,13 +74,19 @@ func TestSourceAwareKimiCodeAPIRoutingFromFixture(t *testing.T) {
 	})
 
 	t.Run("all endpoint classes remain source scoped and redacted", func(t *testing.T) {
+		var projects stats.ProjectStats
+		getHandlerJSON(t, handler, "/api/v1/projects?source=kimi_code&period=all", &projects)
+		if len(projects.Projects) != 1 || projects.Projects[0].ProjectID == "" {
+			t.Fatalf("Kimi projects = %#v, want one collision-resistant project id", projects.Projects)
+		}
+		projectDetailPath := "/api/v1/projects/" + url.PathEscape(projects.Projects[0].ProjectID) + "?source=kimi_code&period=all"
 		paths := []string{
 			"/api/v1/daily?source=kimi_code&period=all",
 			"/api/v1/daily?source=kimi_code&period=all&dimension=model",
 			"/api/v1/models?source=kimi_code&period=all",
 			"/api/v1/tools?source=kimi_code&period=all",
 			"/api/v1/projects?source=kimi_code&period=all",
-			"/api/v1/projects/kimi-project?source=kimi_code&period=all",
+			projectDetailPath,
 			"/api/v1/sessions?source=kimi_code&period=all",
 			"/api/v1/sessions/session-main?source=kimi_code",
 			"/api/v1/messages?source=kimi_code&period=all",

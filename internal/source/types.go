@@ -97,6 +97,7 @@ type CostPolicy struct {
 	Status            string `json:"status,omitempty"`
 	Currency          string `json:"currency,omitempty"`
 	PricingSnapshotID string `json:"pricing_snapshot_id,omitempty"`
+	PricingSource     string `json:"pricing_source,omitempty"`
 	Note              string `json:"note,omitempty"`
 }
 

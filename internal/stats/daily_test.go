@@ -275,10 +275,14 @@ func TestDailyExplicitRangeExcludesDayAfterTo(t *testing.T) {
 		t.Fatalf("Overview() failed: %v", err)
 	}
 	var dailyCost float64
-	var dailyMessages int64
+	var dailyMessages, dailyRequests int64
 	for _, d := range daily.Days {
 		dailyCost += d.Cost
 		dailyMessages += d.Messages
+		dailyRequests += d.Requests
+	}
+	if dailyRequests != overview.Requests {
+		t.Errorf("sum(daily.Requests) = %d, overview.Requests = %d: the two disagree over %s..%s", dailyRequests, overview.Requests, from, to)
 	}
 	if dailyMessages != overview.Messages {
 		t.Errorf("sum(daily.Messages) = %d, overview.Messages = %d: the two disagree over %s..%s", dailyMessages, overview.Messages, from, to)

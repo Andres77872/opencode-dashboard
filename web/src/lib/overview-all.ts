@@ -10,7 +10,7 @@ import type {
 } from '../types/api'
 import { getTokenTotal } from './token-breakdown.ts'
 
-export type TrendMetric = 'messages' | 'cost' | 'tokens'
+export type TrendMetric = 'requests' | 'cost' | 'tokens'
 
 export type UsageGrouping = 'source' | 'model'
 
@@ -20,10 +20,9 @@ export interface UsageMetricCopy {
   explanation?: string
 }
 
-/** User-facing vocabulary for a metric in its active grouping. Model rows only
-    contain assistant messages that can be attributed to a model, while source
-    overview rows count every recorded message role. Calling both "Messages"
-    would imply a shared denominator that the data does not have. */
+/** User-facing vocabulary for a metric in its active grouping. Source request
+    totals count outbound attempts, while model rows expose the same native
+    assistant/API rows through their backward-compatible `messages` field. */
 export function usageMetricCopy(metric: TrendMetric, grouping: UsageGrouping): UsageMetricCopy {
   if (metric === 'tokens' && grouping === 'model') {
     return {
@@ -32,14 +31,14 @@ export function usageMetricCopy(metric: TrendMetric, grouping: UsageGrouping): U
       explanation: 'Model Tokens use additive per-step usage when a source provides it. Source Tokens use recorded message snapshots, so OpenCode totals can differ.',
     }
   }
-  if (metric === 'messages' && grouping === 'model') {
+  if (metric === 'requests' && grouping === 'model') {
     return {
-      label: 'Model calls',
-      noun: 'model calls',
-      explanation: 'Model calls count assistant messages attributed to a model. Source Messages counts every recorded message, so the totals are intentionally different.',
+      label: 'Requests',
+      noun: 'requests',
+      explanation: 'Model Requests include assistant/API request rows that can be attributed to a model. Source Requests include every recorded outbound attempt, including attempts without usage.',
     }
   }
-  if (metric === 'messages') return { label: 'Messages', noun: 'messages' }
+  if (metric === 'requests') return { label: 'Requests', noun: 'requests' }
   if (metric === 'cost') {
     return {
       label: 'Cost',
@@ -57,7 +56,7 @@ export function trendMetricValue(day: DayStats, metric: TrendMetric): number {
     case 'tokens':
       return getTokenTotal(day.tokens)
     default:
-      return day.messages
+      return day.requests ?? 0
   }
 }
 
@@ -70,7 +69,7 @@ export function overviewMetricValue(o: OverviewStats, metric: TrendMetric): numb
     case 'tokens':
       return getTokenTotal(o.tokens)
     default:
-      return o.messages
+      return o.requests ?? 0
   }
 }
 
@@ -82,6 +81,8 @@ export function modelMetricValue(model: ModelEntry, metric: TrendMetric): number
     case 'tokens':
       return getTokenTotal(model.tokens)
     default:
+      // Model aggregates retain the legacy field name, but these rows represent
+      // native assistant/API requests rather than user transcript messages.
       return model.messages
   }
 }
@@ -122,6 +123,7 @@ export interface CombinedDayTotals {
   tokens: number
   sessions: number
   messages: number
+  requests: number
 }
 
 /** Merges each source's daily trend into one ascending-by-date series of
@@ -130,10 +132,11 @@ export function buildCombinedDailyTotals(sources: SourceOverview[]): CombinedDay
   const byDate = new Map<string, CombinedDayTotals>()
   for (const src of sources) {
     for (const day of src.trend ?? []) {
-      const row = byDate.get(day.date) ?? { date: day.date, tokens: 0, sessions: 0, messages: 0 }
+      const row = byDate.get(day.date) ?? { date: day.date, tokens: 0, sessions: 0, messages: 0, requests: 0 }
       row.tokens += getTokenTotal(day.tokens)
       row.sessions += day.sessions
       row.messages += day.messages
+      row.requests += day.requests ?? 0
       byDate.set(day.date, row)
     }
   }

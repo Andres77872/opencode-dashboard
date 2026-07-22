@@ -26,7 +26,8 @@ const (
 // consumers should show per-source costs (SourceOverview.Overview.Cost) with
 // each source's own provenance.
 type AllSourcesOverview struct {
-	// Total holds combined, additive metrics (sessions, messages, tokens, days).
+	// Total holds combined, additive metrics (sessions, messages, requests,
+	// tokens, days).
 	Total stats.OverviewStats `json:"total"`
 	// Sources is the per-source breakdown, one entry per source queried.
 	Sources []SourceOverview `json:"sources"`
@@ -334,6 +335,7 @@ func AggregateOverview(ctx context.Context, reg *Registry, pq stats.PeriodQuery,
 		ov := raw.overview
 		result.Total.Sessions += ov.Sessions
 		result.Total.Messages += ov.Messages
+		result.Total.Requests += ov.Requests
 		result.Total.Cost += ov.Cost
 		result.Total.Tokens.Input += ov.Tokens.Input
 		result.Total.Tokens.Output += ov.Tokens.Output

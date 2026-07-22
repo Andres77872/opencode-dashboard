@@ -116,14 +116,14 @@ func approx(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 func TestAggregateOverviewMerges(t *testing.T) {
 	a := newAggFake(SourceOpenCode)
-	a.overview = stats.OverviewStats{Sessions: 8, Messages: 160, Cost: 6, Days: 3,
+	a.overview = stats.OverviewStats{Sessions: 8, Messages: 160, Requests: 120, Cost: 6, Days: 3,
 		Tokens: stats.TokenStats{Input: 1000, Output: 500}, CostStatus: stats.CostReported}
 	a.models = []stats.ModelEntry{{ModelID: "claude-x", Messages: 160, Cost: 6, Tokens: stats.TokenStats{Input: 1000, Output: 500}}}
 	a.tools = []stats.ToolEntry{{Name: "bash", Invocations: 30}}
 	a.projects = []stats.ProjectEntry{{ProjectID: "p1", ProjectName: "Proj1", Messages: 160, Tokens: stats.TokenStats{Input: 1000, Output: 500}}}
 
 	b := newAggFake(SourceCodex)
-	b.overview = stats.OverviewStats{Sessions: 4, Messages: 80, Cost: 3, Days: 2,
+	b.overview = stats.OverviewStats{Sessions: 4, Messages: 80, Requests: 70, Cost: 3, Days: 2,
 		Tokens: stats.TokenStats{Input: 200, Output: 100}, CostStatus: stats.CostEstimatedAPIEquivalent}
 	b.models = []stats.ModelEntry{{ModelID: "gpt-y", Messages: 80, Cost: 3, Tokens: stats.TokenStats{Input: 200, Output: 100}}}
 	b.tools = []stats.ToolEntry{{Name: "edit", Invocations: 50}}
@@ -137,6 +137,9 @@ func TestAggregateOverviewMerges(t *testing.T) {
 
 	if got.Total.Sessions != 12 || got.Total.Messages != 240 {
 		t.Errorf("totals = sessions %d, messages %d; want 12, 240", got.Total.Sessions, got.Total.Messages)
+	}
+	if got.Total.Requests != 190 {
+		t.Errorf("total requests = %d, want 190", got.Total.Requests)
 	}
 	if got.Total.Tokens.Input != 1200 || got.Total.Tokens.Output != 600 {
 		t.Errorf("token totals = in %d, out %d; want 1200, 600", got.Total.Tokens.Input, got.Total.Tokens.Output)

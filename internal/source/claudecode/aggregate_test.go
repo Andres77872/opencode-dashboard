@@ -27,6 +27,19 @@ func TestClaudeCodeAggregatesReturnExistingStatsShapes(t *testing.T) {
 				if got.Sessions != 7 || got.Messages != 14 {
 					t.Errorf("Overview sessions/messages = %d/%d, want 7/14 per-request message rows", got.Sessions, got.Messages)
 				}
+				messages, err := src.Messages(ctx, period, 1, 100, stats.DefaultMessageSort())
+				if err != nil {
+					t.Fatalf("Messages() failed: %v", err)
+				}
+				var requests int64
+				for _, message := range messages.Messages {
+					if message.Role == "assistant" {
+						requests++
+					}
+				}
+				if got.Requests != requests {
+					t.Errorf("Overview requests = %d, want %d native assistant/API-request rows", got.Requests, requests)
+				}
 			},
 		},
 		{

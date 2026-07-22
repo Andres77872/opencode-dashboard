@@ -42,6 +42,7 @@ import {
   safeDivide,
 } from '../lib/format'
 import { getNextSortState, type SortState } from '../lib/table-sort'
+import { isIncompleteRequestAccounting, requestAccountingDisclosure, usageStatusLabel } from '../lib/request-accounting'
 import { groupModelDaysByDate } from '../lib/daily-models'
 import { getTokenBreakdownItems, getTokenTotal } from '../lib/token-breakdown'
 import {
@@ -94,7 +95,7 @@ type DailyBreakdown = 'overall' | 'processing_mode'
 
 const METRIC_OPTS: { value: DailyMetric; label: string }[] = [
   { value: 'cost', label: 'Cost' },
-  { value: 'requests', label: 'Messages' },
+  { value: 'requests', label: 'Requests' },
   { value: 'tokens', label: 'Tokens' },
 ]
 
@@ -128,10 +129,10 @@ function getDailyMetricMeta(metric: DailyMetric): DailyMetricMeta {
       }
     case 'requests':
       return {
-        label: 'Messages',
+        label: 'Requests',
         color: 'var(--cat-1)',
-        cardTitle: 'Daily messages',
-        cardSubtitle: 'Message count per bucket — the available daily throughput signal.',
+        cardTitle: 'Daily requests',
+        cardSubtitle: 'Every recorded outbound assistant/API attempt, including retries and attempts without usage evidence.',
         yFormat: (v) => formatCompactInteger(v),
       }
     case 'tokens':
@@ -148,7 +149,7 @@ function getDailyMetricMeta(metric: DailyMetric): DailyMetricMeta {
 function getDailyMetricValue(day: DayStats, metric: DailyMetric): number {
   switch (metric) {
     case 'requests':
-      return day.messages
+      return day.requests ?? 0
     case 'tokens':
       return getTokenTotal(day.tokens)
     default:
@@ -157,7 +158,20 @@ function getDailyMetricValue(day: DayStats, metric: DailyMetric): number {
 }
 
 function hasActivity(day: DayStats): boolean {
-  return day.sessions > 0 || day.messages > 0 || day.cost > 0 || getTokenTotal(day.tokens) > 0
+  return day.sessions > 0 || day.messages > 0 || (day.requests ?? 0) > 0 || day.cost > 0 || getTokenTotal(day.tokens) > 0
+}
+
+function getUsageStatusTone(status?: MessageEntry['usage_status']) {
+  switch (status) {
+    case 'recorded':
+      return 'success' as const
+    case 'recovered':
+      return 'warning' as const
+    case 'unavailable':
+      return 'danger' as const
+    default:
+      return 'neutral' as const
+  }
 }
 
 // ── Requests-history ledger sorting ──
@@ -319,12 +333,13 @@ export function DailyView() {
       (acc, day) => {
         acc.sessions += day.sessions
         acc.messages += day.messages
+        acc.requests += day.requests ?? 0
         acc.cost += day.cost
         acc.tokens += getTokenTotal(day.tokens)
         if (hasActivity(day)) acc.activeDays += 1
         return acc
       },
-      { sessions: 0, messages: 0, cost: 0, tokens: 0, activeDays: 0 },
+      { sessions: 0, messages: 0, requests: 0, cost: 0, tokens: 0, activeDays: 0 },
     )
 
     return {
@@ -332,6 +347,7 @@ export function DailyView() {
       isHourly,
       bucketCount: data.days.length,
       averageMessagesPerSession: safeDivide(totals.messages, totals.sessions),
+      averageRequestsPerSession: safeDivide(totals.requests, totals.sessions),
       averageTokensPerBucket: safeDivide(totals.tokens, data.days.length),
       recentDays: [...data.days].reverse(),
       empty: totals.activeDays === 0,
@@ -421,18 +437,19 @@ export function DailyView() {
     },
     { key: 'sessions', header: 'Sessions', numeric: true, render: (d) => formatInteger(d.sessions) },
     { key: 'messages', header: 'Messages', numeric: true, render: (d) => formatInteger(d.messages) },
+    { key: 'requests', header: 'Requests', numeric: true, render: (d) => formatInteger(d.requests ?? 0) },
     // Per-model message history — the dimension endpoint buckets with the
     // same granularity as the daily series, so keys match in hourly mode too.
     {
       key: 'models',
-      header: 'Models · messages',
+      header: 'Models · requests',
       wrap: true,
       render: (d: DayStats) => {
         const rows = modelsByDate.get(d.date) ?? []
         if (rows.length === 0) return <span style={{ color: 'var(--fg-faint)' }}>—</span>
         const shown = rows.slice(0, DAILY_MODELS_SHOWN)
         const hidden = rows.length - shown.length
-        const fullBreakdown = rows.map((r) => `${r.dimension_key}: ${formatInteger(r.messages)} messages`).join('\n')
+        const fullBreakdown = rows.map((r) => `${r.dimension_key}: ${formatInteger(r.messages)} requests`).join('\n')
         return (
           <span title={fullBreakdown} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
             {shown.map((r) => (
@@ -499,12 +516,25 @@ export function DailyView() {
           } satisfies Column<MessageEntry>,
         ]
       : []),
+    ...(selectedSourceId === 'kimi_code'
+      ? [
+          {
+            key: 'usage_status',
+            header: 'Usage evidence',
+            render: (m: MessageEntry) => m.role === 'assistant' && m.usage_status
+              ? <Badge tone={getUsageStatusTone(m.usage_status)}>{usageStatusLabel(m.usage_status)}</Badge>
+              : <span style={{ color: 'var(--fg-faint)' }}>—</span>,
+          } satisfies Column<MessageEntry>,
+        ]
+      : []),
     {
       key: 'cost',
       header: 'Cost',
       numeric: true,
       sortable: true,
-      render: (m) => formatCompactCurrencyWithProvenance(m.cost ?? 0, m.cost_status, m.cost_provenance),
+      render: (m) => m.usage_status === 'unavailable'
+        ? <span title="Kimi persisted this request but no token or cost evidence." style={{ color: 'var(--fg-faint)' }}>Unavailable</span>
+        : formatCompactCurrencyWithProvenance(m.cost ?? 0, m.cost_status, m.cost_provenance),
     },
     {
       key: 'tokens',
@@ -513,6 +543,7 @@ export function DailyView() {
       sortable: true,
       render: (m) => {
         const total = m.tokens ? getTokenTotal(m.tokens) : 0
+        if (m.usage_status === 'unavailable') return <span title="Kimi persisted this request but no usage evidence." style={{ color: 'var(--fg-faint)' }}>Unavailable</span>
         return total > 0 ? <span title={`${formatInteger(total)} tokens`}>{formatTokenCount(total)}</span> : <span style={{ color: 'var(--fg-faint)' }}>—</span>
       },
     },
@@ -561,6 +592,9 @@ export function DailyView() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {error && <Notice tone="warning" title="Daily trends partially loaded">{error}</Notice>}
+      {selectedSourceId === 'kimi_code' && data.request_accounting && isIncompleteRequestAccounting(data.request_accounting) && (
+        <Notice tone="warning" title="Kimi request accounting is incomplete">{requestAccountingDisclosure(data.request_accounting)}</Notice>
+      )}
 
       {/* KPI row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
@@ -579,6 +613,11 @@ export function DailyView() {
           label="Messages"
           value={formatInteger(summary?.messages ?? 0)}
           hint={`${(summary?.averageMessagesPerSession ?? 0).toFixed(1)} avg / session`}
+        />
+        <StatCard
+          label="Requests"
+          value={formatInteger(summary?.requests ?? 0)}
+          hint={`${(summary?.averageRequestsPerSession ?? 0).toFixed(1)} avg / session`}
         />
         <StatCard
           label="Tokens"
@@ -800,6 +839,7 @@ function MessageDetailDrawer({ messageId, onClose }: { messageId: string | null;
   const sourceLabel = selectedSourceInfo?.label ?? selectedSourceId
   const detailSourceId = detail?.source_id ?? selectedSourceId
   const isCodexAssistant = detailSourceId === 'codex' && detail?.role === 'assistant'
+  const usageUnavailable = detail?.usage_status === 'unavailable'
   const costLabel = isCodexAssistant
     ? getProcessingModePricingLabel(detail?.processing_mode, detail?.service_tier)
     : 'Request spend'
@@ -837,21 +877,31 @@ function MessageDetailDrawer({ messageId, onClose }: { messageId: string | null;
             {isCodexAssistant && (
               <RequestedTierBadge processingMode={detail.processing_mode} serviceTier={detail.service_tier} />
             )}
+            {detail.usage_status && (
+              <Badge tone={getUsageStatusTone(detail.usage_status)}>{usageStatusLabel(detail.usage_status)}</Badge>
+            )}
+            {detail.request_trace && <Badge>{detail.request_trace === 'observed' ? 'Request observed' : 'Request inferred'}</Badge>}
           </div>
+
+          {usageUnavailable && (
+            <Notice tone="warning" title="Usage unavailable">
+              Kimi persisted this outbound request but no token usage evidence. Tokens and estimated API-equivalent cost are unknown, not zero.
+            </Notice>
+          )}
 
           {/* Detail metrics */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
             <DetailMetric
               label={costLabel}
-              value={formatCurrencyWithProvenance(detail.cost ?? 0, detail.cost_status, detail.cost_provenance)}
-              hint={costHint}
+              value={usageUnavailable ? 'Unavailable' : formatCurrencyWithProvenance(detail.cost ?? 0, detail.cost_status, detail.cost_provenance)}
+              hint={usageUnavailable ? 'No persisted usage evidence' : costHint}
               title={provenanceHint ?? tierPricingDisclosure ?? undefined}
             />
             <DetailMetric
               label="Token load"
-              value={formatTokenCount(tokenTotal)}
-              title={`${formatInteger(tokenTotal)} tokens`}
-              hint={detail.tokens ? `${formatTokenCount(detail.tokens.input)} in · ${formatTokenCount(detail.tokens.output)} out` : 'No token telemetry'}
+              value={usageUnavailable ? 'Unavailable' : formatTokenCount(tokenTotal)}
+              title={usageUnavailable ? 'No persisted usage evidence' : `${formatInteger(tokenTotal)} tokens`}
+              hint={usageUnavailable ? 'Unknown, not zero' : detail.tokens ? `${formatTokenCount(detail.tokens.input)} in · ${formatTokenCount(detail.tokens.output)} out` : 'No token telemetry'}
             />
             <DetailMetric
               label="Recorded at"

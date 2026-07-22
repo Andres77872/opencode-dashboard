@@ -2,7 +2,8 @@
 
 The analytics assistant is an optional, web-only report agent. It answers
 questions about normalized usage from every source registered with the
-dashboard, including OpenCode, Claude Code, Codex, and sources added later.
+dashboard, including OpenCode, Claude Code, Codex, Kimi Code, Qwen Code, and
+sources added later.
 
 It is intentionally not a coding agent. It cannot edit files, run commands,
 query arbitrary SQL, call arbitrary URLs, read source configuration, or inspect
@@ -50,8 +51,9 @@ Each chat request can send the following to MiniMax:
   conversation;
 - a short system policy defining the report-only role;
 - tool schemas; and
-- only the aggregate usage metrics requested by the model, such as counts,
-  tokens, daily buckets, model totals, tool totals, and cost provenance.
+- only the aggregate usage metrics requested by the model, such as distinct
+  request/message counts, tokens, daily buckets, model totals, tool totals,
+  request-coverage metadata, and cost provenance.
 
 The assistant tools do **not** send raw prompts, assistant text, reasoning,
 patches, tool inputs or outputs, configuration contents, secrets, filesystem
@@ -114,10 +116,10 @@ cancellation propagates through the model call and source queries.
 | Tool | Intended use | Important behavior |
 |------|--------------|--------------------|
 | `list_sources` | Discover sources before selecting one | Dynamic registry metadata only; no source paths |
-| `get_overview` | Totals for one explicit source and range | Sessions, messages, days, tokens, source cost and provenance |
-| `get_cross_source_overview` | Compare all available sources | Additive totals are combined; dollar costs remain per source; omitted source dimensions are explicit |
-| `get_daily_usage` | Find trends and spikes | Validated period/custom dates and at most 1,000 daily/hourly buckets |
-| `get_model_usage` | Compare models for one source | Bounded rows with tokens, messages, sessions, cost provenance |
+| `get_overview` | Totals for one explicit source and range | Sessions, outbound requests, transcript messages, days, tokens, source cost/provenance, and Kimi coverage when available |
+| `get_cross_source_overview` | Compare all available sources | Additive request/message/token totals are combined; dollar costs remain per source; omitted source dimensions are explicit |
+| `get_daily_usage` | Find trends and spikes | Distinct request/message counts in a validated period/custom range and at most 1,000 daily/hourly buckets |
+| `get_model_usage` | Compare models for one source | Bounded rows with outbound requests, tokens, sessions, and cost provenance; legacy `messages` remains additive compatibility data |
 | `get_tool_usage` | Analyze tool adoption and failures | Bounded invocation/success/failure/session counts |
 | `get_project_usage` | Analyze project concentration | Anonymous ranked projects with process-scoped references; local names, IDs, and paths omitted |
 
@@ -130,6 +132,42 @@ the non-bucketed overview/model/tool/project tools. Cross-source payloads list
 any unavailable source and any model/tool/project/trend dimension that failed,
 so a partial ranking cannot silently look complete.
 
+## Request and usage completeness
+
+The assistant treats `requests` and `messages` as different contracts:
+
+- `requests` counts outbound assistant/API attempts and excludes user prompts;
+  it is authoritative for questions about API calls, retries, resends,
+  compaction calls, failed attempts, or request volume;
+- `messages` is retained for transcript/history semantics and can include user
+  prompts; and
+- model aggregates expose `requests` as the authoritative count and also
+  retain a backward-compatible `messages` field for the same native
+  assistant/API rows. The system policy tells the assistant to describe those
+  rows as requests, not transcript messages.
+
+Kimi aggregates can include `request_accounting`: `usage_recorded`,
+`usage_recovered`, `usage_unavailable`, and `trace_coverage`. Coverage values
+mean:
+
+- `complete` — durable request traces cover the attempts in the selected data;
+- `mixed` — observed request traces and requests inferred from legacy usage
+  evidence are both present;
+- `successful_only` — older usage-only logs reveal successful requests but
+  cannot reveal failed attempts that were never persisted; and
+- `unknown` — the available evidence cannot establish trace completeness.
+
+The assistant must report usage-unavailable requests when material. Their
+request count is known, but their tokens and cost are unknown, never zero.
+Kimi Code versions before 0.23.1 can lack durable `llm.request` traces, so one
+successful request is inferred per standalone usage record without inventing
+missing failures. `step.end.usage` can recover token evidence when the canonical
+`usage.record` is absent; that provenance remains explicit.
+
+Kimi does not report a separate reasoning-token counter. Its generated-token
+value remains in `tokens.output`, and neither the dashboard nor the assistant
+creates a synthetic reasoning estimate.
+
 ## Cost semantics
 
 Cross-source cost must never be presented as one spend total:
@@ -137,6 +175,11 @@ Cross-source cost must never be presented as one spend total:
 - OpenCode records reported spend.
 - Codex is an estimated API-equivalent value, not subscription spend.
 - Claude Code can mix reported and snapshot-computed values.
+- Kimi Code is estimated from the dashboard's pinned official Kimi API pricing
+  snapshot for requests with usage evidence; it is not membership or coding-plan
+  spend.
+- Qwen Code is estimated from the pinned Alibaba Cloud API list-price snapshot;
+  it is not coding-plan or Token Plan spend.
 
 The agent receives and must retain each source's `cost_status` and
 `cost_provenance`. Cross-source rankings use cost-neutral signals such as tokens
@@ -144,6 +187,12 @@ or invocation counts. Reports state the requested period, included/unavailable
 sources, and material data limitations. When a run uses cross-source cost
 context, the backend appends a deterministic source-scope notice even if model
 prose omits it.
+
+Kimi subscription quota is a separate live signal. The dashboard obtains it
+from the same managed `/usages` surface used by Kimi Code's official `/usage`
+command and follows the official OAuth refresh/lock flow; it is not inferred
+from estimated transcript cost. A transient failure can leave a stale
+last-good quota visible, clearly marked stale.
 
 ## HTTP surface and security
 

@@ -72,12 +72,19 @@ func TestOpenFreshDatabaseStampsSchemaVersion(t *testing.T) {
 		t.Errorf("source_state.data_version column missing")
 	}
 	for _, column := range []string{
-		"service_tier", "processing_mode",
+		"service_tier", "processing_mode", "request_trace", "usage_status",
 		"model_input_tokens", "model_output_tokens", "model_reasoning_tokens",
 		"model_cache_read_tokens", "model_cache_write_tokens",
 	} {
 		if got := queryInt(t, store.db, `SELECT COUNT(*) FROM pragma_table_info('message_index') WHERE name = ?`, column); got != 1 {
 			t.Errorf("message_index.%s column count = %d, want 1", column, got)
+		}
+	}
+	for _, table := range []string{"hourly_usage", "overview_hourly"} {
+		for _, column := range []string{"requests", "usage_recorded", "usage_recovered", "usage_unavailable", "trace_observed", "trace_inferred"} {
+			if got := queryInt(t, store.db, fmt.Sprintf(`SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = ?`, table), column); got != 1 {
+				t.Errorf("%s.%s column count = %d, want 1", table, column, got)
+			}
 		}
 	}
 	if got := queryInt(t, store.db, `SELECT COUNT(*) FROM pragma_index_info('idx_message_index_source_processing_mode') WHERE name = 'processing_mode'`); got != 1 {

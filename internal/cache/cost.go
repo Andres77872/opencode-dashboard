@@ -2,7 +2,10 @@ package cache
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 
+	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/stats"
 )
 
@@ -50,6 +53,57 @@ func (c costCounts) result() (stats.CostStatus, *stats.CostProvenance) {
 		ComputedCount: c.computed,
 		ReportedCount: c.reported,
 	}
+}
+
+func (s *Store) cachedCostPolicy(ctx context.Context, sourceID string) source.CostPolicy {
+	if s == nil || s.db == nil || sourceID == "" {
+		return source.CostPolicy{}
+	}
+	var raw sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT cost_policy_json FROM source_state WHERE source_id = ?`, sourceID).Scan(&raw); err != nil || !raw.Valid || raw.String == "" {
+		return source.CostPolicy{}
+	}
+	var policy source.CostPolicy
+	if json.Unmarshal([]byte(raw.String), &policy) != nil {
+		return source.CostPolicy{}
+	}
+	return policy
+}
+
+// applyCachedCostPolicy restores the stable source-level pricing identity that
+// numeric hourly rollups intentionally do not duplicate on every row. Message
+// detail keeps its original provenance JSON; aggregate counts receive the same
+// pinned snapshot/source and source-appropriate note after cache reload.
+func applyCachedCostPolicy(sourceID string, status stats.CostStatus, provenance *stats.CostProvenance, policy source.CostPolicy) *stats.CostProvenance {
+	if provenance == nil {
+		return nil
+	}
+	result := *provenance
+	if result.Currency == "" {
+		result.Currency = policy.Currency
+	}
+	if result.ComputedCount > 0 {
+		if result.PricingSnapshotID == "" {
+			result.PricingSnapshotID = policy.PricingSnapshotID
+		}
+		if result.PricingSource == "" {
+			result.PricingSource = policy.PricingSource
+		}
+	}
+	if result.Note == "" {
+		switch {
+		case status == stats.CostStatus(policy.Status) && policy.Note != "":
+			result.Note = policy.Note
+		case sourceID == "kimi_code" && status == stats.CostMixed:
+			result.Note = "aggregate mixes estimated API-equivalent and missing Kimi Code costs"
+		case sourceID == "kimi_code" && status == stats.CostMissing:
+			result.Note = "aggregate Kimi Code cost is unknown because supported model pricing or request usage is unavailable"
+		case status == stats.CostMixed && policy.Note != "":
+			result.Note = policy.Note + "; aggregate also includes costs with different or missing provenance"
+		}
+	}
+	result.Status = status
+	return &result
 }
 
 func (s *Store) costSummary(ctx context.Context, sourceID string, startMs, endMs int64) (stats.CostStatus, *stats.CostProvenance) {

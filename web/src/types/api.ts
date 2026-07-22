@@ -25,6 +25,7 @@ export interface CostPolicy {
   status?: string
   currency?: string
   pricing_snapshot_id?: string
+  pricing_source?: string
   note?: string
 }
 
@@ -138,6 +139,20 @@ export interface SourceTagged {
   cost_provenance?: CostProvenance
 }
 
+export type RequestTrace = 'observed' | 'inferred'
+
+export type UsageStatus = 'recorded' | 'recovered' | 'unavailable'
+
+export type TraceCoverage = 'complete' | 'mixed' | 'successful_only' | 'unknown'
+
+/** Kimi request/usage evidence. Missing usage means unknown tokens and cost, not zero. */
+export interface RequestAccounting {
+  usage_recorded: number
+  usage_recovered: number
+  usage_unavailable: number
+  trace_coverage: TraceCoverage
+}
+
 export interface TokenStats {
   input: number
   output: number
@@ -193,13 +208,19 @@ export interface DayStats extends SourceTagged {
   date: string
   sessions: number
   messages: number
+  /** Outbound assistant/API attempts; excludes user prompts. */
+  requests: number
   cost: number
   tokens: TokenStats
+  /** Present for Kimi aggregates when the wire logs expose request coverage. */
+  request_accounting?: RequestAccounting
 }
 
 export interface DailyStats extends SourceTagged {
   days: DayStats[]
   granularity: Granularity
+  /** Present for Kimi aggregates when the wire logs expose request coverage. */
+  request_accounting?: RequestAccounting
 }
 
 export interface AvgTokenStats {
@@ -336,6 +357,10 @@ export interface SessionMessage extends SourceTagged {
   service_tier?: string
   /** User-facing normalization of the locally requested service_tier. */
   processing_mode?: ProcessingMode
+  /** Whether the request was directly traced or inferred from legacy usage evidence. */
+  request_trace?: RequestTrace
+  /** Provenance of this request's token/cost evidence. */
+  usage_status?: UsageStatus
 }
 
 export interface SessionDetail extends SourceTagged {
@@ -368,6 +393,10 @@ export interface MessageEntry extends SourceTagged {
   service_tier?: string
   /** User-facing normalization of the locally requested service_tier. */
   processing_mode?: ProcessingMode
+  /** Whether the request was directly traced or inferred from legacy usage evidence. */
+  request_trace?: RequestTrace
+  /** Provenance of this request's token/cost evidence. */
+  usage_status?: UsageStatus
   folded_assistant_calls?: number
   folded_tool_calls?: number
   folded_token_updates?: number
@@ -426,10 +455,14 @@ export interface MessageDetail extends MessageEntry {
 export interface OverviewStats extends SourceTagged {
   sessions: number
   messages: number
+  /** Outbound assistant/API attempts; excludes user prompts. */
+  requests: number
   cost: number
   tokens: TokenStats
   cost_per_day: number
   days: number
+  /** Present for Kimi aggregates when the wire logs expose request coverage. */
+  request_accounting?: RequestAccounting
 }
 
 // ── All-sources Overview (cross-source aggregate) ──────────────────

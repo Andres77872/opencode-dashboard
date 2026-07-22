@@ -2,7 +2,6 @@ package kimicode
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -46,6 +45,7 @@ type messageRecord struct {
 	ReasoningParts []stats.MessagePart
 	ToolParts      []stats.ToolPart
 	projectID      string
+	mainAgent      bool
 }
 
 type stepState struct {
@@ -63,6 +63,7 @@ type agentNormalizer struct {
 	directory    string
 	agentID      string
 	agentLabel   string
+	isMainAgent  bool
 	isSubagent   bool
 	file         agentFile
 	currentStep  stepState
@@ -72,7 +73,7 @@ type agentNormalizer struct {
 	userSeq      int
 	pending      *messageRecord
 	pendingKey   string
-	seenPrompts  map[string]time.Time
+	promptEcho   string
 	seenTools    map[string]bool
 	toolRefs     map[string]toolRef
 }
@@ -94,12 +95,15 @@ func normalizeSessions(home string, parsed []parsedSession, pricing pricingSnaps
 	sort.Slice(parsed, func(i, j int) bool { return parsed[i].Files.Dir < parsed[j].Files.Dir })
 
 	for _, item := range parsed {
-		workDir := item.State.WorkDir
+		workDir := resolveSessionWorkDir(item.State, item.Files.IndexWorkDir)
 		directory := redactDisplayPath(workDir)
-		projectID, projectName := projectFromPath(workDir)
+		projectID, projectName := projectFromPath(workDir, item.Files.WorkspaceKey)
 		project := snap.ensureProject(projectID, projectName, directory)
 		session := snap.ensureSession(item.Files.ID, project, directory)
 		session.Title = sanitizeTitle(item.State.Title)
+		if session.Title == "" {
+			session.Title = sanitizeTitle(item.State.Label)
+		}
 		session.Created = parseStateTime(item.State.CreatedAt)
 		session.Updated = parseStateTime(item.State.UpdatedAt)
 		if session.Created.IsZero() {
@@ -109,17 +113,26 @@ func normalizeSessions(home string, parsed []parsedSession, pricing pricingSnaps
 			session.Updated = item.Files.ModTime
 		}
 
-		sort.Slice(item.Agents, func(i, j int) bool { return item.Agents[i].File.AgentID < item.Agents[j].File.AgentID })
+		sort.Slice(item.Agents, func(i, j int) bool {
+			leftMain := item.Agents[i].File.AgentID == "main" || strings.EqualFold(item.Agents[i].Meta.Type, "main")
+			rightMain := item.Agents[j].File.AgentID == "main" || strings.EqualFold(item.Agents[j].Meta.Type, "main")
+			if leftMain != rightMain {
+				return leftMain
+			}
+			return item.Agents[i].File.AgentID < item.Agents[j].File.AgentID
+		})
 		for _, agent := range item.Agents {
 			normalizer := newAgentNormalizer(snap, pricing, session, project, directory, agent)
-			seenRecords := make(map[string]bool, len(agent.Records))
-			for _, record := range agent.Records {
-				key := stableWireRecordKey(record)
-				if seenRecords[key] {
-					continue
+			seenRecords := make(map[string]bool)
+			times := effectiveRecordTimes(agent.Records, session.Created, session.Updated, agent.File.ModTime)
+			for index, record := range agent.Records {
+				if key := durableWireRecordKey(record); key != "" {
+					if seenRecords[key] {
+						continue
+					}
+					seenRecords[key] = true
 				}
-				seenRecords[key] = true
-				normalizer.apply(record)
+				normalizer.apply(record, times[index])
 			}
 			normalizer.flushPending()
 		}
@@ -153,34 +166,39 @@ func normalizeSessions(home string, parsed []parsedSession, pricing pricingSnaps
 }
 
 func newAgentNormalizer(snap *snapshot, pricing pricingSnapshot, session *sessionRecord, project *projectRecord, directory string, agent parsedAgent) *agentNormalizer {
-	isSubagent := agent.File.AgentID != "main" || agent.Meta.ParentAgentID != nil || (agent.Meta.Type != "" && agent.Meta.Type != "main")
-	label := ""
-	if isSubagent {
-		label = strings.TrimSpace(agent.Meta.Type)
-		if label == "" || label == "sub" {
-			label = agent.File.AgentID
-		}
+	agentType := strings.ToLower(strings.TrimSpace(agent.Meta.Type))
+	isMain := agent.File.AgentID == "main" || agentType == "main"
+	isSubagent := agentType == "sub" || agent.Meta.ParentAgentID != nil
+	if !isMain && agentType != "independent" && agentType != "sub" && agent.Meta.ParentAgentID == nil {
+		// Metadata-free non-main wires in older releases are subagents.
+		isSubagent = true
 	}
+	label := agentLabelFromMeta(agent.Meta, agent.File.AgentID, isMain)
 	return &agentNormalizer{
 		snap: snap, pricing: pricing, session: session, sessionID: session.ID,
 		project: project, directory: directory, agentID: agent.File.AgentID,
-		agentLabel: label, isSubagent: isSubagent, file: agent.File,
-		seenPrompts: make(map[string]time.Time), seenTools: make(map[string]bool),
-		toolRefs: make(map[string]toolRef),
+		agentLabel: label, isMainAgent: isMain, isSubagent: isSubagent, file: agent.File,
+		seenTools: make(map[string]bool),
+		toolRefs:  make(map[string]toolRef),
 	}
 }
 
-func (n *agentNormalizer) apply(record wireRecord) {
-	timestamp := record.Time
-	if timestamp.IsZero() {
-		timestamp = n.file.ModTime
+func (n *agentNormalizer) apply(record wireRecord, timestamp time.Time) {
+	isPromptRecord := record.Prompt != nil || (record.Message != nil && record.Message.Role == "user")
+	if !isPromptRecord && !transparentPromptEchoControl(record) {
+		// A request, loop step, usage event, cancellation, compaction, or
+		// assistant message is a semantic boundary. Do not retain a content
+		// fingerprint beyond it: a later identical prompt is genuine input.
+		n.promptEcho = ""
 	}
 	switch {
+	case record.Config != nil:
+		n.applyConfig(record.Config)
 	case record.Prompt != nil:
-		n.addPrompt(record.Prompt.Input, record.Prompt.Origin, timestamp)
+		n.addPrompt(record.Prompt.Input, record.Prompt.Origin, timestamp, true)
 	case record.Message != nil:
 		if record.Message.Role == "user" {
-			n.addPrompt(record.Message.Content, record.Message.Origin, timestamp)
+			n.addPrompt(record.Message.Content, record.Message.Origin, timestamp, false)
 		}
 	case record.Request != nil:
 		n.startRequest(record.Request, timestamp)
@@ -192,28 +210,58 @@ func (n *agentNormalizer) apply(record wireRecord) {
 	updateSessionTimes(n.session, timestamp)
 }
 
-func (n *agentNormalizer) addPrompt(parts []contentPartRecord, origin originRecord, timestamp time.Time) {
-	if origin.Kind != "" && origin.Kind != "user" {
+func transparentPromptEchoControl(record wireRecord) bool {
+	// Kimi can persist bookkeeping between turn.prompt and the matching
+	// context.append_message user row. These records do not represent a second
+	// prompt or an outbound attempt, so they must not break the schema echo pair.
+	switch record.Type {
+	case "metadata", "config.update",
+		"permission.set_mode", "permission.record_approval_result",
+		"plan_mode.enter", "plan_mode.cancel", "plan_mode.exit",
+		"swarm_mode.enter", "swarm_mode.exit",
+		"tools.register_user_tool", "tools.unregister_user_tool",
+		"tools.set_active_tools", "tools.update_store",
+		"context.update_token_count",
+		"goal.create", "goal.update", "goal.clear",
+		"llm.tools_snapshot", "mcp.tools_discovered":
+		return true
+	default:
+		return false
+	}
+}
+
+func (n *agentNormalizer) applyConfig(config *configUpdateRecord) {
+	if config == nil {
+		return
+	}
+	if label := sanitizeAgentLabel(config.ProfileName); label != "" {
+		n.agentLabel = label
+	}
+	if model := strings.TrimSpace(config.ModelAlias); model != "" {
+		n.lastModel = model
+	}
+}
+
+func (n *agentNormalizer) addPrompt(parts []contentPartRecord, origin originRecord, timestamp time.Time, primary bool) {
+	if !visiblePromptOrigin(origin) {
+		n.promptEcho = ""
 		return
 	}
 	normalized := promptParts(parts)
 	if len(normalized) == 0 {
+		n.promptEcho = ""
 		return
 	}
 	fingerprint := promptFingerprint(normalized)
-	if previous, ok := n.seenPrompts[fingerprint]; ok {
-		delta := timestamp.Sub(previous)
-		if delta < 0 {
-			delta = -delta
-		}
-		// turn.prompt is followed by context.append_message for the same
-		// user input. Their timestamps are usually identical but can differ by
-		// one scheduler tick, so collapse only a very tight duplicate window.
-		if delta <= 100*time.Millisecond {
-			return
-		}
+	if !primary && n.promptEcho == fingerprint {
+		// Kimi writes the same logical user input first as turn.prompt (or
+		// turn.steer) and then immediately as context.append_message. Normalize
+		// that documented two-record representation into one transcript row;
+		// this is deliberately adjacency-based, not identity-less deduplication.
+		n.promptEcho = ""
+		return
 	}
-	n.seenPrompts[fingerprint] = timestamp
+	n.promptEcho = ""
 	n.flushPending()
 
 	id := synthesizeUserID(n.sessionID, n.agentID, timestamp, normalized, n.userSeq)
@@ -223,6 +271,9 @@ func (n *agentNormalizer) addPrompt(parts []contentPartRecord, origin originReco
 		msg.TextParts = append(msg.TextParts, redactAndTruncateMessagePart("text", part))
 	}
 	n.register(msg)
+	if primary {
+		n.promptEcho = fingerprint
+	}
 }
 
 func promptParts(parts []contentPartRecord) []string {
@@ -274,9 +325,17 @@ func (n *agentNormalizer) startRequest(request *llmRequestRecord, timestamp time
 	}
 	n.pendingKey = key
 	n.pending = n.newAssistantMessage(timestamp, key)
+	n.pending.Entry.RequestTrace = stats.RequestTraceObserved
+	n.pending.Entry.UsageStatus = stats.UsageStatusUnavailable
 }
 
 func (n *agentNormalizer) closeUsage(usage *usageRecord, timestamp time.Time) {
+	if n.pending != nil && n.pending.Entry.UsageStatus == stats.UsageStatusRecorded {
+		// Identity-less usage records are independently persisted evidence.
+		// Once one request already has canonical usage, the next record must
+		// become its own inferred successful request rather than overwrite it.
+		n.flushPending()
+	}
 	if n.pending == nil {
 		key := n.currentStep.StepUUID
 		if key == "" {
@@ -285,6 +344,9 @@ func (n *agentNormalizer) closeUsage(usage *usageRecord, timestamp time.Time) {
 		n.pendingKey = key
 		n.pending = n.newAssistantMessage(timestamp, key)
 	}
+	if n.pending.Entry.RequestTrace == "" {
+		n.pending.Entry.RequestTrace = stats.RequestTraceInferred
+	}
 	if usage.Model != "" {
 		n.pending.Entry.ModelID = usage.Model
 		n.lastModel = usage.Model
@@ -292,15 +354,7 @@ func (n *agentNormalizer) closeUsage(usage *usageRecord, timestamp time.Time) {
 	if n.pending.Entry.ProviderID == "" {
 		n.pending.Entry.ProviderID = inferProvider(n.pending.Entry.ModelID, n.lastProvider)
 	}
-	tokens := stats.TokenStats{
-		Input:  positive(usage.Usage.InputOther),
-		Output: positive(usage.Usage.Output),
-		Cache: stats.CacheStats{
-			Read:  positive(usage.Usage.InputCacheRead),
-			Write: positive(usage.Usage.InputCacheCreation),
-		},
-	}
-	n.pending.Entry.Tokens = &tokens
+	n.setPendingUsage(usage.Usage, stats.UsageStatusRecorded)
 }
 
 func (n *agentNormalizer) applyLoopEvent(event *loopEventRecord, timestamp time.Time) {
@@ -314,6 +368,9 @@ func (n *agentNormalizer) applyLoopEvent(event *loopEventRecord, timestamp time.
 	case "step.end":
 		if n.currentStep.StepUUID == "" {
 			n.currentStep = stepState{TurnID: event.TurnID, Step: event.Step, StepUUID: event.UUID}
+		}
+		if event.Usage != nil {
+			n.recoverStepUsage(*event.Usage, timestamp, event.UUID)
 		}
 	case "content.part":
 		msg := n.ensurePending(timestamp, event.StepUUID)
@@ -332,6 +389,43 @@ func (n *agentNormalizer) applyLoopEvent(event *loopEventRecord, timestamp time.
 	case "tool.result":
 		n.applyToolResult(event, timestamp)
 	}
+}
+
+func (n *agentNormalizer) recoverStepUsage(usage tokenUsage, timestamp time.Time, stepUUID string) {
+	if n.pending == nil {
+		key := strings.TrimSpace(stepUUID)
+		if key == "" {
+			key = n.currentStep.StepUUID
+		}
+		if key == "" {
+			key = strconv.FormatInt(timestamp.UnixMilli(), 10)
+		}
+		n.pendingKey = key
+		n.pending = n.newAssistantMessage(timestamp, key)
+	}
+	// Canonical usage.record is stronger evidence and must never be replaced
+	// by a duplicate/later step-end fallback.
+	if n.pending.Entry.UsageStatus == stats.UsageStatusRecorded {
+		return
+	}
+	if n.pending.Entry.RequestTrace == "" {
+		n.pending.Entry.RequestTrace = stats.RequestTraceInferred
+	}
+	n.setPendingUsage(usage, stats.UsageStatusRecovered)
+}
+
+func (n *agentNormalizer) setPendingUsage(usage tokenUsage, status stats.UsageStatus) {
+	if n.pending == nil {
+		return
+	}
+	tokens := stats.TokenStats{
+		Input: positive(usage.InputOther), Output: positive(usage.Output),
+		Cache: stats.CacheStats{
+			Read: positive(usage.InputCacheRead), Write: positive(usage.InputCacheCreation),
+		},
+	}
+	n.pending.Entry.Tokens = &tokens
+	n.pending.Entry.UsageStatus = status
 }
 
 func (n *agentNormalizer) ensurePending(timestamp time.Time, stepUUID string) *messageRecord {
@@ -370,6 +464,7 @@ func (n *agentNormalizer) newMessage(id, role string, timestamp time.Time) *mess
 			IsSubagent:  n.isSubagent,
 		},
 		projectID: n.project.ID,
+		mainAgent: n.isMainAgent,
 	}
 }
 
@@ -459,6 +554,14 @@ func (n *agentNormalizer) flushPending() {
 
 func (n *agentNormalizer) finishPending() {
 	if n.pending == nil {
+		return
+	}
+	if n.pending.Entry.RequestTrace == "" && n.pending.Entry.UsageStatus == "" {
+		// Pre-trace content/tool events without persisted usage do not prove
+		// that a separately countable outbound attempt existed. Keep request
+		// inference limited to durable usage evidence.
+		n.pending = nil
+		n.pendingKey = ""
 		return
 	}
 	if n.pending.Entry.ModelID == "" {
@@ -557,12 +660,34 @@ func updateSessionTimes(session *sessionRecord, timestamp time.Time) {
 	}
 }
 
-func parseStateTime(value string) time.Time {
-	parsed, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		return time.Time{}
+func parseStateTime(value any) time.Time {
+	switch typed := value.(type) {
+	case string:
+		text := strings.TrimSpace(typed)
+		if parsed, err := time.Parse(time.RFC3339Nano, text); err == nil {
+			return parsed.UTC()
+		}
+		if numeric, err := strconv.ParseFloat(text, 64); err == nil {
+			return numericTimeFloat(numeric)
+		}
+	case float64:
+		return numericTimeFloat(typed)
+	case float32:
+		return numericTimeFloat(float64(typed))
+	case int:
+		return numericTime(int64(typed))
+	case int64:
+		return numericTime(typed)
+	case int32:
+		return numericTime(int64(typed))
+	case uint64:
+		if typed <= uint64(^uint64(0)>>1) {
+			return numericTime(int64(typed))
+		}
+	case uint:
+		return numericTime(int64(typed))
 	}
-	return parsed.UTC()
+	return time.Time{}
 }
 
 func sanitizeTitle(title string) string {
@@ -583,6 +708,16 @@ func isGenericSessionTitle(title string) bool {
 }
 
 func derivedSessionTitle(session *sessionRecord, fallback string) string {
+	for _, msg := range session.Messages {
+		if msg.Entry.Role != "user" || !msg.mainAgent {
+			continue
+		}
+		for _, part := range msg.TextParts {
+			if title := shortTitle(part.Text); title != "" {
+				return title
+			}
+		}
+	}
 	for _, msg := range session.Messages {
 		if msg.Entry.Role != "user" {
 			continue
@@ -610,12 +745,22 @@ func shortTitle(value string) string {
 	return value
 }
 
-func projectFromPath(path string) (string, string) {
+func projectFromPath(path, workspaceKey string) (string, string) {
 	base := filepath.Base(strings.TrimSpace(path))
 	if base == "." || base == string(filepath.Separator) || base == "" {
-		return "unknown", "unknown"
+		id := safeID(workspaceKey)
+		if id == "unknown" {
+			return "unknown", "unknown"
+		}
+		return id, "unknown"
 	}
-	return safeID(base), base
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	hash := sha256.Sum256([]byte(cleaned))
+	prefix := safeID(workspaceKey)
+	if prefix == "unknown" {
+		prefix = safeID(base)
+	}
+	return fmt.Sprintf("%s-%x", prefix, hash[:6]), base
 }
 
 func safeID(value string) string {
@@ -655,13 +800,106 @@ func promptFingerprint(parts []string) string {
 	return strings.Join(parts, "\x00")
 }
 
-func stableWireRecordKey(record wireRecord) string {
-	encoded, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Sprintf("%#v", record)
+func durableWireRecordKey(record wireRecord) string {
+	if strings.TrimSpace(record.DurableID) == "" {
+		return ""
 	}
-	sum := sha256.Sum256(encoded)
-	return fmt.Sprintf("%x", sum[:])
+	key := record.Type + "\x00" + record.DurableID
+	if record.Request != nil {
+		// A provider request id can identify the logical request while Kimi's
+		// attempt field identifies distinct outbound retries. Preserve those
+		// attempts even when they share the same durable request id; only an
+		// identical id/attempt tuple proves that the wire event was duplicated.
+		key += "\x00" + record.Request.Kind + "\x00" + record.Request.TurnStep + "\x00" + record.Request.Attempt
+	}
+	return key
+}
+
+func effectiveRecordTimes(records []wireRecord, created, updated, fileMod time.Time) []time.Time {
+	times := make([]time.Time, len(records))
+	var previous time.Time
+	for index, record := range records {
+		if !record.Time.IsZero() {
+			previous = record.Time.UTC()
+			times[index] = previous
+		} else if !previous.IsZero() {
+			times[index] = previous
+		}
+	}
+	var next time.Time
+	for index := len(records) - 1; index >= 0; index-- {
+		if !records[index].Time.IsZero() {
+			next = records[index].Time.UTC()
+		} else if times[index].IsZero() && !next.IsZero() {
+			times[index] = next
+		}
+	}
+	fallback := created
+	if fallback.IsZero() {
+		fallback = updated
+	}
+	if fallback.IsZero() {
+		fallback = fileMod.UTC()
+	}
+	for index := range times {
+		if times[index].IsZero() {
+			times[index] = fallback
+		}
+	}
+	return times
+}
+
+func resolveSessionWorkDir(state sessionState, indexed string) string {
+	for _, candidate := range []string{state.Cwd, state.WorkDir, customCwd(state.Custom), indexed} {
+		if value := strings.TrimSpace(candidate); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func customCwd(custom map[string]any) string {
+	if custom == nil {
+		return ""
+	}
+	value, _ := custom["cwd"].(string)
+	return value
+}
+
+func visiblePromptOrigin(origin originRecord) bool {
+	kind := strings.ToLower(strings.TrimSpace(origin.Kind))
+	switch kind {
+	case "", "user":
+		return true
+	case "skill_activation", "plugin_activation":
+		return strings.EqualFold(strings.TrimSpace(origin.Trigger), "user-slash")
+	default:
+		return false
+	}
+}
+
+func agentLabelFromMeta(meta agentMeta, agentID string, isMain bool) string {
+	for _, key := range []string{"profileName", "profile_name", "name", "label"} {
+		if label := sanitizeAgentLabel(meta.Labels[key]); label != "" {
+			return label
+		}
+	}
+	agentType := strings.ToLower(strings.TrimSpace(meta.Type))
+	if isMain {
+		return ""
+	}
+	if agentType != "" && agentType != "sub" {
+		return sanitizeAgentLabel(agentType)
+	}
+	return sanitizeAgentLabel(agentID)
+}
+
+func sanitizeAgentLabel(label string) string {
+	label, _ = redactText(strings.TrimSpace(label))
+	if len(label) > 80 {
+		label, _ = truncateText(label, 80)
+	}
+	return label
 }
 
 func positive(value int64) int64 {

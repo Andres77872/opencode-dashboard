@@ -27,6 +27,7 @@ func (s *snapshot) overview(pq stats.PeriodQuery) (stats.OverviewStats, error) {
 		SourceID:       claudeSourceID,
 		Sessions:       int64(len(sessions)),
 		Messages:       int64(len(messages)),
+		Requests:       countRequestRows(messages),
 		Cost:           totalCost,
 		Tokens:         tokens,
 		Days:           len(days),
@@ -69,6 +70,7 @@ func (s *snapshot) daily(pq stats.PeriodQuery, granularity ...stats.Granularity)
 			Date:           key,
 			Sessions:       int64(len(uniqueSessions(group))),
 			Messages:       int64(len(group)),
+			Requests:       countRequestRows(group),
 			Cost:           cost,
 			Tokens:         tokens,
 			CostStatus:     status,
@@ -544,6 +546,16 @@ func parseHourPreset(period string) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func countRequestRows(messages []*messageRecord) int64 {
+	var requests int64
+	for _, msg := range messages {
+		if msg.Entry.Role == "assistant" {
+			requests++
+		}
+	}
+	return requests
 }
 
 func uniqueSessions(messages []*messageRecord) map[string]bool {

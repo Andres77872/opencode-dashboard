@@ -202,6 +202,7 @@ type costAgg struct {
 	computed int64
 	missing  int64
 	statuses map[stats.CostStatus]int64
+	metadata stats.CostProvenance
 }
 
 func (c *costAgg) add(entry stats.MessageEntry) {
@@ -220,6 +221,7 @@ func (c *costAgg) add(entry stats.MessageEntry) {
 	default:
 		c.computed++
 	}
+	mergeCostMetadata(&c.metadata, entry.CostProvenance)
 }
 
 // result mirrors costSummaryWhere: single status passes through, several mix.
@@ -234,12 +236,34 @@ func (c *costAgg) result() (stats.CostStatus, *stats.CostProvenance) {
 			status = only
 		}
 	}
-	return status, &stats.CostProvenance{
-		Status:        status,
-		Currency:      "USD",
-		MissingCount:  c.missing,
-		ComputedCount: c.computed,
-		ReportedCount: c.reported,
+	result := c.metadata
+	result.Status = status
+	if result.Currency == "" {
+		result.Currency = "USD"
+	}
+	result.MissingCount = c.missing
+	result.ComputedCount = c.computed
+	result.ReportedCount = c.reported
+	return status, &result
+}
+
+func mergeCostMetadata(dst *stats.CostProvenance, src *stats.CostProvenance) {
+	if dst == nil || src == nil {
+		return
+	}
+	if dst.Currency == "" {
+		dst.Currency = src.Currency
+	}
+	if dst.PricingSnapshotID == "" {
+		dst.PricingSnapshotID = src.PricingSnapshotID
+	}
+	if dst.PricingSource == "" {
+		dst.PricingSource = src.PricingSource
+	}
+	if dst.Note == "" {
+		dst.Note = src.Note
+	} else if src.Note != "" && dst.Note != src.Note {
+		dst.Note += "; " + src.Note
 	}
 }
 
@@ -254,7 +278,7 @@ func mergeCost(aStatus stats.CostStatus, aProv *stats.CostProvenance, bStatus st
 	if aStatus != bStatus {
 		status = stats.CostMixed
 	}
-	prov := &stats.CostProvenance{Status: status, Currency: "USD"}
+	prov := &stats.CostProvenance{Status: status}
 	for _, p := range []*stats.CostProvenance{aProv, bProv} {
 		if p == nil {
 			continue
@@ -262,18 +286,25 @@ func mergeCost(aStatus stats.CostStatus, aProv *stats.CostProvenance, bStatus st
 		prov.MissingCount += p.MissingCount
 		prov.ComputedCount += p.ComputedCount
 		prov.ReportedCount += p.ReportedCount
+		mergeCostMetadata(prov, p)
 	}
+	if prov.Currency == "" {
+		prov.Currency = "USD"
+	}
+	prov.Status = status
 	return status, prov
 }
 
 // ---- gap aggregation ----
 
 type bucketAgg struct {
-	messages int64
-	cost     float64
-	tokens   stats.TokenStats
-	sessions map[string]bool
-	cost2    costAgg
+	messages, requests                              int64
+	usageRecorded, usageRecovered, usageUnavailable int64
+	traceObserved, traceInferred                    int64
+	cost                                            float64
+	tokens                                          stats.TokenStats
+	sessions                                        map[string]bool
+	cost2                                           costAgg
 }
 
 func newBucketAgg() *bucketAgg {
@@ -282,6 +313,23 @@ func newBucketAgg() *bucketAgg {
 
 func (b *bucketAgg) add(entry stats.MessageEntry) {
 	b.messages++
+	if entry.Role == "assistant" {
+		b.requests++
+		switch entry.UsageStatus {
+		case stats.UsageStatusRecorded:
+			b.usageRecorded++
+		case stats.UsageStatusRecovered:
+			b.usageRecovered++
+		case stats.UsageStatusUnavailable:
+			b.usageUnavailable++
+		}
+		switch entry.RequestTrace {
+		case stats.RequestTraceObserved:
+			b.traceObserved++
+		case stats.RequestTraceInferred:
+			b.traceInferred++
+		}
+	}
 	b.cost += entry.Cost
 	if entry.Tokens != nil {
 		addTokens(&b.tokens, *entry.Tokens)
@@ -290,6 +338,17 @@ func (b *bucketAgg) add(entry stats.MessageEntry) {
 		b.sessions[entry.SessionID] = true
 	}
 	b.cost2.add(entry)
+}
+
+func (b *bucketAgg) requestAccounting() *stats.RequestAccounting {
+	unknownTrace := b.requests - b.traceObserved - b.traceInferred
+	if unknownTrace < 0 {
+		unknownTrace = 0
+	}
+	return stats.NewRequestAccounting(
+		b.usageRecorded, b.usageRecovered, b.usageUnavailable,
+		b.traceObserved, b.traceInferred, unknownTrace,
+	)
 }
 
 func (b *bucketAgg) sessionIDs() []string {
@@ -351,6 +410,7 @@ func (s *CachedSource) mergeOverview(ctx context.Context, sp splitWindows, c sta
 		gapDays[dayKey(entry.TimeCreated)] = true
 	}
 	out.Messages += agg.messages
+	out.Requests += agg.requests
 	out.Cost += agg.cost
 	addTokens(&out.Tokens, agg.tokens)
 
@@ -388,6 +448,11 @@ func (s *CachedSource) mergeOverview(ctx context.Context, sp splitWindows, c sta
 	}
 	gapStatus, gapProv := agg.cost2.result()
 	out.CostStatus, out.CostProvenance = mergeCost(c.CostStatus, c.CostProvenance, gapStatus, gapProv)
+	cacheAccounting := c.RequestAccounting
+	if c.Requests == 0 {
+		cacheAccounting = nil
+	}
+	out.RequestAccounting = requestAccountingForSource(s.sourceID(), stats.MergeRequestAccounting(cacheAccounting, agg.requestAccounting()))
 	return out, nil
 }
 
@@ -450,10 +515,12 @@ func (s *CachedSource) mergeDaily(ctx context.Context, sp splitWindows, gran sta
 				if b, ok := gapBuckets[key]; ok {
 					day.Sessions += int64(len(b.sessions))
 					day.Messages += b.messages
+					day.Requests += b.requests
 					day.Cost += b.cost
 					addTokens(&day.Tokens, b.tokens)
 					gapStatus, gapProv := b.cost2.result()
 					day.CostStatus, day.CostProvenance = mergeCost(day.CostStatus, day.CostProvenance, gapStatus, gapProv)
+					day.RequestAccounting = stats.MergeRequestAccounting(day.RequestAccounting, b.requestAccounting())
 				}
 				days = append(days, day)
 			}
@@ -466,6 +533,7 @@ func (s *CachedSource) mergeDaily(ctx context.Context, sp splitWindows, gran sta
 		}
 		gapStatus, gapProv := gapAgg.cost2.result()
 		out.CostStatus, out.CostProvenance = mergeCost(c.CostStatus, c.CostProvenance, gapStatus, gapProv)
+		out.RequestAccounting = dailyRequestAccounting(sourceID, out.Days)
 		return out, nil
 	}
 
@@ -491,6 +559,7 @@ func (s *CachedSource) mergeDaily(ctx context.Context, sp splitWindows, gran sta
 			day = stats.DayStats{SourceID: sourceID, Date: date}
 		}
 		day.Messages += b.messages
+		day.Requests += b.requests
 		day.Cost += b.cost
 		addTokens(&day.Tokens, b.tokens)
 		gapSessions := int64(len(b.sessions))
@@ -510,6 +579,7 @@ func (s *CachedSource) mergeDaily(ctx context.Context, sp splitWindows, gran sta
 		}
 		gapStatus, gapProv := b.cost2.result()
 		day.CostStatus, day.CostProvenance = mergeCost(cacheDay.CostStatus, cacheDay.CostProvenance, gapStatus, gapProv)
+		day.RequestAccounting = stats.MergeRequestAccounting(cacheDay.RequestAccounting, b.requestAccounting())
 		merged[date] = day
 	}
 
@@ -536,11 +606,12 @@ func (s *CachedSource) mergeDaily(ctx context.Context, sp splitWindows, gran sta
 	}
 	gapStatus, gapProv := gapAgg.cost2.result()
 	out.CostStatus, out.CostProvenance = mergeCost(c.CostStatus, c.CostProvenance, gapStatus, gapProv)
+	out.RequestAccounting = dailyRequestAccounting(sourceID, out.Days)
 	return out, nil
 }
 
 func dayStatsFromAgg(sourceID, date string, b *bucketAgg) stats.DayStats {
-	d := stats.DayStats{SourceID: sourceID, Date: date, Sessions: int64(len(b.sessions)), Messages: b.messages, Cost: b.cost, Tokens: b.tokens}
+	d := stats.DayStats{SourceID: sourceID, Date: date, Sessions: int64(len(b.sessions)), Messages: b.messages, Requests: b.requests, Cost: b.cost, Tokens: b.tokens, RequestAccounting: b.requestAccounting()}
 	d.CostStatus, d.CostProvenance = b.cost2.result()
 	return d
 }

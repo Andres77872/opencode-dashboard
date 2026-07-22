@@ -133,7 +133,8 @@ func TestNextDailyMetric(t *testing.T) {
 	}{
 		{name: "cost cycles to sessions", input: dailyMetricCost, expected: dailyMetricSessions},
 		{name: "sessions cycles to messages", input: dailyMetricSessions, expected: dailyMetricMessages},
-		{name: "messages cycles to tokens", input: dailyMetricMessages, expected: dailyMetricTokens},
+		{name: "messages cycles to requests", input: dailyMetricMessages, expected: dailyMetricRequests},
+		{name: "requests cycles to tokens", input: dailyMetricRequests, expected: dailyMetricTokens},
 		{name: "tokens cycles to cost", input: dailyMetricTokens, expected: dailyMetricCost},
 		{name: "unknown defaults to cost", input: dailyMetric("unknown"), expected: dailyMetricCost},
 		{name: "empty defaults to cost", input: dailyMetric(""), expected: dailyMetricCost},

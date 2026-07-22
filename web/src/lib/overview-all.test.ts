@@ -14,11 +14,12 @@ import {
 } from './overview-all.ts'
 import type { DayStats, DimensionDayStats, ModelEntry, SourceID, SourceOverview } from '../types/api.ts'
 
-function day(date: string, messages: number, cost: number, sessions = 0): DayStats {
+function day(date: string, messages: number, cost: number, sessions = 0, requests = messages): DayStats {
   return {
     date,
     sessions,
     messages,
+    requests,
     cost,
     tokens: { input: messages * 2, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
   }
@@ -31,6 +32,7 @@ function src(id: string, trend: DayStats[]): SourceOverview {
     overview: {
       sessions: 0,
       messages: 0,
+      requests: 0,
       cost: 0,
       tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
       cost_per_day: 0,
@@ -44,13 +46,14 @@ function src(id: string, trend: DayStats[]): SourceOverview {
   }
 }
 
-function srcWith(id: string, ov: { tokens?: number; cost?: number; messages?: number }): SourceOverview {
+function srcWith(id: string, ov: { tokens?: number; cost?: number; messages?: number; requests?: number }): SourceOverview {
   const base = src(id, [])
   return {
     ...base,
     overview: {
       ...base.overview,
       messages: ov.messages ?? 0,
+      requests: ov.requests ?? 0,
       cost: ov.cost ?? 0,
       tokens: { input: ov.tokens ?? 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
     },
@@ -81,9 +84,9 @@ function modelDay(sourceId: SourceID, date: string, modelId: string, value: numb
   }
 }
 
-test('trendMetricValue selects the requested metric', () => {
-  const d = day('2026-01-01', 10, 1.5)
-  assert.equal(trendMetricValue(d, 'messages'), 10)
+test('trendMetricValue selects requests independently from transcript messages', () => {
+  const d = day('2026-01-01', 10, 1.5, 1, 6)
+  assert.equal(trendMetricValue(d, 'requests'), 6)
   assert.equal(trendMetricValue(d, 'cost'), 1.5)
   assert.equal(trendMetricValue(d, 'tokens'), 20) // input = messages * 2
 })
@@ -93,7 +96,7 @@ test('buildSourceTrendData merges by date with one column per source, ascending'
     src('opencode', [day('2026-01-02', 4, 0), day('2026-01-01', 2, 0)]),
     src('codex', [day('2026-01-02', 7, 0)]),
   ]
-  const rows = buildSourceTrendData(sources, 'messages')
+  const rows = buildSourceTrendData(sources, 'requests')
 
   assert.deepEqual(rows.map((r) => r.date), ['2026-01-01', '2026-01-02'])
   assert.equal(rows[0].opencode, 2)
@@ -107,16 +110,16 @@ test('buildSourceTrendData tolerates missing trends', () => {
   assert.deepEqual(buildSourceTrendData(sources, 'cost'), [])
 })
 
-test('buildCombinedDailyTotals sums tokens, sessions, and messages per day, ascending', () => {
+test('buildCombinedDailyTotals sums tokens, sessions, messages, and requests per day, ascending', () => {
   const sources = [
-    src('opencode', [day('2026-01-02', 4, 9.9, 1), day('2026-01-01', 2, 9.9, 1)]),
-    src('codex', [day('2026-01-02', 7, 9.9, 3)]),
+    src('opencode', [day('2026-01-02', 4, 9.9, 1, 3), day('2026-01-01', 2, 9.9, 1, 1)]),
+    src('codex', [day('2026-01-02', 7, 9.9, 3, 5)]),
   ]
   const rows = buildCombinedDailyTotals(sources)
 
   assert.deepEqual(rows, [
-    { date: '2026-01-01', tokens: 4, sessions: 1, messages: 2 },
-    { date: '2026-01-02', tokens: 22, sessions: 4, messages: 11 },
+    { date: '2026-01-01', tokens: 4, sessions: 1, messages: 2, requests: 1 },
+    { date: '2026-01-02', tokens: 22, sessions: 4, messages: 11, requests: 8 },
   ])
 })
 
@@ -125,10 +128,10 @@ test('buildCombinedDailyTotals tolerates missing trends', () => {
 })
 
 test('overviewMetricValue selects the requested metric from per-source totals', () => {
-  const s = srcWith('claude_code', { tokens: 100, cost: 2.5, messages: 7 })
+  const s = srcWith('claude_code', { tokens: 100, cost: 2.5, messages: 7, requests: 4 })
   assert.equal(overviewMetricValue(s.overview, 'tokens'), 100)
   assert.equal(overviewMetricValue(s.overview, 'cost'), 2.5)
-  assert.equal(overviewMetricValue(s.overview, 'messages'), 7)
+  assert.equal(overviewMetricValue(s.overview, 'requests'), 4)
 })
 
 test('buildSourceMetricShares computes positive shares that sum to 1', () => {
@@ -163,24 +166,24 @@ test('buildSourceMetricShares reads cost for the cost metric', () => {
   assert.ok(Math.abs(shares[0].share - 0.75) < 1e-9)
 })
 
-test('model and dimension metric selectors preserve tokens, cost, and messages', () => {
+test('model and dimension metric selectors expose assistant rows as requests', () => {
   const total = model('opencode', 'gpt-5', 10)
   const daily = modelDay('opencode', '2026-01-01', 'gpt-5', 4)
 
-  assert.equal(modelMetricValue(total, 'messages'), 10)
+  assert.equal(modelMetricValue(total, 'requests'), 10)
   assert.equal(modelMetricValue(total, 'cost'), 1)
   assert.equal(modelMetricValue(total, 'tokens'), 30)
-  assert.equal(dimensionMetricValue(daily, 'messages'), 4)
+  assert.equal(dimensionMetricValue(daily, 'requests'), 4)
   assert.equal(dimensionMetricValue(daily, 'cost'), 0.4)
   assert.equal(dimensionMetricValue(daily, 'tokens'), 12)
 })
 
-test('model message grouping is labeled as model calls with its distinct denominator explained', () => {
-  assert.deepEqual(usageMetricCopy('messages', 'source'), { label: 'Messages', noun: 'messages' })
-  assert.deepEqual(usageMetricCopy('messages', 'model'), {
-    label: 'Model calls',
-    noun: 'model calls',
-    explanation: 'Model calls count assistant messages attributed to a model. Source Messages counts every recorded message, so the totals are intentionally different.',
+test('request grouping uses request vocabulary and explains model attribution', () => {
+  assert.deepEqual(usageMetricCopy('requests', 'source'), { label: 'Requests', noun: 'requests' })
+  assert.deepEqual(usageMetricCopy('requests', 'model'), {
+    label: 'Requests',
+    noun: 'requests',
+    explanation: 'Model Requests include assistant/API request rows that can be attributed to a model. Source Requests include every recorded outbound attempt, including attempts without usage.',
   })
   assert.match(usageMetricCopy('tokens', 'model').explanation ?? '', /additive per-step usage.*message snapshots/i)
   assert.match(usageMetricCopy('cost', 'source').explanation ?? '', /reported spend.*estimated API-equivalent/i)
@@ -205,7 +208,7 @@ test('model breakdown keeps the same model source-scoped and merges daily rows b
       modelDay('codex', '2026-01-02', 'gpt-5', 5),
       modelDay('opencode', '2026-01-01', 'gpt-5', 10),
     ],
-    'messages',
+    'requests',
   )
 
   assert.equal(breakdown.series.length, 2)
@@ -224,7 +227,7 @@ test('model breakdown keeps the same model source-scoped and merges daily rows b
 test('model breakdown bounds high cardinality with an Other bucket in totals and trend', () => {
   const models = Array.from({ length: 10 }, (_, index) => model('opencode', `model-${index + 1}`, 10 - index))
   const trend = models.map((entry) => modelDay('opencode', '2026-01-01', entry.model_id, entry.messages))
-  const breakdown = buildModelMetricBreakdown(models, trend, 'messages', 4)
+  const breakdown = buildModelMetricBreakdown(models, trend, 'requests', 4)
 
   assert.equal(breakdown.series.length, 4)
   assert.deepEqual(breakdown.series.slice(0, 3).map((series) => series.value), [10, 9, 8])

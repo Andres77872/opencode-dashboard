@@ -2,36 +2,49 @@ package kimicode
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
+const maxWireLineBytes = 32 * 1024 * 1024
+
 type parseDiagnostics struct {
 	MalformedLines    int64
 	UnsupportedEvents int64
+	Reason            string
 }
 
 type sessionState struct {
-	CreatedAt     string               `json:"createdAt"`
-	UpdatedAt     string               `json:"updatedAt"`
+	ID            string               `json:"id"`
+	Version       int                  `json:"version"`
+	CreatedAt     any                  `json:"createdAt"`
+	UpdatedAt     any                  `json:"updatedAt"`
 	Title         string               `json:"title"`
+	Label         string               `json:"label"`
 	IsCustomTitle bool                 `json:"isCustomTitle"`
 	LastPrompt    string               `json:"lastPrompt"`
 	ForkedFrom    string               `json:"forkedFrom"`
+	Cwd           string               `json:"cwd"`
 	WorkDir       string               `json:"workDir"`
+	Archived      bool                 `json:"archived"`
 	Agents        map[string]agentMeta `json:"agents"`
 	Custom        map[string]any       `json:"custom"`
 }
 
 type agentMeta struct {
-	Homedir       string  `json:"homedir"`
-	Type          string  `json:"type"`
-	ParentAgentID *string `json:"parentAgentId"`
-	SwarmItem     string  `json:"swarmItem"`
+	Homedir       string            `json:"homedir"`
+	Type          string            `json:"type"`
+	ParentAgentID *string           `json:"parentAgentId"`
+	ForkedFrom    string            `json:"forkedFrom"`
+	Labels        map[string]string `json:"labels"`
+	SwarmItem     string            `json:"swarmItem"`
 }
 
 type parsedSession struct {
@@ -47,20 +60,23 @@ type parsedAgent struct {
 }
 
 type wireRecord struct {
-	Line int
-	Time time.Time
-	Type string
+	Line      int
+	Time      time.Time
+	Type      string
+	DurableID string
 
 	Prompt  *promptRecord
 	Message *contextMessageRecord
 	Event   *loopEventRecord
 	Request *llmRequestRecord
 	Usage   *usageRecord
+	Config  *configUpdateRecord
 }
 
 type originRecord struct {
 	Kind    string `json:"kind"`
 	Variant string `json:"variant"`
+	Trigger string `json:"trigger"`
 }
 
 type contentPartRecord struct {
@@ -92,6 +108,7 @@ type loopEventRecord struct {
 	Args        any
 	Description string
 	Result      toolResultRecord
+	Usage       *tokenUsage
 }
 
 type toolResultRecord struct {
@@ -110,6 +127,12 @@ type llmRequestRecord struct {
 	Attempt    string
 }
 
+type configUpdateRecord struct {
+	ProfileName string
+	ModelAlias  string
+	Cwd         string
+}
+
 type tokenUsage struct {
 	InputOther         int64 `json:"inputOther"`
 	InputCacheRead     int64 `json:"inputCacheRead"`
@@ -124,10 +147,8 @@ type usageRecord struct {
 }
 
 var ignoredRecordTypes = map[string]bool{
-	"metadata":                          true,
 	"forked":                            true,
 	"turn.cancel":                       true,
-	"config.update":                     true,
 	"permission.set_mode":               true,
 	"permission.record_approval_result": true,
 	"full_compaction.begin":             true,
@@ -158,7 +179,17 @@ func parseSession(ctx context.Context, files sessionFiles) (parsedSession, parse
 	result := parsedSession{Files: files}
 	var diag parseDiagnostics
 
-	content, err := os.ReadFile(files.StatePath)
+	statePath := files.StatePath
+	if statePath == "" {
+		statePath = files.LegacyStatePath
+	}
+	var content []byte
+	var err error
+	if statePath != "" {
+		content, err = os.ReadFile(statePath)
+	} else {
+		err = os.ErrNotExist
+	}
 	switch {
 	case err == nil:
 		if jsonErr := json.Unmarshal(content, &result.State); jsonErr != nil {
@@ -173,7 +204,11 @@ func parseSession(ctx context.Context, files sessionFiles) (parsedSession, parse
 	if result.State.Agents == nil {
 		result.State.Agents = map[string]agentMeta{}
 	}
+	if strings.TrimSpace(result.State.ID) != "" {
+		result.Files.ID = strings.TrimSpace(result.State.ID)
+	}
 
+	hasMain := false
 	for _, file := range files.Agents {
 		if err := ctx.Err(); err != nil {
 			return parsedSession{}, diag, err
@@ -184,41 +219,59 @@ func parseSession(ctx context.Context, files sessionFiles) (parsedSession, parse
 		}
 		diag.MalformedLines += wireDiag.MalformedLines
 		diag.UnsupportedEvents += wireDiag.UnsupportedEvents
+		diag.Reason = appendReason(diag.Reason, wireDiag.Reason)
 		result.Agents = append(result.Agents, parsedAgent{
 			File:    file,
 			Meta:    result.State.Agents[file.AgentID],
 			Records: records,
 		})
+		if file.AgentID == "main" {
+			hasMain = true
+		}
+	}
+
+	if files.RootWire != nil {
+		if hasMain {
+			diag.Reason = appendReason(diag.Reason, "ignored a shadowed Kimi Code root wire because agents/main is authoritative")
+		} else {
+			records, wireDiag, err := parseWireFile(ctx, *files.RootWire)
+			if err != nil {
+				return parsedSession{}, diag, err
+			}
+			diag.MalformedLines += wireDiag.MalformedLines
+			diag.UnsupportedEvents += wireDiag.UnsupportedEvents
+			diag.Reason = appendReason(diag.Reason, wireDiag.Reason)
+			if hasCanonicalAgentRecords(records) {
+				result.Agents = append(result.Agents, parsedAgent{
+					File: *files.RootWire, Meta: result.State.Agents["main"], Records: records,
+				})
+			} else {
+				diag.Reason = appendReason(diag.Reason, "ignored a legacy UI-only Kimi Code root wire without canonical agent records")
+			}
+		}
 	}
 	return result, diag, nil
 }
 
 func parseWireFile(ctx context.Context, file agentFile) ([]wireRecord, parseDiagnostics, error) {
-	boundary, boundaryDiag, err := findLastForkBoundary(ctx, file.Path)
-	if err != nil {
-		return nil, boundaryDiag, err
-	}
+	return parseWireFileWithLimit(ctx, file, maxWireLineBytes)
+}
 
-	fh, err := os.Open(file.Path)
-	if err != nil {
-		return nil, boundaryDiag, err
-	}
-	defer fh.Close()
-
-	scanner := bufio.NewScanner(fh)
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
+func parseWireFileWithLimit(ctx context.Context, file agentFile, maxLineBytes int) ([]wireRecord, parseDiagnostics, error) {
 	records := make([]wireRecord, 0)
-	diag := boundaryDiag
-	lineNo := 0
-	for scanner.Scan() {
-		if err := ctx.Err(); err != nil {
-			return nil, diag, err
+	var diag parseDiagnostics
+	lineDiag, err := readBoundedLines(ctx, file.Path, maxLineBytes, func(lineNo int, line []byte, oversized bool) {
+		if oversized {
+			return
 		}
-		lineNo++
-		if lineNo <= boundary {
-			continue
+		record, ok, malformed, unsupported := parseWireLine(lineNo, line)
+		if record.Type == "forked" && !malformed {
+			// A fork clones the complete parent wire and appends a durable
+			// marker. Reset immediately so memory stays bounded and only the
+			// records after the last marker survive this single pass.
+			records = records[:0]
+			return
 		}
-		record, ok, malformed, unsupported := parseWireLine(lineNo, scanner.Bytes())
 		switch {
 		case malformed:
 			diag.MalformedLines++
@@ -227,50 +280,76 @@ func parseWireFile(ctx context.Context, file agentFile) ([]wireRecord, parseDiag
 		case ok:
 			records = append(records, record)
 		}
+	})
+	diag.MalformedLines += lineDiag.MalformedLines
+	if lineDiag.MalformedLines > 0 {
+		diag.Reason = appendReason(diag.Reason, "skipped an oversized Kimi Code JSONL record and continued scanning")
 	}
-	if err := scanner.Err(); err != nil {
+	if err != nil {
 		return nil, diag, err
 	}
 	return records, diag, nil
 }
 
-// findLastForkBoundary returns the last durable "forked" marker. Kimi Code
-// clones an agent's complete wire and appends this marker, so only records after
-// the last marker belong to the derived session. A fork of a fork can contain
-// several markers, making "last" essential.
-func findLastForkBoundary(ctx context.Context, path string) (int, parseDiagnostics, error) {
+// readBoundedLines streams a JSONL-like file without allowing one malformed or
+// torn line to retain unbounded memory. Oversized lines are discarded through
+// their newline and reported to the callback, after which scanning continues.
+func readBoundedLines(ctx context.Context, path string, maxBytes int, visit func(int, []byte, bool)) (parseDiagnostics, error) {
 	fh, err := os.Open(path)
 	if err != nil {
-		return 0, parseDiagnostics{}, err
+		return parseDiagnostics{}, err
 	}
 	defer fh.Close()
-
-	scanner := bufio.NewScanner(fh)
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	last := 0
+	if maxBytes <= 0 {
+		maxBytes = maxWireLineBytes
+	}
+	reader := bufio.NewReaderSize(fh, 64*1024)
+	line := make([]byte, 0, 64*1024)
 	lineNo := 0
 	var diag parseDiagnostics
-	for scanner.Scan() {
+	oversized := false
+	hasData := false
+	for {
 		if err := ctx.Err(); err != nil {
-			return 0, diag, err
+			return diag, err
 		}
-		lineNo++
-		var envelope struct {
-			Type string `json:"type"`
+		fragment, readErr := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			hasData = true
+			if !oversized {
+				if len(line)+len(fragment) > maxBytes {
+					line = nil
+					oversized = true
+				} else {
+					line = append(line, fragment...)
+				}
+			}
 		}
-		if err := json.Unmarshal(scanner.Bytes(), &envelope); err != nil {
-			// Count malformed data in the real parse pass only, avoiding a
-			// doubled diagnostic for the marker pre-scan.
+		if readErr == bufio.ErrBufferFull {
 			continue
 		}
-		if envelope.Type == "forked" {
-			last = lineNo
+		if readErr != nil && readErr != io.EOF {
+			return diag, readErr
+		}
+		if hasData {
+			lineNo++
+			if oversized {
+				diag.MalformedLines++
+				visit(lineNo, nil, true)
+			} else {
+				line = bytes.TrimSuffix(line, []byte{'\n'})
+				line = bytes.TrimSuffix(line, []byte{'\r'})
+				visit(lineNo, line, false)
+			}
+		}
+		line = make([]byte, 0, 64*1024)
+		oversized = false
+		hasData = false
+		if readErr == io.EOF {
+			break
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return 0, diag, err
-	}
-	return last, diag, nil
+	return diag, nil
 }
 
 func parseWireLine(lineNo int, line []byte) (wireRecord, bool, bool, bool) {
@@ -283,11 +362,31 @@ func parseWireLine(lineNo int, line []byte) (wireRecord, bool, bool, bool) {
 	}
 	var recordType string
 	if err := json.Unmarshal(raw["type"], &recordType); err != nil || recordType == "" {
+		if len(raw["message"]) > 0 {
+			return wireRecord{}, false, false, true
+		}
 		return wireRecord{}, false, true, false
 	}
-	record := wireRecord{Line: lineNo, Type: recordType, Time: rawTime(raw["time"])}
+	record := wireRecord{
+		Line: lineNo, Type: recordType, Time: rawTime(raw["time"]),
+		DurableID: firstRawScalar(raw["id"], raw["uuid"], raw["requestId"]),
+	}
 
 	switch recordType {
+	case "metadata":
+		if record.Time.IsZero() {
+			record.Time = rawTime(raw["created_at"])
+		}
+	case "config.update":
+		var value struct {
+			ProfileName string `json:"profileName"`
+			ModelAlias  string `json:"modelAlias"`
+			Cwd         string `json:"cwd"`
+		}
+		if err := json.Unmarshal(line, &value); err != nil {
+			return wireRecord{}, false, true, false
+		}
+		record.Config = &configUpdateRecord{ProfileName: value.ProfileName, ModelAlias: value.ModelAlias, Cwd: value.Cwd}
 	case "turn.prompt", "turn.steer":
 		var value struct {
 			Input  []contentPartRecord `json:"input"`
@@ -325,6 +424,7 @@ func parseWireLine(lineNo int, line []byte) (wireRecord, bool, bool, bool) {
 				Args        any               `json:"args"`
 				Description string            `json:"description"`
 				Result      toolResultRecord  `json:"result"`
+				Usage       *tokenUsage       `json:"usage"`
 			} `json:"event"`
 		}
 		if err := json.Unmarshal(line, &value); err != nil {
@@ -337,25 +437,29 @@ func parseWireLine(lineNo int, line []byte) (wireRecord, bool, bool, bool) {
 				Type: event.Type, UUID: event.UUID, TurnID: event.TurnID, Step: event.Step,
 				StepUUID: event.StepUUID, Part: event.Part, ToolCallID: event.ToolCallID,
 				Name: event.Name, Args: event.Args, Description: event.Description, Result: event.Result,
+				Usage: event.Usage,
+			}
+			if event.UUID != "" {
+				record.DurableID = event.Type + ":" + event.UUID
 			}
 		default:
 			return record, false, false, true
 		}
 	case "llm.request":
 		var value struct {
-			Kind       string `json:"kind"`
-			Provider   string `json:"provider"`
-			Model      string `json:"model"`
-			ModelAlias string `json:"modelAlias"`
-			TurnStep   string `json:"turnStep"`
-			Attempt    string `json:"attempt"`
+			Kind       string          `json:"kind"`
+			Provider   string          `json:"provider"`
+			Model      string          `json:"model"`
+			ModelAlias string          `json:"modelAlias"`
+			TurnStep   string          `json:"turnStep"`
+			Attempt    json.RawMessage `json:"attempt"`
 		}
 		if err := json.Unmarshal(line, &value); err != nil {
 			return wireRecord{}, false, true, false
 		}
 		record.Request = &llmRequestRecord{
 			Kind: value.Kind, Provider: value.Provider, Model: value.Model,
-			ModelAlias: value.ModelAlias, TurnStep: value.TurnStep, Attempt: value.Attempt,
+			ModelAlias: value.ModelAlias, TurnStep: value.TurnStep, Attempt: rawScalar(value.Attempt),
 		}
 	case "usage.record":
 		var value struct {
@@ -369,7 +473,7 @@ func parseWireLine(lineNo int, line []byte) (wireRecord, bool, bool, bool) {
 		record.Usage = &usageRecord{Model: value.Model, Usage: value.Usage, UsageScope: value.UsageScope}
 	default:
 		if ignoredRecordTypes[recordType] {
-			return record, false, false, false
+			return record, true, false, false
 		}
 		return record, false, false, true
 	}
@@ -380,9 +484,11 @@ func rawTime(raw json.RawMessage) time.Time {
 	if len(raw) == 0 {
 		return time.Time{}
 	}
-	var millis int64
-	if err := json.Unmarshal(raw, &millis); err == nil && millis > 0 {
-		return numericTime(millis)
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err == nil {
+		if value, err := strconv.ParseFloat(number.String(), 64); err == nil && value > 0 {
+			return numericTimeFloat(value)
+		}
 	}
 	var text string
 	if err := json.Unmarshal(raw, &text); err == nil {
@@ -393,6 +499,19 @@ func rawTime(raw json.RawMessage) time.Time {
 	return time.Time{}
 }
 
+func numericTimeFloat(value float64) time.Time {
+	if value <= 0 {
+		return time.Time{}
+	}
+	if value > 1_000_000_000_000 {
+		seconds := value / 1000
+		whole := int64(seconds)
+		return time.Unix(whole, int64((seconds-float64(whole))*float64(time.Second))).UTC()
+	}
+	whole := int64(value)
+	return time.Unix(whole, int64((value-float64(whole))*float64(time.Second))).UTC()
+}
+
 func numericTime(value int64) time.Time {
 	if value <= 0 {
 		return time.Time{}
@@ -401,6 +520,39 @@ func numericTime(value int64) time.Time {
 		return time.UnixMilli(value).UTC()
 	}
 	return time.Unix(value, 0).UTC()
+}
+
+func rawScalar(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return strings.TrimSpace(text)
+	}
+	var number json.Number
+	if json.Unmarshal(raw, &number) == nil {
+		return number.String()
+	}
+	return ""
+}
+
+func firstRawScalar(values ...json.RawMessage) string {
+	for _, value := range values {
+		if text := rawScalar(value); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func hasCanonicalAgentRecords(records []wireRecord) bool {
+	for _, record := range records {
+		if record.Prompt != nil || record.Message != nil || record.Event != nil || record.Request != nil || record.Usage != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func valueToText(value any) string {

@@ -24,14 +24,19 @@ const (
 	kimiOAuthClientID          = "17e5f671-d194-4dfb-9706-5516cb48c098"
 	kimiDefaultOAuthKey        = "oauth/kimi-code"
 	kimiCredentialFileMaxBytes = 1 << 20
+	kimiRefreshBudget          = 30 * time.Second
+	kimiRefreshMaxAttempts     = 3
+	kimiRefreshRetryBase       = time.Second
+	kimiPeerRotationDelay      = 100 * time.Millisecond
 	kimiRefreshLockStaleAfter  = 5 * time.Second
 	kimiRefreshLockHeartbeat   = time.Second
 	kimiRefreshLockRetry       = 100 * time.Millisecond
 )
 
 var (
-	errKimiTokenMissing = errors.New("Kimi Code OAuth credential is missing")
-	errKimiAuthRequired = errors.New("Kimi Code OAuth login is required")
+	errKimiTokenMissing     = errors.New("Kimi Code OAuth credential is missing")
+	errKimiAuthRequired     = errors.New("Kimi Code OAuth login is required")
+	errKimiConfirmedRevoked = errors.New("Kimi Code OAuth refresh token was rejected as invalid_grant")
 )
 
 type kimiRuntimeAuth struct {
@@ -255,7 +260,10 @@ func (p *kimiProvider) ensureFreshAccessToken(
 	if err != nil {
 		return "", err
 	}
-	lock, err := acquireKimiRefreshLock(ctx, p.home, storageName)
+	refreshCtx, cancel := context.WithTimeout(ctx, kimiRefreshBudget)
+	defer cancel()
+
+	lock, err := acquireKimiRefreshLock(refreshCtx, p.home, storageName)
 	if err != nil {
 		return "", fmt.Errorf("coordinate Kimi Code OAuth refresh: %w", err)
 	}
@@ -272,21 +280,30 @@ func (p *kimiProvider) ensureFreshAccessToken(
 		return "", err
 	}
 
-	refreshed, err := p.refreshKimiOAuthToken(ctx, auth.OAuthHost, token)
+	refreshed, err := p.refreshKimiOAuthToken(refreshCtx, auth.OAuthHost, token)
 	if err != nil {
 		if errors.Is(err, errKimiAuthRequired) {
-			// A peer can rotate the refresh token between our request and a
-			// 401 response. Re-read once before asking the user to log in.
-			timer := time.NewTimer(100 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return "", ctx.Err()
-			case <-timer.C:
+			// A peer can rotate the refresh token between our request and the
+			// rejection. Re-read once before declaring this credential revoked.
+			if waitErr := p.waitKimiOAuth(refreshCtx, kimiPeerRotationDelay); waitErr != nil {
+				return "", waitErr
 			}
 			recovery, readErr := readKimiOAuthToken(tokenPath)
 			if readErr == nil && recovery.RefreshToken != "" && recovery.RefreshToken != token.RefreshToken {
 				return recovery.AccessToken, nil
+			}
+			if !errors.Is(err, errKimiConfirmedRevoked) {
+				// A generic 401/403 can represent policy, client, or service
+				// rejection; it requires login attention but does not prove that
+				// the refresh credential itself was revoked. Preserve it intact.
+				return "", err
+			}
+
+			// No peer rotation was persisted, so retain an atomic on-disk marker
+			// that distinguishes a rejected login from a never-configured one.
+			if writeErr := writeKimiOAuthToken(tokenPath, revokedKimiOAuthToken(token)); writeErr != nil {
+				return "", fmt.Errorf("%w: OAuth refresh was rejected and the revoked credential could not be recorded: %v",
+					errKimiAuthRequired, writeErr)
 			}
 		}
 		return "", err
@@ -295,6 +312,27 @@ func (p *kimiProvider) ensureFreshAccessToken(
 		return "", err
 	}
 	return refreshed.AccessToken, nil
+}
+
+func (p *kimiProvider) waitKimiOAuth(ctx context.Context, delay time.Duration) error {
+	if p.sleep != nil {
+		return p.sleep(ctx, delay)
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func revokedKimiOAuthToken(prior kimiOAuthToken) kimiOAuthToken {
+	return kimiOAuthToken{
+		Scope:     prior.Scope,
+		TokenType: prior.TokenType,
+	}
 }
 
 func kimiTokenNeedsRefresh(token kimiOAuthToken, now time.Time) bool {
@@ -319,63 +357,133 @@ func (p *kimiProvider) refreshKimiOAuthToken(
 		"refresh_token": {current.RefreshToken},
 	}
 	endpoint := strings.TrimRight(oauthHost, "/") + "/api/oauth/token"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return kimiOAuthToken{}, fmt.Errorf("build Kimi Code OAuth refresh request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "")
+	encodedForm := form.Encode()
+	client := credentialSafeClient(p.client)
+	var lastErr error
 
-	resp, err := credentialSafeClient(p.client).Do(req)
-	if err != nil {
-		return kimiOAuthToken{}, fmt.Errorf("refresh Kimi Code OAuth credential: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, kimiCredentialFileMaxBytes))
-	if err != nil {
-		return kimiOAuthToken{}, fmt.Errorf("read Kimi Code OAuth refresh response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		message := kimiAPIErrorMessage(body, current.AccessToken, current.RefreshToken)
-		if message == "" {
-			message = http.StatusText(resp.StatusCode)
+	for attempt := 0; attempt < kimiRefreshMaxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(encodedForm))
+		if err != nil {
+			return kimiOAuthToken{}, fmt.Errorf("build Kimi Code OAuth refresh request: %w", err)
 		}
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return kimiOAuthToken{}, fmt.Errorf("%w: %s", errKimiAuthRequired, message)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			lastErr = fmt.Errorf("refresh Kimi Code OAuth credential: %s",
+				redactKimiSecrets(err.Error(), current.AccessToken, current.RefreshToken))
+			if attempt == kimiRefreshMaxAttempts-1 {
+				return kimiOAuthToken{}, lastErr
+			}
+			if waitErr := p.waitKimiOAuth(ctx, kimiRefreshRetryBase<<attempt); waitErr != nil {
+				return kimiOAuthToken{}, fmt.Errorf("wait to retry Kimi Code OAuth refresh: %w", waitErr)
+			}
+			continue
 		}
-		return kimiOAuthToken{}, fmt.Errorf("Kimi Code OAuth refresh failed: %s (status %d)", message, resp.StatusCode)
+
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, kimiCredentialFileMaxBytes))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("read Kimi Code OAuth refresh response: %s",
+				redactKimiSecrets(readErr.Error(), current.AccessToken, current.RefreshToken))
+			if attempt == kimiRefreshMaxAttempts-1 {
+				return kimiOAuthToken{}, lastErr
+			}
+			if waitErr := p.waitKimiOAuth(ctx, kimiRefreshRetryBase<<attempt); waitErr != nil {
+				return kimiOAuthToken{}, fmt.Errorf("wait to retry Kimi Code OAuth refresh: %w", waitErr)
+			}
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			message := kimiAPIErrorMessage(body, current.AccessToken, current.RefreshToken)
+			if message == "" {
+				message = http.StatusText(resp.StatusCode)
+			}
+			if strings.EqualFold(kimiOAuthErrorCode(body), "invalid_grant") {
+				return kimiOAuthToken{}, fmt.Errorf("%w: %w: %s (status %d)",
+					errKimiAuthRequired, errKimiConfirmedRevoked, message, resp.StatusCode)
+			}
+			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+				return kimiOAuthToken{}, fmt.Errorf("%w: %s (status %d)",
+					errKimiAuthRequired, message, resp.StatusCode)
+			}
+
+			lastErr = fmt.Errorf("Kimi Code OAuth refresh failed: %s (status %d)", message, resp.StatusCode)
+			if !kimiRefreshStatusRetryable(resp.StatusCode) || attempt == kimiRefreshMaxAttempts-1 {
+				return kimiOAuthToken{}, lastErr
+			}
+			if waitErr := p.waitKimiOAuth(ctx, kimiRefreshRetryBase<<attempt); waitErr != nil {
+				return kimiOAuthToken{}, fmt.Errorf("wait to retry Kimi Code OAuth refresh: %w", waitErr)
+			}
+			continue
+		}
+
+		decoder := json.NewDecoder(strings.NewReader(string(body)))
+		decoder.UseNumber()
+		raw := make(map[string]any)
+		if err := decoder.Decode(&raw); err != nil {
+			return kimiOAuthToken{}, fmt.Errorf("parse Kimi Code OAuth refresh response: %w", err)
+		}
+		accessToken := firstNonEmptyString(raw["access_token"])
+		refreshToken := firstNonEmptyString(raw["refresh_token"])
+		expiresIn, hasExpiresIn := numericValue(raw["expires_in"])
+		if accessToken == "" || refreshToken == "" || !hasExpiresIn || expiresIn <= 0 {
+			return kimiOAuthToken{}, errors.New("Kimi Code OAuth refresh response is missing required token fields")
+		}
+		scope := firstNonEmptyString(raw["scope"])
+		if scope == "" {
+			scope = current.Scope
+		}
+		tokenType := firstNonEmptyString(raw["token_type"])
+		if tokenType == "" {
+			tokenType = "Bearer"
+		}
+		return kimiOAuthToken{
+			AccessToken:  accessToken,
+			RefreshToken: refreshToken,
+			ExpiresAt:    p.now().Unix() + int64(expiresIn),
+			Scope:        scope,
+			TokenType:    tokenType,
+			ExpiresIn:    int64(expiresIn),
+			raw:          current.raw,
+		}, nil
 	}
 
+	return kimiOAuthToken{}, lastErr
+}
+
+func kimiRefreshStatusRetryable(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func kimiOAuthErrorCode(body []byte) string {
+	var payload map[string]any
 	decoder := json.NewDecoder(strings.NewReader(string(body)))
-	decoder.UseNumber()
-	raw := make(map[string]any)
-	if err := decoder.Decode(&raw); err != nil {
-		return kimiOAuthToken{}, fmt.Errorf("parse Kimi Code OAuth refresh response: %w", err)
+	if err := decoder.Decode(&payload); err != nil {
+		return ""
 	}
-	accessToken := firstNonEmptyString(raw["access_token"])
-	refreshToken := firstNonEmptyString(raw["refresh_token"])
-	expiresIn, hasExpiresIn := numericValue(raw["expires_in"])
-	if accessToken == "" || refreshToken == "" || !hasExpiresIn || expiresIn <= 0 {
-		return kimiOAuthToken{}, errors.New("Kimi Code OAuth refresh response is missing required token fields")
+	if code, ok := payload["error"].(string); ok {
+		return strings.TrimSpace(code)
 	}
-	scope := firstNonEmptyString(raw["scope"])
-	if scope == "" {
-		scope = current.Scope
+	if nested, ok := payload["error"].(map[string]any); ok {
+		return firstNonEmptyString(nested["code"], nested["type"], nested["error"])
 	}
-	tokenType := firstNonEmptyString(raw["token_type"])
-	if tokenType == "" {
-		tokenType = "Bearer"
-	}
-	return kimiOAuthToken{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ExpiresAt:    p.now().Unix() + int64(expiresIn),
-		Scope:        scope,
-		TokenType:    tokenType,
-		ExpiresIn:    int64(expiresIn),
-		raw:          current.raw,
-	}, nil
+	return ""
 }
 
 func writeKimiOAuthToken(path string, token kimiOAuthToken) error {
@@ -447,12 +555,18 @@ func acquireKimiRefreshLock(ctx context.Context, home, storageName string) (*kim
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, err
+	}
 	target := filepath.Join(dir, storageName)
 	file, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
 	}
 	if err := file.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(target, 0o600); err != nil {
 		return nil, err
 	}
 	lockPath := target + ".lock"

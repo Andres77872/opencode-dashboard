@@ -22,18 +22,23 @@ func renderOverview(s styles, width, height int, data dashboardData) string {
 	// Per-source cost statuses drive the provenance legend (no combined status).
 	var statuses []stats.CostStatus
 	activeSources := 0
+	var kimiAccounting *stats.RequestAccounting
 	for _, src := range ao.Sources {
 		statuses = append(statuses, resolveCostStatus(src.Overview.CostStatus, src.Overview.CostProvenance))
-		if src.Overview.Sessions > 0 || src.Overview.Messages > 0 {
+		if src.Overview.Sessions > 0 || src.Overview.Messages > 0 || src.Overview.Requests > 0 {
 			activeSources++
+		}
+		if src.SourceID == string(source.SourceKimiCode) {
+			kimiAccounting = src.Overview.RequestAccounting
 		}
 	}
 
 	// --- Block 1: combined KPI cards (no combined cost) ---
-	cardWidth := max((width-6)/4, 18)
+	cardWidth := max((width-8)/5, 18)
 	cards := []string{
 		metricCard(s, "Sessions", formatInt(ov.Sessions), fmt.Sprintf("%d sources • %d days", len(ao.Sources), ov.Days), cardWidth),
 		metricCard(s, "Messages", formatInt(ov.Messages), fmt.Sprintf("%.1f / session", ao.MessagesPerSession), cardWidth),
+		metricCard(s, "Requests", formatInt(ov.Requests), "outbound attempts", cardWidth),
 		metricCard(s, "Tokens", formatInt(totalTokens(ov)), formatTokens(ov.Tokens), cardWidth),
 		metricCard(s, "Sources active", fmt.Sprintf("%d / %d", activeSources, len(ao.Sources)), "with activity in range", cardWidth),
 	}
@@ -88,6 +93,9 @@ func renderOverview(s styles, width, height int, data dashboardData) string {
 	if errLine != "" {
 		sections = append(sections, errLine, "")
 	}
+	if disclosure := renderKimiAccountingDisclosure(s, kimiAccounting); disclosure != "" {
+		sections = append(sections, disclosure, "")
+	}
 	sections = append(sections, tableSection, "", midSection)
 	if trendSection != "" {
 		sections = append(sections, "", trendSection)
@@ -99,7 +107,9 @@ func renderOverview(s styles, width, height int, data dashboardData) string {
 }
 
 // renderSourceUsage builds the "Usage by source" table: per-source sessions,
-// messages, tokens, that source's own cost, and its token share with a bar.
+// messages, outbound requests, tokens, that source's own cost, and its token
+// share with a bar. Messages remain the transcript/history count; requests are
+// assistant/API attempts and can therefore differ.
 func renderSourceUsage(s styles, width int, ao source.AllSourcesOverview) []string {
 	lines := []string{s.PanelTitle.Render("Usage by source")}
 	if len(ao.Sources) == 0 {
@@ -108,12 +118,12 @@ func renderSourceUsage(s styles, width int, ao source.AllSourcesOverview) []stri
 
 	showExtra := width >= 90
 	const barW = 14
-	buildRow := func(label, sess, msgs, toks, cost, share, bar string) string {
+	buildRow := func(label, sess, msgs, reqs, toks, cost, share, bar string) string {
 		cols := []string{padRight(label, 14)}
 		if showExtra {
 			cols = append(cols, padLeft(sess, 6))
 		}
-		cols = append(cols, padLeft(msgs, 8))
+		cols = append(cols, padLeft(msgs, 8), padLeft(reqs, 8))
 		if showExtra {
 			cols = append(cols, padLeft(toks, 9))
 		}
@@ -124,12 +134,13 @@ func renderSourceUsage(s styles, width int, ao source.AllSourcesOverview) []stri
 		return strings.Join(cols, " ")
 	}
 
-	lines = append(lines, s.TableHeader.Render(buildRow("SOURCE", "SESS", "MSGS", "TOKENS", "COST", "SHARE", padRight("TOKEN SHARE", barW))))
+	lines = append(lines, s.TableHeader.Render(buildRow("SOURCE", "SESS", "MSGS", "REQS", "TOKENS", "COST", "SHARE", padRight("TOKEN SHARE", barW))))
 	for _, src := range ao.Sources {
 		rowText := buildRow(
 			truncateWithEllipsis(src.Label, 14),
 			formatCompactInt(src.Overview.Sessions),
 			formatCompactInt(src.Overview.Messages),
+			formatCompactInt(src.Overview.Requests),
 			formatCompactInt(totalTokens(src.Overview)),
 			plainCostProv(src.Overview.Cost, src.Overview.CostStatus, src.Overview.CostProvenance),
 			fmt.Sprintf("%.0f%%", src.TokenShare*100),
@@ -215,21 +226,22 @@ func renderTopSignals(s styles, width int, ao source.AllSourcesOverview) []strin
 	return lines
 }
 
-// renderOverviewTrend renders a combined per-day message-activity sparkline. It
-// uses messages (an additive, cost-neutral metric) so no cross-source cost is mixed.
+// renderOverviewTrend renders combined outbound request activity per day. Requests
+// count assistant/API attempts, while Messages remains the transcript/history
+// measure elsewhere in the overview.
 func renderOverviewTrend(s styles, days []stats.DayStats) []string {
-	lines := []string{s.PanelTitle.Render("Activity trend (messages/day)")}
-	var maxMsgs int64 = 1
+	lines := []string{s.PanelTitle.Render("Activity trend (requests/day)")}
+	var maxRequests int64 = 1
 	for _, d := range days {
-		if d.Messages > maxMsgs {
-			maxMsgs = d.Messages
+		if d.Requests > maxRequests {
+			maxRequests = d.Requests
 		}
 	}
 	// Show the most recent slice if there are many days.
 	start := max(len(days)-14, 0)
 	for _, d := range days[start:] {
-		bar := s.Accent.Render(asciiBar(float64(d.Messages), float64(maxMsgs), 24))
-		lines = append(lines, fmt.Sprintf("%s %s %s", padRight(renderDateLabel(d.Date, false), 8), padRight(bar, 24), padLeft(formatCompactInt(d.Messages), 7)))
+		bar := s.Accent.Render(asciiBar(float64(d.Requests), float64(maxRequests), 24))
+		lines = append(lines, fmt.Sprintf("%s %s %s", padRight(renderDateLabel(d.Date, false), 8), padRight(bar, 24), padLeft(formatCompactInt(d.Requests), 7)))
 	}
 	return lines
 }
@@ -243,6 +255,7 @@ func combineTrend(sources []source.SourceOverview) []stats.DayStats {
 			agg.Date = d.Date
 			agg.Sessions += d.Sessions
 			agg.Messages += d.Messages
+			agg.Requests += d.Requests
 			agg.Cost += d.Cost
 			agg.Tokens.Input += d.Tokens.Input
 			agg.Tokens.Output += d.Tokens.Output

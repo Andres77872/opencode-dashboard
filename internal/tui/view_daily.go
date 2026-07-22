@@ -15,7 +15,11 @@ func renderDaily(s styles, width, height int, daily stats.DailyStats, period str
 		return s.EmptyState.Render("Loading period data...")
 	}
 	if len(daily.Days) == 0 {
-		return s.EmptyState.Render("No daily activity is available yet.")
+		empty := s.EmptyState.Render("No daily activity is available yet.")
+		if disclosure := renderKimiAccountingDisclosure(s, daily.RequestAccounting); disclosure != "" {
+			return joinLines(empty, "", disclosure)
+		}
+		return empty
 	}
 
 	isHourly := daily.Granularity == stats.GranularityHour
@@ -45,6 +49,9 @@ func renderDaily(s styles, width, height int, daily stats.DailyStats, period str
 	lines := []string{
 		s.PanelTitle.Render(fmt.Sprintf("Daily activity • %s • %s", periodLabel, metricLabel)),
 		s.Muted.Render(renderDailySummary(daily, metric, isHourly, showFullSummary)),
+	}
+	if disclosure := renderKimiAccountingDisclosure(s, daily.RequestAccounting); disclosure != "" {
+		lines = append(lines, disclosure)
 	}
 
 	// KPI cards row
@@ -138,6 +145,8 @@ func renderDailyMetricLabel(metric dailyMetric) string {
 		return "sessions"
 	case dailyMetricMessages:
 		return "messages"
+	case dailyMetricRequests:
+		return "requests"
 	case dailyMetricTokens:
 		return "tokens"
 	default:
@@ -151,6 +160,8 @@ func dailyMetricValue(day stats.DayStats, metric dailyMetric) float64 {
 		return float64(day.Sessions)
 	case dailyMetricMessages:
 		return float64(day.Messages)
+	case dailyMetricRequests:
+		return float64(day.Requests)
 	case dailyMetricTokens:
 		return float64(totalDayTokens(day.Tokens))
 	default:
@@ -235,11 +246,12 @@ func renderDailyFooter(daily stats.DailyStats, isHourly bool, full bool) string 
 		return fmt.Sprintf("%s • %s", latestLabel, latestCost)
 	}
 	return fmt.Sprintf(
-		"Latest %s • %s • %s sessions • %s messages • %s tokens",
+		"Latest %s • %s • %s sessions • %s messages • %s requests • %s tokens",
 		latestLabel,
 		latestCost,
 		formatInt(latest.Sessions),
 		formatInt(latest.Messages),
+		formatInt(latest.Requests),
 		formatCompactInt(totalDayTokens(latest.Tokens)),
 	)
 }
@@ -248,7 +260,7 @@ func renderDailySecondary(day stats.DayStats, metric dailyMetric) string {
 	switch metric {
 	case dailyMetricSessions:
 		return plainCostProv(day.Cost, day.CostStatus, day.CostProvenance)
-	case dailyMetricMessages, dailyMetricTokens:
+	case dailyMetricMessages, dailyMetricRequests, dailyMetricTokens:
 		return padLeft(formatCompactInt(day.Sessions), 4) + " sess"
 	default:
 		return padLeft(formatCompactInt(day.Sessions), 4) + " sess"
