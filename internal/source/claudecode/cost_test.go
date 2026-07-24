@@ -156,6 +156,17 @@ func TestBundledPricingSnapshotCoversCurrentClaudeRates(t *testing.T) {
 			},
 		},
 		{
+			name: "current opus 5 exact rate uses current price",
+			key:  "claude-opus-5",
+			want: pricingRate{
+				InputPerMillion:         5.0,
+				OutputPerMillion:        25.0,
+				CacheReadPerMillion:     0.5,
+				CacheCreatePerMillion:   6.25,
+				CacheCreate1hPerMillion: 10.0,
+			},
+		},
+		{
 			name: "current opus 4.8 exact rate uses current price",
 			key:  "claude-opus-4-8",
 			want: pricingRate{
@@ -290,6 +301,7 @@ func TestBundledPricingRealClaudeModelsComputeNonMissingCosts(t *testing.T) {
 		model    string
 		wantCost float64
 	}{
+		{name: "opus 5 uses current input output price", model: "claude-opus-5", wantCost: 30.0},
 		{name: "opus 4.8 uses current input output price", model: "claude-opus-4-8", wantCost: 30.0},
 		{name: "sonnet 5 computes non-missing", model: "claude-sonnet-5", wantCost: 12.0},
 		{name: "sonnet 4.6 computes non-missing", model: "claude-sonnet-4-6", wantCost: 18.0},
