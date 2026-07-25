@@ -24,15 +24,21 @@ import {
 } from '../../lib/api'
 import {
   clampAssistantPosition,
+  clampAssistantSize,
   defaultAssistantPosition,
   readAssistantPreferences,
+  resizeAssistantFrame,
   writeAssistantPreferences,
+  type AssistantFrame,
   type AssistantPosition,
   type AssistantPreferences,
+  type AssistantResizeEdge,
   type AssistantViewport,
 } from '../../lib/assistant-position'
 import { usePeriodState } from '../../lib/use-period-state'
-import { boundAssistantHistory } from '../../lib/assistant-history'
+import { boundAssistantHistory, dropAbandonedTurns } from '../../lib/assistant-history'
+import { conversationToMarkdown } from '../../lib/assistant-transcript'
+import { CopyButton } from './copy-button'
 import { ActivityTrail } from './activity'
 import {
   activitiesFromRecords,
@@ -61,6 +67,9 @@ const ASSISTANT_ROUTES = new Set([
   '/overview', '/daily', '/models', '/tools', '/projects', '/sessions', '/config',
 ])
 
+const RESIZE_EDGES: readonly AssistantResizeEdge[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']
+const COMPOSER_MAX_HEIGHT = 150
+
 const QUICK_PROMPTS = [
   'Summarize my usage for this period.',
   'What changed most recently?',
@@ -71,6 +80,11 @@ const QUICK_PROMPTS = [
 interface DisplayMessage extends AssistantMessage {
   id: number
   streaming?: boolean
+  /**
+   * Set when a turn ended without a complete, signed answer. The partial text
+   * stays readable, but the turn is excluded from what is replayed to the model.
+   */
+  stopped?: 'stopped' | 'failed'
   activities?: Activity[]
   usage?: AssistantUsage
   rounds?: number
@@ -82,6 +96,14 @@ interface DragState {
   startX: number
   startY: number
   origin: AssistantPosition
+}
+
+interface ResizeState {
+  pointerId: number
+  edge: AssistantResizeEdge
+  startX: number
+  startY: number
+  origin: AssistantFrame
 }
 
 function currentViewport(): AssistantViewport {
@@ -163,7 +185,7 @@ function HeaderButton({
   onClick,
 }: {
   label: string
-  icon: 'refresh' | 'chevron-down' | 'x' | 'clock'
+  icon: 'refresh' | 'chevron-down' | 'x' | 'clock' | 'copy' | 'check'
   active?: boolean
   onClick: () => void
 }) {
@@ -240,6 +262,9 @@ function MessageRow({ message }: { message: DisplayMessage }) {
   const assistant = message.role === 'assistant'
   const hasContent = message.content.length > 0
   const activities = assistant ? message.activities ?? [] : []
+  // The copy target is message.content itself — the Markdown source the model
+  // produced, which the renderer only ever reads. Copying never touches the DOM.
+  const copyable = hasContent && !message.streaming
   return (
     <article
       className={`analytics-assistant-message ${assistant ? 'assistant' : 'user'}${message.streaming ? ' streaming' : ''}`}
@@ -248,6 +273,11 @@ function MessageRow({ message }: { message: DisplayMessage }) {
       <div className="analytics-assistant-message-meta">
         <span>{assistant ? 'Analytics assistant' : 'You'}</span>
         {message.streaming && <span className="analytics-assistant-stream-label">Live</span>}
+        {message.stopped && (
+          <span className="analytics-assistant-stopped-label">
+            {message.stopped === 'stopped' ? 'Stopped' : 'Incomplete'}
+          </span>
+        )}
       </div>
       <ActivityTrail activities={activities} />
       {hasContent && (
@@ -266,7 +296,14 @@ function MessageRow({ message }: { message: DisplayMessage }) {
           <i /><i /><i />
         </div>
       )}
-      {assistant && !message.streaming && <MessageFooter message={message} />}
+      {copyable && (
+        <div className="analytics-assistant-message-trailer">
+          {assistant && <MessageFooter message={message} />}
+          <div className="analytics-assistant-message-actions">
+            <CopyButton value={message.content} label="Copy markdown" copiedLabel="Copied markdown" />
+          </div>
+        </div>
+      )}
     </article>
   )
 }
@@ -375,6 +412,8 @@ export function AnalyticsAssistant() {
   const [liveMessage, setLiveMessage] = useState('')
   const [completedAnnouncement, setCompletedAnnouncement] = useState('')
   const [dragging, setDragging] = useState(false)
+  const [resizing, setResizing] = useState(false)
+  const [atBottom, setAtBottom] = useState(true)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [sessionTitle, setSessionTitle] = useState<string | null>(null)
   const [sessionUsage, setSessionUsage] = useState<AssistantUsage | undefined>(undefined)
@@ -390,6 +429,12 @@ export function AnalyticsAssistant() {
   const messageListRef = useRef<HTMLDivElement>(null)
   const followStreamRef = useRef(true)
   const dragRef = useRef<DragState | null>(null)
+  const resizeRef = useRef<ResizeState | null>(null)
+  // Stop and error recovery run from callbacks that must not be rebuilt on every
+  // keystroke, but still need to know whether the composer holds unsent text and
+  // whether the abandoned answer produced anything worth keeping.
+  const draftRef = useRef('')
+  const messagesRef = useRef<DisplayMessage[]>([])
   const abortRef = useRef<AbortController | null>(null)
   const historyAbortRef = useRef<AbortController | null>(null)
   const pendingPromptRef = useRef<{ id: number; responseID: number; content: string } | null>(null)
@@ -470,6 +515,10 @@ export function AnalyticsAssistant() {
     if (!element) return
 
     const place = () => {
+      // A live resize already produces a clamped frame, and the ResizeObserver
+      // below fires on every one of its frames. Re-clamping from here would
+      // fight the gesture it is observing.
+      if (resizeRef.current) return
       const rect = element.getBoundingClientRect()
       const viewport = currentViewport()
       setPreferences((current) => {
@@ -478,7 +527,11 @@ export function AnalyticsAssistant() {
           viewport,
         )
         const next = clampAssistantPosition(desired, { width: rect.width, height: rect.height }, viewport)
-        return samePosition(current.position, next) ? current : { ...current, position: next }
+        const size = current.size ? clampAssistantSize(current.size, viewport) : null
+        const sizeChanged = size !== null && current.size !== null
+          && (size.width !== current.size.width || size.height !== current.size.height)
+        if (samePosition(current.position, next) && !sizeChanged) return current
+        return { ...current, position: next, size }
       })
     }
 
@@ -520,6 +573,24 @@ export function AnalyticsAssistant() {
   }, [preferences.open])
 
   useEffect(() => {
+    draftRef.current = draft
+  }, [draft])
+
+  useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
+
+  // Grow the composer with its content instead of parking it at a fixed height
+  // with an inner scrollbar. Resetting to auto first lets it shrink again when
+  // the draft is cleared on send.
+  useLayoutEffect(() => {
+    const element = inputRef.current
+    if (!element) return
+    element.style.height = 'auto'
+    element.style.height = `${Math.min(element.scrollHeight, COMPOSER_MAX_HEIGHT)}px`
+  }, [draft, preferences.open, preferences.minimized, consentAccepted, historyOpen])
+
+  useEffect(() => {
     const list = messageListRef.current
     if (list && followStreamRef.current) list.scrollTop = list.scrollHeight
   }, [messages, preferences.minimized, preferences.open, sending])
@@ -527,7 +598,17 @@ export function AnalyticsAssistant() {
   const updateMessageScrollFollow = useCallback(() => {
     const list = messageListRef.current
     if (!list) return
-    followStreamRef.current = list.scrollHeight - list.scrollTop - list.clientHeight < 40
+    const following = list.scrollHeight - list.scrollTop - list.clientHeight < 40
+    followStreamRef.current = following
+    setAtBottom(following)
+  }, [])
+
+  const jumpToLatest = useCallback(() => {
+    const list = messageListRef.current
+    if (!list) return
+    followStreamRef.current = true
+    setAtBottom(true)
+    list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' })
   }, [])
 
   useEffect(() => {
@@ -577,6 +658,51 @@ export function AnalyticsAssistant() {
     setDragging(false)
   }, [])
 
+  // The origin frame is read from the live rect rather than from preferences, so
+  // the first resize works while the size is still the stylesheet default.
+  const beginResize = useCallback((edge: AssistantResizeEdge) => (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    const element = panelRef.current
+    if (!element) return
+    const rect = element.getBoundingClientRect()
+    resizeRef.current = {
+      pointerId: event.pointerId,
+      edge,
+      startX: event.clientX,
+      startY: event.clientY,
+      origin: {
+        position: { x: rect.left, y: rect.top },
+        size: { width: rect.width, height: rect.height },
+      },
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    event.preventDefault()
+    event.stopPropagation()
+    setResizing(true)
+  }, [])
+
+  const moveResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = resizeRef.current
+    if (!resize || resize.pointerId !== event.pointerId) return
+    const frame = resizeAssistantFrame(
+      resize.edge,
+      resize.origin,
+      { x: event.clientX - resize.startX, y: event.clientY - resize.startY },
+      currentViewport(),
+    )
+    setPreferences((current) => ({ ...current, position: frame.position, size: frame.size }))
+  }, [])
+
+  const endResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = resizeRef.current
+    if (!resize || resize.pointerId !== event.pointerId) return
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    resizeRef.current = null
+    setResizing(false)
+  }, [])
+
   const moveWithKeyboard = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return
     const directions: Record<string, AssistantPosition> = {
@@ -598,15 +724,36 @@ export function AnalyticsAssistant() {
     setPreferences((current) => ({ ...current, position: next }))
   }, [clampToPanel])
 
-  const stopRequest = useCallback((message = 'Request stopped.') => {
+  /**
+   * Ends the in-flight turn. Whatever streamed in is left on screen — an answer
+   * cut short is still worth reading — and the composer is never overwritten,
+   * because by now it may hold a follow-up typed during the response.
+   */
+  const stopRequest = useCallback((message = 'Response stopped.') => {
     requestIDRef.current += 1
     abortRef.current?.abort()
     abortRef.current = null
     const pending = pendingPromptRef.current
     pendingPromptRef.current = null
     if (pending) {
-      setMessages((current) => current.filter((item) => item.id !== pending.id && item.id !== pending.responseID))
-      setDraft(pending.content)
+      const partial = messagesRef.current.find((item) => item.id === pending.responseID)
+      if (partial && partial.content.trim() !== '') {
+        setMessages((current) => current.map((item) => (item.id === pending.responseID
+          ? {
+              ...item,
+              streaming: false,
+              stopped: 'stopped' as const,
+              activities: settleActivities(item.activities ?? []),
+            }
+          : item)))
+      } else {
+        // Nothing was produced, so there is no turn to preserve. Offer the
+        // prompt back through the composer only when it is empty; otherwise the
+        // Retry button carries it instead of clobbering what was typed.
+        setMessages((current) => current.filter((item) => item.id !== pending.id && item.id !== pending.responseID))
+        if (draftRef.current.trim()) setFailedPrompt(pending.content)
+        else setDraft(pending.content)
+      }
     }
     setSending(false)
     setLiveMessage(message)
@@ -750,8 +897,13 @@ export function AnalyticsAssistant() {
       streaming: true,
       activities: [],
     }
+    // Abandoned turns are dropped as whole pairs before bounding: their answers
+    // carry no signature (which the backend rejects) and removing only the
+    // answer would leave two adjacent user turns, which boundAssistantHistory
+    // treats as the end of the replayable suffix.
     const requestMessages = boundAssistantHistory(
-      [...messages, userMessage].map(({ role, content, signature }) => ({ role, content, signature })),
+      dropAbandonedTurns([...messages, userMessage])
+        .map(({ role, content, signature }) => ({ role, content, signature })),
     )
     const requestSessionID = sessionId ?? undefined
     const controller = new AbortController()
@@ -866,8 +1018,22 @@ export function AnalyticsAssistant() {
     } catch (caught) {
       if (controller.signal.aborted || requestID !== requestIDRef.current) return
       pendingPromptRef.current = null
-      setMessages((current) => current.filter((item) => item.id !== userMessage.id && item.id !== assistantMessage.id))
-      setDraft(prompt)
+      const partial = messagesRef.current.find((item) => item.id === assistantMessage.id)
+      if (partial && partial.content.trim() !== '') {
+        // A stream that died mid-answer still delivered analysis; keep it
+        // readable alongside the error rather than erasing the turn.
+        setMessages((current) => current.map((item) => (item.id === assistantMessage.id
+          ? {
+              ...item,
+              streaming: false,
+              stopped: 'failed' as const,
+              activities: settleActivities(item.activities ?? []),
+            }
+          : item)))
+      } else {
+        setMessages((current) => current.filter((item) => item.id !== userMessage.id && item.id !== assistantMessage.id))
+        if (!draftRef.current.trim()) setDraft(prompt)
+      }
       // The prompt is kept verbatim so a transient failure costs one click,
       // not a retyped question.
       setFailedPrompt(prompt)
@@ -956,12 +1122,29 @@ export function AnalyticsAssistant() {
     <section
       ref={panelRef}
       id={PANEL_ID}
-      className={`analytics-assistant-panel${dragging ? ' dragging' : ''}`}
-      style={positionedStyle}
+      className={`analytics-assistant-panel${dragging ? ' dragging' : ''}${resizing ? ' resizing' : ''}`}
+      style={{
+        ...positionedStyle,
+        // Undefined falls through to the stylesheet default until the panel has
+        // actually been resized.
+        width: preferences.size?.width,
+        height: preferences.size?.height,
+      }}
       role="dialog"
       aria-modal="false"
       aria-labelledby={`${PANEL_ID}-title`}
     >
+      {RESIZE_EDGES.map((edge) => (
+        <div
+          key={edge}
+          className={`analytics-assistant-resize ${edge}`}
+          aria-hidden="true"
+          onPointerDown={beginResize(edge)}
+          onPointerMove={moveResize}
+          onPointerUp={endResize}
+          onPointerCancel={endResize}
+        />
+      ))}
       <div
         className="analytics-assistant-drag-handle"
         tabIndex={0}
@@ -985,6 +1168,16 @@ export function AnalyticsAssistant() {
         <div className="analytics-assistant-header-actions">
           {messages.length > 0 && (
             <button type="button" className="analytics-assistant-new-chat" onClick={resetConversation}>New chat</button>
+          )}
+          {messages.length > 0 && (
+            <CopyButton
+              value={() => conversationToMarkdown(messages)}
+              label="Copy conversation as Markdown"
+              copiedLabel="Conversation copied"
+              iconSize={15}
+              showLabel={false}
+              className="analytics-assistant-header-button"
+            />
           )}
           {consentAccepted && sessionsPersisted && (
             <HeaderButton
@@ -1035,6 +1228,16 @@ export function AnalyticsAssistant() {
           >
             {messages.length === 0 && <Welcome status={status} onPrompt={(prompt) => void submitPrompt(prompt)} />}
             {messages.map((message) => <MessageRow key={message.id} message={message} />)}
+            {!atBottom && messages.length > 0 && (
+              <button
+                type="button"
+                className="analytics-assistant-jump-latest"
+                onClick={jumpToLatest}
+              >
+                <Icon name="arrow-down" size={13} />
+                Jump to latest
+              </button>
+            )}
           </div>
 
           <div className="analytics-assistant-sr-only" role="status" aria-live="polite" aria-atomic="true">
@@ -1071,9 +1274,8 @@ export function AnalyticsAssistant() {
               id="analytics-assistant-input"
               value={draft}
               maxLength={MAX_PROMPT_LENGTH}
-              rows={2}
+              rows={1}
               placeholder="Ask for a report or usage insight…"
-              disabled={sending}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
@@ -1084,11 +1286,20 @@ export function AnalyticsAssistant() {
             />
             <div className="analytics-assistant-composer-actions">
               <span>{draft.length.toLocaleString()} / {MAX_PROMPT_LENGTH.toLocaleString()}</span>
-              {sending ? (
+              {/* Only sending is gated while a response streams — the composer
+                  itself stays live so a follow-up can be drafted meanwhile. Both
+                  buttons are shown so the disabled Ask explains the gate. */}
+              {sending && (
                 <button type="button" className="analytics-assistant-button secondary" onClick={() => stopRequest()}>Stop</button>
-              ) : (
-                <button type="submit" className="analytics-assistant-button primary" disabled={!draft.trim()}>Ask</button>
               )}
+              <button
+                type="submit"
+                className="analytics-assistant-button primary"
+                disabled={sending || !draft.trim()}
+                title={sending ? 'Waiting for the current answer' : undefined}
+              >
+                Ask
+              </button>
             </div>
           </form>
         </>

@@ -8,6 +8,30 @@ export const MAX_ASSISTANT_HISTORY_BYTES = 56 * 1024
 const textEncoder = new TextEncoder()
 
 /**
+ * Removes turns the user abandoned — a stopped or failed answer plus the prompt
+ * that provoked it — before the history is put on the wire.
+ *
+ * Two reasons this has to drop the pair rather than just the answer. The
+ * backend rejects any assistant message that carries no signature, and a
+ * partial answer never received one. And boundAssistantHistory stops at the
+ * first role that does not alternate, so leaving the orphaned prompt behind
+ * would silently truncate the replay to the newest message.
+ */
+export function dropAbandonedTurns<T extends { role: AssistantMessage['role']; stopped?: unknown }>(
+  messages: T[],
+): T[] {
+  const result: T[] = []
+  for (const message of messages) {
+    if (message.role === 'assistant' && message.stopped) {
+      if (result[result.length - 1]?.role === 'user') result.pop()
+      continue
+    }
+    result.push(message)
+  }
+  return result
+}
+
+/**
  * Bounds the stateless chat payload while preserving chronological order.
  * Callers append the current user prompt before invoking this helper, so the
  * newest prompt is always retained as the final message.

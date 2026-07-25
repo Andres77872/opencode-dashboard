@@ -7,9 +7,9 @@
  * reach window.opener. Styling is class-based and scoped to
  * `.analytics-assistant-md` in index.css.
  */
-import { Fragment, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useMemo, type ReactNode } from 'react'
 import { parseMarkdown, type MdBlock, type MdInline } from '../../lib/markdown'
-import { Icon } from '../vael/icon'
+import { CopyButton } from './copy-button'
 
 function InlineNodes({ nodes }: { nodes: MdInline[] }): ReactNode {
   return (
@@ -45,26 +45,11 @@ function InlineNode({ node }: { node: MdInline }): ReactNode {
 }
 
 function CodeBlock({ lang, value }: { lang: string | null; value: string }) {
-  const [copied, setCopied] = useState(false)
-  const copy = () => {
-    navigator.clipboard
-      ?.writeText(value)
-      .then(() => {
-        setCopied(true)
-        window.setTimeout(() => setCopied(false), 1_400)
-      })
-      .catch(() => {
-        /* Clipboard blocked (permissions / insecure context); ignore silently. */
-      })
-  }
   return (
     <div className="md-codeblock">
       <div className="md-codeblock-head">
         <span className="md-codeblock-lang">{lang || 'text'}</span>
-        <button type="button" className="md-codeblock-copy" onClick={copy} aria-label="Copy code">
-          <Icon name={copied ? 'check' : 'copy'} size={12} />
-          {copied ? 'Copied' : 'Copy'}
-        </button>
+        <CopyButton value={value} label="Copy" className="md-codeblock-copy" />
       </div>
       <pre>
         <code>{value}</code>

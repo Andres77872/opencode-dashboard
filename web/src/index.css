@@ -160,6 +160,13 @@ body {
   flex-direction: column;
   width: min(420px, calc(100vw - 24px));
   height: min(620px, calc(100dvh - 24px));
+  /* Bounds for the inline width/height a resize writes: below the minimum the
+     composer and a message stop coexisting, above the maximum the panel would
+     outgrow the viewport it is clamped against. */
+  min-width: 320px;
+  min-height: 360px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
   overflow: hidden;
   color: var(--fg-primary);
   background: var(--ink-800);
@@ -179,9 +186,71 @@ body {
 }
 
 .analytics-assistant-panel.dragging,
+.analytics-assistant-panel.resizing,
 .analytics-assistant-minimized.dragging {
   user-select: none;
   box-shadow: var(--shadow-xl), var(--glow-accent);
+}
+
+/* The entry animation transforms the panel, which would fight a live resize. */
+.analytics-assistant-panel.resizing {
+  animation: none;
+}
+
+/* Invisible grab zones inset along every edge and corner: the cursor is the
+   affordance, so no chrome competes with the panel's own content. */
+.analytics-assistant-resize {
+  position: absolute;
+  z-index: 3;
+  touch-action: none;
+}
+
+.analytics-assistant-resize.n,
+.analytics-assistant-resize.s {
+  left: 12px;
+  right: 12px;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.analytics-assistant-resize.e,
+.analytics-assistant-resize.w {
+  top: 12px;
+  bottom: 12px;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.analytics-assistant-resize.n { top: 0; }
+.analytics-assistant-resize.s { bottom: 0; }
+.analytics-assistant-resize.w { left: 0; }
+.analytics-assistant-resize.e { right: 0; }
+
+.analytics-assistant-resize.ne,
+.analytics-assistant-resize.nw,
+.analytics-assistant-resize.se,
+.analytics-assistant-resize.sw {
+  width: 14px;
+  height: 14px;
+}
+
+.analytics-assistant-resize.nw { top: 0; left: 0; cursor: nwse-resize; }
+.analytics-assistant-resize.se { bottom: 0; right: 0; cursor: nwse-resize; }
+.analytics-assistant-resize.ne { top: 0; right: 0; cursor: nesw-resize; }
+.analytics-assistant-resize.sw { bottom: 0; left: 0; cursor: nesw-resize; }
+
+/* A faint grip on the corner most likely to be reached for. */
+.analytics-assistant-resize.se::after {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 7px;
+  height: 7px;
+  content: '';
+  border-right: 2px solid var(--border-strong);
+  border-bottom: 2px solid var(--border-strong);
+  border-bottom-right-radius: 3px;
+  opacity: 0.7;
 }
 
 .analytics-assistant-drag-handle {
@@ -508,6 +577,116 @@ body {
   border-radius: 50%;
   box-shadow: 0 0 0 3px var(--accent-soft);
   animation: vael-pulse 1.2s ease-in-out infinite;
+}
+
+.analytics-assistant-stopped-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-muted);
+}
+
+.analytics-assistant-stopped-label::before {
+  width: 5px;
+  height: 5px;
+  content: '';
+  background: currentColor;
+  border-radius: 1px;
+}
+
+/* Footer stats and the copy action share one line beneath a message. */
+.analytics-assistant-message-trailer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 18px;
+  padding: 0 3px;
+}
+
+.analytics-assistant-message.user .analytics-assistant-message-trailer {
+  justify-content: flex-end;
+}
+
+/* Hidden by opacity rather than display so the button stays focusable and Tab
+   reveals it; coarse pointers have no hover, so it is always shown there. */
+.analytics-assistant-message-actions {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.analytics-assistant-message:hover .analytics-assistant-message-actions,
+.analytics-assistant-message:focus-within .analytics-assistant-message-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .analytics-assistant-message-actions {
+    opacity: 1;
+  }
+}
+
+.analytics-assistant-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  color: var(--fg-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font: 600 10px/1 var(--font-ui);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.analytics-assistant-copy:hover {
+  color: var(--fg-primary);
+  background: var(--ink-700);
+  border-color: var(--border-default);
+}
+
+.analytics-assistant-copy:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.analytics-assistant-copy.failed {
+  color: var(--danger);
+}
+
+/* The header variant is icon-only and matches the sibling header buttons. */
+.analytics-assistant-copy.analytics-assistant-header-button {
+  gap: 0;
+  padding: 0;
+}
+
+.analytics-assistant-jump-latest {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+  padding: 6px 12px;
+  color: var(--fg-primary);
+  background: var(--ink-700);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-lg);
+  font: 600 11px/1 var(--font-ui);
+  cursor: pointer;
+}
+
+.analytics-assistant-jump-latest:hover {
+  background: var(--ink-650);
+}
+
+.analytics-assistant-jump-latest:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .analytics-assistant-message-content {
@@ -1181,12 +1360,15 @@ body {
   border-top: 1px solid var(--border-default);
 }
 
+/* Height is driven from script to match the content; the bounds here are what
+   that measurement is clamped between. */
 .analytics-assistant-composer textarea {
   display: block;
   width: 100%;
-  min-height: 54px;
-  max-height: 120px;
-  resize: vertical;
+  min-height: 40px;
+  max-height: 150px;
+  resize: none;
+  overflow-y: auto;
   padding: 10px 11px;
   color: var(--fg-primary);
   background: var(--ink-800);
@@ -1212,12 +1394,13 @@ body {
 .analytics-assistant-composer-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   padding-top: 8px;
 }
 
 .analytics-assistant-composer-actions > span {
+  /* Pushes the buttons to the trailing edge whether one or two are present. */
+  margin-right: auto;
   color: var(--fg-faint);
   font: 500 10px/1 var(--font-mono);
 }
@@ -1233,15 +1416,29 @@ body {
   border: 0;
 }
 
+/* Nothing to grab without a precise pointer, and on a full-width panel there is
+   nowhere to grow to anyway. */
+@media (pointer: coarse) {
+  .analytics-assistant-resize {
+    display: none;
+  }
+}
+
 @media (max-width: 640px) {
   .analytics-assistant-launcher {
     right: max(10px, env(safe-area-inset-right));
     bottom: max(10px, env(safe-area-inset-bottom));
   }
 
+  .analytics-assistant-resize {
+    display: none;
+  }
+
   .analytics-assistant-panel {
-    width: calc(100vw - 16px);
-    height: min(620px, calc(100dvh - 16px));
+    /* Overrides any persisted inline size, which cannot fit at this width. */
+    width: calc(100vw - 16px) !important;
+    height: min(620px, calc(100dvh - 16px)) !important;
+    min-width: 0;
     border-radius: var(--radius-lg);
   }
 

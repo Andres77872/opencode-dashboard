@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   boundAssistantHistory,
+  dropAbandonedTurns,
   MAX_ASSISTANT_HISTORY_BYTES,
   MAX_ASSISTANT_HISTORY_MESSAGES,
 } from './assistant-history.ts'
@@ -84,4 +85,67 @@ test('budgets escaped JSON wire bytes below the HTTP request envelope', () => {
   assert.ok(wireBytes < 64 * 1024, `serialized history was ${wireBytes} bytes`)
   assert.equal(bounded.at(-1)?.content, 'current')
   assert.equal(bounded[0]?.role, 'user')
+})
+
+test('an abandoned turn is dropped as a pair so roles keep alternating', () => {
+  const messages = [
+    { role: 'user' as const, content: 'one' },
+    { role: 'assistant' as const, content: 'first answer', signature: 'sig-1' },
+    { role: 'user' as const, content: 'two' },
+    { role: 'assistant' as const, content: 'partial', stopped: 'stopped' as const },
+    { role: 'user' as const, content: 'three' },
+  ]
+
+  assert.deepEqual(dropAbandonedTurns(messages), [
+    { role: 'user', content: 'one' },
+    { role: 'assistant', content: 'first answer', signature: 'sig-1' },
+    { role: 'user', content: 'three' },
+  ])
+})
+
+test('history before an abandoned turn still reaches the wire', () => {
+  // Dropping only the unsigned answer would leave two adjacent user turns, and
+  // boundAssistantHistory would stop there — sending just the newest prompt.
+  const messages = [
+    { role: 'user' as const, content: 'one' },
+    { role: 'assistant' as const, content: 'first answer', signature: 'sig-1' },
+    { role: 'user' as const, content: 'two' },
+    { role: 'assistant' as const, content: 'partial', stopped: 'failed' as const },
+    { role: 'user' as const, content: 'three' },
+  ]
+
+  const bounded = boundAssistantHistory(
+    dropAbandonedTurns(messages).map(({ role, content, signature }) => ({ role, content, signature })),
+  )
+  assert.equal(bounded.length, 3)
+  assert.deepEqual(bounded.map((message) => message.content), ['one', 'first answer', 'three'])
+  assert.equal(bounded.every((message) => message.role !== 'assistant' || message.signature), true)
+})
+
+test('leading and trailing abandoned turns are removed without leaving orphans', () => {
+  assert.deepEqual(
+    dropAbandonedTurns([
+      { role: 'user' as const, content: 'one' },
+      { role: 'assistant' as const, content: 'partial', stopped: 'stopped' as const },
+    ]),
+    [],
+  )
+  assert.deepEqual(
+    dropAbandonedTurns([
+      { role: 'assistant' as const, content: 'orphan partial', stopped: 'stopped' as const },
+      { role: 'user' as const, content: 'one' },
+    ]),
+    [{ role: 'user', content: 'one' }],
+  )
+})
+
+test('dropAbandonedTurns leaves completed conversations and its input untouched', () => {
+  const messages = [
+    { role: 'user' as const, content: 'one' },
+    { role: 'assistant' as const, content: 'answer', signature: 'sig-1' },
+  ]
+  const snapshot = JSON.stringify(messages)
+
+  assert.deepEqual(dropAbandonedTurns(messages), messages)
+  assert.equal(JSON.stringify(messages), snapshot)
 })

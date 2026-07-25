@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  ASSISTANT_MIN_SIZE,
   ASSISTANT_PREFERENCES_KEY,
   clampAssistantPosition,
+  clampAssistantSize,
   defaultAssistantPosition,
   parseAssistantPreferences,
   readAssistantPreferences,
+  resizeAssistantFrame,
   writeAssistantPreferences,
+  type AssistantFrame,
   type AssistantStorage,
 } from './assistant-position.ts'
 
@@ -46,6 +50,7 @@ test('preferences parser accepts only the supported UI fields', () => {
     open: true,
     minimized: true,
     position: { x: 42, y: 84 },
+    size: null,
     privacyAcceptedVersion: null,
   })
   assert.equal('messages' in parsed, false)
@@ -56,12 +61,14 @@ test('corrupt or non-finite preferences fall back safely', () => {
     open: false,
     minimized: false,
     position: null,
+    size: null,
     privacyAcceptedVersion: null,
   })
   assert.deepEqual(parseAssistantPreferences('{"open":true,"position":{"x":1,"y":null}}'), {
     open: true,
     minimized: false,
     position: null,
+    size: null,
     privacyAcceptedVersion: null,
   })
 })
@@ -79,6 +86,7 @@ test('storage round-trip contains UI preferences and no conversation content', (
     open: true,
     minimized: false,
     position: { x: 123, y: 234 },
+    size: { width: 520, height: 700 },
     privacyAcceptedVersion: 'analytics-assistant-v1',
   }
   writeAssistantPreferences(preferences, storage)
@@ -98,12 +106,119 @@ test('storage failures are non-fatal', () => {
     open: false,
     minimized: false,
     position: null,
+    size: null,
     privacyAcceptedVersion: null,
   }, storage))
   assert.deepEqual(readAssistantPreferences(storage), {
     open: false,
     minimized: false,
     position: null,
+    size: null,
     privacyAcceptedVersion: null,
   })
+})
+
+test('a stored size survives the round-trip and implausible extents are rejected', () => {
+  assert.deepEqual(
+    parseAssistantPreferences('{"size":{"width":640,"height":720}}').size,
+    { width: 640, height: 720 },
+  )
+  assert.equal(parseAssistantPreferences('{"size":{"width":0,"height":720}}').size, null)
+  assert.equal(parseAssistantPreferences('{"size":{"width":-5,"height":720}}').size, null)
+  assert.equal(parseAssistantPreferences('{"size":{"width":640}}').size, null)
+  assert.equal(parseAssistantPreferences('{"size":"640x720"}').size, null)
+})
+
+test('a size stored on a wide screen is clamped to what the viewport can show', () => {
+  assert.deepEqual(
+    clampAssistantSize({ width: 900, height: 800 }, { width: 1440, height: 900 }),
+    { width: 900, height: 800 },
+  )
+  assert.deepEqual(
+    clampAssistantSize({ width: 900, height: 800 }, { width: 500, height: 600 }),
+    { width: 476, height: 576 },
+  )
+  assert.deepEqual(
+    clampAssistantSize({ width: 10, height: 10 }, { width: 1440, height: 900 }),
+    ASSISTANT_MIN_SIZE,
+  )
+})
+
+const FRAME: AssistantFrame = { position: { x: 400, y: 300 }, size: { width: 420, height: 620 } }
+const WIDE = { width: 1440, height: 1000 }
+
+test('east and south edges grow the panel without moving its origin', () => {
+  assert.deepEqual(resizeAssistantFrame('e', FRAME, { x: 80, y: 0 }, WIDE), {
+    position: { x: 400, y: 300 },
+    size: { width: 500, height: 620 },
+  })
+  assert.deepEqual(resizeAssistantFrame('s', FRAME, { x: 0, y: 60 }, WIDE), {
+    position: { x: 400, y: 300 },
+    size: { width: 420, height: 680 },
+  })
+})
+
+test('west and north edges pin the opposite edge and move the origin', () => {
+  // Left edge moves out by 100, so x drops by 100 and width grows by 100 —
+  // the right edge stays at 820 and the bottom stays at 920.
+  assert.deepEqual(resizeAssistantFrame('w', FRAME, { x: -100, y: 0 }, WIDE), {
+    position: { x: 300, y: 300 },
+    size: { width: 520, height: 620 },
+  })
+  assert.deepEqual(resizeAssistantFrame('n', FRAME, { x: 0, y: -50 }, WIDE), {
+    position: { x: 400, y: 250 },
+    size: { width: 420, height: 670 },
+  })
+})
+
+test('corners move both axes at once', () => {
+  assert.deepEqual(resizeAssistantFrame('se', FRAME, { x: 40, y: 40 }, WIDE), {
+    position: { x: 400, y: 300 },
+    size: { width: 460, height: 660 },
+  })
+  assert.deepEqual(resizeAssistantFrame('nw', FRAME, { x: -40, y: -40 }, WIDE), {
+    position: { x: 360, y: 260 },
+    size: { width: 460, height: 660 },
+  })
+  assert.deepEqual(resizeAssistantFrame('ne', FRAME, { x: 40, y: -40 }, WIDE), {
+    position: { x: 400, y: 260 },
+    size: { width: 460, height: 660 },
+  })
+  assert.deepEqual(resizeAssistantFrame('sw', FRAME, { x: -40, y: 40 }, WIDE), {
+    position: { x: 360, y: 300 },
+    size: { width: 460, height: 660 },
+  })
+})
+
+test('shrinking stops at the minimum extent instead of collapsing', () => {
+  // Dragging the east edge far left cannot push it past x + MIN.width.
+  assert.deepEqual(resizeAssistantFrame('e', FRAME, { x: -9999, y: 0 }, WIDE), {
+    position: { x: 400, y: 300 },
+    size: { width: ASSISTANT_MIN_SIZE.width, height: 620 },
+  })
+  // Dragging the west edge right stops with the right edge still pinned at 820.
+  assert.deepEqual(resizeAssistantFrame('w', FRAME, { x: 9999, y: 0 }, WIDE), {
+    position: { x: 820 - ASSISTANT_MIN_SIZE.width, y: 300 },
+    size: { width: ASSISTANT_MIN_SIZE.width, height: 620 },
+  })
+  assert.deepEqual(resizeAssistantFrame('n', FRAME, { x: 0, y: 9999 }, WIDE), {
+    position: { x: 400, y: 920 - ASSISTANT_MIN_SIZE.height },
+    size: { width: 420, height: ASSISTANT_MIN_SIZE.height },
+  })
+})
+
+test('growing stops at the viewport gap and honours visual viewport offsets', () => {
+  assert.deepEqual(resizeAssistantFrame('se', FRAME, { x: 9999, y: 9999 }, WIDE), {
+    position: { x: 400, y: 300 },
+    size: { width: 1428 - 400, height: 988 - 300 },
+  })
+  assert.deepEqual(resizeAssistantFrame('nw', FRAME, { x: -9999, y: -9999 }, WIDE), {
+    position: { x: 12, y: 12 },
+    size: { width: 820 - 12, height: 920 - 12 },
+  })
+  // With the visual viewport shifted, the safe bounds shift with it.
+  assert.deepEqual(
+    resizeAssistantFrame('nw', FRAME, { x: -9999, y: -9999 }, { ...WIDE, left: 100, top: 50 }),
+    { position: { x: 112, y: 62 }, size: { width: 820 - 112, height: 920 - 62 } },
+  )
 })
