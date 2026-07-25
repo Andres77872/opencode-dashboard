@@ -842,6 +842,188 @@ func TestAssistantChatStreamPersistsTurnWithToolCalls(t *testing.T) {
 	}
 }
 
+func TestAssistantChatStreamForwardsSpecialistProgressAndPersistsIt(t *testing.T) {
+	okValue := true
+	usage := analyticsagent.Usage{Requests: 2, InputTokens: 600, OutputTokens: 90, TotalTokens: 690}
+	service := &fakeAssistantService{
+		streamEvents: []analyticsagent.StreamEvent{
+			{Type: analyticsagent.StreamEventRoundStart, Agent: analyticsagent.AgentLead, Round: 1},
+			{
+				Type: analyticsagent.StreamEventSubagentStart, Agent: analyticsagent.AgentLead, CallID: "tool-1",
+				Subagent: &analyticsagent.SubagentEvent{
+					Agent: analyticsagent.AgentTrend, Title: "Trend analyst", Task: "Explain the 7-day token trend for opencode.",
+				},
+			},
+			{
+				Type: analyticsagent.StreamEventToolStart, Agent: analyticsagent.AgentTrend, ParentCallID: "tool-1",
+				Round: 1, CallID: "tool-2", Name: "get_daily_usage", Arguments: json.RawMessage(`{"source":"opencode"}`),
+			},
+			{
+				Type: analyticsagent.StreamEventToolFinish, Agent: analyticsagent.AgentTrend, ParentCallID: "tool-1",
+				Round: 1, CallID: "tool-2", Name: "get_daily_usage", OK: &okValue,
+				Result: json.RawMessage(`{"ok":true,"data":{}}`), DurationMS: 11,
+			},
+			{
+				Type: analyticsagent.StreamEventSubagentFinish, Agent: analyticsagent.AgentLead, CallID: "tool-1",
+				OK: &okValue, DurationMS: 320,
+				Subagent: &analyticsagent.SubagentEvent{
+					Agent: analyticsagent.AgentTrend, Title: "Trend analyst", Task: "Explain the 7-day token trend for opencode.",
+					Status: analyticsagent.SubagentStatusComplete, Report: "Tokens rose 40%.", Rounds: 2,
+					ToolsUsed: []string{"get_daily_usage"}, Usage: &usage,
+				},
+			},
+			{Type: analyticsagent.StreamEventContentDelta, Delta: "Tokens rose."},
+		},
+		streamResult: analyticsagent.ChatResult{
+			Message:   analyticsagent.BrowserMessage{Role: "assistant", Content: "Tokens rose.", Signature: "sig"},
+			Model:     "MiniMax-M3",
+			Provider:  analyticsagent.ProviderMiniMax,
+			Agent:     analyticsagent.AgentLead,
+			Rounds:    2,
+			Usage:     analyticsagent.Usage{Requests: 4, InputTokens: 1200, OutputTokens: 200, TotalTokens: 1400},
+			ToolsUsed: []string{"delegate_to_specialist", "get_daily_usage"},
+			ToolCalls: []analyticsagent.ToolCallRecord{{
+				CallID: "tool-2", Name: "get_daily_usage", Agent: analyticsagent.AgentTrend, ParentCallID: "tool-1", Round: 1,
+				Arguments: json.RawMessage(`{"source":"opencode"}`), Result: json.RawMessage(`{"ok":true,"data":{}}`),
+				OK: true, DurationMS: 11,
+			}},
+			Subagents: []analyticsagent.SubagentRunRecord{{
+				CallID: "tool-1", Agent: analyticsagent.AgentTrend, Title: "Trend analyst",
+				Task: "Explain the 7-day token trend for opencode.", Status: analyticsagent.SubagentStatusComplete,
+				Report: "Tokens rose 40%.", Rounds: 2, ToolsUsed: []string{"get_daily_usage"},
+				Usage: usage, DurationMS: 320,
+			}},
+			DurationMS: 900,
+		},
+	}
+	server, store := assistantTestServerWithChatLog(t, service)
+
+	request := newAssistantRequest(http.MethodPost, "/api/v1/assistant/chat/stream", validAssistantBody("Why did tokens grow?"))
+	recorder := &flushCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
+	server.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	var sessionID string
+	var types []string
+	var sawSubagentStart, sawSubagentReport, sawNestedTool bool
+	scanner := bufio.NewScanner(bytes.NewReader(recorder.Body.Bytes()))
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) == "" {
+			continue
+		}
+		var frame map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &frame); err != nil {
+			t.Fatalf("frame %q: %v", scanner.Text(), err)
+		}
+		frameType, _ := frame["type"].(string)
+		types = append(types, frameType)
+		switch frameType {
+		case "round_start":
+			if frame["round"] != float64(1) || frame["agent"] != string(analyticsagent.AgentLead) {
+				t.Fatalf("round_start frame = %v", frame)
+			}
+		case "subagent_start":
+			subagent, _ := frame["subagent"].(map[string]any)
+			sawSubagentStart = subagent["agent"] == string(analyticsagent.AgentTrend) && subagent["task"] != ""
+		case "tool_start":
+			if frame["parent_call_id"] == "tool-1" && frame["agent"] == string(analyticsagent.AgentTrend) {
+				sawNestedTool = true
+			}
+		case "subagent_finish":
+			subagent, _ := frame["subagent"].(map[string]any)
+			usageFrame, _ := subagent["usage"].(map[string]any)
+			sawSubagentReport = subagent["report"] == "Tokens rose 40%." && usageFrame["total_tokens"] == float64(690)
+		case "complete":
+			sessionID, _ = frame["session_id"].(string)
+			completeUsage, ok := frame["usage"].(map[string]any)
+			if !ok || completeUsage["total_tokens"] != float64(1400) || completeUsage["requests"] != float64(4) {
+				t.Fatalf("complete usage = %v", frame["usage"])
+			}
+			if runs, ok := frame["subagents"].([]any); !ok || len(runs) != 1 {
+				t.Fatalf("complete subagents = %v", frame["subagents"])
+			}
+			if frame["session_title"] != "Why did tokens grow?" {
+				t.Fatalf("complete session_title = %v", frame["session_title"])
+			}
+			if sessionUsage, ok := frame["session_usage"].(map[string]any); !ok || sessionUsage["total_tokens"] != float64(1400) {
+				t.Fatalf("complete session_usage = %v", frame["session_usage"])
+			}
+		}
+	}
+	if !sawSubagentStart || !sawSubagentReport || !sawNestedTool {
+		t.Fatalf("specialist frames incomplete (start=%v report=%v nested=%v): %s", sawSubagentStart, sawSubagentReport, sawNestedTool, recorder.Body.String())
+	}
+	if types[0] != "start" {
+		t.Fatalf("frame order = %v", types)
+	}
+
+	detail, err := store.GetSession(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	answer := detail.Messages[1]
+	if answer.Usage == nil || answer.Usage.TotalTokens != 1400 || answer.Rounds != 2 {
+		t.Fatalf("persisted turn accounting = %+v", answer)
+	}
+	if len(answer.Subagents) != 1 {
+		t.Fatalf("persisted specialist runs = %+v", answer.Subagents)
+	}
+	run := answer.Subagents[0]
+	if run.Agent != string(analyticsagent.AgentTrend) || run.Report != "Tokens rose 40%." || run.Usage.TotalTokens != 690 {
+		t.Fatalf("persisted specialist run = %+v", run)
+	}
+	if len(answer.ToolCalls) != 1 || answer.ToolCalls[0].ParentCallRef != "tool-1" || answer.ToolCalls[0].Agent != string(analyticsagent.AgentTrend) {
+		t.Fatalf("persisted nested tool call = %+v", answer.ToolCalls)
+	}
+	if answer.Context == nil || answer.Context.Route != "/models" || answer.Context.Period != "7d" {
+		t.Fatalf("persisted request context = %+v", answer.Context)
+	}
+}
+
+func TestAssistantChatStreamRejectsMalformedProgressEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		event analyticsagent.StreamEvent
+	}{
+		{"round without a number", analyticsagent.StreamEvent{Type: analyticsagent.StreamEventRoundStart}},
+		{"subagent start without a specialist", analyticsagent.StreamEvent{Type: analyticsagent.StreamEventSubagentStart, CallID: "tool-1"}},
+		{
+			"subagent finish without an outcome",
+			analyticsagent.StreamEvent{
+				Type: analyticsagent.StreamEventSubagentFinish, CallID: "tool-1",
+				Subagent: &analyticsagent.SubagentEvent{Agent: analyticsagent.AgentTrend},
+			},
+		},
+		{"tool finish without an outcome", analyticsagent.StreamEvent{Type: analyticsagent.StreamEventToolFinish, CallID: "tool-1", Name: "list_sources"}},
+		{"unknown event", analyticsagent.StreamEvent{Type: "reasoning_delta", Delta: "private"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var emitErr error
+			service := &fakeAssistantService{
+				streamFunc: func(_ context.Context, _ analyticsagent.ChatInput, emit func(analyticsagent.StreamEvent) error) (analyticsagent.ChatResult, error) {
+					emitErr = emit(test.event)
+					return analyticsagent.ChatResult{
+						Message: analyticsagent.BrowserMessage{Role: "assistant", Content: "Report.", Signature: "sig"},
+						Model:   "MiniMax-M3",
+					}, emitErr
+				},
+			}
+			server := assistantTestServer(service, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			recorder := &flushCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
+			server.Handler.ServeHTTP(recorder, newAssistantRequest(http.MethodPost, "/api/v1/assistant/chat/stream", validAssistantBody("Report.")))
+			if emitErr == nil {
+				t.Fatalf("malformed event %#v was forwarded", test.event)
+			}
+			if strings.Contains(recorder.Body.String(), "private") {
+				t.Fatalf("unknown event content reached the browser: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestAssistantChatStreamRejectsUnknownSessionBeforeService(t *testing.T) {
 	service := &fakeAssistantService{}
 	server, _ := assistantTestServerWithChatLog(t, service)
@@ -865,14 +1047,21 @@ func TestAssistantChatStreamRejectsUnknownSessionBeforeService(t *testing.T) {
 func TestAssistantSessionEndpointsListGetDelete(t *testing.T) {
 	service := &fakeAssistantService{}
 	server, store := assistantTestServerWithChatLog(t, service)
-	sessionID, err := store.AppendTurn(context.Background(), chatstore.Turn{
+	receipt, err := store.AppendTurn(context.Background(), chatstore.Turn{
 		UserContent: "How is usage?", AssistantContent: "Usage report.", AssistantSignature: "sig",
-		Model: "MiniMax-M3", Provider: "minimax",
+		Model: "MiniMax-M3", Provider: "minimax", Rounds: 2, DurationMS: 1500,
+		Usage:     chatstore.Usage{Requests: 2, InputTokens: 400, OutputTokens: 80, TotalTokens: 480},
 		ToolCalls: []chatstore.ToolCall{{Name: "list_sources", Arguments: json.RawMessage(`{}`), Result: json.RawMessage(`{"ok":true}`), OK: true}},
+		Subagents: []chatstore.SubagentRun{{
+			Agent: "trend_analyst", Title: "Trend analyst", Task: "Explain the 7-day trend.",
+			Status: "complete", Report: "Usage rose.", Rounds: 2,
+			Usage: chatstore.Usage{Requests: 2, TotalTokens: 200},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
+	sessionID := receipt.SessionID
 
 	recorder := httptest.NewRecorder()
 	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/sessions", nil))
@@ -891,6 +1080,12 @@ func TestAssistantSessionEndpointsListGetDelete(t *testing.T) {
 	if len(listing.Sessions) != 1 || listing.Sessions[0].ID != sessionID || listing.Sessions[0].Title != "How is usage?" {
 		t.Fatalf("listing = %+v", listing)
 	}
+	// A listing must carry enough metadata for the browser to describe a saved
+	// conversation without loading it.
+	listed := listing.Sessions[0]
+	if listed.Usage.TotalTokens != 480 || listed.TurnCount != 1 || listed.ToolCallCount != 1 || listed.SubagentCount != 1 {
+		t.Fatalf("listed session metadata = %+v", listed)
+	}
 
 	recorder = httptest.NewRecorder()
 	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/sessions/"+sessionID, nil))
@@ -903,6 +1098,14 @@ func TestAssistantSessionEndpointsListGetDelete(t *testing.T) {
 	}
 	if len(detail.Messages) != 2 || len(detail.Messages[1].ToolCalls) != 1 {
 		t.Fatalf("detail = %+v", detail)
+	}
+	// Restoring must return everything the live turn displayed.
+	answer := detail.Messages[1]
+	if answer.Usage == nil || answer.Usage.TotalTokens != 480 || answer.Rounds != 2 {
+		t.Fatalf("restored turn accounting = %+v", answer)
+	}
+	if len(answer.Subagents) != 1 || answer.Subagents[0].Report != "Usage rose." {
+		t.Fatalf("restored specialist runs = %+v", answer.Subagents)
 	}
 
 	recorder = httptest.NewRecorder()

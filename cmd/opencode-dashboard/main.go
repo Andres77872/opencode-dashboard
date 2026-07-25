@@ -336,6 +336,11 @@ func openAssistantChatStore(ctx context.Context, logger *slog.Logger) *chatstore
 		logger.Warn("analytics assistant: chat history persistence is disabled", "error", err)
 		return nil
 	}
+	if store.Recreated() {
+		// Assistant history is never migrated; say so rather than letting saved
+		// conversations disappear silently.
+		logger.Info("analytics assistant: saved conversations were reset for a new chat schema", "path", store.Path())
+	}
 	return store
 }
 

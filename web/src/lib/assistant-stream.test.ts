@@ -35,6 +35,7 @@ function completeEvent(content = 'Résumé 😀') {
     model: 'MiniMax-M3',
     tools_used: ['get_daily_usage'],
     tool_calls: [],
+    subagents: [],
   } as const
 }
 
@@ -45,6 +46,7 @@ function wireEvents(events: readonly object[]): string {
 test('parses every event shape into the discriminated stream union', () => {
   const events = [
     { type: 'start', model: 'MiniMax-M3' },
+    { type: 'round_start', agent: 'analyst', round: 1 },
     { type: 'content_delta', delta: 'hello' },
     { type: 'content_reset' },
     { type: 'tool_start', call_id: 'call-1', name: 'get_daily_usage' },
@@ -56,6 +58,101 @@ test('parses every event shape into the discriminated stream union', () => {
   assert.deepEqual(
     events.map((event, index) => parseAssistantStreamEvent(JSON.stringify(event), index + 1)),
     events,
+  )
+})
+
+test('parses delegated specialist progress with its finding and usage', () => {
+  const start = {
+    type: 'subagent_start',
+    call_id: 'tool-1',
+    agent: 'analyst',
+    subagent: { agent: 'trend_analyst', title: 'Trend analyst', task: 'Explain the 7-day trend.' },
+  }
+  const nestedTool = {
+    type: 'tool_start',
+    call_id: 'tool-2',
+    name: 'get_daily_usage',
+    agent: 'trend_analyst',
+    parent_call_id: 'tool-1',
+    round: 1,
+  }
+  const finish = {
+    type: 'subagent_finish',
+    call_id: 'tool-1',
+    ok: true,
+    agent: 'analyst',
+    duration_ms: 320,
+    subagent: {
+      agent: 'trend_analyst',
+      title: 'Trend analyst',
+      task: 'Explain the 7-day trend.',
+      status: 'complete',
+      report: 'Tokens rose 40%.',
+      rounds: 2,
+      tools_used: ['get_daily_usage'],
+      usage: { requests: 2, input_tokens: 600, output_tokens: 90, total_tokens: 690 },
+    },
+  }
+
+  assert.deepEqual(parseAssistantStreamEvent(JSON.stringify(start)), start)
+  assert.deepEqual(parseAssistantStreamEvent(JSON.stringify(nestedTool)), nestedTool)
+  assert.deepEqual(parseAssistantStreamEvent(JSON.stringify(finish)), finish)
+})
+
+test('rejects specialist and round events that are not self-describing', () => {
+  for (const event of [
+    { type: 'round_start' },
+    { type: 'round_start', round: 0 },
+    { type: 'round_start', round: 1, unexpected: true },
+    { type: 'subagent_start', call_id: 'tool-1' },
+    { type: 'subagent_start', call_id: 'tool-1', subagent: { agent: '' } },
+    { type: 'subagent_start', call_id: 'tool-1', subagent: { agent: 'trend_analyst', reasoning: 'private' } },
+    { type: 'subagent_finish', call_id: 'tool-1', subagent: { agent: 'trend_analyst' } },
+    {
+      type: 'subagent_finish',
+      call_id: 'tool-1',
+      ok: true,
+      subagent: { agent: 'trend_analyst', usage: { total_tokens: 'many' } },
+    },
+  ]) {
+    assert.throws(
+      () => parseAssistantStreamEvent(JSON.stringify(event)),
+      AssistantStreamProtocolError,
+      `accepted ${JSON.stringify(event)}`,
+    )
+  }
+})
+
+test('rejects a specialist run that finishes without starting or changes identity', async () => {
+  const orphanFinish = wireEvents([
+    { type: 'start', model: 'MiniMax-M3' },
+    { type: 'subagent_finish', call_id: 'tool-1', ok: true, subagent: { agent: 'trend_analyst' } },
+    completeEvent(),
+  ])
+  await assert.rejects(
+    readAssistantStream(textStream(orphanFinish), () => {}),
+    AssistantStreamProtocolError,
+  )
+
+  const switched = wireEvents([
+    { type: 'start', model: 'MiniMax-M3' },
+    { type: 'subagent_start', call_id: 'tool-1', subagent: { agent: 'trend_analyst' } },
+    { type: 'subagent_finish', call_id: 'tool-1', ok: true, subagent: { agent: 'cost_auditor' } },
+    completeEvent(),
+  ])
+  await assert.rejects(
+    readAssistantStream(textStream(switched), () => {}),
+    AssistantStreamProtocolError,
+  )
+
+  const unfinished = wireEvents([
+    { type: 'start', model: 'MiniMax-M3' },
+    { type: 'subagent_start', call_id: 'tool-1', subagent: { agent: 'trend_analyst' } },
+    completeEvent(),
+  ])
+  await assert.rejects(
+    readAssistantStream(textStream(unfinished), () => {}),
+    AssistantStreamProtocolError,
   )
 })
 
@@ -87,7 +184,16 @@ test('parses tool input/output, per-call durations, session ids, and canonical t
       result: { ok: true, data: { sessions: 4 } },
       duration_ms: 32,
     }],
+    subagents: [],
+    usage: { requests: 2, input_tokens: 900, output_tokens: 120, total_tokens: 1020 },
+    rounds: 2,
+    duration_ms: 1800,
+    provider: 'minimax',
+    agent: 'analyst',
+    notices: ['Cost scope: source costs are not additive.'],
     session_id: 'cs_0123456789abcdef0123456789abcdef',
+    session_title: 'How is usage?',
+    session_usage: { requests: 4, input_tokens: 1800, output_tokens: 240, total_tokens: 2040 },
   }
 
   assert.deepEqual(parseAssistantStreamEvent(JSON.stringify(toolStart)), toolStart)

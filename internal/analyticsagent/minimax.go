@@ -283,6 +283,9 @@ type ChatResponse struct {
 	Content          string
 	ToolCalls        []ToolCall
 	AssistantMessage json.RawMessage
+	// Usage is the provider's token accounting for this single round. It stays
+	// zero when the provider does not report counters.
+	Usage Usage
 }
 
 type baseResponse struct {
@@ -309,8 +312,15 @@ type wireChatRequest struct {
 	Thinking            struct {
 		Type string `json:"type"`
 	} `json:"thinking"`
-	ReasoningSplit bool `json:"reasoning_split"`
-	Stream         bool `json:"stream"`
+	ReasoningSplit bool               `json:"reasoning_split"`
+	Stream         bool               `json:"stream"`
+	StreamOptions  *wireStreamOptions `json:"stream_options,omitempty"`
+}
+
+// wireStreamOptions asks for the terminal usage chunk. Providers that do not
+// implement it simply omit usage, which the loop already tolerates.
+type wireStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 func makeWireChatPayload(request ChatRequest, stream bool) ([]byte, error) {
@@ -352,6 +362,9 @@ func makeWireChatPayload(request ChatRequest, stream bool) ([]byte, error) {
 		Stream:              stream,
 	}
 	wireRequest.Thinking.Type = "adaptive"
+	if stream {
+		wireRequest.StreamOptions = &wireStreamOptions{IncludeUsage: true}
+	}
 
 	payload, err := json.Marshal(wireRequest)
 	if err != nil {
@@ -378,7 +391,8 @@ func (c *MiniMaxClient) Chat(ctx context.Context, request ChatRequest) (*ChatRes
 			FinishReason string          `json:"finish_reason"`
 			Message      json.RawMessage `json:"message"`
 		} `json:"choices"`
-		BaseResp baseResponse `json:"base_resp"`
+		Usage    json.RawMessage `json:"usage"`
+		BaseResp baseResponse    `json:"base_resp"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, &ProviderError{Operation: "decode chat completion", Cause: err}
@@ -428,11 +442,22 @@ func (c *MiniMaxClient) Chat(ctx context.Context, request ChatRequest) (*ChatRes
 		Content:          parsedMessage.Content,
 		ToolCalls:        parsedMessage.ToolCalls,
 		AssistantMessage: bytes.Clone(choice.Message),
+		Usage:            requestUsage(parseUsage(response.Usage)),
 	}, nil
+}
+
+// requestUsage guarantees that a completed round is always counted, even when
+// the provider omitted its token counters entirely.
+func requestUsage(usage Usage) Usage {
+	if usage.Requests == 0 {
+		usage.Requests = 1
+	}
+	return usage
 }
 
 type streamChatChunk struct {
 	Choices  []streamChatChoice `json:"choices"`
+	Usage    json.RawMessage    `json:"usage"`
 	BaseResp baseResponse       `json:"base_resp"`
 }
 
@@ -493,6 +518,7 @@ type streamAssistantAccumulator struct {
 	extraAssistantFields    map[string]json.RawMessage
 	providerFinishReason    string
 	providerFinishReasonSet bool
+	usage                   Usage
 }
 
 // ChatStream performs one streamed M3 turn. MiniMax deployments have emitted
@@ -562,6 +588,11 @@ func (c *MiniMaxClient) ChatStream(ctx context.Context, request ChatRequest, onC
 		}
 		if err := classifyBaseResponse("stream chat completion", chunk.BaseResp); err != nil {
 			return nil, err
+		}
+		// Usage arrives in a terminal chunk that usually carries no choices.
+		// Providers may also repeat it; the last complete report wins.
+		if usage := parseUsage(chunk.Usage); usage.HasTokens() {
+			accumulator.usage = usage
 		}
 		for _, choice := range chunk.Choices {
 			if choice.Index != 0 {
@@ -878,6 +909,7 @@ func (a *streamAssistantAccumulator) response() (*ChatResponse, error) {
 		Content:          a.content,
 		ToolCalls:        toolCalls,
 		AssistantMessage: assistantMessage,
+		Usage:            requestUsage(a.usage),
 	}, nil
 }
 

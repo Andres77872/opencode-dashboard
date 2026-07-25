@@ -24,6 +24,10 @@ const (
 	defaultDailyLimit = 120
 	maxDailyLimit     = 1000
 	maxAggregateTopN  = 25
+	// Published model, provider, and tool identifiers are short; anything
+	// longer is not a product name.
+	maxPublicIdentifierBytes = 96
+	maxProjectNameBytes      = 64
 )
 
 var errInvalidToolInput = errors.New("invalid analytics tool input")
@@ -101,6 +105,24 @@ func NewToolRegistry(registry *source.Registry) *ToolRegistry {
 	return &ToolRegistry{registry: registry, projectRefKey: key}
 }
 
+// DefinitionsFor returns the definitions for an agent's tool allowlist, in the
+// registry's canonical order. Names outside the registry are ignored, so a
+// roster typo can only reduce an agent's reach, never widen it.
+func (r *ToolRegistry) DefinitionsFor(allowed []string) []ToolDefinition {
+	permitted := make(map[string]struct{}, len(allowed))
+	for _, name := range allowed {
+		permitted[name] = struct{}{}
+	}
+	all := r.Definitions()
+	result := make([]ToolDefinition, 0, len(all))
+	for _, definition := range all {
+		if _, ok := permitted[definition.Name]; ok {
+			result = append(result, definition)
+		}
+	}
+	return result
+}
+
 func (r *ToolRegistry) Definitions() []ToolDefinition {
 	return []ToolDefinition{
 		{
@@ -130,7 +152,7 @@ func (r *ToolRegistry) Definitions() []ToolDefinition {
 		},
 		{
 			Name:        "get_session_usage",
-			Description: "Rank coding sessions for one explicit source by recency, cost, or message volume using process-scoped opaque session references and aggregate metrics. Session titles, prompts, and transcripts are never returned.",
+			Description: "Rank coding sessions for one explicit source by recency, cost, or message volume using opaque session references and aggregate metrics, plus the project each session belongs to. Session titles, prompts, and transcripts are never returned.",
 			Parameters:  rawSchema(`{"type":"object","properties":{"source":{"type":"string"},"period":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":50},"sort":{"type":"string","enum":["newest","oldest","cost","messages"]}},"required":["source"],"additionalProperties":false}`),
 		},
 		{
@@ -145,7 +167,7 @@ func (r *ToolRegistry) Definitions() []ToolDefinition {
 		},
 		{
 			Name:        "get_project_usage",
-			Description: "Rank projects using process-scoped opaque project references and aggregate metrics. Local project IDs, names, and paths are never returned.",
+			Description: "Rank projects by aggregate metrics. Each row carries a stable project_ref and, when it is safe to read, the project's own name without its directories. Local project IDs and filesystem paths are never returned.",
 			Parameters:  rawSchema(sourcePeriodSchema(true)),
 		},
 	}
@@ -731,8 +753,11 @@ type safeSourceOverview struct {
 }
 
 type safeProjectMetric struct {
-	Rank           int                 `json:"rank"`
+	Rank int `json:"rank"`
+	// ProjectRef is the stable pseudonym; ProjectName is the leaf name only,
+	// present when it is safe to read, so rankings can be named in a report.
 	ProjectRef     string              `json:"project_ref"`
+	ProjectName    string              `json:"project_name,omitempty"`
 	SourceID       string              `json:"source_id,omitempty"`
 	Sessions       int64               `json:"sessions"`
 	Messages       int64               `json:"messages"`
@@ -929,8 +954,11 @@ type safeDimensionTrend struct {
 }
 
 type safeDimensionDay struct {
-	Date           string              `json:"date"`
+	Date string `json:"date"`
+	// DimensionKey is readable for models and tools and an opaque reference for
+	// projects, which carry their leaf name in DimensionName when it is safe.
 	DimensionKey   string              `json:"dimension_key"`
+	DimensionName  string              `json:"dimension_name,omitempty"`
 	Sessions       int64               `json:"sessions"`
 	Messages       int64               `json:"messages"`
 	Cost           float64             `json:"cost"`
@@ -948,6 +976,7 @@ func safeDimensionTrendFrom(value stats.DailyDimensionStats, dimension string, l
 			sourceID = value.SourceID
 		}
 		dimensionKey := ""
+		dimensionName := ""
 		switch dimension {
 		case "model":
 			dimensionKey = safeOutboundIdentifier(key, "model", day.Dimension)
@@ -955,9 +984,10 @@ func safeDimensionTrendFrom(value stats.DailyDimensionStats, dimension string, l
 			dimensionKey = safeOutboundIdentifier(key, "tool", day.Dimension)
 		default:
 			dimensionKey = opaqueProjectRef(key, sourceID, day.Dimension)
+			dimensionName = safeProjectName(day.Dimension)
 		}
 		entries = append(entries, safeDimensionDay{
-			Date: safeDate(day.Date), DimensionKey: dimensionKey,
+			Date: safeDate(day.Date), DimensionKey: dimensionKey, DimensionName: dimensionName,
 			Sessions: day.Sessions, Messages: day.Messages, Cost: day.Cost, Tokens: day.Tokens,
 			CostStatus: safeCostStatus(day.CostStatus), CostProvenance: safeProvenance(day.CostProvenance, key),
 		})
@@ -983,9 +1013,12 @@ type safeSessionList struct {
 }
 
 type safeSession struct {
-	Rank           int                 `json:"rank"`
+	Rank int `json:"rank"`
+	// Session titles are the user's own first prompt and never travel; the
+	// project a session belongs to is named the same way rankings are.
 	SessionRef     string              `json:"session_ref"`
 	ProjectRef     string              `json:"project_ref,omitempty"`
+	ProjectName    string              `json:"project_name,omitempty"`
 	StartedAt      string              `json:"started_at,omitempty"`
 	LastActiveAt   string              `json:"last_active_at,omitempty"`
 	Messages       int64               `json:"messages"`
@@ -1011,10 +1044,11 @@ func safeSessionsFrom(value stats.SessionList, limit int, key []byte) safeSessio
 			projectRef = opaqueProjectRef(key, sourceID, session.ProjectID)
 		}
 		result.Sessions = append(result.Sessions, safeSession{
-			Rank:       i + 1,
-			SessionRef: opaqueValueRef(key, "session", sourceID+"\x00"+session.ID),
-			ProjectRef: projectRef,
-			StartedAt:  safeSessionTime(session.TimeCreated), LastActiveAt: safeSessionTime(session.TimeUpdated),
+			Rank:        i + 1,
+			SessionRef:  opaqueValueRef(key, "session", sourceID+"\x00"+session.ID),
+			ProjectRef:  projectRef,
+			ProjectName: safeProjectName(session.ProjectName),
+			StartedAt:   safeSessionTime(session.TimeCreated), LastActiveAt: safeSessionTime(session.TimeUpdated),
 			Messages: session.MessageCount, Cost: session.Cost,
 			CostStatus: safeCostStatus(session.CostStatus), CostProvenance: safeProvenance(session.CostProvenance, key),
 		})
@@ -1054,7 +1088,8 @@ func safeProjectsFrom(value stats.ProjectStats, limit int, projectRefKey []byte)
 
 func safeProjectFrom(value stats.ProjectEntry, rank int, projectRefKey []byte) safeProjectMetric {
 	return safeProjectMetric{
-		Rank: rank, ProjectRef: opaqueProjectRef(projectRefKey, value.SourceID, value.ProjectID), SourceID: safeSourceRef(projectRefKey, value.SourceID),
+		Rank: rank, ProjectRef: opaqueProjectRef(projectRefKey, value.SourceID, value.ProjectID),
+		ProjectName: safeProjectName(value.ProjectName), SourceID: safeSourceRef(projectRefKey, value.SourceID),
 		Sessions: value.Sessions, Messages: value.Messages, Cost: value.Cost, Tokens: value.Tokens,
 		CostStatus: safeCostStatus(value.CostStatus), CostProvenance: safeProvenance(value.CostProvenance, projectRefKey),
 	}
@@ -1178,60 +1213,77 @@ func safeSourceRefs(key []byte, values []string) []string {
 	return result
 }
 
+// safeOutboundIdentifier decides whether a model, provider, tool, or pricing
+// identifier travels readable. These are published product identifiers, and
+// naming them is the entire point of a usage report: a ranking of
+// "model-7f3a9b…" answers nothing. Values are therefore passed through whenever
+// they have the shape of an identifier, and pseudonymized only when they look
+// like local state a report has no business quoting.
+//
+// A fixed allowlist is deliberately not used here: model and tool catalogs
+// change constantly, and an unknown-but-ordinary name like a new model release
+// would otherwise be reported as an unreadable pseudonym.
 func safeOutboundIdentifier(key []byte, prefix, value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return ""
 	}
-	if isSafePublicIdentifier(value) {
-		switch prefix {
-		case "provider":
-			if isKnownProviderIdentifier(value) {
-				return value
-			}
-		case "tool":
-			if isKnownToolIdentifier(value) {
-				return value
-			}
-		}
+	if isPublicIdentifier(value) {
+		return value
 	}
 	return opaqueValueRef(key, prefix, value)
 }
 
-func isSafePublicIdentifier(value string) bool {
-	if len(value) == 0 || len(value) > 128 {
+// isPublicIdentifier accepts the shape of a published identifier, such as
+// "gpt-5.6-sol", "claude-opus-5", "anthropic/claude-opus-5", "MiniMax-M3", or
+// "mcp__linear__create_issue". It rejects anything shaped like local state:
+// filesystem paths, home directories, URLs, values containing whitespace or
+// control characters, and oversized values.
+func isPublicIdentifier(value string) bool {
+	if len(value) == 0 || len(value) > maxPublicIdentifierBytes {
+		return false
+	}
+	// A path, a URL, a relative reference, or a home directory is local
+	// context, never a product name.
+	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, "~") || strings.HasPrefix(value, ".") ||
+		strings.Contains(value, "..") || strings.Contains(value, "://") || strings.Count(value, "/") > 2 {
 		return false
 	}
 	for _, char := range value {
 		alphaNumeric := (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9')
-		if !alphaNumeric && !strings.ContainsRune("._:@+-", char) {
+		if !alphaNumeric && !strings.ContainsRune("._:@+-/", char) {
 			return false
 		}
 	}
 	return true
 }
 
-func isKnownProviderIdentifier(value string) bool {
-	switch strings.ToLower(value) {
-	case "openai", "anthropic", "google", "google-vertex", "vertex", "minimax", "minimax-coding-plan",
-		"deepseek", "mistral", "groq", "openrouter", "azure", "azure-openai", "aws-bedrock",
-		"bedrock", "xai", "cohere", "ollama", "github-copilot", "codex", "claude_code", "opencode":
-		return true
-	default:
-		return false
+// safeProjectName exposes only the leaf name of a project, never the directory
+// structure that led to it, so a report can say which project dominates without
+// disclosing where it lives. An unusable or suspicious name is dropped, leaving
+// the opaque reference as the only handle.
+func safeProjectName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
 	}
-}
-
-func isKnownToolIdentifier(value string) bool {
-	switch strings.ToLower(value) {
-	case "bash", "shell", "terminal", "execute", "exec", "exec_command", "read", "write", "edit",
-		"apply_patch", "patch", "grep", "rg", "glob", "find", "list", "ls", "search", "webfetch",
-		"web_fetch", "websearch", "web_search", "task", "todowrite", "todo_write", "notebookedit",
-		"notebook_edit", "multi_tool_use", "computer", "python", "view_image", "imagegen":
-		return true
-	default:
-		return false
+	// Local project identities are frequently paths; keep the leaf only.
+	for _, separator := range []string{"/", "\\"} {
+		if index := strings.LastIndex(value, separator); index >= 0 {
+			value = value[index+1:]
+		}
 	}
+	value = strings.TrimSpace(strings.Trim(value, "-_. "))
+	if value == "" || len(value) > maxProjectNameBytes {
+		return ""
+	}
+	for _, char := range value {
+		alphaNumeric := (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9')
+		if !alphaNumeric && !strings.ContainsRune("._ +-", char) {
+			return ""
+		}
+	}
+	return value
 }
 
 func safeDate(value string) string {

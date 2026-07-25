@@ -37,7 +37,7 @@ type AssistantStreamingService interface {
 // When absent, chat still works statelessly and the session endpoints report
 // persistence as unavailable.
 type AssistantChatStore interface {
-	AppendTurn(context.Context, chatstore.Turn) (string, error)
+	AppendTurn(context.Context, chatstore.Turn) (chatstore.Receipt, error)
 	ListSessions(context.Context, int) ([]chatstore.Session, error)
 	GetSession(context.Context, string) (*chatstore.SessionDetail, error)
 	DeleteSession(context.Context, string) (bool, error)
@@ -60,11 +60,13 @@ func (h *Handlers) AssistantStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSONNoStore(w, http.StatusOK, status)
 }
 
-// assistantChatResponseBody extends the canonical chat result with the id of
-// the persisted session the turn was appended to (empty without persistence).
+// assistantChatResponseBody extends the canonical chat result with where the
+// turn was persisted (absent without persistence).
 type assistantChatResponseBody struct {
 	analyticsagent.ChatResult
-	SessionID string `json:"session_id,omitempty"`
+	SessionID    string           `json:"session_id,omitempty"`
+	SessionTitle string           `json:"session_title,omitempty"`
+	SessionUsage *chatstore.Usage `json:"session_usage,omitempty"`
 }
 
 func (h *Handlers) AssistantChat(w http.ResponseWriter, r *http.Request) {
@@ -95,8 +97,13 @@ func (h *Handlers) AssistantChat(w http.ResponseWriter, r *http.Request) {
 		writeAssistantServiceError(w, err)
 		return
 	}
-	sessionID := h.persistAssistantTurn(r.Context(), input, result)
-	writeJSONNoStore(w, http.StatusOK, assistantChatResponseBody{ChatResult: result, SessionID: sessionID})
+	body := assistantChatResponseBody{ChatResult: result}
+	if receipt, persisted := h.persistAssistantTurn(r.Context(), input, result); persisted {
+		body.SessionID = receipt.SessionID
+		body.SessionTitle = receipt.Title
+		body.SessionUsage = &receipt.Session
+	}
+	writeJSONNoStore(w, http.StatusOK, body)
 }
 
 // checkAssistantChatSession rejects turns addressed to a session that cannot
@@ -122,42 +129,97 @@ func (h *Handlers) checkAssistantChatSession(w http.ResponseWriter, ctx context.
 	return true
 }
 
-// persistAssistantTurn appends the completed exchange to the durable chat log.
-// Persistence failures are logged and never fail the chat itself.
-func (h *Handlers) persistAssistantTurn(ctx context.Context, input analyticsagent.ChatInput, result analyticsagent.ChatResult) string {
+// persistAssistantTurn appends the completed exchange — prompt, answer, every
+// tool call, every specialist run, and the turn's accounting — to the durable
+// chat log. Persistence failures are logged and never fail the chat itself.
+func (h *Handlers) persistAssistantTurn(ctx context.Context, input analyticsagent.ChatInput, result analyticsagent.ChatResult) (chatstore.Receipt, bool) {
 	if h.chatlog == nil || len(input.Messages) == 0 {
-		return ""
+		return chatstore.Receipt{}, false
 	}
 	prompt := input.Messages[len(input.Messages)-1]
 	if prompt.Role != "user" {
-		return ""
+		return chatstore.Receipt{}, false
 	}
-	toolCalls := make([]chatstore.ToolCall, 0, len(result.ToolCalls))
-	for index, call := range result.ToolCalls {
-		toolCalls = append(toolCalls, chatstore.ToolCall{
-			Index: index, Name: call.Name,
-			Arguments: call.Arguments, Result: call.Result,
-			OK: call.OK, DurationMS: call.DurationMS,
-		})
-	}
+
 	// The chat may have been canceled-adjacent; persist with a background-safe
 	// context so a browser disconnect after completion cannot lose the turn.
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	sessionID, err := h.chatlog.AppendTurn(persistCtx, chatstore.Turn{
+	receipt, err := h.chatlog.AppendTurn(persistCtx, chatstore.Turn{
 		SessionID:          input.SessionID,
-		Provider:           "minimax",
+		Provider:           storedProvider(result),
 		Model:              result.Model,
+		Agent:              string(result.Agent),
+		ConsentVersion:     input.ConsentVersion,
+		Context:            storedTurnContext(input.Context),
 		UserContent:        prompt.Content,
 		AssistantContent:   result.Message.Content,
 		AssistantSignature: result.Message.Signature,
-		ToolCalls:          toolCalls,
+		Rounds:             result.Rounds,
+		DurationMS:         result.DurationMS,
+		Usage:              storedUsage(result.Usage),
+		Notices:            result.Notices,
+		ToolCalls:          storedToolCalls(result.ToolCalls),
+		Subagents:          storedSubagentRuns(result.Subagents),
 	})
 	if err != nil {
 		h.logger.Error("assistant chat turn was not persisted", "error", err)
-		return ""
+		return chatstore.Receipt{}, false
 	}
-	return sessionID
+	return receipt, true
+}
+
+func storedProvider(result analyticsagent.ChatResult) string {
+	if provider := strings.TrimSpace(result.Provider); provider != "" {
+		return provider
+	}
+	return analyticsagent.ProviderMiniMax
+}
+
+func storedTurnContext(value *analyticsagent.BrowserContext) chatstore.TurnContext {
+	if value == nil {
+		return chatstore.TurnContext{}
+	}
+	return chatstore.TurnContext{
+		Route: value.Route, Source: value.Source, Period: value.Period, Timezone: value.Timezone,
+	}
+}
+
+func storedUsage(value analyticsagent.Usage) chatstore.Usage {
+	return chatstore.Usage{
+		Requests:          value.Requests,
+		InputTokens:       value.InputTokens,
+		OutputTokens:      value.OutputTokens,
+		CachedInputTokens: value.CachedInputTokens,
+		ReasoningTokens:   value.ReasoningTokens,
+		TotalTokens:       value.TotalTokens,
+	}
+}
+
+func storedToolCalls(calls []analyticsagent.ToolCallRecord) []chatstore.ToolCall {
+	stored := make([]chatstore.ToolCall, 0, len(calls))
+	for index, call := range calls {
+		stored = append(stored, chatstore.ToolCall{
+			Index: index, Name: call.Name, CallRef: call.CallID,
+			ParentCallRef: call.ParentCallID, Agent: string(call.Agent), Round: call.Round,
+			Arguments: call.Arguments, Result: call.Result,
+			OK: call.OK, DurationMS: call.DurationMS,
+		})
+	}
+	return stored
+}
+
+func storedSubagentRuns(runs []analyticsagent.SubagentRunRecord) []chatstore.SubagentRun {
+	stored := make([]chatstore.SubagentRun, 0, len(runs))
+	for index, run := range runs {
+		stored = append(stored, chatstore.SubagentRun{
+			Index: index, CallRef: run.CallID, Agent: string(run.Agent), Title: run.Title,
+			Task: run.Task, Status: run.Status, Report: run.Report, Error: run.Error,
+			Rounds: run.Rounds, ToolsUsed: run.ToolsUsed, DurationMS: run.DurationMS,
+			Usage: storedUsage(run.Usage),
+		})
+	}
+	return stored
 }
 
 func (h *Handlers) AssistantSessions(w http.ResponseWriter, r *http.Request) {
@@ -268,7 +330,7 @@ func (h *Handlers) AssistantChatStream(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	sessionID := h.persistAssistantTurn(r.Context(), input, result)
+	receipt, persisted := h.persistAssistantTurn(r.Context(), input, result)
 
 	if err := stream.start(result.Model); err != nil {
 		return
@@ -277,22 +339,39 @@ func (h *Handlers) AssistantChatStream(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = analyticsagent.MiniMaxM3Model
 	}
-	toolsUsed := result.ToolsUsed
-	if toolsUsed == nil {
-		toolsUsed = make([]string, 0)
+	frame := assistantStreamCompleteFrame{
+		Type:       "complete",
+		Message:    result.Message,
+		Model:      model,
+		Provider:   storedProvider(result),
+		Agent:      result.Agent,
+		Rounds:     result.Rounds,
+		DurationMS: result.DurationMS,
+		Usage:      result.Usage,
+		ToolsUsed:  nonNilStrings(result.ToolsUsed),
+		ToolCalls:  result.ToolCalls,
+		Subagents:  result.Subagents,
+		Notices:    result.Notices,
 	}
-	toolCalls := result.ToolCalls
-	if toolCalls == nil {
-		toolCalls = make([]analyticsagent.ToolCallRecord, 0)
+	if frame.ToolCalls == nil {
+		frame.ToolCalls = make([]analyticsagent.ToolCallRecord, 0)
 	}
-	_ = stream.write(assistantStreamCompleteFrame{
-		Type:      "complete",
-		Message:   result.Message,
-		Model:     model,
-		ToolsUsed: toolsUsed,
-		ToolCalls: toolCalls,
-		SessionID: sessionID,
-	})
+	if frame.Subagents == nil {
+		frame.Subagents = make([]analyticsagent.SubagentRunRecord, 0)
+	}
+	if persisted {
+		frame.SessionID = receipt.SessionID
+		frame.SessionTitle = receipt.Title
+		frame.SessionUsage = &receipt.Session
+	}
+	_ = stream.write(frame)
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return make([]string, 0)
+	}
+	return values
 }
 
 func decodeAssistantChatInput(w http.ResponseWriter, r *http.Request) (analyticsagent.ChatInput, bool) {
@@ -328,24 +407,53 @@ type assistantNDJSONStream struct {
 }
 
 type assistantStreamProgressFrame struct {
-	Type       string          `json:"type"`
-	Delta      string          `json:"delta,omitempty"`
-	CallID     string          `json:"call_id,omitempty"`
-	Name       string          `json:"name,omitempty"`
-	OK         *bool           `json:"ok,omitempty"`
-	Model      string          `json:"model,omitempty"`
-	Arguments  json.RawMessage `json:"arguments,omitempty"`
-	Result     json.RawMessage `json:"result,omitempty"`
-	DurationMS int64           `json:"duration_ms,omitempty"`
+	Type string `json:"type"`
+	// Agent, ParentCallID, and Round let the browser attribute progress to the
+	// lead analyst or to a specialist working under a delegation.
+	Agent        analyticsagent.AgentID `json:"agent,omitempty"`
+	ParentCallID string                 `json:"parent_call_id,omitempty"`
+	Round        int                    `json:"round,omitempty"`
+	Delta        string                 `json:"delta,omitempty"`
+	CallID       string                 `json:"call_id,omitempty"`
+	Name         string                 `json:"name,omitempty"`
+	OK           *bool                  `json:"ok,omitempty"`
+	Model        string                 `json:"model,omitempty"`
+	Arguments    json.RawMessage        `json:"arguments,omitempty"`
+	Result       json.RawMessage        `json:"result,omitempty"`
+	DurationMS   int64                  `json:"duration_ms,omitempty"`
+	Subagent     *assistantSubagentInfo `json:"subagent,omitempty"`
+}
+
+// assistantSubagentInfo describes a delegated investigation as it starts and as
+// it finishes.
+type assistantSubagentInfo struct {
+	Agent     analyticsagent.AgentID `json:"agent"`
+	Title     string                 `json:"title"`
+	Task      string                 `json:"task"`
+	Status    string                 `json:"status,omitempty"`
+	Report    string                 `json:"report,omitempty"`
+	Rounds    int                    `json:"rounds,omitempty"`
+	ToolsUsed []string               `json:"tools_used,omitempty"`
+	Usage     *analyticsagent.Usage  `json:"usage,omitempty"`
+	Error     string                 `json:"error,omitempty"`
 }
 
 type assistantStreamCompleteFrame struct {
-	Type      string                          `json:"type"`
-	Message   analyticsagent.BrowserMessage   `json:"message"`
-	Model     string                          `json:"model"`
-	ToolsUsed []string                        `json:"tools_used"`
-	ToolCalls []analyticsagent.ToolCallRecord `json:"tool_calls"`
-	SessionID string                          `json:"session_id,omitempty"`
+	Type         string                             `json:"type"`
+	Message      analyticsagent.BrowserMessage      `json:"message"`
+	Model        string                             `json:"model"`
+	Provider     string                             `json:"provider,omitempty"`
+	Agent        analyticsagent.AgentID             `json:"agent,omitempty"`
+	Rounds       int                                `json:"rounds,omitempty"`
+	DurationMS   int64                              `json:"duration_ms,omitempty"`
+	Usage        analyticsagent.Usage               `json:"usage"`
+	ToolsUsed    []string                           `json:"tools_used"`
+	ToolCalls    []analyticsagent.ToolCallRecord    `json:"tool_calls"`
+	Subagents    []analyticsagent.SubagentRunRecord `json:"subagents"`
+	Notices      []string                           `json:"notices,omitempty"`
+	SessionID    string                             `json:"session_id,omitempty"`
+	SessionTitle string                             `json:"session_title,omitempty"`
+	SessionUsage *chatstore.Usage                   `json:"session_usage,omitempty"`
 }
 
 type assistantStreamErrorFrame struct {
@@ -387,6 +495,16 @@ func (s *assistantNDJSONStream) forward(event analyticsagent.StreamEvent) error 
 	switch event.Type {
 	case analyticsagent.StreamEventStart:
 		return s.start(event.Model)
+	case analyticsagent.StreamEventRoundStart:
+		if event.Round <= 0 {
+			return errors.New("invalid assistant round-start stream event")
+		}
+		if err := s.start(event.Model); err != nil {
+			return err
+		}
+		return s.write(assistantStreamProgressFrame{
+			Type: event.Type, Agent: event.Agent, Round: event.Round, ParentCallID: event.ParentCallID,
+		})
 	case analyticsagent.StreamEventContentDelta:
 		if event.Delta == "" {
 			return nil
@@ -407,7 +525,10 @@ func (s *assistantNDJSONStream) forward(event analyticsagent.StreamEvent) error 
 		if err := s.start(event.Model); err != nil {
 			return err
 		}
-		return s.write(assistantStreamProgressFrame{Type: event.Type, CallID: event.CallID, Name: event.Name, Arguments: safeFrameJSON(event.Arguments)})
+		return s.write(assistantStreamProgressFrame{
+			Type: event.Type, Agent: event.Agent, ParentCallID: event.ParentCallID, Round: event.Round,
+			CallID: event.CallID, Name: event.Name, Arguments: safeFrameJSON(event.Arguments),
+		})
 	case analyticsagent.StreamEventToolFinish:
 		if strings.TrimSpace(event.CallID) == "" || strings.TrimSpace(event.Name) == "" || event.OK == nil {
 			return errors.New("invalid assistant tool-finish stream event")
@@ -415,10 +536,43 @@ func (s *assistantNDJSONStream) forward(event analyticsagent.StreamEvent) error 
 		if err := s.start(event.Model); err != nil {
 			return err
 		}
-		return s.write(assistantStreamProgressFrame{Type: event.Type, CallID: event.CallID, Name: event.Name, OK: event.OK, Result: safeFrameJSON(event.Result), DurationMS: event.DurationMS})
+		return s.write(assistantStreamProgressFrame{
+			Type: event.Type, Agent: event.Agent, ParentCallID: event.ParentCallID, Round: event.Round,
+			CallID: event.CallID, Name: event.Name, OK: event.OK,
+			Result: safeFrameJSON(event.Result), DurationMS: event.DurationMS,
+		})
+	case analyticsagent.StreamEventSubagentStart, analyticsagent.StreamEventSubagentFinish:
+		if strings.TrimSpace(event.CallID) == "" || event.Subagent == nil || strings.TrimSpace(string(event.Subagent.Agent)) == "" {
+			return errors.New("invalid assistant subagent stream event")
+		}
+		if event.Type == analyticsagent.StreamEventSubagentFinish && event.OK == nil {
+			return errors.New("invalid assistant subagent stream event")
+		}
+		if err := s.start(event.Model); err != nil {
+			return err
+		}
+		return s.write(assistantStreamProgressFrame{
+			Type: event.Type, Agent: event.Agent, CallID: event.CallID, OK: event.OK,
+			DurationMS: event.DurationMS, Subagent: subagentFrame(event.Subagent),
+		})
 	default:
 		return errors.New("invalid assistant stream event")
 	}
+}
+
+func subagentFrame(value *analyticsagent.SubagentEvent) *assistantSubagentInfo {
+	if value == nil {
+		return nil
+	}
+	frame := &assistantSubagentInfo{
+		Agent: value.Agent, Title: value.Title, Task: value.Task, Status: value.Status,
+		Report: value.Report, Rounds: value.Rounds, ToolsUsed: value.ToolsUsed, Error: value.Error,
+	}
+	if value.Usage != nil {
+		usage := *value.Usage
+		frame.Usage = &usage
+	}
+	return frame
 }
 
 // safeFrameJSON keeps NDJSON frames well-formed even if an upstream event

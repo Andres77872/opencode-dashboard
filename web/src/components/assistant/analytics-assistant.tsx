@@ -33,13 +33,25 @@ import {
 } from '../../lib/assistant-position'
 import { usePeriodState } from '../../lib/use-period-state'
 import { boundAssistantHistory } from '../../lib/assistant-history'
+import { ActivityTrail } from './activity'
+import {
+  activitiesFromRecords,
+  activitiesFromStoredMessage,
+  applyStreamEvent,
+  countToolActivities,
+  formatDurationMs,
+  humanizeAgentName,
+  settleActivities,
+  usageSummary,
+  type Activity,
+} from '../../lib/assistant-activity'
 import type {
   AssistantChatSessionSummary,
   AssistantMessage,
   AssistantRequestContext,
   AssistantStatusResponse,
   AssistantStreamEvent,
-  AssistantToolCall,
+  AssistantUsage,
 } from '../../types/assistant'
 
 const PANEL_ID = 'analytics-assistant-panel'
@@ -59,15 +71,9 @@ const QUICK_PROMPTS = [
 interface DisplayMessage extends AssistantMessage {
   id: number
   streaming?: boolean
-  toolActivities?: StreamToolActivity[]
-}
-
-interface StreamToolActivity {
-  id: string
-  name: string
-  status: 'running' | 'complete' | 'failed'
-  arguments?: unknown
-  result?: unknown
+  activities?: Activity[]
+  usage?: AssistantUsage
+  rounds?: number
   durationMs?: number
 }
 
@@ -114,27 +120,8 @@ function samePosition(left: AssistantPosition | null, right: AssistantPosition):
   return left?.x === right.x && left.y === right.y
 }
 
-function humanizeToolName(value: string): string {
-  return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
-}
-
 function providerLabel(value: string): string {
   return value.trim().toLowerCase() === 'minimax' ? 'MiniMax' : value
-}
-
-function formatToolJSON(value: unknown): string {
-  if (value === undefined) return ''
-  try {
-    return JSON.stringify(value, null, 2) ?? ''
-  } catch {
-    return String(value)
-  }
-}
-
-function formatDuration(durationMs?: number): string {
-  if (durationMs === undefined || durationMs < 0) return ''
-  if (durationMs < 1000) return `${durationMs} ms`
-  return `${(durationMs / 1000).toFixed(durationMs < 10_000 ? 1 : 0)} s`
 }
 
 function formatSessionTime(updatedMs: number): string {
@@ -145,16 +132,19 @@ function formatSessionTime(updatedMs: number): string {
   return new Date(updatedMs).toLocaleDateString()
 }
 
-/** Maps a completed turn's canonical tool calls onto display activities. */
-function activitiesFromToolCalls(calls: AssistantToolCall[]): StreamToolActivity[] {
-  return calls.map((call) => ({
-    id: call.call_id,
-    name: call.name,
-    status: call.ok ? 'complete' : 'failed',
-    arguments: call.arguments,
-    result: call.result,
-    durationMs: call.duration_ms,
-  }))
+/** Describes a saved conversation without needing to open it. */
+function sessionMetaLine(session: AssistantChatSessionSummary): string {
+  const turns = session.turn_count ?? Math.ceil(session.message_count / 2)
+  const parts = [
+    formatSessionTime(session.updated_ms),
+    `${turns} ${turns === 1 ? 'question' : 'questions'}`,
+  ]
+  if (session.subagent_count) {
+    parts.push(`${session.subagent_count} ${session.subagent_count === 1 ? 'specialist' : 'specialists'}`)
+  }
+  const usage = usageSummary(session.usage)
+  if (usage) parts.push(usage)
+  return parts.join(' · ')
 }
 
 function AssistantGlyph({ size = 20 }: { size?: number }) {
@@ -210,8 +200,10 @@ function PrivacyDisclosure({
       <div>
         <h3>Before you start</h3>
         <p>
-          Your prompts and the aggregate usage metrics requested to answer them are sent to MiniMax.
-          Transcripts, source files, raw configuration, and secrets are not included.
+          Your prompts and the aggregate usage metrics requested to answer them are sent to MiniMax,
+          including the model, provider, and tool names behind those numbers and project names
+          without their directories — a report has to be able to name what it ranks.
+          Transcripts, prompts, session titles, file paths, raw configuration, and secrets are not included.
         </p>
         {status.privacy_notice && <p className="analytics-assistant-privacy-note">{status.privacy_notice}</p>}
       </div>
@@ -228,64 +220,26 @@ function PrivacyDisclosure({
   )
 }
 
-function ToolCallCard({ tool }: { tool: StreamToolActivity }) {
-  const [expanded, setExpanded] = useState(false)
-  const argumentsJSON = formatToolJSON(tool.arguments)
-  const resultJSON = formatToolJSON(tool.result)
-  const expandable = argumentsJSON !== '' || resultJSON !== ''
-  const duration = formatDuration(tool.durationMs)
-  const statusLabel = tool.status === 'running' ? 'Running' : tool.status === 'complete' ? 'Complete' : 'Failed'
-  return (
-    <div className={`analytics-assistant-tool-call ${tool.status}`}>
-      <button
-        type="button"
-        className="analytics-assistant-tool-call-header"
-        onClick={() => expandable && setExpanded((current) => !current)}
-        aria-expanded={expandable ? expanded : undefined}
-        disabled={!expandable}
-        title={expandable ? 'Show tool input and output' : undefined}
-      >
-        <span className="analytics-assistant-tool-state" aria-hidden="true">
-          {tool.status === 'running'
-            ? <i />
-            : <Icon name={tool.status === 'complete' ? 'check' : 'x'} size={11} />}
-        </span>
-        <Icon name="wrench" size={12} />
-        <span className="analytics-assistant-tool-name">{humanizeToolName(tool.name)}</span>
-        <small>
-          {statusLabel}
-          {duration && tool.status !== 'running' ? ` · ${duration}` : ''}
-        </small>
-        {expandable && (
-          <span className="analytics-assistant-tool-chevron" aria-hidden="true">
-            <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={13} />
-          </span>
-        )}
-      </button>
-      {expanded && expandable && (
-        <div className="analytics-assistant-tool-io">
-          {argumentsJSON !== '' && (
-            <div>
-              <span className="analytics-assistant-tool-io-label">Input</span>
-              <pre>{argumentsJSON}</pre>
-            </div>
-          )}
-          {resultJSON !== '' && (
-            <div>
-              <span className="analytics-assistant-tool-io-label">Output</span>
-              <pre>{resultJSON}</pre>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  )
+/** Reports what one answer cost once the turn is complete. */
+function MessageFooter({ message }: { message: DisplayMessage }) {
+  const activities = message.activities ?? []
+  const calls = countToolActivities(activities)
+  const specialists = activities.filter((activity) => activity.kind === 'specialist').length
+  const parts = [
+    message.rounds ? `${message.rounds} ${message.rounds === 1 ? 'round' : 'rounds'}` : '',
+    calls ? `${calls} ${calls === 1 ? 'call' : 'calls'}` : '',
+    specialists ? `${specialists} ${specialists === 1 ? 'specialist' : 'specialists'}` : '',
+    formatDurationMs(message.durationMs),
+    usageSummary(message.usage),
+  ].filter(Boolean)
+  if (parts.length === 0) return null
+  return <div className="analytics-assistant-message-footer">{parts.join(' · ')}</div>
 }
 
 function MessageRow({ message }: { message: DisplayMessage }) {
   const assistant = message.role === 'assistant'
   const hasContent = message.content.length > 0
-  const toolActivities = assistant ? message.toolActivities ?? [] : []
+  const activities = assistant ? message.activities ?? [] : []
   return (
     <article
       className={`analytics-assistant-message ${assistant ? 'assistant' : 'user'}${message.streaming ? ' streaming' : ''}`}
@@ -295,11 +249,7 @@ function MessageRow({ message }: { message: DisplayMessage }) {
         <span>{assistant ? 'Analytics assistant' : 'You'}</span>
         {message.streaming && <span className="analytics-assistant-stream-label">Live</span>}
       </div>
-      {toolActivities.length > 0 && (
-        <div className="analytics-assistant-tool-activity" aria-label="Analytics tool activity">
-          {toolActivities.map((tool) => <ToolCallCard key={tool.id} tool={tool} />)}
-        </div>
-      )}
+      <ActivityTrail activities={activities} />
       {hasContent && (
         <div className={`analytics-assistant-message-content${assistant ? ' markdown' : ''}`}>
           {assistant ? (
@@ -309,18 +259,20 @@ function MessageRow({ message }: { message: DisplayMessage }) {
           )}
         </div>
       )}
-      {message.streaming && !hasContent && toolActivities.length === 0 && (
+      {message.streaming && !hasContent && activities.length === 0 && (
         <div className="analytics-assistant-thinking compact" role="status">
           <AssistantGlyph size={15} />
           <span>Starting the report</span>
           <i /><i /><i />
         </div>
       )}
+      {assistant && !message.streaming && <MessageFooter message={message} />}
     </article>
   )
 }
 
-function Welcome({ onPrompt }: { onPrompt: (prompt: string) => void }) {
+function Welcome({ status, onPrompt }: { status: AssistantStatusResponse; onPrompt: (prompt: string) => void }) {
+  const specialists = status.specialists ?? []
   return (
     <div className="analytics-assistant-welcome">
       <AssistantGlyph size={22} />
@@ -333,6 +285,19 @@ function Welcome({ onPrompt }: { onPrompt: (prompt: string) => void }) {
           <button key={prompt} type="button" onClick={() => onPrompt(prompt)}>{prompt}</button>
         ))}
       </div>
+      {specialists.length > 0 && (
+        <div className="analytics-assistant-specialist-roster">
+          <span>Deeper questions are handed to specialists</span>
+          <ul>
+            {specialists.map((specialist) => (
+              <li key={specialist.id}>
+                <strong>{specialist.title || humanizeAgentName(specialist.id)}</strong>
+                <span>{specialist.purpose}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }
@@ -377,9 +342,7 @@ function SessionHistory({
                 title={session.title}
               >
                 <span className="analytics-assistant-history-title">{session.title}</span>
-                <span className="analytics-assistant-history-meta">
-                  {formatSessionTime(session.updated_ms)} · {session.message_count} messages
-                </span>
+                <span className="analytics-assistant-history-meta">{sessionMetaLine(session)}</span>
               </button>
               <button
                 type="button"
@@ -408,10 +371,13 @@ export function AnalyticsAssistant() {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [failedPrompt, setFailedPrompt] = useState<string | null>(null)
   const [liveMessage, setLiveMessage] = useState('')
   const [completedAnnouncement, setCompletedAnnouncement] = useState('')
   const [dragging, setDragging] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [sessionTitle, setSessionTitle] = useState<string | null>(null)
+  const [sessionUsage, setSessionUsage] = useState<AssistantUsage | undefined>(undefined)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historySessions, setHistorySessions] = useState<AssistantChatSessionSummary[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -494,8 +460,12 @@ export function AnalyticsAssistant() {
     return clampAssistantPosition(position, { width: rect.width, height: rect.height }, currentViewport())
   }, [])
 
+  // The panel only exists once status confirms availability, so placement must
+  // also re-run then. Without that dependency a position saved on a wider
+  // screen is never re-clamped and the panel stays parked off-viewport.
+  const panelVisible = status?.available === true && preferences.open
   useLayoutEffect(() => {
-    if (!preferences.open) return
+    if (!panelVisible) return
     const element = panelRef.current
     if (!element) return
 
@@ -526,7 +496,7 @@ export function AnalyticsAssistant() {
       window.visualViewport?.removeEventListener('resize', place)
       window.visualViewport?.removeEventListener('scroll', place)
     }
-  }, [preferences.open, preferences.minimized])
+  }, [panelVisible, preferences.minimized, consentAccepted])
 
   useEffect(() => {
     if (!preferences.open) return
@@ -653,8 +623,11 @@ export function AnalyticsAssistant() {
     setMessages([])
     setDraft('')
     setError(null)
+    setFailedPrompt(null)
     setCompletedAnnouncement('')
     setSessionId(null)
+    setSessionTitle(null)
+    setSessionUsage(undefined)
     setHistoryOpen(false)
     followStreamRef.current = true
     setLiveMessage('New conversation started.')
@@ -707,22 +680,24 @@ export function AnalyticsAssistant() {
     getAssistantSession(id, controller.signal)
       .then((detail) => {
         if (controller.signal.aborted) return
+        // A restored conversation must show exactly what the live turn showed:
+        // its evidence trail, its specialist findings, and what it cost.
         const restored: DisplayMessage[] = detail.messages.map((message) => ({
           id: messageIDRef.current++,
           role: message.role,
           content: message.content,
           signature: message.signature,
-          toolActivities: message.tool_calls?.map((call) => ({
-            id: `saved-${message.id}-${call.index}`,
-            name: call.name,
-            status: call.ok ? 'complete' as const : 'failed' as const,
-            arguments: call.arguments,
-            result: call.result,
-            durationMs: call.duration_ms,
-          })),
+          ...(message.role === 'assistant' ? {
+            activities: activitiesFromStoredMessage(message),
+            usage: message.usage,
+            rounds: message.rounds,
+            durationMs: message.duration_ms,
+          } : {}),
         }))
         setMessages(restored)
         setSessionId(detail.session.id)
+        setSessionTitle(detail.session.title)
+        setSessionUsage(detail.session.usage)
         setError(null)
         setHistoryOpen(false)
         setHistoryLoading(false)
@@ -747,6 +722,8 @@ export function AnalyticsAssistant() {
         setSessionId((current) => {
           if (current !== id) return current
           setMessages([])
+          setSessionTitle(null)
+          setSessionUsage(undefined)
           return null
         })
         setLiveMessage('Conversation deleted.')
@@ -771,7 +748,7 @@ export function AnalyticsAssistant() {
       role: 'assistant',
       content: '',
       streaming: true,
-      toolActivities: [],
+      activities: [],
     }
     const requestMessages = boundAssistantHistory(
       [...messages, userMessage].map(({ role, content, signature }) => ({ role, content, signature })),
@@ -786,6 +763,7 @@ export function AnalyticsAssistant() {
     setMessages((current) => [...current, userMessage, assistantMessage])
     setDraft('')
     setError(null)
+    setFailedPrompt(null)
     setCompletedAnnouncement('')
     setLiveMessage('Analyzing usage data…')
     setSending(true)
@@ -800,9 +778,21 @@ export function AnalyticsAssistant() {
           )))
         }
 
+        const foldActivity = () => {
+          updateResponse((message) => ({
+            ...message,
+            activities: applyStreamEvent(message.activities ?? [], event),
+          }))
+        }
+
         switch (event.type) {
           case 'start':
             setLiveMessage(`Connected to ${event.model}.`)
+            break
+          case 'round_start':
+            if (event.round > 1 && !event.parent_call_id) {
+              setLiveMessage(`Reasoning over the evidence (round ${event.round})…`)
+            }
             break
           case 'content_delta':
             if (event.delta !== '') {
@@ -815,30 +805,22 @@ export function AnalyticsAssistant() {
             setLiveMessage('Gathering analytics evidence…')
             break
           case 'tool_start':
-            updateResponse((message) => ({
-              ...message,
-              toolActivities: [
-                ...(message.toolActivities ?? []).filter((tool) => tool.id !== event.call_id),
-                { id: event.call_id, name: event.name, status: 'running', arguments: event.arguments },
-              ],
-            }))
-            setLiveMessage(`Running ${humanizeToolName(event.name)}…`)
+            foldActivity()
+            setLiveMessage(`Running ${humanizeAgentName(event.name)}…`)
             break
           case 'tool_finish':
-            updateResponse((message) => ({
-              ...message,
-              toolActivities: (message.toolActivities ?? []).map((tool) => (
-                tool.id === event.call_id
-                  ? {
-                      ...tool,
-                      status: event.ok ? 'complete' : 'failed',
-                      result: event.result ?? tool.result,
-                      durationMs: event.duration_ms ?? tool.durationMs,
-                    }
-                  : tool
-              )),
-            }))
-            setLiveMessage(`${humanizeToolName(event.name)} ${event.ok ? 'completed.' : 'failed safely.'}`)
+            foldActivity()
+            setLiveMessage(`${humanizeAgentName(event.name)} ${event.ok ? 'completed.' : 'failed safely.'}`)
+            break
+          case 'subagent_start':
+            foldActivity()
+            setLiveMessage(`${event.subagent.title || humanizeAgentName(event.subagent.agent)} is investigating…`)
+            break
+          case 'subagent_finish':
+            foldActivity()
+            setLiveMessage(
+              `${event.subagent.title || humanizeAgentName(event.subagent.agent)} ${event.ok ? 'reported a finding.' : 'could not finish.'}`,
+            )
             break
           case 'complete':
             break
@@ -860,22 +842,25 @@ export function AnalyticsAssistant() {
       pendingPromptRef.current = null
       setMessages((current) => current.map((message) => {
         if (message.id !== assistantMessage.id) return message
-        // Canonical tool records replace live activities so restored and live
+        // Canonical records replace live activities so restored and live
         // conversations render identically; fall back to the streamed ones.
-        const toolActivities = response.tool_calls.length > 0
-          ? activitiesFromToolCalls(response.tool_calls)
-          : (message.toolActivities ?? []).map((tool) => (
-              tool.status === 'running' ? { ...tool, status: 'complete' as const } : tool
-            ))
+        const activities = response.tool_calls.length > 0 || response.subagents.length > 0
+          ? activitiesFromRecords(response.tool_calls, response.subagents)
+          : settleActivities(message.activities ?? [])
         return {
           id: assistantMessage.id,
           role: 'assistant',
           content,
           signature: response.message.signature,
-          toolActivities,
+          activities,
+          usage: response.usage,
+          rounds: response.rounds,
+          durationMs: response.duration_ms,
         }
       }))
       if (response.session_id) setSessionId(response.session_id)
+      if (response.session_title) setSessionTitle(response.session_title)
+      if (response.session_usage) setSessionUsage(response.session_usage)
       setCompletedAnnouncement(`Analytics assistant: ${content}`)
       setLiveMessage(`Response complete with ${response.model || status?.model || 'the configured model'}.`)
     } catch (caught) {
@@ -883,6 +868,9 @@ export function AnalyticsAssistant() {
       pendingPromptRef.current = null
       setMessages((current) => current.filter((item) => item.id !== userMessage.id && item.id !== assistantMessage.id))
       setDraft(prompt)
+      // The prompt is kept verbatim so a transient failure costs one click,
+      // not a retyped question.
+      setFailedPrompt(prompt)
       setError(caught instanceof Error ? caught.message : 'The analytics request failed.')
       setLiveMessage('')
     } finally {
@@ -986,8 +974,13 @@ export function AnalyticsAssistant() {
       >
         <AssistantGlyph size={19} />
         <div className="analytics-assistant-title-block">
-          <strong id={`${PANEL_ID}-title`}>Analytics assistant</strong>
-          <span>{providerLabel(status.provider)} · {status.model}</span>
+          <strong id={`${PANEL_ID}-title`} title={sessionTitle ?? undefined}>
+            {sessionTitle ?? 'Analytics assistant'}
+          </strong>
+          <span>
+            {providerLabel(status.provider)} · {status.model}
+            {sessionUsage && usageSummary(sessionUsage) ? ` · ${usageSummary(sessionUsage)}` : ''}
+          </span>
         </div>
         <div className="analytics-assistant-header-actions">
           {messages.length > 0 && (
@@ -1040,7 +1033,7 @@ export function AnalyticsAssistant() {
             tabIndex={0}
             onScroll={updateMessageScrollFollow}
           >
-            {messages.length === 0 && <Welcome onPrompt={(prompt) => void submitPrompt(prompt)} />}
+            {messages.length === 0 && <Welcome status={status} onPrompt={(prompt) => void submitPrompt(prompt)} />}
             {messages.map((message) => <MessageRow key={message.id} message={message} />)}
           </div>
 
@@ -1053,7 +1046,22 @@ export function AnalyticsAssistant() {
             aria-live={completedAnnouncement ? 'off' : 'polite'}
             aria-atomic="true"
           >
-            {error ? <span className="error" role="alert">{error}</span> : <span>{liveMessage}</span>}
+            {error ? (
+              <>
+                <span className="error" role="alert">{error}</span>
+                {failedPrompt && (
+                  <button
+                    type="button"
+                    className="analytics-assistant-retry"
+                    onClick={() => void submitPrompt(failedPrompt)}
+                  >
+                    Retry
+                  </button>
+                )}
+              </>
+            ) : (
+              <span>{liveMessage}</span>
+            )}
           </div>
 
           <form className="analytics-assistant-composer" onSubmit={handleSubmit}>

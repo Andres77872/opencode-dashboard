@@ -858,6 +858,160 @@ body {
   color: var(--fg-faint);
 }
 
+/* A tool call made by a specialist is indented under the delegation. */
+.analytics-assistant-tool-call.nested {
+  background: var(--ink-850, var(--ink-800));
+}
+
+.analytics-assistant-tool-error {
+  margin: 0;
+  padding: 0 9px 8px 29px;
+  color: color-mix(in srgb, var(--danger) 75%, var(--fg-secondary));
+  font: 400 10.5px/1.4 var(--font-ui);
+}
+
+.analytics-assistant-specialist {
+  color: var(--fg-muted);
+  background: var(--ink-800);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border-subtle));
+  border-radius: var(--radius-md);
+  font: 500 11px/1.2 var(--font-ui);
+}
+
+.analytics-assistant-specialist.complete .analytics-assistant-tool-state {
+  color: var(--success);
+}
+
+.analytics-assistant-specialist.failed {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border-subtle));
+}
+
+.analytics-assistant-specialist.failed .analytics-assistant-tool-state {
+  color: var(--danger);
+}
+
+.analytics-assistant-specialist-header {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 14px 14px minmax(0, 1fr) auto 14px;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.analytics-assistant-specialist-header:hover {
+  background: var(--ink-750);
+}
+
+.analytics-assistant-specialist-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.analytics-assistant-specialist small {
+  color: var(--fg-faint);
+  font: 500 9px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.analytics-assistant-specialist-body {
+  display: grid;
+  gap: 8px;
+  padding: 4px 9px 9px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.analytics-assistant-specialist-body p {
+  margin: 0;
+  color: var(--fg-secondary);
+  font: 400 11px/1.5 var(--font-ui);
+}
+
+.analytics-assistant-specialist-task p {
+  color: var(--fg-muted);
+}
+
+.analytics-assistant-specialist-tools {
+  display: grid;
+  gap: 5px;
+}
+
+.analytics-assistant-specialist-usage {
+  color: var(--fg-faint);
+  font: 500 9.5px/1.3 var(--font-mono);
+}
+
+.analytics-assistant-specialist-roster {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+}
+
+.analytics-assistant-specialist-roster > span {
+  color: var(--fg-faint);
+  font: 600 9px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.analytics-assistant-specialist-roster ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.analytics-assistant-specialist-roster li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--fg-muted);
+  font: 400 10.5px/1.4 var(--font-ui);
+}
+
+.analytics-assistant-specialist-roster strong {
+  color: var(--fg-secondary);
+  font-weight: 600;
+}
+
+/* What one answer cost, shown once the turn is complete. */
+.analytics-assistant-message-footer {
+  padding: 2px 3px 0;
+  color: var(--fg-faint);
+  font: 500 9.5px/1.3 var(--font-mono);
+}
+
+.analytics-assistant-retry {
+  margin-left: 8px;
+  padding: 2px 8px;
+  color: var(--accent);
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-subtle));
+  border-radius: var(--radius-sm);
+  font: 600 10px/1.4 var(--font-ui);
+  cursor: pointer;
+}
+
+.analytics-assistant-retry:hover {
+  background: var(--ink-750);
+}
+
+.analytics-assistant-retry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .analytics-assistant-header-button.active {
   color: var(--accent);
   background: var(--ink-650);

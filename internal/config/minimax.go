@@ -47,15 +47,16 @@ func MiniMaxBaseURLOverride() string {
 }
 
 // MiniMaxRunTimeoutOverride bounds one complete agent run, including model
-// discovery and all tool rounds. Zero means the service default.
+// discovery, every tool round, and any delegated specialist run. Zero means the
+// service default.
 func MiniMaxRunTimeoutOverride() (time.Duration, error) {
 	raw := strings.TrimSpace(os.Getenv(EnvMiniMaxRunTimeout))
 	if raw == "" {
 		return 0, nil
 	}
 	timeout, err := time.ParseDuration(raw)
-	if err != nil || timeout < 10*time.Second || timeout > 2*time.Minute {
-		return 0, fmt.Errorf("%s must be a duration from 10s through 2m", EnvMiniMaxRunTimeout)
+	if err != nil || timeout < 10*time.Second || timeout > 5*time.Minute {
+		return 0, fmt.Errorf("%s must be a duration from 10s through 5m", EnvMiniMaxRunTimeout)
 	}
 	return timeout, nil
 }

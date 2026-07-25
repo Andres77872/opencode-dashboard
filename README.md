@@ -163,9 +163,11 @@ Codex and Claude quota only refresh while their CLI is running; the dashboard ma
 
 The web dashboard can expose a floating, draggable report assistant backed by MiniMax M3. It appears only when a server-side MiniMax key is configured and MiniMax's authenticated model list contains the exact `MiniMax-M3` model. There is no fallback to an older model, and the TUI does not initialize the agent.
 
-The agent loop and every analytics tool run in the Go backend. Assistant prose streams into the chat while it is generated, and privacy-safe tool cards show each allowlisted analytics tool as it starts and finishes. The browser never receives the MiniMax credential, tool arguments/results, or provider reasoning, and never calls MiniMax directly. Tools are read-only and aggregate-only: raw transcripts, prompts, reasoning, patches, tool payloads, configs, secrets, paths, and session details are outside the allowlist. Project results use process-scoped keyed pseudonyms before being sent externally, and cross-source costs remain separated by provenance. The assistant uses `requests` for outbound-attempt questions, keeps `messages` for transcript semantics, and must disclose Kimi trace/usage gaps instead of interpreting unavailable tokens or cost as zero.
+The agent loop and every analytics tool run in the Go backend. Assistant prose streams into the chat while it is generated, and privacy-safe cards show each allowlisted analytics tool as it starts and finishes. A lead analyst answers the question and can delegate a focused investigation to a bounded specialist — trend, cost, tooling, or workload — whose task, finding, tool calls, and token usage are shown nested under the delegation. The browser never receives the MiniMax credential or provider reasoning, and never calls MiniMax directly. Tools are read-only and aggregate-only: raw transcripts, prompts, reasoning, patches, tool payloads, configs, secrets, paths, and session titles are outside the allowlist. Reports name what they rank — model, provider, and tool identifiers are published product names and travel as recorded, and projects travel as their leaf name (`/home/you/work/alpha` → `alpha`) with a stable reference; anything shaped like a path, URL, or other local state is replaced with a process-scoped pseudonym instead. Cross-source costs remain separated by provenance. The assistant uses `requests` for outbound-attempt questions, keeps `messages` for transcript semantics, and must disclose Kimi trace/usage gaps instead of interpreting unavailable tokens or cost as zero.
 
-Set `OPENCODE_DASHBOARD_MINIMAX_API_KEY`, restart `opencode-dashboard web`, and open the floating assistant. The first-use UI discloses that assistant messages and requested aggregates leave the machine. A complete run is limited to 60 seconds by default; `OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` accepts `10s` through `2m`. See [the architecture, tool contracts, loop limits, and privacy model](docs/analytics-assistant.md).
+Completed conversations are saved locally with everything that produced them — tool inputs and outputs, specialist findings, per-turn provider token usage, timing, and the view the question was asked from — so a saved conversation restores exactly what was shown live. Assistant history lives in its own SQLite database and is never migrated: a database from a different schema version is rebuilt empty and the reset is logged.
+
+Set `OPENCODE_DASHBOARD_MINIMAX_API_KEY`, restart `opencode-dashboard web`, and open the floating assistant. The first-use UI discloses that assistant messages and requested aggregates leave the machine. A complete run, including delegated specialists, is limited to 90 seconds by default; `OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` accepts `10s` through `5m`. See [the agent architecture, tool contracts, loop limits, and privacy model](docs/analytics-assistant.md).
 
 ## Prerequisites
 
@@ -390,9 +392,12 @@ The web command also serves a JSON API under `/api/v1`. Most endpoints accept a 
 | `GET /api/v1/messages/{id}` | Message detail | `source` |
 | `GET /api/v1/config` | Source configuration preview (redacted) | `source` |
 | `GET /api/v1/quotas` | Provider quota (Codex / Claude Code / Kimi Code / MiniMax), including Kimi Extra Usage when available | — |
-| `GET /api/v1/assistant/status` | MiniMax M3 entitlement and assistant privacy metadata | — |
+| `GET /api/v1/assistant/status` | MiniMax M3 entitlement, assistant privacy metadata, and the specialist roster | — |
 | `POST /api/v1/assistant/chat` | Run the backend report-agent loop | bounded user/assistant history |
-| `POST /api/v1/assistant/chat/stream` | Stream assistant text and privacy-safe tool lifecycle events (NDJSON) | bounded user/assistant history |
+| `POST /api/v1/assistant/chat/stream` | Stream assistant text plus privacy-safe round, tool, and specialist lifecycle events (NDJSON) | bounded user/assistant history |
+| `GET /api/v1/assistant/sessions` | List saved conversations with their totals | — |
+| `GET /api/v1/assistant/sessions/{id}` | Restore one conversation with its tool calls, specialist runs, and usage | — |
+| `DELETE /api/v1/assistant/sessions/{id}` | Delete a saved conversation | — |
 | `GET /api/v1/version` | Build info | — |
 | `GET /health` | Health check | — |
 

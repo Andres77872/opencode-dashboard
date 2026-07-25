@@ -1,7 +1,10 @@
 import type {
   AssistantStreamCompleteEvent,
   AssistantStreamEvent,
+  AssistantStreamSubagentInfo,
+  AssistantSubagentRun,
   AssistantToolCall,
+  AssistantUsage,
 } from '../types/assistant'
 
 type AssistantStreamEventHandler = (event: AssistantStreamEvent) => void
@@ -46,15 +49,101 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim() !== ''
 }
 
+function isOptionalNumber(value: unknown): value is number | undefined {
+  return value === undefined || typeof value === 'number'
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === 'string'
+}
+
+function isOptionalStringArray(value: unknown): value is string[] | undefined {
+  return value === undefined || (Array.isArray(value) && value.every((item) => typeof item === 'string'))
+}
+
+/** Usage counters are optional evidence: every present field must be numeric. */
+function isValidUsage(value: unknown): value is AssistantUsage & JSONRecord {
+  if (value === undefined) return true
+  if (!isRecord(value)) return false
+  return Object.entries(value).every(([key, entry]) => (
+    ['requests', 'input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_tokens', 'total_tokens']
+      .includes(key) && typeof entry === 'number'
+  ))
+}
+
 function isValidToolCall(value: unknown): value is AssistantToolCall & JSONRecord {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ['call_id', 'name', 'ok'], ['arguments', 'result', 'duration_ms']) &&
+    hasOnlyKeys(
+      value,
+      ['call_id', 'name', 'ok'],
+      ['arguments', 'result', 'duration_ms', 'agent', 'parent_call_id', 'round'],
+    ) &&
     isNonEmptyString(value.call_id) &&
     isNonEmptyString(value.name) &&
     typeof value.ok === 'boolean' &&
-    (value.duration_ms === undefined || typeof value.duration_ms === 'number')
+    isOptionalNumber(value.duration_ms) &&
+    isOptionalNumber(value.round) &&
+    isOptionalString(value.agent) &&
+    isOptionalString(value.parent_call_id)
   )
+}
+
+function isValidSubagentRun(value: unknown): value is AssistantSubagentRun & JSONRecord {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(
+      value,
+      ['call_id', 'agent'],
+      ['title', 'task', 'status', 'report', 'error', 'rounds', 'tools_used', 'usage', 'duration_ms'],
+    ) &&
+    isNonEmptyString(value.call_id) &&
+    isNonEmptyString(value.agent) &&
+    isOptionalString(value.title) &&
+    isOptionalString(value.task) &&
+    isOptionalString(value.status) &&
+    isOptionalString(value.report) &&
+    isOptionalString(value.error) &&
+    isOptionalNumber(value.rounds) &&
+    isOptionalNumber(value.duration_ms) &&
+    isOptionalStringArray(value.tools_used) &&
+    isValidUsage(value.usage)
+  )
+}
+
+/** The nested payload shared by the specialist lifecycle events. */
+function isValidSubagentInfo(value: unknown): value is AssistantStreamSubagentInfo & JSONRecord {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(
+      value,
+      ['agent'],
+      ['title', 'task', 'status', 'report', 'error', 'rounds', 'tools_used', 'usage'],
+    ) &&
+    isNonEmptyString(value.agent) &&
+    isOptionalString(value.title) &&
+    isOptionalString(value.task) &&
+    isOptionalString(value.status) &&
+    isOptionalString(value.report) &&
+    isOptionalString(value.error) &&
+    isOptionalNumber(value.rounds) &&
+    isOptionalStringArray(value.tools_used) &&
+    isValidUsage(value.usage)
+  )
+}
+
+function subagentInfo(value: AssistantStreamSubagentInfo & JSONRecord): AssistantStreamSubagentInfo {
+  return {
+    agent: value.agent,
+    ...(value.title !== undefined ? { title: value.title } : {}),
+    ...(value.task !== undefined ? { task: value.task } : {}),
+    ...(value.status !== undefined ? { status: value.status } : {}),
+    ...(value.report !== undefined ? { report: value.report } : {}),
+    ...(value.error !== undefined ? { error: value.error } : {}),
+    ...(value.rounds !== undefined ? { rounds: value.rounds } : {}),
+    ...(value.tools_used !== undefined ? { tools_used: [...value.tools_used] } : {}),
+    ...(value.usage !== undefined ? { usage: { ...value.usage } } : {}),
+  }
 }
 
 function invalidEvent(lineNumber: number, message: string): AssistantStreamProtocolError {
@@ -93,11 +182,32 @@ export function parseAssistantStreamEvent(line: string, lineNumber = 1): Assista
       }
       return { type: 'content_reset' }
 
+    case 'round_start':
+      if (
+        !hasOnlyKeys(value, ['type', 'round'], ['agent', 'parent_call_id']) ||
+        typeof value.round !== 'number' ||
+        !Number.isFinite(value.round) ||
+        value.round < 1 ||
+        !isOptionalString(value.agent) ||
+        !isOptionalString(value.parent_call_id)
+      ) {
+        throw invalidEvent(lineNumber, 'round_start requires a positive round number')
+      }
+      return {
+        type: 'round_start',
+        round: value.round,
+        ...(value.agent !== undefined ? { agent: value.agent } : {}),
+        ...(value.parent_call_id !== undefined ? { parent_call_id: value.parent_call_id } : {}),
+      }
+
     case 'tool_start':
       if (
-        !hasOnlyKeys(value, ['type', 'call_id', 'name'], ['arguments']) ||
+        !hasOnlyKeys(value, ['type', 'call_id', 'name'], ['arguments', 'agent', 'parent_call_id', 'round']) ||
         !isNonEmptyString(value.call_id) ||
-        !isNonEmptyString(value.name)
+        !isNonEmptyString(value.name) ||
+        !isOptionalString(value.agent) ||
+        !isOptionalString(value.parent_call_id) ||
+        !isOptionalNumber(value.round)
       ) {
         throw invalidEvent(lineNumber, 'tool_start requires non-empty call_id and name fields')
       }
@@ -105,16 +215,22 @@ export function parseAssistantStreamEvent(line: string, lineNumber = 1): Assista
         type: 'tool_start',
         call_id: value.call_id,
         name: value.name,
+        ...(value.agent !== undefined ? { agent: value.agent } : {}),
+        ...(value.parent_call_id !== undefined ? { parent_call_id: value.parent_call_id } : {}),
+        ...(typeof value.round === 'number' ? { round: value.round } : {}),
         ...(value.arguments !== undefined ? { arguments: value.arguments } : {}),
       }
 
     case 'tool_finish':
       if (
-        !hasOnlyKeys(value, ['type', 'call_id', 'name', 'ok'], ['result', 'duration_ms']) ||
+        !hasOnlyKeys(value, ['type', 'call_id', 'name', 'ok'], ['result', 'duration_ms', 'agent', 'parent_call_id', 'round']) ||
         !isNonEmptyString(value.call_id) ||
         !isNonEmptyString(value.name) ||
         typeof value.ok !== 'boolean' ||
-        (value.duration_ms !== undefined && typeof value.duration_ms !== 'number')
+        !isOptionalNumber(value.duration_ms) ||
+        !isOptionalNumber(value.round) ||
+        !isOptionalString(value.agent) ||
+        !isOptionalString(value.parent_call_id)
       ) {
         throw invalidEvent(lineNumber, 'tool_finish requires non-empty call_id and name fields and a boolean ok')
       }
@@ -123,13 +239,57 @@ export function parseAssistantStreamEvent(line: string, lineNumber = 1): Assista
         call_id: value.call_id,
         name: value.name,
         ok: value.ok,
+        ...(value.agent !== undefined ? { agent: value.agent } : {}),
+        ...(value.parent_call_id !== undefined ? { parent_call_id: value.parent_call_id } : {}),
+        ...(typeof value.round === 'number' ? { round: value.round } : {}),
         ...(value.result !== undefined ? { result: value.result } : {}),
         ...(typeof value.duration_ms === 'number' ? { duration_ms: value.duration_ms } : {}),
       }
 
+    case 'subagent_start':
+      if (
+        !hasOnlyKeys(value, ['type', 'call_id', 'subagent'], ['agent']) ||
+        !isNonEmptyString(value.call_id) ||
+        !isOptionalString(value.agent) ||
+        !isValidSubagentInfo(value.subagent)
+      ) {
+        throw invalidEvent(lineNumber, 'subagent_start requires a call_id and a specialist')
+      }
+      return {
+        type: 'subagent_start',
+        call_id: value.call_id,
+        ...(value.agent !== undefined ? { agent: value.agent } : {}),
+        subagent: subagentInfo(value.subagent),
+      }
+
+    case 'subagent_finish':
+      if (
+        !hasOnlyKeys(value, ['type', 'call_id', 'ok', 'subagent'], ['agent', 'duration_ms']) ||
+        !isNonEmptyString(value.call_id) ||
+        typeof value.ok !== 'boolean' ||
+        !isOptionalString(value.agent) ||
+        !isOptionalNumber(value.duration_ms) ||
+        !isValidSubagentInfo(value.subagent)
+      ) {
+        throw invalidEvent(lineNumber, 'subagent_finish requires a call_id, a boolean ok, and a specialist')
+      }
+      return {
+        type: 'subagent_finish',
+        call_id: value.call_id,
+        ok: value.ok,
+        ...(value.agent !== undefined ? { agent: value.agent } : {}),
+        ...(typeof value.duration_ms === 'number' ? { duration_ms: value.duration_ms } : {}),
+        subagent: subagentInfo(value.subagent),
+      }
+
     case 'complete': {
       if (
-        !hasOnlyKeys(value, ['type', 'message', 'model', 'tools_used'], ['tool_calls', 'session_id']) ||
+        !hasOnlyKeys(
+          value,
+          ['type', 'message', 'model', 'tools_used'],
+          ['tool_calls', 'subagents', 'session_id', 'session_title', 'session_usage', 'usage',
+            'provider', 'agent', 'rounds', 'duration_ms', 'notices'],
+        ) ||
         !isRecord(value.message) ||
         !hasExactKeys(value.message, ['role', 'content', 'signature']) ||
         value.message.role !== 'assistant' ||
@@ -139,12 +299,23 @@ export function parseAssistantStreamEvent(line: string, lineNumber = 1): Assista
         !Array.isArray(value.tools_used) ||
         !value.tools_used.every(isNonEmptyString) ||
         (value.session_id !== undefined && !isNonEmptyString(value.session_id)) ||
+        !isOptionalString(value.session_title) ||
+        !isOptionalString(value.provider) ||
+        !isOptionalString(value.agent) ||
+        !isOptionalNumber(value.rounds) ||
+        !isOptionalNumber(value.duration_ms) ||
+        !isOptionalStringArray(value.notices) ||
+        !isValidUsage(value.usage) ||
+        !isValidUsage(value.session_usage) ||
         (value.tool_calls !== undefined &&
-          (!Array.isArray(value.tool_calls) || !value.tool_calls.every(isValidToolCall)))
+          (!Array.isArray(value.tool_calls) || !value.tool_calls.every(isValidToolCall))) ||
+        (value.subagents !== undefined &&
+          (!Array.isArray(value.subagents) || !value.subagents.every(isValidSubagentRun)))
       ) {
-        throw invalidEvent(lineNumber, 'complete contains an invalid assistant message, model, tools_used, tool_calls, or session_id')
+        throw invalidEvent(lineNumber, 'complete contains an invalid assistant message, model, tools_used, tool_calls, subagents, usage, or session reference')
       }
       const toolCalls = Array.isArray(value.tool_calls) ? value.tool_calls.filter(isValidToolCall) : []
+      const subagents = Array.isArray(value.subagents) ? value.subagents.filter(isValidSubagentRun) : []
       return {
         type: 'complete',
         message: {
@@ -153,16 +324,28 @@ export function parseAssistantStreamEvent(line: string, lineNumber = 1): Assista
           signature: value.message.signature,
         },
         model: value.model,
+        ...(value.provider !== undefined ? { provider: value.provider } : {}),
+        ...(value.agent !== undefined ? { agent: value.agent } : {}),
+        ...(typeof value.rounds === 'number' ? { rounds: value.rounds } : {}),
+        ...(typeof value.duration_ms === 'number' ? { duration_ms: value.duration_ms } : {}),
+        ...(value.usage !== undefined ? { usage: { ...value.usage } } : {}),
+        ...(value.notices !== undefined ? { notices: [...value.notices] } : {}),
         tools_used: [...value.tools_used],
         tool_calls: toolCalls.map((call) => ({
           call_id: call.call_id,
           name: call.name,
           ok: call.ok,
+          ...(call.agent !== undefined ? { agent: call.agent } : {}),
+          ...(call.parent_call_id !== undefined ? { parent_call_id: call.parent_call_id } : {}),
+          ...(typeof call.round === 'number' ? { round: call.round } : {}),
           ...(call.arguments !== undefined ? { arguments: call.arguments } : {}),
           ...(call.result !== undefined ? { result: call.result } : {}),
           ...(typeof call.duration_ms === 'number' ? { duration_ms: call.duration_ms } : {}),
         })),
+        subagents: subagents.map((run) => ({ ...run, ...(run.tools_used ? { tools_used: [...run.tools_used] } : {}) })),
         ...(typeof value.session_id === 'string' ? { session_id: value.session_id } : {}),
+        ...(typeof value.session_title === 'string' ? { session_title: value.session_title } : {}),
+        ...(value.session_usage !== undefined ? { session_usage: { ...value.session_usage } } : {}),
       }
     }
 
@@ -195,6 +378,7 @@ export async function readAssistantStream(
   let pendingRecordBytes = 0
   const seenToolCalls = new Set<string>()
   const runningToolCalls = new Map<string, string>()
+  const runningSubagents = new Map<string, string>()
 
   const accountRecordBytes = (chunk: Uint8Array) => {
     let segmentStart = 0
@@ -254,8 +438,23 @@ export async function readAssistantStream(
         throw invalidEvent(lineNumber, `tool call ${JSON.stringify(event.call_id)} changed names before it finished`)
       }
       runningToolCalls.delete(event.call_id)
-    } else if (event.type === 'complete' && runningToolCalls.size > 0) {
-      throw invalidEvent(lineNumber, 'complete arrived while an analytics tool was still running')
+    } else if (event.type === 'subagent_start') {
+      if (seenToolCalls.has(event.call_id)) {
+        throw invalidEvent(lineNumber, `call ${JSON.stringify(event.call_id)} started more than once`)
+      }
+      seenToolCalls.add(event.call_id)
+      runningSubagents.set(event.call_id, event.subagent.agent)
+    } else if (event.type === 'subagent_finish') {
+      const startedAgent = runningSubagents.get(event.call_id)
+      if (startedAgent === undefined) {
+        throw invalidEvent(lineNumber, `specialist run ${JSON.stringify(event.call_id)} finished before it started`)
+      }
+      if (startedAgent !== event.subagent.agent) {
+        throw invalidEvent(lineNumber, `specialist run ${JSON.stringify(event.call_id)} changed specialists before it finished`)
+      }
+      runningSubagents.delete(event.call_id)
+    } else if (event.type === 'complete' && (runningToolCalls.size > 0 || runningSubagents.size > 0)) {
+      throw invalidEvent(lineNumber, 'complete arrived while an analytics tool or specialist was still running')
     }
 
     onEvent(event)

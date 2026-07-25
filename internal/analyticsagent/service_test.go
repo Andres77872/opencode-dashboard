@@ -13,11 +13,14 @@ import (
 )
 
 type scriptedAgentClient struct {
-	mu             sync.Mutex
-	availableErr   error
-	ensureCalls    int
-	responses      []*ChatResponse
-	chatErr        error
+	mu           sync.Mutex
+	availableErr error
+	ensureCalls  int
+	responses    []*ChatResponse
+	chatErr      error
+	// attemptErrors fails specific provider attempts by index, so retry
+	// behavior can be scripted alongside successful responses.
+	attemptErrors  []error
 	requests       []ChatRequest
 	chatStarted    chan struct{}
 	blockUntilDone bool
@@ -29,13 +32,12 @@ type streamingAgentClient struct {
 	chunks [][]string
 }
 
+// ChatStream publishes this attempt's chunks before resolving the response, the
+// way a real provider stream does: content can already be on the wire when the
+// round ends in a failure or in tool calls.
 func (c *streamingAgentClient) ChatStream(ctx context.Context, request ChatRequest, onContent func(string) error) (*ChatResponse, error) {
-	response, err := c.Chat(ctx, request)
-	if err != nil {
-		return nil, err
-	}
 	c.mu.Lock()
-	index := len(c.requests) - 1
+	index := len(c.requests)
 	c.mu.Unlock()
 	if index < len(c.chunks) {
 		for _, chunk := range c.chunks[index] {
@@ -44,7 +46,7 @@ func (c *streamingAgentClient) ChatStream(ctx context.Context, request ChatReque
 			}
 		}
 	}
-	return response, nil
+	return c.Chat(ctx, request)
 }
 
 func (c *scriptedAgentClient) EnsureAvailable(context.Context) error {
@@ -67,6 +69,9 @@ func (c *scriptedAgentClient) Chat(ctx context.Context, request ChatRequest) (*C
 		response = c.responses[index]
 	}
 	chatErr := c.chatErr
+	if chatErr == nil && index < len(c.attemptErrors) {
+		chatErr = c.attemptErrors[index]
+	}
 	c.mu.Unlock()
 	if c.chatStarted != nil {
 		c.startedOnce.Do(func() { close(c.chatStarted) })
@@ -108,17 +113,56 @@ func oneUserMessage(content string) ChatInput {
 	return ChatInput{ConsentVersion: PrivacyConsentVersion, Messages: []BrowserMessage{{Role: "user", Content: content}}}
 }
 
-func TestReportSystemPromptDefinesRequestAndKimiCompletenessSemantics(t *testing.T) {
-	for _, want := range []string{
+func TestSharedPolicyDefinesRequestAndKimiCompletenessSemanticsForEveryAgent(t *testing.T) {
+	wants := []string{
 		"Use requests—not messages",
 		"usage_unavailable",
 		"successful_only",
 		"does not persist a separate reasoning-token counter",
 		"estimated API-equivalent",
-	} {
-		if !strings.Contains(reportSystemPrompt, want) {
-			t.Errorf("system prompt is missing %q", want)
+	}
+	for id, definition := range agentRoster {
+		prompt := definition.systemPrompt()
+		for _, want := range wants {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s system prompt is missing %q", id, want)
+			}
 		}
+	}
+}
+
+func TestSpecialistsCannotDelegateAndAreScopedToTheirTools(t *testing.T) {
+	lead, found := agentByID(AgentLead)
+	if !found {
+		t.Fatal("the lead agent is not defined")
+	}
+	registry := NewToolRegistry(source.NewRegistry(source.SourceOpenCode))
+	if len(registry.DefinitionsFor(lead.Tools)) != len(lead.Tools) {
+		t.Fatalf("lead tool definitions = %d, want %d", len(registry.DefinitionsFor(lead.Tools)), len(lead.Tools))
+	}
+	for _, info := range Specialists() {
+		definition, found := agentByID(info.ID)
+		if !found {
+			t.Fatalf("specialist %s is advertised but not defined", info.ID)
+		}
+		if definition.MaxRounds <= 0 || definition.MaxToolCalls <= 0 {
+			t.Errorf("specialist %s has no bounded budget: %#v", info.ID, definition)
+		}
+		run := &agentRun{agent: definition}
+		if run.allows(delegateToolName) {
+			t.Errorf("specialist %s may delegate", info.ID)
+		}
+		for _, name := range definition.Tools {
+			if !run.allows(name) {
+				t.Errorf("specialist %s cannot call its own tool %q", info.ID, name)
+			}
+		}
+		if run.allows("read_local_file") {
+			t.Errorf("specialist %s accepted a tool outside the analytics registry", info.ID)
+		}
+	}
+	if !isSpecialistAgent(AgentTrend) || isSpecialistAgent(AgentLead) {
+		t.Error("the delegable roster must exclude the lead agent")
 	}
 }
 
@@ -152,7 +196,7 @@ func TestServiceAcceptsBoundedLongerRunTimeout(t *testing.T) {
 	if service.runTimeout != 90*time.Second {
 		t.Fatalf("run timeout = %v, want 90s", service.runTimeout)
 	}
-	service = NewService(ServiceOptions{RunTimeout: 3 * time.Minute})
+	service = NewService(ServiceOptions{RunTimeout: 10 * time.Minute})
 	if service.runTimeout != maxRunTimeout {
 		t.Fatalf("capped run timeout = %v, want %v", service.runTimeout, maxRunTimeout)
 	}
@@ -233,25 +277,34 @@ func TestServiceChatStreamEmitsSafeContentAndToolLifecycle(t *testing.T) {
 		}
 	}
 	wantTypes := []string{
+		StreamEventStart,
+		StreamEventRoundStart,
 		StreamEventContentDelta,
 		StreamEventContentDelta,
 		StreamEventContentReset,
 		StreamEventToolStart,
 		StreamEventToolFinish,
+		StreamEventRoundStart,
 		StreamEventContentDelta,
 		StreamEventContentDelta,
 	}
 	if strings.Join(eventTypes, ",") != strings.Join(wantTypes, ",") {
 		t.Fatalf("event types = %#v, want %#v (events %#v)", eventTypes, wantTypes, events)
 	}
-	if events[3].Name != "list_sources" || events[3].CallID != "tool-1" {
-		t.Fatalf("tool start = %#v", events[3])
+	if events[1].Round != 1 || events[7].Round != 2 || events[1].Agent != AgentLead {
+		t.Fatalf("round events = %#v, %#v", events[1], events[7])
 	}
-	if events[4].OK == nil || !*events[4].OK || events[4].CallID != "tool-1" {
-		t.Fatalf("tool finish = %#v", events[4])
+	if events[5].Name != "list_sources" || events[5].CallID != "tool-1" {
+		t.Fatalf("tool start = %#v", events[5])
+	}
+	if events[6].OK == nil || !*events[6].OK || events[6].CallID != "tool-1" {
+		t.Fatalf("tool finish = %#v", events[6])
 	}
 	if got := streamed.String(); got != "I will check.Final answer." {
 		t.Fatalf("streamed content = %q", got)
+	}
+	if result.Rounds != 2 || result.Agent != AgentLead || result.Provider != ProviderMiniMax {
+		t.Fatalf("result metadata = %#v", result)
 	}
 }
 
@@ -280,7 +333,7 @@ func TestServiceChatStreamResetsIncompleteFinalContent(t *testing.T) {
 			if result.Message.Content != "" || result.Message.Signature != "" || result.Model != "" {
 				t.Fatalf("incomplete response returned a browser result: %#v", result)
 			}
-			wantTypes := []string{StreamEventContentDelta, StreamEventContentDelta, StreamEventContentReset}
+			wantTypes := []string{StreamEventStart, StreamEventRoundStart, StreamEventContentDelta, StreamEventContentDelta, StreamEventContentReset}
 			if len(events) != len(wantTypes) {
 				t.Fatalf("events = %#v, want event types %#v", events, wantTypes)
 			}
@@ -325,7 +378,10 @@ func TestServiceChatStreamDoesNotResetUnpublishedToolPreamble(t *testing.T) {
 	if result.Message.Content != "Final answer." {
 		t.Fatalf("result = %#v", result)
 	}
-	wantTypes := []string{StreamEventToolStart, StreamEventToolFinish, StreamEventContentDelta}
+	wantTypes := []string{
+		StreamEventStart, StreamEventRoundStart, StreamEventToolStart, StreamEventToolFinish,
+		StreamEventRoundStart, StreamEventContentDelta,
+	}
 	if len(events) != len(wantTypes) {
 		t.Fatalf("events = %#v, want event types %#v", events, wantTypes)
 	}
@@ -429,10 +485,6 @@ func TestServiceBoundsProviderControlledStrings(t *testing.T) {
 			response: assistantResponse(t, "tool_calls", "", []ToolCall{functionToolCall("id", "list_sources", strings.Repeat("a", maxProviderToolArgsBytes+1))}, nil),
 		},
 		{
-			name:     "unknown tool",
-			response: assistantResponse(t, "tool_calls", "", []ToolCall{functionToolCall("id", "read_local_file", `{}`)}, nil),
-		},
-		{
 			name:     "assistant envelope",
 			response: assistantResponse(t, "stop", "safe", nil, map[string]any{"reasoning_details": strings.Repeat("r", maxProviderAssistantBytes)}),
 		},
@@ -453,38 +505,144 @@ func TestServiceBoundsProviderControlledStrings(t *testing.T) {
 	}
 }
 
-func TestServiceDetectsRepeatedToolCall(t *testing.T) {
-	call := functionToolCall("call-1", "list_sources", `{ "x": 1 }`)
+func TestServiceRejectsRepeatedToolCallWithoutEndingTheRun(t *testing.T) {
+	call := functionToolCall("call-1", "list_sources", `{ }`)
 	client := &scriptedAgentClient{responses: []*ChatResponse{
 		assistantResponse(t, "tool_calls", "", []ToolCall{call}, nil),
-		assistantResponse(t, "tool_calls", "", []ToolCall{functionToolCall("call-2", "list_sources", `{"x":1}`)}, nil),
+		assistantResponse(t, "tool_calls", "", []ToolCall{functionToolCall("call-2", "list_sources", `{}`)}, nil),
+		assistantResponse(t, "stop", "Report from the first result.", nil, nil),
 	}}
 	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
-	_, err := service.Chat(context.Background(), oneUserMessage("Report usage."))
-	if !errors.Is(err, ErrLoopLimit) || !strings.Contains(err.Error(), "repeated") {
-		t.Fatalf("err = %v, want repeated ErrLoopLimit", err)
+
+	result, err := service.Chat(context.Background(), oneUserMessage("Report usage."))
+	if err != nil {
+		t.Fatalf("a repeated call ended the run: %v", err)
+	}
+	if result.Message.Content != "Report from the first result." {
+		t.Fatalf("content = %q", result.Message.Content)
+	}
+	if len(result.ToolCalls) != 2 {
+		t.Fatalf("tool calls = %d, want the executed call and the rejected repeat", len(result.ToolCalls))
+	}
+	repeat := result.ToolCalls[1]
+	if repeat.OK || !strings.Contains(string(repeat.Result), "duplicate_call") {
+		t.Fatalf("repeated call result = %s", repeat.Result)
+	}
+	// The rejection must reach the model as ordinary tool evidence.
+	if !strings.Contains(string(client.requests[2].Messages[len(client.requests[2].Messages)-1]), "duplicate_call") {
+		t.Fatal("the duplicate rejection was not sent back to the model")
 	}
 }
 
-func TestServiceEnforcesToolCallAndOutputCaps(t *testing.T) {
-	calls := make([]ToolCall, 13)
-	for i := range calls {
-		calls[i] = functionToolCall("call-"+string(rune('a'+i)), "list_sources", `{}`)
-	}
-	client := &scriptedAgentClient{responses: []*ChatResponse{assistantResponse(t, "tool_calls", "", calls, nil)}}
+func TestServiceRejectsUnavailableToolWithoutEchoingItsName(t *testing.T) {
+	client := &scriptedAgentClient{responses: []*ChatResponse{
+		assistantResponse(t, "tool_calls", "", []ToolCall{functionToolCall("call-1", "read_local_file", `{"path":"/etc/passwd"}`)}, nil),
+		assistantResponse(t, "stop", "I cannot read files; here is the usage report.", nil, nil),
+	}}
 	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
-	if _, err := service.Chat(context.Background(), oneUserMessage("Report.")); !errors.Is(err, ErrLoopLimit) {
-		t.Fatalf("13 tool calls err = %v, want ErrLoopLimit", err)
-	}
 
-	client = &scriptedAgentClient{responses: []*ChatResponse{assistantResponse(t, "tool_calls", "", []ToolCall{functionToolCall("one", "list_sources", `{}`)}, nil)}}
-	service = NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode), MaxToolOutputBytes: 8})
-	if _, err := service.Chat(context.Background(), oneUserMessage("Report.")); !errors.Is(err, ErrLoopLimit) {
-		t.Fatalf("output cap err = %v, want ErrLoopLimit", err)
+	result, err := service.Chat(context.Background(), oneUserMessage("Read a file."))
+	if err != nil {
+		t.Fatalf("an unavailable tool ended the run: %v", err)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v", result.ToolCalls)
+	}
+	record := result.ToolCalls[0]
+	if record.OK || !strings.Contains(string(record.Result), "unknown_tool") {
+		t.Fatalf("rejected call = %#v", record)
+	}
+	if record.Name == "read_local_file" || strings.Contains(string(record.Arguments), "passwd") {
+		t.Fatalf("provider-controlled tool name or arguments were echoed: %#v", record)
 	}
 }
 
-func TestServiceStopsAfterSixModelRounds(t *testing.T) {
+func TestServiceClosesEvidenceBudgetAndStillAnswers(t *testing.T) {
+	// Two calls are affordable; the rest must be refused as budget rejections
+	// that the model can react to, not as a failed run.
+	calls := make([]ToolCall, 4)
+	for i := range calls {
+		calls[i] = functionToolCall("call-"+string(rune('a'+i)), "list_sources", `{"n":`+string(rune('1'+i))+`}`)
+	}
+	client := &scriptedAgentClient{responses: []*ChatResponse{
+		assistantResponse(t, "tool_calls", "", calls, nil),
+		assistantResponse(t, "stop", "Partial report with disclosed limits.", nil, nil),
+	}}
+	service := NewService(ServiceOptions{
+		Client: client, Registry: source.NewRegistry(source.SourceOpenCode), MaxToolCalls: 2,
+	})
+
+	result, err := service.Chat(context.Background(), oneUserMessage("Report."))
+	if err != nil {
+		t.Fatalf("budget exhaustion ended the run: %v", err)
+	}
+	if result.Message.Content != "Partial report with disclosed limits." {
+		t.Fatalf("content = %q", result.Message.Content)
+	}
+	refused := 0
+	for _, record := range result.ToolCalls {
+		if !record.OK && strings.Contains(string(record.Result), "budget_exhausted") {
+			refused++
+		}
+	}
+	if refused != 2 {
+		t.Fatalf("refused calls = %d, want 2 (records %#v)", refused, result.ToolCalls)
+	}
+	// The follow-up round must be offered no tools at all.
+	if len(client.requests[1].Tools) != 0 {
+		t.Fatalf("closing round offered %d tools", len(client.requests[1].Tools))
+	}
+	if !strings.Contains(string(client.requests[1].Messages[len(client.requests[1].Messages)-1]), "Evidence budget reached") {
+		t.Fatal("the closing round did not tell the model to answer from existing evidence")
+	}
+}
+
+func TestServiceRefusesOversizedToolResultWithoutEndingTheRun(t *testing.T) {
+	client := &scriptedAgentClient{responses: []*ChatResponse{
+		assistantResponse(t, "tool_calls", "", []ToolCall{functionToolCall("one", "list_sources", `{}`)}, nil),
+		assistantResponse(t, "stop", "The evidence did not fit; here is what is known.", nil, nil),
+	}}
+	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode), MaxToolOutputBytes: 8})
+
+	result, err := service.Chat(context.Background(), oneUserMessage("Report."))
+	if err != nil {
+		t.Fatalf("an oversized result ended the run: %v", err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].OK ||
+		!strings.Contains(string(result.ToolCalls[0].Result), "result_too_large") {
+		t.Fatalf("tool calls = %#v", result.ToolCalls)
+	}
+}
+
+func TestServiceClosesTheLastRoundToTools(t *testing.T) {
+	responses := make([]*ChatResponse, defaultMaxRounds)
+	for i := range responses[:defaultMaxRounds-1] {
+		call := functionToolCall("round-"+string(rune('a'+i)), "list_sources", `{"round":`+string(rune('1'+i))+`}`)
+		responses[i] = assistantResponse(t, "tool_calls", "", []ToolCall{call}, nil)
+	}
+	responses[defaultMaxRounds-1] = assistantResponse(t, "stop", "Report after the last round.", nil, nil)
+	client := &scriptedAgentClient{responses: responses}
+	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
+
+	result, err := service.Chat(context.Background(), oneUserMessage("Report."))
+	if err != nil {
+		t.Fatalf("the bounded loop failed instead of answering: %v", err)
+	}
+	if result.Rounds != defaultMaxRounds || len(client.requests) != defaultMaxRounds {
+		t.Fatalf("rounds=%d requests=%d, want %d", result.Rounds, len(client.requests), defaultMaxRounds)
+	}
+	for index, request := range client.requests {
+		last := index == defaultMaxRounds-1
+		if last && len(request.Tools) != 0 {
+			t.Fatalf("the last round offered %d tools", len(request.Tools))
+		}
+		if !last && len(request.Tools) == 0 {
+			t.Fatalf("round %d offered no tools", index+1)
+		}
+	}
+}
+
+func TestServiceStillFailsWhenTheProviderIgnoresAClosedBudget(t *testing.T) {
 	responses := make([]*ChatResponse, defaultMaxRounds)
 	for i := range responses {
 		call := functionToolCall("round-"+string(rune('a'+i)), "list_sources", `{"round":`+string(rune('1'+i))+`}`)
@@ -492,15 +650,18 @@ func TestServiceStopsAfterSixModelRounds(t *testing.T) {
 	}
 	client := &scriptedAgentClient{responses: responses}
 	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
-	if _, err := service.Chat(context.Background(), oneUserMessage("Report.")); !errors.Is(err, ErrLoopLimit) || len(client.requests) != defaultMaxRounds {
-		t.Fatalf("requests=%d err=%v, want six rounds and ErrLoopLimit", len(client.requests), err)
+	if _, err := service.Chat(context.Background(), oneUserMessage("Report.")); !errors.Is(err, ErrProviderFailure) {
+		t.Fatalf("err = %v, want ErrProviderFailure", err)
 	}
 }
 
-func TestServiceIsSingleFlightAndHonorsCancellation(t *testing.T) {
+func TestServiceBoundsConcurrentChatsAndHonorsCancellation(t *testing.T) {
 	started := make(chan struct{})
 	client := &scriptedAgentClient{chatStarted: started, blockUntilDone: true}
-	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode), RunTimeout: time.Minute})
+	service := NewService(ServiceOptions{
+		Client: client, Registry: source.NewRegistry(source.SourceOpenCode),
+		RunTimeout: time.Minute, MaxConcurrentChats: 1,
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	firstDone := make(chan error, 1)
 	go func() {
@@ -523,6 +684,13 @@ func TestServiceIsSingleFlightAndHonorsCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("canceled chat did not stop")
+	}
+
+	if NewService(ServiceOptions{}).sem == nil || cap(NewService(ServiceOptions{}).sem) != defaultMaxConcurrentChats {
+		t.Fatalf("default concurrency = %d, want %d", cap(NewService(ServiceOptions{}).sem), defaultMaxConcurrentChats)
+	}
+	if cap(NewService(ServiceOptions{MaxConcurrentChats: 999}).sem) != maxConcurrentChatsLimit {
+		t.Fatal("concurrency is not capped")
 	}
 }
 
@@ -612,8 +780,10 @@ func TestServiceToolResultsDoNotLeakLocalPrivacySentinel(t *testing.T) {
 	const sentinel = "LOCAL_TRANSCRIPT_CONFIG_PATH_SENTINEL"
 	src := newAnalyticsTestSource(source.SourceOpenCode, 2)
 	src.info.Path = "/private/" + sentinel
-	src.projects.Projects[0].ProjectID = sentinel
-	src.projects.Projects[0].ProjectName = sentinel
+	// A project's leaf name is reportable, so the sentinel lives in the parts
+	// that must never travel: the path around it, the id, and the config.
+	src.projects.Projects[0].ProjectID = "/private/" + sentinel + "/alpha"
+	src.projects.Projects[0].ProjectName = "/private/" + sentinel + "/alpha"
 	src.config.Content = map[string]any{"secret": sentinel}
 	registry := source.NewRegistry(source.SourceOpenCode)
 	if err := registry.Register(src); err != nil {

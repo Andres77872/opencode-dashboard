@@ -51,7 +51,13 @@ func TestMiniMaxRunTimeoutOverride(t *testing.T) {
 	if got, err := MiniMaxRunTimeoutOverride(); err != nil || got != 45*time.Second {
 		t.Fatalf("timeout = %v, err=%v", got, err)
 	}
-	for _, value := range []string{"broken", "9s", "3m"} {
+	// Delegated specialist runs share the turn budget, so longer limits are
+	// legitimate; the upper bound still keeps one question bounded.
+	t.Setenv(EnvMiniMaxRunTimeout, "3m")
+	if got, err := MiniMaxRunTimeoutOverride(); err != nil || got != 3*time.Minute {
+		t.Fatalf("timeout = %v, err=%v", got, err)
+	}
+	for _, value := range []string{"broken", "9s", "6m"} {
 		t.Setenv(EnvMiniMaxRunTimeout, value)
 		if _, err := MiniMaxRunTimeoutOverride(); err == nil {
 			t.Errorf("timeout %q unexpectedly accepted", value)

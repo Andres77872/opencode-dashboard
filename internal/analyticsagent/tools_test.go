@@ -149,7 +149,7 @@ func TestToolsStrictArguments(t *testing.T) {
 	}
 }
 
-func TestToolsNeverExposeTranscriptConfigPathOrProjectIdentity(t *testing.T) {
+func TestToolsNeverExposeTranscriptConfigOrProjectPaths(t *testing.T) {
 	const secret = "PRIVACY_SENTINEL_MUST_NOT_LEAVE_MACHINE"
 	src := newAnalyticsTestSource(source.SourceOpenCode, 3)
 	src.info.Path = "/home/private/" + secret
@@ -157,11 +157,13 @@ func TestToolsNeverExposeTranscriptConfigPathOrProjectIdentity(t *testing.T) {
 	src.info.Diagnostics.Reason = secret
 	src.info.Warnings = []string{secret}
 	src.info.CostPolicy.Note = secret
-	src.projects.Projects[0].ProjectID = secret + "-id"
-	src.projects.Projects[0].ProjectName = secret + "-name"
+	src.projects.Projects[0].ProjectID = "/home/private/" + secret + "/checkout"
+	// A project's leaf name is reportable; the directories that lead to it are
+	// local context and must not travel.
+	src.projects.Projects[0].ProjectName = "/home/private/" + secret + "/checkout"
 	src.projects.Projects[0].CostProvenance.Note = secret
 	src.projects.CostProvenance.Note = secret
-	src.dimension.Days[0].Dimension = secret + "-dimension"
+	src.dimension.Days[0].Dimension = "/home/private/" + secret + "/checkout"
 	src.config.Path = "/secret/" + secret
 	src.config.Content = map[string]any{"token": secret}
 
@@ -182,11 +184,34 @@ func TestToolsNeverExposeTranscriptConfigPathOrProjectIdentity(t *testing.T) {
 	}
 	joined := string(outputs[1]) + string(outputs[2])
 	if !strings.Contains(joined, "project-") {
-		t.Fatalf("project outputs lack opaque references: %s", joined)
+		t.Fatalf("project outputs lack stable references: %s", joined)
 	}
-	for _, forbidden := range []string{"project_name", "project_id", "/home/private", "config"} {
+	// The leaf survives so a ranking can be named; nothing above it does.
+	if !strings.Contains(joined, `"project_name":"checkout"`) {
+		t.Errorf("project output cannot be named in a report: %s", joined)
+	}
+	for _, forbidden := range []string{"project_id", "/home/private", "config"} {
 		if strings.Contains(joined, forbidden) {
 			t.Errorf("project output contains forbidden field %q: %s", forbidden, joined)
+		}
+	}
+}
+
+func TestProjectNamesAreReducedToTheirLeaf(t *testing.T) {
+	t.Parallel()
+	for input, want := range map[string]string{
+		"opencode-dashboard":           "opencode-dashboard",
+		"/home/andres/work/alpha":      "alpha",
+		`C:\Users\andres\work\beta`:    "beta",
+		"  spaced name  ":              "spaced name",
+		"":                             "",
+		"weird\nname":                  "",
+		strings.Repeat("n", 65):        "",
+		"/home/andres/work/":           "",
+		"-/home/andres/secret client-": "secret client",
+	} {
+		if got := safeProjectName(input); got != want {
+			t.Errorf("safeProjectName(%q) = %q, want %q", input, got, want)
 		}
 	}
 }
@@ -251,14 +276,15 @@ func TestProviderBoundIdentifiersAreBoundedAndInjectionSafe(t *testing.T) {
 	}
 }
 
-func TestUnexpectedSafeLookingIdentifiersArePseudonymized(t *testing.T) {
-	const privateIdentifier = "customer_alpha_private"
+// A usage report is worthless if it cannot name the model, provider, or tool a
+// number belongs to, so published identifiers travel exactly as recorded.
+func TestPublishedModelProviderAndToolNamesAreReportedVerbatim(t *testing.T) {
 	src := newAnalyticsTestSource(source.SourceOpenCode, 3)
-	src.info.CostPolicy.PricingSnapshotID = privateIdentifier
-	src.overview.CostProvenance.PricingSnapshotID = privateIdentifier
-	src.models.Models[0].ModelID = privateIdentifier
-	src.models.Models[0].ProviderID = privateIdentifier
-	src.tools.Tools[0].Name = privateIdentifier
+	src.info.CostPolicy.PricingSnapshotID = "kimi-2026-01"
+	src.overview.CostProvenance.PricingSnapshotID = "kimi-2026-01"
+	src.models.Models[0].ModelID = "gpt-5.6-sol"
+	src.models.Models[0].ProviderID = "openai"
+	src.tools.Tools[0].Name = "mcp__linear__create_issue"
 
 	registry := source.NewRegistry(source.SourceOpenCode)
 	if err := registry.Register(src); err != nil {
@@ -269,21 +295,45 @@ func TestUnexpectedSafeLookingIdentifiersArePseudonymized(t *testing.T) {
 		string(tools.Execute(context.Background(), "get_overview", json.RawMessage(`{"source":"opencode","period":"7d"}`))) +
 		string(tools.Execute(context.Background(), "get_model_usage", json.RawMessage(`{"source":"opencode","period":"7d"}`))) +
 		string(tools.Execute(context.Background(), "get_tool_usage", json.RawMessage(`{"source":"opencode","period":"7d"}`)))
-	if strings.Contains(joined, privateIdentifier) {
-		t.Fatalf("unexpected safe-looking identifier left the backend verbatim: %s", joined)
+
+	for _, want := range []string{`"model_id":"gpt-5.6-sol"`, `"provider_id":"openai"`,
+		`"name":"mcp__linear__create_issue"`, `"pricing_snapshot_id":"kimi-2026-01"`} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("report cannot name %s: %s", want, joined)
+		}
 	}
-	for _, prefix := range []string{"model-", "provider-", "tool-", "pricing-"} {
-		if !strings.Contains(joined, prefix) {
-			t.Errorf("pseudonymized output lacks %q alias: %s", prefix, joined)
+	for _, pseudonym := range []string{"model-", "provider-", "tool-", "pricing-"} {
+		if strings.Contains(joined, pseudonym) {
+			t.Errorf("published identifier was replaced by a %q pseudonym: %s", pseudonym, joined)
 		}
 	}
 }
 
-func TestVendorPrefixedModelIdentifiersAreStillPseudonymized(t *testing.T) {
-	const privateModel = "gpt-customer_alpha_private"
-	got := safeOutboundIdentifier([]byte("01234567890123456789012345678901"), "model", privateModel)
-	if got == privateModel || !strings.HasPrefix(got, "model-") {
-		t.Fatalf("model identifier was not pseudonymized: %q", got)
+func TestIdentifiersShapedLikeLocalStateAreStillPseudonymized(t *testing.T) {
+	t.Parallel()
+	key := []byte("01234567890123456789012345678901")
+	for _, local := range []string{
+		"/home/andres/models/llama.gguf",
+		"~/models/private.gguf",
+		"./relative/model",
+		"../escape",
+		"https://internal.corp/models/private",
+		"a/b/c/d/deep/path",
+		"model with spaces",
+		"model\nnewline",
+		strings.Repeat("m", maxPublicIdentifierBytes+1),
+	} {
+		got := safeOutboundIdentifier(key, "model", local)
+		if got == local || !strings.HasPrefix(got, "model-") {
+			t.Errorf("safeOutboundIdentifier(%q) = %q, want a pseudonym", local, got)
+		}
+	}
+
+	// Vendor-qualified published names remain readable.
+	for _, public := range []string{"anthropic/claude-opus-5", "MiniMax-M3", "qwen3.8-max-preview", "o4-mini"} {
+		if got := safeOutboundIdentifier(key, "model", public); got != public {
+			t.Errorf("safeOutboundIdentifier(%q) = %q, want it reported verbatim", public, got)
+		}
 	}
 }
 
@@ -376,10 +426,15 @@ func TestSessionUsageReturnsOpaqueRefsAndNoTitles(t *testing.T) {
 	tools := NewToolRegistry(registry)
 	result := string(tools.Execute(context.Background(), "get_session_usage", json.RawMessage(`{"source":"opencode","period":"7d","sort":"cost"}`)))
 
-	for _, leaked := range []string{privateTitle, "secret-project", "ses_private_id", "ses_other", "another private title", "\"title\""} {
+	// Session titles are the user's own prompt text and never travel; the
+	// project a session belongs to is named the same way rankings are.
+	for _, leaked := range []string{privateTitle, "ses_private_id", "ses_other", "another private title", "\"title\""} {
 		if strings.Contains(result, leaked) {
 			t.Fatalf("session output leaked %q: %s", leaked, result)
 		}
+	}
+	if !strings.Contains(result, `"project_name":"secret-project"`) {
+		t.Fatalf("session output cannot name its project: %s", result)
 	}
 	if !strings.Contains(result, `"session_ref":"session-`) {
 		t.Fatalf("session output lacks opaque session refs: %s", result)
