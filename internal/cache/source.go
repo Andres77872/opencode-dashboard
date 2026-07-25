@@ -31,6 +31,14 @@ const fillRetryBackoff = time.Minute
 // request.
 const fillTimeout = 10 * time.Minute
 
+// gapMemoTTL is how long one live read of the recent gap may be reused by
+// subsequent reads. A single dashboard request fans out into several
+// aggregates (overview, trend, projects) that all need the same gap window;
+// the memo collapses them into one pagination pass. Entries created within
+// the TTL may be missed — the same staleness the live sources' own snapshot
+// TTL already implies.
+const gapMemoTTL = 2 * time.Second
+
 // CachedSource implements source.Source by serving aggregate and list endpoints
 // as a merge of the dashboard-owned SQLite cache (finalized hours, strictly
 // before the hour-aligned cutoff) and a live read of the recent gap
@@ -51,6 +59,13 @@ type CachedSource struct {
 	freshMu       sync.Mutex
 	fillDone      chan struct{} // non-nil while a fill is in flight
 	nextFillCheck time.Time
+
+	// gapMu guards the memoized unfiltered gap read (see gapMessages).
+	gapMu       sync.Mutex
+	gapRaw      gapData
+	gapFrom     time.Time
+	gapAt       time.Time     // completion time of the memoized fetch; zero = empty
+	gapInflight chan struct{} // non-nil while a fetch is running (single-flight)
 }
 
 func WrapSource(store *Store, live source.Source) *CachedSource {
@@ -164,12 +179,72 @@ func (s *CachedSource) split(ctx context.Context, pq stats.PeriodQuery) (splitWi
 }
 
 // degradeGap handles a failed live read of the recent gap: the failure is
-// logged, surfaced through the fill-state status API, and the read proceeds
-// with the consolidated cache data only — it never fails the request.
+// logged, surfaced through the gap-state status API (rendered by the web
+// layer as a per-source "recent data incomplete" warning), and the read
+// proceeds with the consolidated cache data only — it never fails the
+// request. The state self-heals: the next successful gapMessages clears it.
 func (s *CachedSource) degradeGap(err error) gapData {
 	s.store.logger.Warn("cache gap read failed; serving consolidated data only", "source", s.sourceID(), "error", err)
-	s.store.recordFillState(s.sourceID(), fmt.Errorf("recent-window live read failed: %w", err))
+	s.store.recordGapState(s.sourceID(), fmt.Errorf("recent-window live read failed: %w", err))
 	return gapData{}
+}
+
+// retryLiveOnce retries fn once on failure unless ctx is already done.
+// Transient live-read failures (snapshot churn while a consolidation runs)
+// usually clear immediately on a warm second pass.
+func retryLiveOnce[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	v, err := fn()
+	if err != nil && ctx.Err() == nil {
+		v, err = fn()
+	}
+	return v, err
+}
+
+// gapMessages returns the recent live window [livePQ.FromTime, livePQ.ToTime)
+// with livePQ's model/provider predicate applied. The underlying unfiltered
+// pagination is memoized per source for gapMemoTTL and fetched single-flight,
+// so one request burst (overview + trend + projects, or parallel refresh
+// fan-out) pages the live source once instead of once per aggregate.
+func (s *CachedSource) gapMessages(ctx context.Context, livePQ stats.PeriodQuery) (gapData, error) {
+	f := filterFromPQ(livePQ)
+	for {
+		s.gapMu.Lock()
+		if !s.gapAt.IsZero() && time.Since(s.gapAt) <= gapMemoTTL && !s.gapFrom.After(livePQ.FromTime) {
+			g := filterGap(s.gapRaw, f, livePQ.FromTime, livePQ.ToTime)
+			s.gapMu.Unlock()
+			return g, nil
+		}
+		if s.gapInflight != nil {
+			wait := s.gapInflight
+			s.gapMu.Unlock()
+			select {
+			case <-wait:
+				continue // re-check the memo; fall through to own fetch if unusable
+			case <-ctx.Done():
+				return gapData{}, ctx.Err()
+			}
+		}
+		inflight := make(chan struct{})
+		s.gapInflight = inflight
+		s.gapMu.Unlock()
+
+		raw, err := retryLiveOnce(ctx, func() (gapData, error) {
+			return fetchGapRaw(ctx, s.live, livePQ)
+		})
+
+		s.gapMu.Lock()
+		s.gapInflight = nil
+		if err == nil {
+			s.gapRaw, s.gapFrom, s.gapAt = raw, livePQ.FromTime, time.Now()
+		}
+		close(inflight)
+		s.gapMu.Unlock()
+		if err != nil {
+			return gapData{}, err
+		}
+		s.store.recordGapState(s.sourceID(), nil)
+		return filterGap(raw, f, livePQ.FromTime, livePQ.ToTime), nil
+	}
 }
 
 func (s *CachedSource) Overview(ctx context.Context, pq stats.PeriodQuery) (stats.OverviewStats, error) {
@@ -188,7 +263,7 @@ func (s *CachedSource) Overview(ctx context.Context, pq stats.PeriodQuery) (stat
 	if err != nil || !sp.hasLive {
 		return c, err
 	}
-	gap, err := fetchGapMessages(ctx, s.live, sp.livePQ)
+	gap, err := s.gapMessages(ctx, sp.livePQ)
 	if err != nil {
 		gap = s.degradeGap(err)
 	}
@@ -213,7 +288,7 @@ func (s *CachedSource) Daily(ctx context.Context, pq stats.PeriodQuery, granular
 	if err != nil || !sp.hasLive {
 		return c, err
 	}
-	gap, err := fetchGapMessages(ctx, s.live, sp.livePQ)
+	gap, err := s.gapMessages(ctx, sp.livePQ)
 	if err != nil {
 		gap = s.degradeGap(err)
 	}
@@ -238,14 +313,16 @@ func (s *CachedSource) DailyDimension(ctx context.Context, dimension string, pq 
 	}
 	label := periodLabel(pq)
 	if dimension == "tool" || dimension == "model" {
-		gapDim, err := s.live.DailyDimension(ctx, dimension, sp.livePQ, gran)
+		gapDim, err := retryLiveOnce(ctx, func() (stats.DailyDimensionStats, error) {
+			return s.live.DailyDimension(ctx, dimension, sp.livePQ, gran)
+		})
 		if err != nil {
 			s.degradeGap(err)
 			gapDim = stats.DailyDimensionStats{}
 		}
 		return mergeDailyDimension(s.sourceID(), dimension, label, gran, c, gapDim.Days, gapDim.CostStatus, gapDim.CostProvenance), nil
 	}
-	gap, err := fetchGapMessages(ctx, s.live, sp.livePQ)
+	gap, err := s.gapMessages(ctx, sp.livePQ)
 	if err != nil {
 		gap = s.degradeGap(err)
 	}
@@ -283,7 +360,9 @@ func (s *CachedSource) Models(ctx context.Context, pq stats.PeriodQuery) (stats.
 	if err != nil || !sp.hasLive {
 		return c, err
 	}
-	gapModels, err := s.live.Models(ctx, sp.livePQ)
+	gapModels, err := retryLiveOnce(ctx, func() (stats.ModelStats, error) {
+		return s.live.Models(ctx, sp.livePQ)
+	})
 	if err != nil {
 		s.degradeGap(err)
 		return c, nil
@@ -291,7 +370,7 @@ func (s *CachedSource) Models(ctx context.Context, pq stats.PeriodQuery) (stats.
 	// ModelStats does not expose the contributing session ids. Fetch the small
 	// recent message window as well so sessions spanning the cache cutoff can
 	// still be de-duplicated without using message-level tokens for usage.
-	gap, err := fetchGapMessages(ctx, s.live, sp.livePQ)
+	gap, err := s.gapMessages(ctx, sp.livePQ)
 	if err != nil {
 		s.degradeGap(err)
 		return c, nil
@@ -312,7 +391,9 @@ func (s *CachedSource) Tools(ctx context.Context, pq stats.PeriodQuery) (stats.T
 	if err != nil || !sp.hasLive {
 		return c, err
 	}
-	gapTools, err := s.live.Tools(ctx, sp.livePQ)
+	gapTools, err := retryLiveOnce(ctx, func() (stats.ToolStats, error) {
+		return s.live.Tools(ctx, sp.livePQ)
+	})
 	if err != nil {
 		s.degradeGap(err)
 		gapTools = stats.ToolStats{}
@@ -333,7 +414,7 @@ func (s *CachedSource) Projects(ctx context.Context, pq stats.PeriodQuery) (stat
 	if err != nil || !sp.hasLive {
 		return c, err
 	}
-	gap, err := fetchGapMessages(ctx, s.live, sp.livePQ)
+	gap, err := s.gapMessages(ctx, sp.livePQ)
 	var gapSessions []stats.SessionEntry
 	if err == nil && len(gap.msgs) > 0 {
 		gapSessions, err = fetchGapSessions(ctx, s.live, stats.SessionQuery{FromTime: sp.livePQ.FromTime, ToTime: sp.livePQ.ToTime})
@@ -366,7 +447,7 @@ func (s *CachedSource) ProjectByID(ctx context.Context, id string, pq stats.Peri
 	gapSessions, err := fetchGapSessions(ctx, s.live, stats.SessionQuery{ProjectID: id, FromTime: sp.livePQ.FromTime, ToTime: sp.livePQ.ToTime})
 	var gap gapData
 	if err == nil {
-		gap, err = fetchGapMessages(ctx, s.live, sp.livePQ)
+		gap, err = s.gapMessages(ctx, sp.livePQ)
 	}
 	if err != nil {
 		s.degradeGap(err)
@@ -411,7 +492,7 @@ func (s *CachedSource) Sessions(ctx context.Context, query stats.SessionQuery) (
 	gapSessions, err := fetchGapSessions(ctx, s.live, gapQuery)
 	var gap gapData
 	if err == nil {
-		gap, err = fetchGapMessages(ctx, s.live, sp.livePQ)
+		gap, err = s.gapMessages(ctx, sp.livePQ)
 	}
 	if err != nil {
 		s.degradeGap(err)
@@ -445,7 +526,7 @@ func (s *CachedSource) Messages(ctx context.Context, pq stats.PeriodQuery, page,
 	if !sp.hasLive {
 		return s.store.Messages(ctx, s.sourceID(), sp.cachePQ, page, limit, sort)
 	}
-	gap, err := fetchGapMessages(ctx, s.live, sp.livePQ)
+	gap, err := s.gapMessages(ctx, sp.livePQ)
 	if err != nil {
 		s.degradeGap(err)
 		return s.store.Messages(ctx, s.sourceID(), sp.cachePQ, page, limit, sort)

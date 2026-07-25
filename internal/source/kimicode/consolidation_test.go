@@ -52,8 +52,8 @@ func TestConsolidationDataExportsFilteredMetadataOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConsolidationData() error = %v", err)
 	}
-	if src.snapshot != nil || !src.loadedAt.IsZero() {
-		t.Fatalf("full snapshot cache was not released: snapshot=%p loadedAt=%v", src.snapshot, src.loadedAt)
+	if src.snapshot != snap || src.loadedAt.IsZero() {
+		t.Fatalf("full snapshot cache must be retained after consolidation (concurrent live reads reuse it): snapshot=%p loadedAt=%v", src.snapshot, src.loadedAt)
 	}
 	if len(data.Sessions) != 3 {
 		t.Fatalf("sessions = %d, want all 3 snapshot sessions", len(data.Sessions))
@@ -98,25 +98,14 @@ func TestConsolidationDataExportsFilteredMetadataOnly(t *testing.T) {
 	}
 
 	src.bounded = snap
-	src.boundedFrom = start.Add(-boundedLoadMargin)
-	src.boundedLoadedAt = time.Now()
+	boundedFrom := start.Add(-boundedLoadMargin)
+	boundedLoadedAt := time.Now()
+	src.boundedFrom, src.boundedLoadedAt = boundedFrom, boundedLoadedAt
 	if _, err := src.ConsolidationData(context.Background(), pq); err != nil {
 		t.Fatalf("ConsolidationData(bounded) error = %v", err)
 	}
-	if src.bounded != nil || !src.boundedFrom.IsZero() || !src.boundedLoadedAt.IsZero() {
-		t.Fatalf("bounded snapshot cache was not released: snapshot=%p from=%v loadedAt=%v", src.bounded, src.boundedFrom, src.boundedLoadedAt)
-	}
-
-	newer := &snapshot{}
-	newerLoadedAt := time.Now()
-	newerBoundedFrom := start.Add(-2 * boundedLoadMargin)
-	newerBoundedLoadedAt := newerLoadedAt.Add(-time.Second)
-	src.snapshot, src.loadedAt = newer, newerLoadedAt
-	src.bounded, src.boundedFrom, src.boundedLoadedAt = newer, newerBoundedFrom, newerBoundedLoadedAt
-	src.releaseConsolidationSnapshot(snap)
-	if src.snapshot != newer || !src.loadedAt.Equal(newerLoadedAt) || src.bounded != newer ||
-		!src.boundedFrom.Equal(newerBoundedFrom) || !src.boundedLoadedAt.Equal(newerBoundedLoadedAt) {
-		t.Fatal("releasing an old pinned snapshot cleared a newer cached snapshot")
+	if src.bounded != snap || !src.boundedFrom.Equal(boundedFrom) || !src.boundedLoadedAt.Equal(boundedLoadedAt) {
+		t.Fatalf("bounded snapshot cache must be retained after consolidation: snapshot=%p from=%v loadedAt=%v", src.bounded, src.boundedFrom, src.boundedLoadedAt)
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())
@@ -124,7 +113,7 @@ func TestConsolidationDataExportsFilteredMetadataOnly(t *testing.T) {
 	if _, err := src.ConsolidationData(canceled, pq); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ConsolidationData(canceled) error = %v, want context.Canceled", err)
 	}
-	if src.snapshot != newer || src.bounded != newer {
+	if src.snapshot != snap || src.bounded != snap {
 		t.Fatal("canceled consolidation evicted cached snapshots before snapshot lookup")
 	}
 }

@@ -15,7 +15,7 @@ import (
 
 const (
 	qwenSourceID         = string(source.SourceQwenCode)
-	defaultSnapshotTTL   = 2 * time.Second
+	defaultSnapshotTTL   = 15 * time.Second
 	defaultSourceTimeout = 10 * time.Second
 	boundedLoadMargin    = 10 * time.Minute
 	// usageMonthSlack absorbs the writer-local-timezone month boundaries of

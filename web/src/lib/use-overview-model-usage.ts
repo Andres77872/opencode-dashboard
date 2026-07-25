@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useDashboardContext } from '../components/layout/dashboard-context.ts'
 import type { DimensionDayStats, ModelEntry, SourceDimensionError, SourceLoadError } from '../types/api.ts'
-import { getOverviewAllModels, setBypassCache } from './api.ts'
+import { getOverviewAllModels, withBypassCache } from './api.ts'
 
 export interface OverviewModelUsage {
   period: string
@@ -64,8 +64,9 @@ export function useOverviewModelUsage(period: string, enabled: boolean): UseOver
       setError(null)
 
       try {
-        if (refreshTriggered) setBypassCache(true)
-        const response = await getOverviewAllModels(period, controller.signal)
+        const response = refreshTriggered
+          ? await withBypassCache(() => getOverviewAllModels(period, controller.signal))
+          : await getOverviewAllModels(period, controller.signal)
         if (controller.signal.aborted) return
 
         const next: OverviewModelUsage = {

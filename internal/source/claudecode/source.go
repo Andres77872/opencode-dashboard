@@ -15,7 +15,7 @@ import (
 
 const (
 	claudeSourceID       = string(source.SourceClaudeCode)
-	defaultSnapshotTTL   = 2 * time.Second
+	defaultSnapshotTTL   = 15 * time.Second
 	defaultSourceTimeout = 10 * time.Second
 
 	// boundedLoadMargin is subtracted from a bounded load's lower bound before

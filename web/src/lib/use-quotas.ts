@@ -2,7 +2,7 @@
    (the sidebar section is always mounted, so the Overview section reuses the
    same fetch instead of adding a second poller). */
 import { useEffect, useSyncExternalStore } from 'react'
-import { getQuotas } from './api'
+import { getQuotas, withBypassCache } from './api'
 import type { QuotasResponse } from '../types/api'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 
@@ -25,13 +25,15 @@ function setState(next: Partial<QuotasState>) {
   listeners.forEach((listener) => listener())
 }
 
-async function refresh() {
+async function refresh(bypassHttpCache = false) {
   inFlight?.abort()
   const controller = new AbortController()
   inFlight = controller
   setState({ loading: true })
   try {
-    const data = await getQuotas(controller.signal)
+    const data = bypassHttpCache
+      ? await withBypassCache(() => getQuotas(controller.signal))
+      : await getQuotas(controller.signal)
     if (controller.signal.aborted) return
     setState({ data, error: null, loading: false })
   } catch (error) {
@@ -69,7 +71,7 @@ function getSnapshot(): QuotasState {
 
 /** Re-fetch quotas now — backs the retry action on the quota error states. */
 export function refreshQuotas() {
-  void refresh()
+  void refresh(true)
 }
 
 export function useQuotas(): QuotasState {
@@ -81,7 +83,7 @@ export function useQuotas(): QuotasState {
   useEffect(() => {
     if (refreshNonce > 0 && refreshNonce !== lastHandledNonce) {
       lastHandledNonce = refreshNonce
-      void refresh()
+      void refresh(true)
     }
   }, [refreshNonce])
 

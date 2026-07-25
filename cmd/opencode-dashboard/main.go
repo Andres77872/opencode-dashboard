@@ -667,6 +667,13 @@ type dbSelection struct {
 	Source string
 }
 
+// autoSyncInterval paces the periodic background consolidation. The finality
+// cutoff only advances once per clock hour, so roughly every other tick
+// short-circuits into a cheap watermark verification and one tick per hour
+// does a real one-hour incremental collect. It also retries sources whose
+// startup sync failed well inside the read-staleness window.
+const autoSyncInterval = 30 * time.Minute
+
 type cacheRuntime struct {
 	mu             sync.Mutex
 	store          *usagecache.Store
@@ -680,6 +687,21 @@ type cacheRuntime struct {
 	job            cacheJobState
 	disabled       bool
 	logger         *slog.Logger
+
+	// lifeCtx cancels in-flight sync jobs and stops the auto-sync loop at
+	// shutdown; autoDone (guarded by mu) is closed when the loop exits.
+	lifeCtx    context.Context
+	lifeCancel context.CancelFunc
+	autoDone   chan struct{}
+}
+
+// lifecycleCtx is the context sync jobs run under; falls back to Background
+// for runtimes constructed without openCacheRuntime (tests).
+func (c *cacheRuntime) lifecycleCtx() context.Context {
+	if c != nil && c.lifeCtx != nil {
+		return c.lifeCtx
+	}
+	return context.Background()
 }
 
 // SetLogger directs cache runtime and store activity logs to l.
@@ -770,6 +792,7 @@ func openCacheRuntime(ctx context.Context, selection config.PathSelection, rebui
 		return nil, err
 	}
 	runtime.store = cacheStore
+	runtime.lifeCtx, runtime.lifeCancel = context.WithCancel(context.Background())
 	return runtime, nil
 }
 
@@ -799,7 +822,19 @@ func (c *cacheRuntime) hasCachedSources() bool {
 }
 
 func (c *cacheRuntime) Close() error {
-	if c == nil || c.store == nil {
+	if c == nil {
+		return nil
+	}
+	if c.lifeCancel != nil {
+		c.lifeCancel() // aborts in-flight jobs and stops the auto-sync loop
+	}
+	c.mu.Lock()
+	done := c.autoDone
+	c.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+	if c.store == nil {
 		return nil
 	}
 	return c.store.Close()
@@ -922,7 +957,88 @@ func buildWebRegistry(cache *cacheRuntime, st *store.Store, selection dbSelectio
 	}
 
 	cache.startPendingInitialSync()
+	cache.startAutoSync()
 	return registry, nil
+}
+
+// startAutoSync launches the periodic background consolidation loop (idempotent).
+func (c *cacheRuntime) startAutoSync() {
+	if c == nil || c.disabled || c.store == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.autoDone != nil {
+		c.mu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	c.autoDone = done
+	c.mu.Unlock()
+	go c.autoSyncLoop(done)
+}
+
+func (c *cacheRuntime) autoSyncLoop(done chan struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(autoSyncInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.lifecycleCtx().Done():
+			return
+		case <-ticker.C:
+			c.runAutoSyncTick()
+		}
+	}
+}
+
+// runAutoSyncTick runs one periodic incremental consolidation of every
+// currently-available source, so the cache stays warm without reads or manual
+// syncs and sources that failed their startup sync get retried. It runs
+// synchronously in the loop goroutine so ticks never overlap; a running
+// manual/startup job wins and the tick is skipped. The tick reuses the normal
+// job state, so it is visible in the cache status API like any other sync.
+func (c *cacheRuntime) runAutoSyncTick() {
+	if c == nil || c.disabled || c.store == nil {
+		return
+	}
+	available := make([]source.Source, 0)
+	for _, src := range c.sourceSnapshot() { // no locks held during Info discovery scans
+		if src.Info(c.lifecycleCtx()).Available {
+			available = append(available, src)
+		}
+	}
+	if len(available) == 0 {
+		return
+	}
+	cutoff := usagecache.DefaultSafeCutoff(time.Now().UTC())
+	c.mu.Lock()
+	if c.job.Running {
+		c.mu.Unlock()
+		return
+	}
+	// The tick targets every remembered source, superseding any initial-sync
+	// queue that never got to run (startPendingInitialSync skips while a job
+	// is running and is never re-invoked).
+	c.pendingInitial = nil
+	c.startJobLocked("auto", available, usagecache.SyncModeIncremental, cutoff)
+	c.mu.Unlock()
+	c.log().Debug("cache: periodic auto-sync tick", "sources", len(available))
+	c.runSyncJob(c.lifecycleCtx(), available, usagecache.SyncModeIncremental, cutoff)
+}
+
+// knownSourceIDs snapshots every remembered source id — including currently
+// unavailable ones, which must never be treated as prunable.
+func (c *cacheRuntime) knownSourceIDs() []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, 0, len(c.order))
+	for _, id := range c.order {
+		out = append(out, string(id))
+	}
+	return out
 }
 
 func registerCachedSource(ctx context.Context, registry *source.Registry, cache *cacheRuntime, src source.Source) error {
@@ -967,6 +1083,9 @@ func (c *cacheRuntime) startPendingInitialSync() {
 	cutoff := usagecache.DefaultSafeCutoff(time.Now().UTC())
 	c.mu.Lock()
 	if c.job.Running || len(c.pendingInitial) == 0 {
+		// The queue is deliberately kept when a job is already running: the
+		// periodic auto-sync tick clears it while targeting every remembered
+		// source, so queued sources still get consolidated.
 		c.mu.Unlock()
 		return
 	}
@@ -989,7 +1108,7 @@ func (c *cacheRuntime) startPendingInitialSync() {
 	}
 	c.log().Info("cache: starting initial background consolidation; views serve live data until it finishes",
 		"sources", strings.Join(ids, ","))
-	go c.runSyncJob(targets, usagecache.SyncModeIncremental, cutoff)
+	go c.runSyncJob(c.lifecycleCtx(), targets, usagecache.SyncModeIncremental, cutoff)
 }
 
 func (c *cacheRuntime) rememberSource(src source.Source) {
@@ -1078,6 +1197,10 @@ func (c *cacheRuntime) Status(ctx context.Context) (web.CacheStatusResponse, err
 					item.FillAttemptMS = fill.AttemptMS
 					item.FillError = fill.ErrMsg
 				}
+				if gap, ok := c.store.GapState(item.SourceID); ok {
+					item.RecentAttemptMS = gap.AttemptMS
+					item.RecentError = gap.ErrMsg
+				}
 				if item.LastSyncedMS > resp.LastUpdatedMS {
 					resp.LastUpdatedMS = item.LastSyncedMS
 				}
@@ -1092,6 +1215,28 @@ func (c *cacheRuntime) Status(ctx context.Context) (web.CacheStatusResponse, err
 		resp.LastUpdatedMS = resp.Sync.UpdatedAtMS
 	}
 	return resp, nil
+}
+
+// RecentWarnings reports sources whose latest live read of the recent
+// (post-cutoff) window failed, so their newest hours are currently served
+// cache-only. In-memory only — safe on every request.
+func (c *cacheRuntime) RecentWarnings(context.Context) []web.SourceWarning {
+	if c == nil || c.disabled || c.store == nil {
+		return nil
+	}
+	var warnings []web.SourceWarning
+	c.mu.Lock()
+	ids := append([]source.SourceID(nil), c.order...)
+	c.mu.Unlock()
+	for _, id := range ids {
+		if gap, ok := c.store.GapState(string(id)); ok && gap.ErrMsg != "" {
+			warnings = append(warnings, web.SourceWarning{
+				SourceID: string(id),
+				Message:  "recent activity is temporarily incomplete: " + gap.ErrMsg,
+			})
+		}
+	}
+	return warnings
 }
 
 func (c *cacheRuntime) Sync(ctx context.Context, selected string, modeValue string) (web.CacheStatusResponse, error) {
@@ -1125,7 +1270,7 @@ func (c *cacheRuntime) Sync(ctx context.Context, selected string, modeValue stri
 	if err != nil {
 		return web.CacheStatusResponse{}, err
 	}
-	go c.runSyncJob(targets, mode, cutoff)
+	go c.runSyncJob(c.lifecycleCtx(), targets, mode, cutoff)
 	return status, nil
 }
 
@@ -1144,10 +1289,27 @@ func parseCacheSyncMode(value string) (usagecache.SyncMode, error) {
 // runSyncJob consolidates each target in turn. One failing or unavailable
 // source no longer aborts the rest: its error is logged and collected, the
 // remaining sources still sync, and the job finishes with the combined error.
-func (c *cacheRuntime) runSyncJob(targets []source.Source, mode usagecache.SyncMode, cutoff time.Time) {
-	ctx := context.Background()
+// ctx is the runtime's lifecycle context, so shutdown aborts in-flight jobs.
+func (c *cacheRuntime) runSyncJob(ctx context.Context, targets []source.Source, mode usagecache.SyncMode, cutoff time.Time) {
 	start := time.Now()
 	var errs []error
+	if mode == usagecache.SyncModeRebuild {
+		// Rebuild means "the entire database": also sweep rows belonging to
+		// sources that are no longer registered (renamed ids, de-configured
+		// homes) — per-source re-collection alone would keep them forever.
+		if pruned, err := c.store.PruneUnknownSources(ctx, c.knownSourceIDs()); err != nil {
+			c.log().Warn("cache job: pruning unknown sources failed", "error", err)
+			c.mu.Lock()
+			c.appendLogLocked("warn", "", fmt.Sprintf("Failed to remove cached data for unknown sources: %v", err))
+			c.mu.Unlock()
+			errs = append(errs, fmt.Errorf("prune unknown sources: %w", err))
+		} else if len(pruned) > 0 {
+			c.log().Info("cache job: removed cached data for unknown sources", "sources", strings.Join(pruned, ","))
+			c.mu.Lock()
+			c.appendLogLocked("info", "", "Removed cached data for sources no longer configured: "+strings.Join(pruned, ", "))
+			c.mu.Unlock()
+		}
+	}
 	for _, src := range targets {
 		info := src.Info(ctx)
 		if !info.Available {
@@ -1178,7 +1340,11 @@ func (c *cacheRuntime) runSyncJob(targets []source.Source, mode usagecache.SyncM
 			continue
 		}
 		c.logSyncReport(info.ID, info.Label, report)
-		if c.registry != nil {
+		// Only swap in a cached wrapper on the live->cached transition: an
+		// already-cached source's registry entry wraps this same live source
+		// and store, and re-wrapping would orphan the old wrapper's fill
+		// context and reset its staleness backoff for no benefit.
+		if c.registry != nil && !c.isCached(info.ID) {
 			if err := c.registry.Register(usagecache.WrapSource(c.store, src)); err != nil {
 				c.log().Error("cache job: registering cached source failed", "source", info.ID, "error", err)
 				c.mu.Lock()

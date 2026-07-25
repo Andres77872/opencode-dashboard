@@ -16,7 +16,7 @@ import (
 
 const (
 	kimiSourceID         = string(source.SourceKimiCode)
-	defaultSnapshotTTL   = 2 * time.Second
+	defaultSnapshotTTL   = 15 * time.Second
 	defaultSourceTimeout = 10 * time.Second
 	boundedLoadMargin    = 10 * time.Minute
 )

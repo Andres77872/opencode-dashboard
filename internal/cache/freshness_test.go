@@ -113,9 +113,9 @@ func TestStaleCacheTriggersBackgroundConsolidation(t *testing.T) {
 	t.Fatalf("background consolidation never landed")
 }
 
-// TestGapReadFailureDegradesToCacheOnly: a failing live source must not fail
-// the read; the consolidated data is served and the error surfaces via the
-// fill-state status API.
+// TestGapReadFailureDegradesToCacheOnly: a persistently failing live source
+// must not fail the read; the consolidated data is served and the failure
+// surfaces via the gap-state status API until a later gap read succeeds.
 func TestGapReadFailureDegradesToCacheOnly(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -135,12 +135,132 @@ func TestGapReadFailureDegradesToCacheOnly(t *testing.T) {
 	if overview.Messages != 1 {
 		t.Fatalf("degraded message count = %d, want 1 (cache only)", overview.Messages)
 	}
-	state, ok := store.FillState(syncFakeSourceID)
+	state, ok := store.GapState(syncFakeSourceID)
 	if !ok || state.ErrMsg == "" {
-		t.Fatalf("gap read failure never surfaced via FillState: %#v", state)
+		t.Fatalf("gap read failure never surfaced via GapState: %#v", state)
 	}
 	if state.AttemptMS == 0 {
-		t.Fatalf("fill state missing attempt timestamp: %#v", state)
+		t.Fatalf("gap state missing attempt timestamp: %#v", state)
+	}
+
+	// Recovery: the next successful gap read clears the warning state.
+	src.messagesErr = nil
+	if _, err := cached.Overview(ctx, stats.PeriodQuery{Period: "all"}); err != nil {
+		t.Fatalf("Overview() after recovery failed: %v", err)
+	}
+	state, ok = store.GapState(syncFakeSourceID)
+	if !ok || state.ErrMsg != "" {
+		t.Fatalf("gap state not cleared after a successful read: %#v", state)
+	}
+}
+
+// TestGapReadRetriesOnce: a one-off live failure is absorbed by the in-place
+// retry — the response stays complete and no warning state is recorded.
+func TestGapReadRetriesOnce(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	src := &syncFakeSource{messages: []stats.MessageEntry{
+		testMessage("finalized", now.Add(-10*time.Hour), 0.01),
+		testMessage("recent", now.Add(-30*time.Minute), 0.02),
+	}}
+	store := newTestStore(t)
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{}); err != nil {
+		t.Fatalf("initial sync failed: %v", err)
+	}
+	cached := WrapSource(store, src)
+	t.Cleanup(func() { _ = cached.Close() })
+
+	src.failMessagesTimes = 1
+	overview, err := cached.Overview(ctx, stats.PeriodQuery{Period: "all"})
+	if err != nil {
+		t.Fatalf("Overview() must absorb a one-off live failure: %v", err)
+	}
+	if overview.Messages != 2 {
+		t.Fatalf("merged message count = %d, want 2 (cache + gap after retry)", overview.Messages)
+	}
+	if state, ok := store.GapState(syncFakeSourceID); ok && state.ErrMsg != "" {
+		t.Fatalf("retried gap read recorded a warning: %#v", state)
+	}
+}
+
+// TestGapFetchedOncePerBurst: one request burst (overview + trend + projects)
+// pages the live source once — the unfiltered gap read is memoized.
+func TestGapFetchedOncePerBurst(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	src := &syncFakeSource{messages: []stats.MessageEntry{
+		testMessage("finalized", now.Add(-10*time.Hour), 0.01),
+		testMessage("recent", now.Add(-30*time.Minute), 0.02),
+	}}
+	store := newTestStore(t)
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{}); err != nil {
+		t.Fatalf("initial sync failed: %v", err)
+	}
+	cached := WrapSource(store, src)
+	t.Cleanup(func() { _ = cached.Close() })
+	src.mu.Lock()
+	src.messagesCalls = 0 // ignore calls made by the initial sync
+	src.mu.Unlock()
+
+	if _, err := cached.Overview(ctx, stats.PeriodQuery{Period: "all"}); err != nil {
+		t.Fatalf("Overview() failed: %v", err)
+	}
+	if _, err := cached.Daily(ctx, stats.PeriodQuery{Period: "all"}); err != nil {
+		t.Fatalf("Daily() failed: %v", err)
+	}
+	if _, err := cached.Projects(ctx, stats.PeriodQuery{Period: "all"}); err != nil {
+		t.Fatalf("Projects() failed: %v", err)
+	}
+
+	src.mu.Lock()
+	calls := src.messagesCalls
+	src.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("live Messages called %d times for one burst, want 1 (gap memo)", calls)
+	}
+}
+
+// TestGapMemoSingleFlight: concurrent reads share one in-flight gap fetch.
+func TestGapMemoSingleFlight(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	src := &syncFakeSource{messages: []stats.MessageEntry{
+		testMessage("finalized", now.Add(-10*time.Hour), 0.01),
+		testMessage("recent", now.Add(-30*time.Minute), 0.02),
+	}}
+	store := newTestStore(t)
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{}); err != nil {
+		t.Fatalf("initial sync failed: %v", err)
+	}
+	gate := make(chan struct{})
+	src.messagesGate = gate
+	cached := WrapSource(store, src)
+	t.Cleanup(func() { _ = cached.Close() })
+	src.mu.Lock()
+	src.messagesCalls = 0
+	src.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := cached.Overview(ctx, stats.PeriodQuery{Period: "all"}); err != nil {
+				t.Errorf("concurrent Overview() failed: %v", err)
+			}
+		}()
+	}
+	// Let the goroutines pile up behind the single-flight fetch, then release
+	// the live source.
+	time.Sleep(50 * time.Millisecond)
+	close(gate)
+	wg.Wait()
+
+	src.mu.Lock()
+	calls := src.messagesCalls
+	src.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("concurrent burst issued %d live Messages calls, want 1 (single-flight)", calls)
 	}
 }
 

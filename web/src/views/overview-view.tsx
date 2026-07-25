@@ -324,6 +324,11 @@ export function OverviewView() {
       {data.errors?.map((e) => (
         <Notice key={e.source_id} tone="danger" title={`${labelFor(e.source_id)} could not be loaded`}>{e.message}</Notice>
       ))}
+      {data.warnings?.map((warning) => (
+        <Notice key={`recent-${warning.source_id}`} tone="warning" title={`${labelFor(warning.source_id)} recent data is temporarily incomplete`}>
+          The last hours could not be read from the raw source, so they may show as zero. Older consolidated data is unaffected — refresh to retry.
+        </Notice>
+      ))}
       {kimiAccounting && isIncompleteRequestAccounting(kimiAccounting) && (
         <Notice tone="warning" title="Kimi request accounting is incomplete">{requestAccountingDisclosure(kimiAccounting)}</Notice>
       )}

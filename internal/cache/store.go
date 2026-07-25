@@ -125,10 +125,12 @@ type Store struct {
 
 	fillMu     sync.Mutex
 	fillStates map[string]FillState
+	gapStates  map[string]FillState
 
-	// memoMu guards stateMemo (leaf lock; see merge_store.go).
+	// memoMu guards stateMemo and memoGen (leaf lock; see merge_store.go).
 	memoMu    sync.Mutex
 	stateMemo map[string]sourceStateMemo
+	memoGen   map[string]uint64
 
 	// writeSem serializes cache write transactions across sources: SQLite
 	// permits one writer, so in-process writers queue here instead of
@@ -200,6 +202,35 @@ func (s *Store) recordFillState(sourceID string, err error) {
 		s.fillStates = make(map[string]FillState)
 	}
 	s.fillStates[sourceID] = state
+}
+
+// GapState is the outcome of the latest live read of the recent window for a
+// source. A non-empty ErrMsg means the last request degraded to cache-only
+// data (recent hours shown as zero); the web layer renders it as a warning.
+func (s *Store) GapState(sourceID string) (FillState, bool) {
+	if s == nil {
+		return FillState{}, false
+	}
+	s.fillMu.Lock()
+	defer s.fillMu.Unlock()
+	state, ok := s.gapStates[sourceID]
+	return state, ok
+}
+
+func (s *Store) recordGapState(sourceID string, err error) {
+	if s == nil || sourceID == "" {
+		return
+	}
+	state := FillState{AttemptMS: time.Now().UTC().UnixMilli()}
+	if err != nil {
+		state.ErrMsg = err.Error()
+	}
+	s.fillMu.Lock()
+	defer s.fillMu.Unlock()
+	if s.gapStates == nil {
+		s.gapStates = make(map[string]FillState)
+	}
+	s.gapStates[sourceID] = state
 }
 
 type SourceStatus struct {
@@ -373,7 +404,11 @@ func (s *Store) SyncSourceWithOptions(ctx context.Context, src source.Source, op
 	lock := s.sourceLock(string(info.ID))
 	if opts.ReadTriggered {
 		if !lock.TryLock() {
-			// Another sync is running; serve the current cache as-is.
+			// Another sync is running; serve the current cache as-is. The skip
+			// is deliberately invisible in the fill states: it is not an attempt
+			// (recording success would fake freshness, recording an error would
+			// flag a failure while a healthy sync runs) — the running job is the
+			// visible artifact, and the 1-minute fill backoff retries shortly.
 			s.logger.Debug("cache fill skipped: sync already running", "source", info.ID)
 			return report, nil
 		}
@@ -397,11 +432,15 @@ func (s *Store) SyncSourceWithOptions(ctx context.Context, src source.Source, op
 	}
 	if !info.Available {
 		if opts.ReadTriggered {
+			// Return an error so the deferred recordFillState surfaces the
+			// condition ("auto-refresh failed") instead of faking a healthy fill.
+			// Nothing persisted changes; the read itself is unaffected.
 			s.logger.Debug("cache fill skipped: source unavailable", "source", info.ID, "reason", info.Diagnostics.Reason)
-			return report, nil
+			retErr = fmt.Errorf("source unavailable: %s", info.Diagnostics.Reason)
+			return report, retErr
 		}
-		s.logger.Warn("cache sync: source unavailable, clearing cached rows", "source", info.ID, "reason", info.Diagnostics.Reason)
-		return report, s.replaceUnavailable(ctx, info, fp)
+		s.logger.Warn("cache sync: source unavailable, keeping cached rows", "source", info.ID, "reason", info.Diagnostics.Reason)
+		return report, s.markUnavailable(ctx, info, fp, current, ok)
 	}
 
 	pricingChanged := ok && pricingIdentityChanged(current.Fingerprint, fp, info.CostPolicy.PricingSnapshotID)
@@ -413,12 +452,18 @@ func (s *Store) SyncSourceWithOptions(ctx context.Context, src source.Source, op
 		report.Mode = SyncModeRebuild
 	}
 
-	// The finality boundary never regresses, except down to the start of its
-	// own hour: the cache only ever holds complete clock-hour buckets, so a
-	// non-aligned cutoff inherited from a pre-v4 cache snaps back once (the
-	// partial hour is re-collected by the next consolidation; reads serve it
-	// live meanwhile).
+	// The finality boundary never regresses across incremental syncs, except
+	// down to the start of its own hour: the cache only ever holds complete
+	// clock-hour buckets, so a non-aligned cutoff inherited from a pre-v4
+	// cache snaps back once (the partial hour is re-collected by the next
+	// consolidation; reads serve it live meanwhile). A rebuild instead uses
+	// the requested cutoff directly: it re-collects every row from scratch
+	// strictly before it, so a stuck-ahead stored cutoff (clock skew, a
+	// hand-edited row) is repaired rather than inherited forever.
 	cutoff := maxTime(millisToTime(current.LastSafeCutoff), opts.Cutoff).Truncate(time.Hour)
+	if opts.Mode == SyncModeRebuild {
+		cutoff = opts.Cutoff.Truncate(time.Hour)
+	}
 	report.Cutoff = cutoff
 	report.FreshThrough = cutoff
 
@@ -556,6 +601,12 @@ func DefaultSafeCutoff(now time.Time) time.Time {
 	return now.UTC().Add(-DefaultSyncSafetyDelay).Truncate(time.Hour)
 }
 
+// advanceWatermarks records a no-collect verification: the fingerprint was
+// unchanged and the cutoff had not advanced past what is consolidated. It
+// still stamps last_synced_ms = now — that field means "last time the cache
+// was verified fresh through the cutoff", so deferring the next read-triggered
+// staleness check by consolidationStaleness is correct; the periodic auto-sync
+// re-verifies on its own cadence regardless.
 func (s *Store) advanceWatermarks(ctx context.Context, info source.SourceInfo, fp string, safeCutoff, freshThrough time.Time) error {
 	if err := s.beginWrite(ctx); err != nil {
 		return err
@@ -615,7 +666,17 @@ type toolRow struct {
 	Status      string
 }
 
-func (s *Store) replaceUnavailable(ctx context.Context, info source.SourceInfo, fp string) error {
+// markUnavailable records that the source's raw data is currently missing
+// WITHOUT deleting the cached rows. Unavailability is routinely transient (a
+// request-scoped discovery timeout, a stat hiccup, an unmounted disk), and
+// unavailable sources are never served from the cache anyway, so wiping here
+// would only destroy data. When prior state exists, the fingerprint the
+// cached rows actually correspond to and both watermarks are preserved, so
+// recovery is a cheap incremental collect and a junk fallback fingerprint
+// computed while unavailable cannot later force a spurious full rebuild.
+// Rows are only ever removed by boundary deletes, an explicit rebuild, or
+// PruneUnknownSources.
+func (s *Store) markUnavailable(ctx context.Context, info source.SourceInfo, fp string, current SourceStatus, hasState bool) error {
 	if err := s.beginWrite(ctx); err != nil {
 		return err
 	}
@@ -625,13 +686,92 @@ func (s *Store) replaceUnavailable(ctx context.Context, info source.SourceInfo, 
 		return err
 	}
 	defer rollback(tx)
-	if err := deleteSourceRows(ctx, tx, string(info.ID)); err != nil {
-		return err
+	stateFp, cutoff, fresh := fp, time.Time{}, time.Time{}
+	if hasState {
+		stateFp = current.Fingerprint
+		cutoff = millisToTime(current.LastSafeCutoff)
+		fresh = millisToTime(current.FreshThrough)
 	}
-	if err := insertSourceState(ctx, tx, info, fp, "unavailable", info.Diagnostics.Reason, time.Time{}, time.Time{}); err != nil {
+	if err := insertSourceState(ctx, tx, info, stateFp, "unavailable", info.Diagnostics.Reason, cutoff, fresh); err != nil {
 		return err
 	}
 	return s.commitState(tx, string(info.ID))
+}
+
+// PruneUnknownSources deletes every cached row whose source_id is not in
+// keep. Rebuilds only re-collect currently-registered sources, so rows for a
+// renamed or de-configured source would otherwise survive "rebuild the entire
+// database" indefinitely. Returns the pruned source ids. No sourceLock is
+// taken: pruned ids have no registered live source, hence no concurrent sync;
+// writeSem alone serializes the write (respecting sourceLock -> writeSem).
+func (s *Store) PruneUnknownSources(ctx context.Context, keep []string) ([]string, error) {
+	if s == nil {
+		return nil, nil
+	}
+	if err := s.beginWrite(ctx); err != nil {
+		return nil, err
+	}
+	defer s.endWrite()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer rollback(tx)
+
+	keepWhere := ""
+	keepArgs := make([]any, 0, len(keep))
+	if len(keep) > 0 {
+		keepWhere = " WHERE source_id NOT IN (" + inPlaceholders(len(keep)) + ")"
+		for _, id := range keep {
+			keepArgs = append(keepArgs, id)
+		}
+	}
+	pruned := make([]string, 0)
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT source_id FROM source_state`+keepWhere, keepArgs...)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		pruned = append(pruned, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	// Sweep each data table independently so orphan rows without a state row
+	// are caught too.
+	tables := []string{
+		"hourly_model_cost",
+		"hourly_model_sessions",
+		"overview_hourly_cost",
+		"overview_hourly_sessions",
+		"overview_hourly",
+		"hourly_usage",
+		"tool_index",
+		"message_index",
+		"sessions",
+		"projects",
+		"source_state",
+	}
+	for _, table := range tables {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+keepWhere, keepArgs...); err != nil {
+			return nil, fmt.Errorf("prune %s: %w", table, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	for _, id := range pruned {
+		s.invalidateStateMemo(id)
+	}
+	return pruned, nil
 }
 
 // replaceFailed records the error but preserves the existing watermarks so a

@@ -1,6 +1,6 @@
 /* Vael top bar — per-route title/subtitle, mobile nav toggle, live sync status
    + refresh. Sticky-fixed flex item (the in-page scroll lives in PageBody). */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { routeMeta } from './nav-items'
 import { Button, IconButton, Popover } from '../vael/controls'
@@ -60,6 +60,34 @@ export function TopBar() {
     return () => window.clearInterval(id)
   }, [cacheStatus?.sync?.running, requestRefresh])
 
+  // Idle slow-poll: periodic auto-syncs and read-triggered fills happen with
+  // no UI action, so without this the topbar (and the page data) would never
+  // notice them. When the cache's last_updated advances while no job runs,
+  // pick up the new status and refresh the views; if a background job started
+  // after mount, updating the status also hands over to the 900ms poll above.
+  const lastUpdatedRef = useRef(0)
+  useEffect(() => {
+    lastUpdatedRef.current = cacheStatus?.last_updated_ms ?? lastUpdatedRef.current
+  }, [cacheStatus?.last_updated_ms])
+  useEffect(() => {
+    if (cacheStatus?.sync?.running) return
+    const id = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return
+      getCacheStatus()
+        .then((next) => {
+          const advanced = (next.last_updated_ms ?? 0) > lastUpdatedRef.current
+          if (advanced || next.sync?.running) {
+            setCacheStatus(next)
+            if (advanced && !next.sync?.running) requestRefresh()
+          }
+        })
+        .catch(() => {
+          // Quiet poll: errors surface on the next explicit interaction.
+        })
+    }, 60_000)
+    return () => window.clearInterval(id)
+  }, [cacheStatus?.sync?.running, requestRefresh])
+
   const selectedCache = useMemo(
     () => cacheStatus?.sources?.find((source) => source.source_id === selectedSourceId) ?? null,
     [cacheStatus?.sources, selectedSourceId],
@@ -100,7 +128,7 @@ export function TopBar() {
     // and the panel is otherwise a dead end after a failed status fetch.
     if (cacheStatus && !cacheEnabled) return
     if (mode === 'rebuild') {
-      const confirmed = window.confirm('Clear cached database metrics for ALL sources and rebuild the entire database from eligible source data?')
+      const confirmed = window.confirm('Clear cached database metrics for ALL sources and rebuild the entire database from eligible source data? Cached data for sources that are no longer detected will be deleted.')
       if (!confirmed) return
     }
     setCacheSyncing(true)
@@ -316,9 +344,10 @@ function SourceStatusList({
     <div style={{ display: 'grid', gap: 5 }}>
       {sources.map((source) => {
         const fillError = source.fill_error || null
+        const recentError = source.recent_error || null
         const syncError = source.status === 'error' && source.reason ? source.reason : null
         const infoReason = !syncError && source.reason && (source.needs_sync || !source.available) ? source.reason : null
-        const hasError = Boolean(fillError || syncError)
+        const hasError = Boolean(fillError || recentError || syncError)
         const rowSyncing = pendingSourceId === source.source_id || (syncing && currentSourceId === source.source_id)
         const dotColor = hasError
           ? 'var(--danger)'
@@ -331,6 +360,8 @@ function SourceStatusList({
           ? 'syncing...'
           : fillError
             ? 'auto-refresh failed'
+            : recentError
+              ? 'recent-window read failed'
             : syncError
               ? 'sync failed'
               : source.cached && source.fresh_through_ms
@@ -342,6 +373,7 @@ function SourceStatusList({
                     : 'Unavailable'
         const metaParts = [
           fillError && source.fill_attempt_ms ? `Last attempt ${formatRelativeTime(new Date(source.fill_attempt_ms))}` : null,
+          recentError && source.recent_attempt_ms ? `Recent-window read failed ${formatRelativeTime(new Date(source.recent_attempt_ms))}` : null,
           source.last_synced_ms ? `Last synced ${formatRelativeTime(new Date(source.last_synced_ms))}` : null,
         ].filter(Boolean)
         return (
@@ -365,9 +397,9 @@ function SourceStatusList({
                 />
               </div>
             </div>
-            {(fillError || syncError) && (
+            {(fillError || recentError || syncError) && (
               <div style={{ padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--danger)', background: 'var(--danger-soft)', color: 'var(--danger)', font: '500 11px/1.4 var(--font-ui)', whiteSpace: 'normal', overflowWrap: 'anywhere', maxHeight: 72, overflow: 'auto' }}>
-                {fillError ?? syncError}
+                {fillError ?? recentError ?? syncError}
               </div>
             )}
             {infoReason && (
@@ -375,7 +407,7 @@ function SourceStatusList({
                 {infoReason}
               </div>
             )}
-            {(fillError || syncError || infoReason) && metaParts.length > 0 && (
+            {(fillError || recentError || syncError || infoReason) && metaParts.length > 0 && (
               <div style={{ font: '500 11px/1.3 var(--font-ui)', color: 'var(--fg-faint)' }}>
                 {metaParts.join(' · ')}
               </div>

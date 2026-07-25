@@ -35,18 +35,26 @@ import { AssistantStreamProtocolError, readAssistantStream } from './assistant-s
 const DEFAULT_API_BASE_URL = import.meta.env?.VITE_API_BASE_URL?.trim() ?? ''
 
 /**
- * Module-level flag for HTTP cache bypass.
- * Set to true before a refresh-triggered fetch to make the next `request()` call
- * pass `cache: 'no-cache'` to fetch(). Reset to false after each request.
+ * Module-level flag for HTTP cache bypass, scoped by `withBypassCache`.
  */
 let _bypassCache = false
 
 /**
- * Enable HTTP cache bypass for the next request made via `request()`.
- * Used by usePeriodResource when refreshNonce triggers a re-fetch.
+ * Run `fn`, making every request it *initiates synchronously* bypass the
+ * browser HTTP cache (`cache: 'no-cache'`). The flag is read before fetch()
+ * is called and restored before returning, so in single-threaded JS the scope
+ * is deterministic: parallel refresh-triggered fetches all get the bypass and
+ * nothing started outside the callback does. (The old one-shot flag was
+ * consumed by whichever concurrent request ran first, letting a refresh
+ * replay a stale cached body for the rest.)
  */
-export function setBypassCache(value: boolean) {
-  _bypassCache = value
+export function withBypassCache<T>(fn: () => T): T {
+  _bypassCache = true
+  try {
+    return fn()
+  } finally {
+    _bypassCache = false
+  }
 }
 
 export class ApiClientError extends Error {
@@ -85,10 +93,10 @@ async function request<T>(path: string, init?: RequestInit) {
     },
   }
 
-  // When the user-initiated refresh has triggered this request, bypass HTTP cache
+  // When a user-initiated refresh triggered this request, bypass HTTP cache.
+  // Read-only: the flag is scoped by withBypassCache, never consumed here.
   if (_bypassCache) {
     fetchInit.cache = 'no-cache'
-    _bypassCache = false
   }
 
   const response = await fetch(resolveUrl(path), fetchInit)

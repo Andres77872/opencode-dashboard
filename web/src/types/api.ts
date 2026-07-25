@@ -74,6 +74,8 @@ export interface CacheSourceStatus {
   fresh_through_ms?: number
   fill_attempt_ms?: number
   fill_error?: string
+  recent_attempt_ms?: number
+  recent_error?: string
 }
 
 export interface CacheStatusResponse {
@@ -502,6 +504,14 @@ export interface AllSourcesOverview {
   top_tools: ToolEntry[]
   errors?: SourceLoadError[]
   partial_errors?: SourceDimensionError[]
+  /** Sources whose recent (post-cutoff) window failed its live read: their
+   *  newest hours are served cache-only and may show as zero. */
+  warnings?: SourceRecentWarning[]
+}
+
+export interface SourceRecentWarning {
+  source_id: SourceID
+  message: string
 }
 
 /** Lean response returned by GET /api/v1/overview/all?dimension=model. */

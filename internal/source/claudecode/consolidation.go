@@ -2,7 +2,6 @@ package claudecode
 
 import (
 	"context"
-	"time"
 
 	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/stats"
@@ -12,6 +11,10 @@ var _ source.ConsolidationSource = (*Source)(nil)
 
 // ConsolidationData exports the cache-safe metadata in one pinned snapshot.
 // In particular, tool payloads and message content never cross this boundary.
+// The snapshot is deliberately kept cached afterwards: a consolidation runs
+// concurrently with live reads of the recent window, which need the very same
+// snapshot — releasing it here forced those reads into cold full re-parses.
+// It expires via the normal snapshot TTL instead.
 func (s *Source) ConsolidationData(ctx context.Context, pq stats.PeriodQuery) (source.ConsolidationData, error) {
 	if err := ctx.Err(); err != nil {
 		return source.ConsolidationData{}, err
@@ -20,28 +23,7 @@ func (s *Source) ConsolidationData(ctx context.Context, pq stats.PeriodQuery) (s
 	if err != nil {
 		return source.ConsolidationData{}, err
 	}
-	defer s.releaseConsolidationSnapshot(snap)
 	return snap.consolidationData(ctx, pq)
-}
-
-// releaseConsolidationSnapshot lets the raw transcript graph be collected as
-// soon as the metadata export is complete. Pointer checks protect a newer
-// snapshot installed concurrently while this export was being copied.
-func (s *Source) releaseConsolidationSnapshot(snap *snapshot) {
-	if s == nil || snap == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.snapshot == snap {
-		s.snapshot = nil
-		s.loadedAt = time.Time{}
-	}
-	if s.bounded == snap {
-		s.bounded = nil
-		s.boundedFrom = time.Time{}
-		s.boundedLoadedAt = time.Time{}
-	}
 }
 
 func (s *snapshot) consolidationData(ctx context.Context, pq stats.PeriodQuery) (source.ConsolidationData, error) {

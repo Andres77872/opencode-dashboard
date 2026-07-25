@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDashboardContext } from '../components/layout/dashboard-context.ts'
-import { setBypassCache } from './api.ts'
+import { withBypassCache } from './api.ts'
 import type { SourceID } from '../types/api.ts'
 
 export interface UsePeriodResourceOptions {
@@ -162,15 +162,12 @@ export function usePeriodResource<T>(
       setLoading(true)
 
       try {
-        // When this fetch was triggered by a user-initiated refresh (nonce change),
-        // set the HTTP cache bypass flag so the underlying fetch() uses
-        // cache: 'no-cache'. The flag is consumed and reset by the `request()`
-        // function in api.ts.
-        if (isRefreshTriggered) {
-          setBypassCache(true)
-        }
-
-        const next = await fetcher(period, controller.signal, selectedSourceId)
+        // When this fetch was triggered by a user-initiated refresh (nonce
+        // change), scope the HTTP cache bypass around the fetch initiation so
+        // the underlying fetch() uses cache: 'no-cache'.
+        const next = isRefreshTriggered
+          ? await withBypassCache(() => fetcher(period, controller.signal, selectedSourceId))
+          : await fetcher(period, controller.signal, selectedSourceId)
 
         if (controller.signal.aborted || !mountedRef.current) return
 

@@ -28,7 +28,7 @@ import {
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { usePeriodControls } from '../lib/use-period-controls'
 import { usePeriodResource } from '../lib/use-period-resource'
-import { getDaily, getDailyDimension, getMessages, getMessageDetail } from '../lib/api'
+import { getDaily, getDailyDimension, getMessages, getMessageDetail, withBypassCache } from '../lib/api'
 import {
   formatCompactCurrency,
   formatCompactCurrencyWithProvenance,
@@ -296,15 +296,20 @@ export function DailyView() {
   }, [period])
 
   // Fetch the message ledger (separate shape from daily stats).
+  const lastLedgerNonceRef = useRef(refreshNonce)
   useEffect(() => {
     const controller = new AbortController()
+    const isRefreshTriggered = lastLedgerNonceRef.current !== refreshNonce
 
     async function loadMessages() {
       setMessagesError(null)
       setMessagesLoading(true)
       try {
         const sortParam = messagesSort ? `${messagesSort.key}:${messagesSort.direction}` : undefined
-        const next = await getMessages(period, messagesPage, REQUESTS_PAGE_SIZE, sortParam, controller.signal, selectedSourceId)
+        const fetchMessages = () =>
+          getMessages(period, messagesPage, REQUESTS_PAGE_SIZE, sortParam, controller.signal, selectedSourceId)
+        const next = isRefreshTriggered ? await withBypassCache(fetchMessages) : await fetchMessages()
+        lastLedgerNonceRef.current = refreshNonce
         setMessages(next)
       } catch (caught) {
         if (controller.signal.aborted) return

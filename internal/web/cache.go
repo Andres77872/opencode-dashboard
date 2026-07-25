@@ -9,6 +9,16 @@ import (
 type CacheManager interface {
 	Status(context.Context) (CacheStatusResponse, error)
 	Sync(context.Context, string, string) (CacheStatusResponse, error)
+	// RecentWarnings reports sources whose recent (post-cutoff) window failed
+	// its last live read: their latest hours are served cache-only and may
+	// show as zero. Cheap — reads only in-memory state.
+	RecentWarnings(context.Context) []SourceWarning
+}
+
+// SourceWarning flags a source whose response is degraded but not failed.
+type SourceWarning struct {
+	SourceID string `json:"source_id"`
+	Message  string `json:"message"`
 }
 
 type CacheStatusResponse struct {
@@ -34,6 +44,11 @@ type CacheSourceStatus struct {
 	FreshThroughMS int64  `json:"fresh_through_ms,omitempty"`
 	FillAttemptMS  int64  `json:"fill_attempt_ms,omitempty"`
 	FillError      string `json:"fill_error,omitempty"`
+	// RecentAttemptMS/RecentError track the latest live read of the recent
+	// (post-cutoff) window; a non-empty error means the newest hours were
+	// served cache-only (shown as zero) on the last degraded request.
+	RecentAttemptMS int64  `json:"recent_attempt_ms,omitempty"`
+	RecentError     string `json:"recent_error,omitempty"`
 }
 
 type CacheSyncStatus struct {

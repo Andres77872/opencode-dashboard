@@ -27,12 +27,17 @@ func (s *Store) invalidateStateMemo(sourceID string) {
 	}
 	s.memoMu.Lock()
 	delete(s.stateMemo, sourceID)
+	if s.memoGen == nil {
+		s.memoGen = make(map[string]uint64)
+	}
+	s.memoGen[sourceID]++
 	s.memoMu.Unlock()
 }
 
 func (s *Store) sourceMemo(ctx context.Context, sourceID string) (sourceStateMemo, error) {
 	s.memoMu.Lock()
 	memo, ok := s.stateMemo[sourceID]
+	gen := s.memoGen[sourceID]
 	s.memoMu.Unlock()
 	if ok {
 		return memo, nil
@@ -44,10 +49,15 @@ func (s *Store) sourceMemo(ctx context.Context, sourceID string) (sourceStateMem
 		return sourceStateMemo{}, err
 	}
 	s.memoMu.Lock()
-	if s.stateMemo == nil {
-		s.stateMemo = make(map[string]sourceStateMemo)
+	// Only seed the memo if no commit invalidated it while the row was being
+	// read: a read started before a commit could otherwise be stored after the
+	// invalidation and pin pre-commit watermarks until the next write.
+	if s.memoGen[sourceID] == gen {
+		if s.stateMemo == nil {
+			s.stateMemo = make(map[string]sourceStateMemo)
+		}
+		s.stateMemo[sourceID] = memo
 	}
-	s.stateMemo[sourceID] = memo
 	s.memoMu.Unlock()
 	return memo, nil
 }

@@ -137,9 +137,19 @@ type gapData struct {
 }
 
 func fetchGapMessages(ctx context.Context, live sourceReader, pq stats.PeriodQuery) (gapData, error) {
-	// Live sources do not implement model filtering: fetch the gap unfiltered
-	// and apply the predicate in Go.
-	f := filterFromPQ(pq)
+	raw, err := fetchGapRaw(ctx, live, pq)
+	if err != nil {
+		return gapData{}, err
+	}
+	return filterGap(raw, filterFromPQ(pq), pq.FromTime, pq.ToTime), nil
+}
+
+// fetchGapRaw pages the live source's whole [pq.FromTime, pq.ToTime) window
+// unfiltered, patching list-level cost status into entries that lack one
+// (mirroring collectMessagesAndTools). Live sources do not implement model
+// filtering, so the predicate is applied afterwards by filterGap — keeping
+// the raw result reusable across differently-filtered requests.
+func fetchGapRaw(ctx context.Context, live sourceReader, pq stats.PeriodQuery) (gapData, error) {
 	pq.Model, pq.Provider = "", ""
 	var g gapData
 	for page := 1; ; page++ {
@@ -149,12 +159,8 @@ func fetchGapMessages(ctx context.Context, live sourceReader, pq stats.PeriodQue
 		}
 		if page == 1 {
 			g.listStatus, g.listProv = list.CostStatus, list.CostProvenance
-			g.total = list.Total
 		}
 		for _, entry := range list.Messages {
-			if !f.matches(entry) {
-				continue
-			}
 			if entry.CostStatus == "" && entry.Role == "assistant" {
 				entry.CostStatus = list.CostStatus
 				entry.CostProvenance = list.CostProvenance
@@ -169,7 +175,35 @@ func fetchGapMessages(ctx context.Context, live sourceReader, pq stats.PeriodQue
 	return g, nil
 }
 
+// filterGap narrows a raw gap to the model/provider predicate and the
+// [from, to) window. A memoized raw gap may cover a wider window than the
+// request (older from, or entries that arrived before a narrower to), so the
+// bounds are re-applied here; zero bounds are open.
+func filterGap(raw gapData, f modelFilter, from, to time.Time) gapData {
+	g := gapData{listStatus: raw.listStatus, listProv: raw.listProv}
+	for _, entry := range raw.msgs {
+		if !from.IsZero() && entry.TimeCreated.Before(from) {
+			continue
+		}
+		if !to.IsZero() && !entry.TimeCreated.Before(to) {
+			continue
+		}
+		if !f.matches(entry) {
+			continue
+		}
+		g.msgs = append(g.msgs, entry)
+	}
+	g.total = int64(len(g.msgs))
+	return g
+}
+
 func fetchGapSessions(ctx context.Context, live sourceReader, query stats.SessionQuery) ([]stats.SessionEntry, error) {
+	return retryLiveOnce(ctx, func() ([]stats.SessionEntry, error) {
+		return fetchGapSessionsOnce(ctx, live, query)
+	})
+}
+
+func fetchGapSessionsOnce(ctx context.Context, live sourceReader, query stats.SessionQuery) ([]stats.SessionEntry, error) {
 	query.PageSize = syncPageSize
 	if query.Sort == "" {
 		query.Sort = stats.SessionSortOldest

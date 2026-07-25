@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -137,7 +138,28 @@ func (h *Handlers) OverviewAll(w http.ResponseWriter, r *http.Request) {
 		InternalError("failed to compute aggregated overview").Write(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	// Gap states were just recorded by the aggregation above, so the warnings
+	// reflect exactly this response's degraded sources.
+	warnings := h.recentWarnings(ctx)
+	resp := struct {
+		source.AllSourcesOverview
+		Warnings []SourceWarning `json:"warnings,omitempty"`
+	}{AllSourcesOverview: result, Warnings: warnings}
+	if len(warnings) > 0 || len(result.Errors) > 0 {
+		// A degraded body (zeroed recent hours or missing sources) must never
+		// be replayed from the browser cache after the condition clears.
+		writeJSONNoStore(w, http.StatusOK, resp)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// recentWarnings is nil-safe around the optional cache manager.
+func (h *Handlers) recentWarnings(ctx context.Context) []SourceWarning {
+	if h.cache == nil {
+		return nil
+	}
+	return h.cache.RecentWarnings(ctx)
 }
 
 func (h *Handlers) Daily(w http.ResponseWriter, r *http.Request) {

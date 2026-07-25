@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"path/filepath"
@@ -397,5 +398,30 @@ func TestOutdatedDataVersionRowsAreReset(t *testing.T) {
 	}
 	if got := queryInt(t, store.db, `SELECT data_version FROM source_state WHERE source_id='codex'`); got != dataVersion {
 		t.Errorf("data_version = %d, want %d stamped", got, dataVersion)
+	}
+}
+
+// TestSchemaSQLChangesRequireVersionBump is a tripwire: schemaSQL and
+// schemaVersion must change together. There are no migrations by design — a
+// version mismatch deletes the cache file and rebuilds it from raw sources —
+// so an edited schemaSQL with an unchanged schemaVersion would silently leave
+// existing caches on the old table shape forever (every statement is
+// CREATE-IF-NOT-EXISTS and never re-runs on an adopted database).
+//
+// If this test fails after an intentional schema change: bump schemaVersion
+// in schema.go AND update recordedSchemaVersion + recordedSchemaDigest below
+// in the same commit (the failure message prints the new digest).
+func TestSchemaSQLChangesRequireVersionBump(t *testing.T) {
+	const recordedSchemaVersion = 7
+	const recordedSchemaDigest = "77acfe1ace9c3a9b367231f8c9c44f3b275f44e66e344c44177a579acfbfecf0"
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(schemaSQL)))
+	if schemaVersion != recordedSchemaVersion || digest != recordedSchemaDigest {
+		t.Fatalf("schemaSQL/schemaVersion drifted from the recorded pair.\n"+
+			"  schemaVersion = %d (recorded %d)\n"+
+			"  schemaSQL sha256 = %s\n"+
+			"  (recorded %s)\n"+
+			"Any schemaSQL edit requires a schemaVersion bump: mismatched caches are deleted and rebuilt, never migrated. "+
+			"Update recordedSchemaVersion and recordedSchemaDigest here in the same commit as the schema change.",
+			schemaVersion, recordedSchemaVersion, digest, recordedSchemaDigest)
 	}
 }

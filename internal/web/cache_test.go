@@ -13,6 +13,11 @@ import (
 type fakeCacheManager struct {
 	syncedSource string
 	syncedMode   string
+	warnings     []SourceWarning
+}
+
+func (m *fakeCacheManager) RecentWarnings(context.Context) []SourceWarning {
+	return m.warnings
 }
 
 func (m *fakeCacheManager) Status(context.Context) (CacheStatusResponse, error) {

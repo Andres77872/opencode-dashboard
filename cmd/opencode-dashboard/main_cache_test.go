@@ -36,6 +36,153 @@ func newTestCacheRuntime(t *testing.T) *cacheRuntime {
 	}
 }
 
+// TestAutoSyncTickWrapsRawSource: a source left raw (startup sync never ran)
+// becomes cache-backed after one periodic tick, and a second tick keeps the
+// existing cached wrapper instead of churning it.
+func TestAutoSyncTickWrapsRawSource(t *testing.T) {
+	cache := newTestCacheRuntime(t)
+	registry := source.NewRegistry(source.SourceOpenCode)
+	cache.registry = registry
+
+	codexSrc := codex.New(codex.Options{CodexHome: codexFixtureHome(), PathSource: "test fixture"})
+	cache.rememberSource(codexSrc)
+	if err := registry.Register(codexSrc); err != nil {
+		t.Fatalf("register codex source: %v", err)
+	}
+	cache.queueInitialSync(sourceIDOf(codexSrc))
+
+	cache.runAutoSyncTick()
+
+	if !cache.isCached(source.SourceCodex) {
+		t.Fatalf("source not cached after auto-sync tick")
+	}
+	cache.mu.Lock()
+	pending := len(cache.pendingInitial)
+	target := cache.job.Target
+	running := cache.job.Running
+	cache.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("auto-sync tick left %d pending initial syncs", pending)
+	}
+	if target != "auto" || running {
+		t.Fatalf("job state after tick = target %q running %v, want finished auto job", target, running)
+	}
+	wrapped, err := registry.Resolve(string(source.SourceCodex))
+	if err != nil {
+		t.Fatalf("Resolve() failed: %v", err)
+	}
+	if _, ok := wrapped.(*usagecache.CachedSource); !ok {
+		t.Fatalf("registry entry is %T, want *usagecache.CachedSource", wrapped)
+	}
+
+	// A second tick must not replace the cached wrapper.
+	cache.runAutoSyncTick()
+	again, err := registry.Resolve(string(source.SourceCodex))
+	if err != nil {
+		t.Fatalf("Resolve() after second tick failed: %v", err)
+	}
+	if again != wrapped {
+		t.Fatalf("second tick re-wrapped the cached source (wrapper churn)")
+	}
+}
+
+// TestRebuildSweepsUnknownSources: "rebuild the entire database" also removes
+// cached rows for sources that are no longer registered with the runtime.
+func TestRebuildSweepsUnknownSources(t *testing.T) {
+	ctx := context.Background()
+	cache := newTestCacheRuntime(t)
+	registry := source.NewRegistry(source.SourceOpenCode)
+	cache.registry = registry
+
+	// Seed rows for a source the runtime does not know about (renamed or
+	// de-configured since it was cached).
+	ghost := codex.New(codex.Options{CodexHome: codexFixtureHome(), PathSource: "test fixture"})
+	if _, err := cache.store.SyncSourceWithOptions(ctx, ghost, usagecache.SyncOptions{}); err != nil {
+		t.Fatalf("seed ghost source: %v", err)
+	}
+	if _, ok, err := cache.store.SourceStatus(ctx, string(source.SourceCodex)); err != nil || !ok {
+		t.Fatalf("ghost state not seeded: ok=%v err=%v", ok, err)
+	}
+
+	status, err := cache.Sync(ctx, "", "rebuild")
+	if err != nil {
+		t.Fatalf("Sync(rebuild) failed to start: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err = cache.Status(ctx)
+		if err != nil {
+			t.Fatalf("Status() failed: %v", err)
+		}
+		if status.Sync != nil && !status.Sync.Running {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if status.Sync == nil || status.Sync.Running {
+		t.Fatalf("rebuild job never finished: %#v", status.Sync)
+	}
+
+	if _, ok, err := cache.store.SourceStatus(ctx, string(source.SourceCodex)); err != nil {
+		t.Fatalf("SourceStatus() failed: %v", err)
+	} else if ok {
+		t.Fatalf("rebuild kept state for an unregistered source")
+	}
+	var mentioned bool
+	for _, entry := range status.Sync.Logs {
+		if strings.Contains(entry.Message, "no longer configured") {
+			mentioned = true
+			break
+		}
+	}
+	if !mentioned {
+		t.Fatalf("job log never mentioned the swept sources: %#v", status.Sync.Logs)
+	}
+}
+
+// TestAutoSyncTickSkipsWhileJobRunning: a manual/startup job wins.
+func TestAutoSyncTickSkipsWhileJobRunning(t *testing.T) {
+	cache := newTestCacheRuntime(t)
+	codexSrc := codex.New(codex.Options{CodexHome: codexFixtureHome(), PathSource: "test fixture"})
+	cache.rememberSource(codexSrc)
+
+	cache.mu.Lock()
+	cache.job.Running = true
+	cache.job.Target = "manual"
+	cache.mu.Unlock()
+
+	cache.runAutoSyncTick()
+
+	cache.mu.Lock()
+	target := cache.job.Target
+	cache.mu.Unlock()
+	if target != "manual" {
+		t.Fatalf("tick replaced a running job: target = %q", target)
+	}
+	if cache.isCached(source.SourceCodex) {
+		t.Fatalf("tick synced despite a running job")
+	}
+}
+
+// TestCacheRuntimeCloseReapsAutoSyncLoop: Close cancels the loop and waits it
+// out instead of leaking the goroutine.
+func TestCacheRuntimeCloseReapsAutoSyncLoop(t *testing.T) {
+	cache := newTestCacheRuntime(t)
+	cache.lifeCtx, cache.lifeCancel = context.WithCancel(context.Background())
+	cache.startAutoSync()
+
+	done := make(chan error, 1)
+	go func() { done <- cache.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close() failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Close() never returned; auto-sync loop not reaped")
+	}
+}
+
 func TestSyncJobContinuesPastFailingSource(t *testing.T) {
 	ctx := context.Background()
 	cache := newTestCacheRuntime(t)

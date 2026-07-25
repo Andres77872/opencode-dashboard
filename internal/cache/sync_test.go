@@ -336,11 +336,13 @@ func TestReadTriggeredSyncNeverWipesOrFailsState(t *testing.T) {
 		t.Fatalf("first SyncSourceWithOptions() failed: %v", err)
 	}
 
-	// Transient unavailability on the read path must not touch cached rows.
+	// Transient unavailability on the read path must not touch cached rows or
+	// persisted state, but must surface via the in-memory fill state instead
+	// of masquerading as a healthy fill.
 	src.available = boolPtr(false)
 	src.scannedFiles++
-	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{ReadTriggered: true, Cutoff: base.Add(-6 * time.Hour)}); err != nil {
-		t.Fatalf("read-triggered sync on unavailable source errored: %v", err)
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{ReadTriggered: true, Cutoff: base.Add(-6 * time.Hour)}); err == nil {
+		t.Fatalf("read-triggered sync on unavailable source should surface the condition")
 	}
 	assertCachedMessageCount(t, store, 2)
 	status, _, err := store.SourceStatus(ctx, syncFakeSourceID)
@@ -349,6 +351,18 @@ func TestReadTriggeredSyncNeverWipesOrFailsState(t *testing.T) {
 	}
 	if status.Status != "ready" {
 		t.Fatalf("status after read-triggered unavailable = %q, want ready", status.Status)
+	}
+	if state, ok := store.FillState(syncFakeSourceID); !ok || state.ErrMsg == "" {
+		t.Fatalf("unavailable fill attempt not recorded in fill state: %#v", state)
+	}
+
+	// Recovery: a successful fill clears the recorded failure.
+	src.available = boolPtr(true)
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{ReadTriggered: true, Cutoff: base.Add(-6 * time.Hour)}); err != nil {
+		t.Fatalf("read-triggered sync after recovery failed: %v", err)
+	}
+	if state, ok := store.FillState(syncFakeSourceID); !ok || state.ErrMsg != "" {
+		t.Fatalf("fill state not cleared after recovery: %#v", state)
 	}
 
 	// A collect failure on the read path must not record an error state.
@@ -381,6 +395,140 @@ func TestReadTriggeredSyncNeverWipesOrFailsState(t *testing.T) {
 	if status.LastSafeCutoff != base.Add(-6*time.Hour).UnixMilli() {
 		t.Fatalf("failure reset cutoff to %d, want preserved %d", status.LastSafeCutoff, base.Add(-6*time.Hour).UnixMilli())
 	}
+}
+
+// TestExplicitSyncOnUnavailableSourceKeepsRows: unavailability is routinely
+// transient, and unavailable sources are never served from the cache anyway —
+// an explicit sync must mark the state, never delete rows or watermarks.
+func TestExplicitSyncOnUnavailableSourceKeepsRows(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	src := &syncFakeSource{messages: []stats.MessageEntry{
+		testMessage("a", base.Add(-9*time.Hour), 0.01),
+		testMessage("b", base.Add(-8*time.Hour), 0.02),
+	}}
+	store := newTestStore(t)
+	cutoff := base.Add(-6 * time.Hour)
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{Cutoff: cutoff}); err != nil {
+		t.Fatalf("initial sync failed: %v", err)
+	}
+	before, _, err := store.SourceStatus(ctx, syncFakeSourceID)
+	if err != nil {
+		t.Fatalf("SourceStatus() failed: %v", err)
+	}
+
+	src.available = boolPtr(false)
+	src.scannedFiles++
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{Cutoff: cutoff}); err != nil {
+		t.Fatalf("explicit sync on unavailable source errored: %v", err)
+	}
+	assertCachedMessageCount(t, store, 2)
+	status, _, err := store.SourceStatus(ctx, syncFakeSourceID)
+	if err != nil {
+		t.Fatalf("SourceStatus() failed: %v", err)
+	}
+	if status.Status != "unavailable" {
+		t.Fatalf("status = %q, want unavailable", status.Status)
+	}
+	if status.LastSafeCutoff != before.LastSafeCutoff || status.FreshThrough != before.FreshThrough {
+		t.Fatalf("watermarks changed on unavailability: %#v vs %#v", status, before)
+	}
+	if status.Fingerprint != before.Fingerprint {
+		t.Fatalf("fingerprint changed on unavailability: %q vs %q", status.Fingerprint, before.Fingerprint)
+	}
+
+	// Recovery: the next sync restores ready state with the rows intact.
+	src.available = boolPtr(true)
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{Cutoff: cutoff}); err != nil {
+		t.Fatalf("recovery sync failed: %v", err)
+	}
+	assertCachedMessageCount(t, store, 2)
+	status, _, err = store.SourceStatus(ctx, syncFakeSourceID)
+	if err != nil {
+		t.Fatalf("SourceStatus() failed: %v", err)
+	}
+	if status.Status != "ready" {
+		t.Fatalf("status after recovery = %q, want ready", status.Status)
+	}
+}
+
+// TestPruneUnknownSources: rebuilds sweep rows for sources that are no longer
+// registered; kept sources are untouched.
+func TestPruneUnknownSources(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	keep := &syncFakeSource{id: "keep_source", messages: []stats.MessageEntry{testMessage("k", base.Add(-9*time.Hour), 0.01)}}
+	ghost := &syncFakeSource{id: "ghost_source", messages: []stats.MessageEntry{testMessage("g", base.Add(-9*time.Hour), 0.02)}}
+	store := newTestStore(t)
+	cutoff := base.Add(-6 * time.Hour)
+	for _, src := range []*syncFakeSource{keep, ghost} {
+		if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{Cutoff: cutoff}); err != nil {
+			t.Fatalf("sync %s failed: %v", src.id, err)
+		}
+	}
+
+	pruned, err := store.PruneUnknownSources(ctx, []string{"keep_source"})
+	if err != nil {
+		t.Fatalf("PruneUnknownSources() failed: %v", err)
+	}
+	if len(pruned) != 1 || pruned[0] != "ghost_source" {
+		t.Fatalf("pruned = %v, want [ghost_source]", pruned)
+	}
+	for _, table := range []string{"message_index", "sessions", "hourly_usage", "overview_hourly", "source_state"} {
+		var ghostRows, keptRows int64
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE source_id = ?`, "ghost_source").Scan(&ghostRows); err != nil {
+			t.Fatalf("count %s ghost rows: %v", table, err)
+		}
+		if ghostRows != 0 {
+			t.Fatalf("%s still has %d rows for pruned source", table, ghostRows)
+		}
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE source_id = ?`, "keep_source").Scan(&keptRows); err != nil {
+			t.Fatalf("count %s kept rows: %v", table, err)
+		}
+		if keptRows == 0 {
+			t.Fatalf("%s lost rows for the kept source", table)
+		}
+	}
+}
+
+// TestRebuildRepairsStickyCutoff: an explicit rebuild re-collects everything
+// before the requested cutoff, so a stored cutoff stuck in the future must be
+// replaced, not inherited (incremental syncs keep the monotonic clamp).
+func TestRebuildRepairsStickyCutoff(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	src := &syncFakeSource{messages: []stats.MessageEntry{testMessage("m", base.Add(-9*time.Hour), 0.01)}}
+	store := newTestStore(t)
+
+	// Seed state with a cutoff far ahead of the sane one (clock skew).
+	sticky := base.Add(24 * time.Hour)
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{Cutoff: sticky}); err != nil {
+		t.Fatalf("seed sync failed: %v", err)
+	}
+
+	sane := base.Add(-6 * time.Hour)
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{Mode: SyncModeIncremental, Cutoff: sane}); err != nil {
+		t.Fatalf("incremental sync failed: %v", err)
+	}
+	status, _, err := store.SourceStatus(ctx, syncFakeSourceID)
+	if err != nil {
+		t.Fatalf("SourceStatus() failed: %v", err)
+	}
+	if status.LastSafeCutoff != sticky.Truncate(time.Hour).UnixMilli() {
+		t.Fatalf("incremental sync regressed the cutoff: %d", status.LastSafeCutoff)
+	}
+
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{Mode: SyncModeRebuild, Cutoff: sane}); err != nil {
+		t.Fatalf("rebuild failed: %v", err)
+	}
+	status, _, err = store.SourceStatus(ctx, syncFakeSourceID)
+	if err != nil {
+		t.Fatalf("SourceStatus() failed: %v", err)
+	}
+	if status.LastSafeCutoff != sane.Truncate(time.Hour).UnixMilli() {
+		t.Fatalf("rebuild kept the sticky cutoff: %d, want %d", status.LastSafeCutoff, sane.Truncate(time.Hour).UnixMilli())
+	}
+	assertCachedMessageCount(t, store, 1)
 }
 
 func TestCollectPassesWindowHintsToLiveSource(t *testing.T) {
@@ -505,6 +653,7 @@ type syncFakeSource struct {
 	scannedFiles      int64
 	pricingSnapshotID string
 	messagesErr       error
+	failMessagesTimes int           // fail the next N Messages calls, then succeed
 	messagesGate      chan struct{} // when set, Messages blocks until closed
 	ignoreWindows     bool          // when set, window hints are ignored (everything is returned)
 
@@ -649,9 +798,16 @@ func (s *syncFakeSource) Messages(_ context.Context, pq stats.PeriodQuery, _ int
 	s.mu.Lock()
 	s.messagesCalls++
 	s.messageQueries = append(s.messageQueries, pq)
+	failNow := s.failMessagesTimes > 0
+	if failNow {
+		s.failMessagesTimes--
+	}
 	s.mu.Unlock()
 	if s.messagesGate != nil {
 		<-s.messagesGate
+	}
+	if failNow {
+		return stats.MessageList{}, fmt.Errorf("transient one-off failure")
 	}
 	if s.messagesErr != nil {
 		return stats.MessageList{}, s.messagesErr

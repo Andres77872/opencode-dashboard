@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useDashboardContext } from '../components/layout/dashboard-context.ts'
-import { getOverviewAll, setBypassCache } from './api.ts'
+import { getOverviewAll, withBypassCache } from './api.ts'
 import type { AllSourcesOverview } from '../types/api.ts'
 
 export interface UseOverviewAllResult {
@@ -67,11 +67,9 @@ export function useOverviewAll(period: string): UseOverviewAllResult {
       setLoading(true)
 
       try {
-        if (isRefreshTriggered) {
-          setBypassCache(true)
-        }
-
-        const next = await getOverviewAll(period, controller.signal)
+        const next = isRefreshTriggered
+          ? await withBypassCache(() => getOverviewAll(period, controller.signal))
+          : await getOverviewAll(period, controller.signal)
         if (controller.signal.aborted || !mountedRef.current) return
 
         cacheRef.current.set(cacheKey, next)

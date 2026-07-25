@@ -11,7 +11,7 @@ import (
 
 const (
 	defaultAggregateTopN         = 10
-	defaultPerSourceFetchTimeout = 10 * time.Second
+	defaultPerSourceFetchTimeout = 30 * time.Second
 )
 
 // AllSourcesOverview is the cross-source dashboard payload that powers the
