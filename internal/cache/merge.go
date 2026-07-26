@@ -334,6 +334,7 @@ func mergeCost(aStatus stats.CostStatus, aProv *stats.CostProvenance, bStatus st
 type bucketAgg struct {
 	messages, requests                              int64
 	usageRecorded, usageRecovered, usageUnavailable int64
+	unavailableReasons                              stats.UsageUnavailableReasons
 	traceObserved, traceInferred                    int64
 	cost                                            float64
 	tokens                                          stats.TokenStats
@@ -356,6 +357,16 @@ func (b *bucketAgg) add(entry stats.MessageEntry) {
 			b.usageRecovered++
 		case stats.UsageStatusUnavailable:
 			b.usageUnavailable++
+			switch entry.UsageUnavailableReason {
+			case stats.UsageUnavailableCancelled:
+				b.unavailableReasons.Cancelled++
+			case stats.UsageUnavailableInterrupted:
+				b.unavailableReasons.Interrupted++
+			case stats.UsageUnavailableFailed:
+				b.unavailableReasons.Failed++
+			default:
+				b.unavailableReasons.Unknown++
+			}
 		}
 		switch entry.RequestTrace {
 		case stats.RequestTraceObserved:
@@ -379,9 +390,10 @@ func (b *bucketAgg) requestAccounting() *stats.RequestAccounting {
 	if unknownTrace < 0 {
 		unknownTrace = 0
 	}
-	return stats.NewRequestAccounting(
+	return stats.NewRequestAccountingWithReasons(
 		b.usageRecorded, b.usageRecovered, b.usageUnavailable,
 		b.traceObserved, b.traceInferred, unknownTrace,
+		b.unavailableReasons,
 	)
 }
 

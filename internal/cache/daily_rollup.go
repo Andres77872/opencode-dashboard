@@ -39,7 +39,10 @@ func dailyBucketTotals[K comparable](ctx context.Context, s *Store, sourceID str
 		if f.active() {
 			selects = append(selects, `
 				SELECT `+exprs.rollup+` AS bucket, messages, requests,
-					usage_recorded, usage_recovered, usage_unavailable, trace_observed, trace_inferred,
+					usage_recorded, usage_recovered, usage_unavailable,
+					usage_unavailable_cancelled, usage_unavailable_interrupted,
+					usage_unavailable_failed, usage_unavailable_unknown,
+					trace_observed, trace_inferred,
 					cost, input_tokens, output_tokens,
 					reasoning_tokens, cache_read_tokens, cache_write_tokens
 				FROM hourly_usage
@@ -48,7 +51,10 @@ func dailyBucketTotals[K comparable](ctx context.Context, s *Store, sourceID str
 		} else {
 			selects = append(selects, `
 				SELECT `+exprs.rollup+` AS bucket, messages, requests,
-					usage_recorded, usage_recovered, usage_unavailable, trace_observed, trace_inferred,
+					usage_recorded, usage_recovered, usage_unavailable,
+					usage_unavailable_cancelled, usage_unavailable_interrupted,
+					usage_unavailable_failed, usage_unavailable_unknown,
+					trace_observed, trace_inferred,
 					cost, input_tokens, output_tokens,
 					reasoning_tokens, cache_read_tokens, cache_write_tokens
 				FROM overview_hourly
@@ -64,6 +70,10 @@ func dailyBucketTotals[K comparable](ctx context.Context, s *Store, sourceID str
 					CASE WHEN usage_status = 'recorded' THEN 1 ELSE 0 END AS usage_recorded,
 					CASE WHEN usage_status = 'recovered' THEN 1 ELSE 0 END AS usage_recovered,
 					CASE WHEN usage_status = 'unavailable' THEN 1 ELSE 0 END AS usage_unavailable,
+					CASE WHEN usage_status = 'unavailable' AND usage_unavailable_reason = 'cancelled' THEN 1 ELSE 0 END AS usage_unavailable_cancelled,
+					CASE WHEN usage_status = 'unavailable' AND usage_unavailable_reason = 'interrupted' THEN 1 ELSE 0 END AS usage_unavailable_interrupted,
+					CASE WHEN usage_status = 'unavailable' AND usage_unavailable_reason = 'failed' THEN 1 ELSE 0 END AS usage_unavailable_failed,
+					CASE WHEN usage_status = 'unavailable' AND COALESCE(usage_unavailable_reason, '') NOT IN ('cancelled', 'interrupted', 'failed') THEN 1 ELSE 0 END AS usage_unavailable_unknown,
 					CASE WHEN request_trace = 'observed' THEN 1 ELSE 0 END AS trace_observed,
 					CASE WHEN request_trace = 'inferred' THEN 1 ELSE 0 END AS trace_inferred,
 					COALESCE(cost, 0) AS cost, COALESCE(model_input_tokens, 0) AS input_tokens,
@@ -81,6 +91,10 @@ func dailyBucketTotals[K comparable](ctx context.Context, s *Store, sourceID str
 					CASE WHEN role = 'assistant' AND usage_status = 'recorded' THEN 1 ELSE 0 END AS usage_recorded,
 					CASE WHEN role = 'assistant' AND usage_status = 'recovered' THEN 1 ELSE 0 END AS usage_recovered,
 					CASE WHEN role = 'assistant' AND usage_status = 'unavailable' THEN 1 ELSE 0 END AS usage_unavailable,
+					CASE WHEN role = 'assistant' AND usage_status = 'unavailable' AND usage_unavailable_reason = 'cancelled' THEN 1 ELSE 0 END AS usage_unavailable_cancelled,
+					CASE WHEN role = 'assistant' AND usage_status = 'unavailable' AND usage_unavailable_reason = 'interrupted' THEN 1 ELSE 0 END AS usage_unavailable_interrupted,
+					CASE WHEN role = 'assistant' AND usage_status = 'unavailable' AND usage_unavailable_reason = 'failed' THEN 1 ELSE 0 END AS usage_unavailable_failed,
+					CASE WHEN role = 'assistant' AND usage_status = 'unavailable' AND COALESCE(usage_unavailable_reason, '') NOT IN ('cancelled', 'interrupted', 'failed') THEN 1 ELSE 0 END AS usage_unavailable_unknown,
 					CASE WHEN role = 'assistant' AND request_trace = 'observed' THEN 1 ELSE 0 END AS trace_observed,
 					CASE WHEN role = 'assistant' AND request_trace = 'inferred' THEN 1 ELSE 0 END AS trace_inferred,
 					COALESCE(cost, 0) AS cost, COALESCE(input_tokens, 0) AS input_tokens,
@@ -101,7 +115,12 @@ func dailyBucketTotals[K comparable](ctx context.Context, s *Store, sourceID str
 	query := `
 		SELECT bucket, SUM(messages), SUM(requests),
 			COALESCE(SUM(usage_recorded), 0), COALESCE(SUM(usage_recovered), 0),
-			COALESCE(SUM(usage_unavailable), 0), COALESCE(SUM(trace_observed), 0),
+			COALESCE(SUM(usage_unavailable), 0),
+			COALESCE(SUM(usage_unavailable_cancelled), 0),
+			COALESCE(SUM(usage_unavailable_interrupted), 0),
+			COALESCE(SUM(usage_unavailable_failed), 0),
+			COALESCE(SUM(usage_unavailable_unknown), 0),
+			COALESCE(SUM(trace_observed), 0),
 			COALESCE(SUM(trace_inferred), 0), COALESCE(SUM(cost), 0), COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0), COALESCE(SUM(reasoning_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0)
@@ -117,11 +136,14 @@ func dailyBucketTotals[K comparable](ctx context.Context, s *Store, sourceID str
 		var bucket K
 		d := &stats.DayStats{SourceID: sourceID}
 		var usageRecorded, usageRecovered, usageUnavailable int64
+		var reasons stats.UsageUnavailableReasons
 		var traceObserved, traceInferred int64
 		var cacheRead, cacheWrite int64
 		if err := rows.Scan(
 			&bucket, &d.Messages, &d.Requests,
-			&usageRecorded, &usageRecovered, &usageUnavailable, &traceObserved, &traceInferred,
+			&usageRecorded, &usageRecovered, &usageUnavailable,
+			&reasons.Cancelled, &reasons.Interrupted, &reasons.Failed, &reasons.Unknown,
+			&traceObserved, &traceInferred,
 			&d.Cost, &d.Tokens.Input, &d.Tokens.Output, &d.Tokens.Reasoning, &cacheRead, &cacheWrite,
 		); err != nil {
 			return nil, fmt.Errorf("scan daily bucket totals: %w", err)
@@ -132,9 +154,10 @@ func dailyBucketTotals[K comparable](ctx context.Context, s *Store, sourceID str
 		if unknownTrace < 0 {
 			unknownTrace = 0
 		}
-		d.RequestAccounting = stats.NewRequestAccounting(
+		d.RequestAccounting = stats.NewRequestAccountingWithReasons(
 			usageRecorded, usageRecovered, usageUnavailable,
 			traceObserved, traceInferred, unknownTrace,
+			reasons,
 		)
 		byBucket[bucket] = d
 	}

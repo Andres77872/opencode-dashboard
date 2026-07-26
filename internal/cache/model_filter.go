@@ -90,14 +90,18 @@ func (s *Store) overviewFromModelRollups(ctx context.Context, sourceID string, s
 	rollupWhere, rollupArgs := f.rollupWhere()
 	msgWhere, msgArgs := f.messageWhere()
 	var usageRecorded, usageRecovered, usageUnavailable int64
+	var unavailableReasons stats.UsageUnavailableReasons
 	var traceObserved, traceInferred int64
 
 	scanTotals := func(query string, args ...any) error {
 		var messages, requests, recorded, recovered, unavailable, observed, inferred int64
+		var reasons stats.UsageUnavailableReasons
 		var input, output, reasoning, cacheRead, cacheWrite int64
 		var cost float64
 		if err := s.db.QueryRowContext(ctx, query, args...).Scan(
-			&messages, &requests, &recorded, &recovered, &unavailable, &observed, &inferred,
+			&messages, &requests, &recorded, &recovered, &unavailable,
+			&reasons.Cancelled, &reasons.Interrupted, &reasons.Failed, &reasons.Unknown,
+			&observed, &inferred,
 			&cost, &input, &output, &reasoning, &cacheRead, &cacheWrite,
 		); err != nil {
 			return err
@@ -107,6 +111,10 @@ func (s *Store) overviewFromModelRollups(ctx context.Context, sourceID string, s
 		usageRecorded += recorded
 		usageRecovered += recovered
 		usageUnavailable += unavailable
+		unavailableReasons.Cancelled += reasons.Cancelled
+		unavailableReasons.Interrupted += reasons.Interrupted
+		unavailableReasons.Failed += reasons.Failed
+		unavailableReasons.Unknown += reasons.Unknown
 		traceObserved += observed
 		traceInferred += inferred
 		result.Cost += cost
@@ -122,7 +130,12 @@ func (s *Store) overviewFromModelRollups(ctx context.Context, sourceID string, s
 			SELECT
 				COALESCE(SUM(messages), 0), COALESCE(SUM(requests), 0),
 				COALESCE(SUM(usage_recorded), 0), COALESCE(SUM(usage_recovered), 0),
-				COALESCE(SUM(usage_unavailable), 0), COALESCE(SUM(trace_observed), 0),
+				COALESCE(SUM(usage_unavailable), 0),
+				COALESCE(SUM(usage_unavailable_cancelled), 0),
+				COALESCE(SUM(usage_unavailable_interrupted), 0),
+				COALESCE(SUM(usage_unavailable_failed), 0),
+				COALESCE(SUM(usage_unavailable_unknown), 0),
+				COALESCE(SUM(trace_observed), 0),
 				COALESCE(SUM(trace_inferred), 0), COALESCE(SUM(cost), 0),
 				COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
 				COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(cache_read_tokens), 0),
@@ -140,6 +153,10 @@ func (s *Store) overviewFromModelRollups(ctx context.Context, sourceID string, s
 				COALESCE(SUM(CASE WHEN usage_status = 'recorded' THEN 1 ELSE 0 END), 0),
 				COALESCE(SUM(CASE WHEN usage_status = 'recovered' THEN 1 ELSE 0 END), 0),
 				COALESCE(SUM(CASE WHEN usage_status = 'unavailable' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN usage_status = 'unavailable' AND usage_unavailable_reason = 'cancelled' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN usage_status = 'unavailable' AND usage_unavailable_reason = 'interrupted' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN usage_status = 'unavailable' AND usage_unavailable_reason = 'failed' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN usage_status = 'unavailable' AND COALESCE(usage_unavailable_reason, '') NOT IN ('cancelled', 'interrupted', 'failed') THEN 1 ELSE 0 END), 0),
 				COALESCE(SUM(CASE WHEN request_trace = 'observed' THEN 1 ELSE 0 END), 0),
 				COALESCE(SUM(CASE WHEN request_trace = 'inferred' THEN 1 ELSE 0 END), 0),
 				COALESCE(SUM(cost), 0),
@@ -156,9 +173,10 @@ func (s *Store) overviewFromModelRollups(ctx context.Context, sourceID string, s
 	if unknownTrace < 0 {
 		unknownTrace = 0
 	}
-	result.RequestAccounting = stats.NewRequestAccounting(
+	result.RequestAccounting = stats.NewRequestAccountingWithReasons(
 		usageRecorded, usageRecovered, usageUnavailable,
 		traceObserved, traceInferred, unknownTrace,
+		unavailableReasons,
 	)
 
 	selects := make([]string, 0, 1+len(parts.edges))

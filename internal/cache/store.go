@@ -1016,10 +1016,11 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 			cache_write_tokens, model_input_tokens, model_output_tokens,
 			model_reasoning_tokens, model_cache_read_tokens, model_cache_write_tokens,
 			model_id, provider_id, service_tier, processing_mode, request_trace, usage_status,
+			usage_unavailable_reason,
 			agent, is_subagent,
 			folded_assistant_calls, folded_tool_calls, folded_token_updates,
 			cost_status, cost_provenance_json, project_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_id, message_id) DO UPDATE SET
 			session_id = excluded.session_id,
 			role = excluded.role,
@@ -1041,6 +1042,7 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 			processing_mode = excluded.processing_mode,
 			request_trace = excluded.request_trace,
 			usage_status = excluded.usage_status,
+			usage_unavailable_reason = excluded.usage_unavailable_reason,
 			agent = excluded.agent,
 			is_subagent = excluded.is_subagent,
 			folded_assistant_calls = excluded.folded_assistant_calls,
@@ -1077,6 +1079,7 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 			modelTokens.Input, modelTokens.Output, modelTokens.Reasoning, modelTokens.Cache.Read, modelTokens.Cache.Write,
 			nullEmpty(entry.ModelID), nullEmpty(entry.ProviderID), nullEmpty(entry.ServiceTier), nullEmpty(string(entry.ProcessingMode)),
 			nullEmpty(string(entry.RequestTrace)), nullEmpty(string(entry.UsageStatus)),
+			nullEmpty(string(entry.UsageUnavailableReason)),
 			nullEmpty(entry.Agent), boolInt(entry.IsSubagent),
 			entry.FoldedAssistantCalls, entry.FoldedToolCalls, entry.FoldedTokenUpdates,
 			string(entry.CostStatus), prov, row.ProjectID,
@@ -1272,6 +1275,8 @@ func rebuildHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string) error 
 		INSERT INTO hourly_usage(
 			source_id, bucket_start_ms, model_id, provider_id, role,
 			messages, requests, usage_recorded, usage_recovered, usage_unavailable,
+			usage_unavailable_cancelled, usage_unavailable_interrupted,
+			usage_unavailable_failed, usage_unavailable_unknown,
 			trace_observed, trace_inferred, cost, input_tokens, output_tokens, reasoning_tokens,
 			cache_read_tokens, cache_write_tokens
 		)
@@ -1286,6 +1291,10 @@ func rebuildHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string) error 
 			SUM(CASE WHEN usage_status = 'recorded' THEN 1 ELSE 0 END),
 			SUM(CASE WHEN usage_status = 'recovered' THEN 1 ELSE 0 END),
 			SUM(CASE WHEN usage_status = 'unavailable' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'unavailable' AND usage_unavailable_reason = 'cancelled' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'unavailable' AND usage_unavailable_reason = 'interrupted' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'unavailable' AND usage_unavailable_reason = 'failed' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'unavailable' AND COALESCE(usage_unavailable_reason, '') NOT IN ('cancelled', 'interrupted', 'failed') THEN 1 ELSE 0 END),
 			SUM(CASE WHEN request_trace = 'observed' THEN 1 ELSE 0 END),
 			SUM(CASE WHEN request_trace = 'inferred' THEN 1 ELSE 0 END),
 			COALESCE(SUM(cost), 0),
@@ -1326,6 +1335,8 @@ func refreshHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string, sinceM
 		INSERT INTO hourly_usage(
 			source_id, bucket_start_ms, model_id, provider_id, role,
 			messages, requests, usage_recorded, usage_recovered, usage_unavailable,
+			usage_unavailable_cancelled, usage_unavailable_interrupted,
+			usage_unavailable_failed, usage_unavailable_unknown,
 			trace_observed, trace_inferred, cost, input_tokens, output_tokens, reasoning_tokens,
 			cache_read_tokens, cache_write_tokens
 		)
@@ -1340,6 +1351,10 @@ func refreshHourlyUsage(ctx context.Context, tx *sql.Tx, sourceID string, sinceM
 			SUM(CASE WHEN usage_status = 'recorded' THEN 1 ELSE 0 END),
 			SUM(CASE WHEN usage_status = 'recovered' THEN 1 ELSE 0 END),
 			SUM(CASE WHEN usage_status = 'unavailable' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'unavailable' AND usage_unavailable_reason = 'cancelled' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'unavailable' AND usage_unavailable_reason = 'interrupted' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'unavailable' AND usage_unavailable_reason = 'failed' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN usage_status = 'unavailable' AND COALESCE(usage_unavailable_reason, '') NOT IN ('cancelled', 'interrupted', 'failed') THEN 1 ELSE 0 END),
 			SUM(CASE WHEN request_trace = 'observed' THEN 1 ELSE 0 END),
 			SUM(CASE WHEN request_trace = 'inferred' THEN 1 ELSE 0 END),
 			COALESCE(SUM(cost), 0),
@@ -1398,7 +1413,10 @@ func insertOverviewHourly(ctx context.Context, tx *sql.Tx, sourceID string, buck
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO overview_hourly(
 			source_id, bucket_start_ms, messages, requests,
-			usage_recorded, usage_recovered, usage_unavailable, trace_observed, trace_inferred,
+			usage_recorded, usage_recovered, usage_unavailable,
+			usage_unavailable_cancelled, usage_unavailable_interrupted,
+			usage_unavailable_failed, usage_unavailable_unknown,
+			trace_observed, trace_inferred,
 			cost, input_tokens, output_tokens,
 			reasoning_tokens, cache_read_tokens, cache_write_tokens
 		)
@@ -1410,6 +1428,10 @@ func insertOverviewHourly(ctx context.Context, tx *sql.Tx, sourceID string, buck
 			SUM(CASE WHEN role = 'assistant' AND usage_status = 'recorded' THEN 1 ELSE 0 END),
 			SUM(CASE WHEN role = 'assistant' AND usage_status = 'recovered' THEN 1 ELSE 0 END),
 			SUM(CASE WHEN role = 'assistant' AND usage_status = 'unavailable' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN role = 'assistant' AND usage_status = 'unavailable' AND usage_unavailable_reason = 'cancelled' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN role = 'assistant' AND usage_status = 'unavailable' AND usage_unavailable_reason = 'interrupted' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN role = 'assistant' AND usage_status = 'unavailable' AND usage_unavailable_reason = 'failed' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN role = 'assistant' AND usage_status = 'unavailable' AND COALESCE(usage_unavailable_reason, '') NOT IN ('cancelled', 'interrupted', 'failed') THEN 1 ELSE 0 END),
 			SUM(CASE WHEN role = 'assistant' AND request_trace = 'observed' THEN 1 ELSE 0 END),
 			SUM(CASE WHEN role = 'assistant' AND request_trace = 'inferred' THEN 1 ELSE 0 END),
 			COALESCE(SUM(cost), 0),

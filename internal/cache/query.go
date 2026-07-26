@@ -562,7 +562,7 @@ func (s *Store) Messages(ctx context.Context, sourceID string, pq stats.PeriodQu
 			COALESCE(model_id, ''), COALESCE(provider_id, ''),
 			COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent,
 			folded_assistant_calls, folded_tool_calls, folded_token_updates, COALESCE(cost_status, ''), cost_provenance_json,
-			COALESCE(request_trace, ''), COALESCE(usage_status, '')
+			COALESCE(request_trace, ''), COALESCE(usage_status, ''), COALESCE(usage_unavailable_reason, '')
 		FROM message_index
 		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?`+msgWhere+`
 		ORDER BY `+messageOrderBy(sortSpec)+`
@@ -621,7 +621,7 @@ func (s *Store) SessionByID(ctx context.Context, sourceID, id string) (*stats.Se
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT message_id, role, time_created_ms, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, COALESCE(model_id, ''), COALESCE(provider_id, ''), COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent, COALESCE(cost_status, ''), cost_provenance_json, COALESCE(request_trace, ''), COALESCE(usage_status, '')
+		SELECT message_id, role, time_created_ms, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, COALESCE(model_id, ''), COALESCE(provider_id, ''), COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent, COALESCE(cost_status, ''), cost_provenance_json, COALESCE(request_trace, ''), COALESCE(usage_status, ''), COALESCE(usage_unavailable_reason, '')
 		FROM message_index
 		WHERE source_id = ? AND session_id = ?
 		ORDER BY time_created_ms ASC, message_id ASC
@@ -638,7 +638,7 @@ func (s *Store) SessionByID(ctx context.Context, sourceID, id string) (*stats.Se
 		var isSubagent int
 		var msgProv sql.NullString
 		msg.SourceID = sourceID
-		if err := rows.Scan(&msg.ID, &msg.Role, &msgMs, &msg.Cost, &input, &output, &reasoning, &cacheRead, &cacheWrite, &msg.ModelID, &msg.ProviderID, &msg.ServiceTier, &msg.ProcessingMode, &msg.Agent, &isSubagent, &msg.CostStatus, &msgProv, &msg.RequestTrace, &msg.UsageStatus); err != nil {
+		if err := rows.Scan(&msg.ID, &msg.Role, &msgMs, &msg.Cost, &input, &output, &reasoning, &cacheRead, &cacheWrite, &msg.ModelID, &msg.ProviderID, &msg.ServiceTier, &msg.ProcessingMode, &msg.Agent, &isSubagent, &msg.CostStatus, &msgProv, &msg.RequestTrace, &msg.UsageStatus, &msg.UsageUnavailableReason); err != nil {
 			return nil, err
 		}
 		msg.TimeCreated = time.UnixMilli(msgMs).UTC()
@@ -681,7 +681,7 @@ func scanMessageEntry(rows interface {
 		&input, &output, &reasoning, &cacheRead, &cacheWrite,
 		&entry.ModelID, &entry.ProviderID, &entry.ServiceTier, &entry.ProcessingMode, &entry.Agent, &isSubagent,
 		&entry.FoldedAssistantCalls, &entry.FoldedToolCalls, &entry.FoldedTokenUpdates, &entry.CostStatus, &prov,
-		&entry.RequestTrace, &entry.UsageStatus,
+		&entry.RequestTrace, &entry.UsageStatus, &entry.UsageUnavailableReason,
 	); err != nil {
 		return entry, err
 	}
@@ -715,7 +715,7 @@ func (s *Store) MessageByID(ctx context.Context, sourceID, id string) (*stats.Me
 			COALESCE(model_id, ''), COALESCE(provider_id, ''),
 			COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent,
 			folded_assistant_calls, folded_tool_calls, folded_token_updates, COALESCE(cost_status, ''), cost_provenance_json,
-			COALESCE(request_trace, ''), COALESCE(usage_status, '')
+			COALESCE(request_trace, ''), COALESCE(usage_status, ''), COALESCE(usage_unavailable_reason, '')
 		FROM message_index
 		WHERE source_id = ? AND message_id = ?
 	`, sourceID, id)

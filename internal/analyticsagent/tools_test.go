@@ -19,6 +19,7 @@ func TestToolDefinitionsAreAggregateOnly(t *testing.T) {
 		"list_sources": true, "get_overview": true, "get_cross_source_overview": true,
 		"get_daily_usage": true, "get_usage_trend_by_dimension": true, "get_session_usage": true,
 		"get_model_usage": true, "get_tool_usage": true, "get_project_usage": true,
+		"get_source_integrity": true,
 	}
 	if len(definitions) != len(want) {
 		t.Fatalf("definitions = %d, want %d", len(definitions), len(want))
@@ -59,7 +60,8 @@ func TestToolsExposeRequestsAndKimiAccountingCoverage(t *testing.T) {
 	}
 	accounting := &stats.RequestAccounting{
 		UsageRecorded: 1, UsageRecovered: 1, UsageUnavailable: 1,
-		TraceCoverage: stats.TraceCoverageMixed,
+		UsageUnavailableReasons: stats.UsageUnavailableReasons{Interrupted: 1},
+		TraceCoverage:           stats.TraceCoverageMixed,
 	}
 	src.overview.Requests = 3
 	src.overview.RequestAccounting = accounting
@@ -82,6 +84,7 @@ func TestToolsExposeRequestsAndKimiAccountingCoverage(t *testing.T) {
 		for _, want := range []string{
 			`"requests":3`, `"usage_recorded":1`, `"usage_recovered":1`,
 			`"usage_unavailable":1`, `"trace_coverage":"mixed"`,
+			`"usage_unavailable_reasons":{"cancelled":0,"interrupted":1,"failed":0,"unknown":0}`,
 			`"pricing_source":"https://platform.kimi.ai/docs/pricing/chat"`,
 			`"note":"Estimated from Kimi API list prices as an API-equivalent value. Kimi Code memberships and coding plans are not billed per transcript token, so this is not actual subscription spend."`,
 		} {
@@ -93,6 +96,84 @@ func TestToolsExposeRequestsAndKimiAccountingCoverage(t *testing.T) {
 	modelResult := string(tools.Execute(context.Background(), "get_model_usage", json.RawMessage(`{"source":"kimi_code","period":"7d"}`)))
 	if !strings.Contains(modelResult, `"requests":4`) || !strings.Contains(modelResult, `"messages":4`) {
 		t.Fatalf("model tool did not expose the additive request field with its compatibility alias: %s", modelResult)
+	}
+}
+
+type testCacheIntegrityProvider struct {
+	snapshot CacheIntegritySnapshot
+}
+
+func (p testCacheIntegrityProvider) AnalyticsCacheIntegrity(context.Context) (CacheIntegritySnapshot, error) {
+	return p.snapshot, nil
+}
+
+func TestSourceIntegrityIsAggregateDeterministicAndPrivacySafe(t *testing.T) {
+	src := newAnalyticsTestSource(source.SourceKimiCode, 3)
+	src.info.Diagnostics = source.SourceDiagnostics{
+		Status: "ok", ScannedFiles: 9, MalformedLines: 2, UnsupportedEvents: 4,
+		Reason: "/private/sentinel/wire.jsonl: secret parse failure",
+	}
+	src.info.Warnings = []string{"sentinel transcript warning"}
+	src.overview.Requests = 3
+	src.overview.RequestAccounting = &stats.RequestAccounting{
+		UsageRecorded: 0, UsageRecovered: 0, UsageUnavailable: 3,
+		UsageUnavailableReasons: stats.UsageUnavailableReasons{Cancelled: 1, Interrupted: 2},
+		TraceCoverage:           stats.TraceCoverageComplete,
+	}
+	src.overview.CostStatus = stats.CostMixed
+	src.overview.CostProvenance = &stats.CostProvenance{
+		Status: stats.CostMixed, MissingCount: 3,
+		Note: "sentinel cost detail", PricingSource: "file:///private/sentinel",
+	}
+	registry := source.NewRegistry(source.SourceKimiCode)
+	if err := registry.Register(src); err != nil {
+		t.Fatal(err)
+	}
+	tools := NewToolRegistryWithCache(registry, testCacheIntegrityProvider{
+		snapshot: CacheIntegritySnapshot{
+			Enabled: true, SyncRunning: true,
+			Sources: []CacheIntegritySource{{
+				SourceID: string(source.SourceKimiCode), Cached: true, Status: "error",
+				FillFailed: true, RecentWindowIncomplete: true,
+			}},
+		},
+	})
+	result := string(tools.Execute(context.Background(), "get_source_integrity", json.RawMessage(`{"source":"kimi_code","period":"7d"}`)))
+	for _, want := range []string{
+		`"ok":true`, `"status":"attention"`, `"request_usage_unavailable"`,
+		`"malformed_records_skipped"`, `"unsupported_events_skipped"`,
+		`"cost_evidence_partial"`, `"cache_sync_in_progress"`,
+		`"cache_sync_failed"`, `"recent_window_incomplete"`,
+		`"cancelled":1`, `"interrupted":2`,
+	} {
+		if !strings.Contains(result, want) {
+			t.Errorf("integrity result %s does not contain %s", result, want)
+		}
+	}
+	for _, forbidden := range []string{"/private/", "sentinel", "wire.jsonl", "file://", "session_id", "request_id", "timestamp"} {
+		if strings.Contains(result, forbidden) {
+			t.Errorf("integrity result leaked %q: %s", forbidden, result)
+		}
+	}
+}
+
+func TestSourceIntegrityReportsUnavailableSourceWithoutQueryFailure(t *testing.T) {
+	registry := source.NewRegistry(source.SourceKimiCode)
+	if err := registry.RegisterUnavailable(source.SourceInfo{
+		ID: source.SourceKimiCode, Available: false,
+		Diagnostics: source.SourceDiagnostics{Reason: "/private/sentinel"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := string(NewToolRegistry(registry).Execute(
+		context.Background(), "get_source_integrity",
+		json.RawMessage(`{"source":"kimi_code","period":"7d"}`),
+	))
+	if !strings.Contains(result, `"ok":true`) || !strings.Contains(result, `"source_unavailable"`) {
+		t.Fatalf("unavailable source integrity = %s", result)
+	}
+	if strings.Contains(result, "/private/") {
+		t.Fatalf("unavailable source leaked diagnostics: %s", result)
 	}
 }
 

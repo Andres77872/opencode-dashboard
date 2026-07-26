@@ -193,7 +193,7 @@ func (s *Store) messagesSlice(ctx context.Context, sourceID string, pq stats.Per
 			COALESCE(model_id, ''), COALESCE(provider_id, ''),
 			COALESCE(service_tier, ''), COALESCE(processing_mode, ''), COALESCE(agent, ''), is_subagent,
 			folded_assistant_calls, folded_tool_calls, folded_token_updates, COALESCE(cost_status, ''), cost_provenance_json,
-			COALESCE(request_trace, ''), COALESCE(usage_status, '')
+			COALESCE(request_trace, ''), COALESCE(usage_status, ''), COALESCE(usage_unavailable_reason, '')
 		FROM message_index
 		WHERE source_id = ? AND time_created_ms >= ? AND time_created_ms < ?`+msgWhere+`
 		ORDER BY `+messageOrderBy(sortSpec)+`

@@ -224,8 +224,10 @@ function PrivacyDisclosure({
         <p>
           Your prompts and the aggregate usage metrics requested to answer them are sent to MiniMax,
           including the model, provider, and tool names behind those numbers and project names
-          without their directories — a report has to be able to name what it ranks.
-          Transcripts, prompts, session titles, file paths, raw configuration, and secrets are not included.
+          without their directories. Integrity audits can also send normalized source scan counts,
+          request-accounting evidence, and sanitized cache-health flags.
+          Transcripts, prompts, session titles, file paths, raw diagnostics or errors, timestamps,
+          request/session identifiers, raw configuration, and secrets are not included.
         </p>
         {status.privacy_notice && <p className="analytics-assistant-privacy-note">{status.privacy_notice}</p>}
       </div>

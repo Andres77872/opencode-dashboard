@@ -54,6 +54,47 @@ const (
 	UsageStatusUnavailable UsageStatus = "unavailable"
 )
 
+// UsageUnavailableReason classifies the strongest persisted evidence for why
+// an observed outbound request has no persisted usage. It never implies that
+// the request was not billable.
+type UsageUnavailableReason string
+
+const (
+	UsageUnavailableCancelled   UsageUnavailableReason = "cancelled"
+	UsageUnavailableInterrupted UsageUnavailableReason = "interrupted"
+	UsageUnavailableFailed      UsageUnavailableReason = "failed"
+	UsageUnavailableUnknown     UsageUnavailableReason = "unknown"
+)
+
+// UsageUnavailableReasons is a fixed-shape partition of unavailable usage.
+// Fixed fields keep API and assistant output deterministic and prevent absent
+// categories from being mistaken for unsupported dynamic keys.
+type UsageUnavailableReasons struct {
+	Cancelled   int64 `json:"cancelled"`
+	Interrupted int64 `json:"interrupted"`
+	Failed      int64 `json:"failed"`
+	Unknown     int64 `json:"unknown"`
+}
+
+func (r UsageUnavailableReasons) Total() int64 {
+	return r.Cancelled + r.Interrupted + r.Failed + r.Unknown
+}
+
+// NormalizeUsageUnavailableReasons fails closed: invalid counters and any
+// unattributed remainder are represented as unknown, while corrupt excess
+// attribution is discarded rather than overstating evidence.
+func NormalizeUsageUnavailableReasons(unavailable int64, reasons UsageUnavailableReasons) UsageUnavailableReasons {
+	if unavailable <= 0 {
+		return UsageUnavailableReasons{}
+	}
+	if reasons.Cancelled < 0 || reasons.Interrupted < 0 || reasons.Failed < 0 || reasons.Unknown < 0 ||
+		reasons.Total() > unavailable {
+		return UsageUnavailableReasons{Unknown: unavailable}
+	}
+	reasons.Unknown += unavailable - reasons.Total()
+	return reasons
+}
+
 // TraceCoverage summarizes how completely a source's persisted events expose
 // outbound attempts for a requested window.
 type TraceCoverage string
@@ -69,10 +110,11 @@ const (
 // provenance needed to distinguish persisted usage from unavailable usage.
 // Kimi Code populates it for overview and daily request totals.
 type RequestAccounting struct {
-	UsageRecorded    int64         `json:"usage_recorded"`
-	UsageRecovered   int64         `json:"usage_recovered"`
-	UsageUnavailable int64         `json:"usage_unavailable"`
-	TraceCoverage    TraceCoverage `json:"trace_coverage"`
+	UsageRecorded           int64                   `json:"usage_recorded"`
+	UsageRecovered          int64                   `json:"usage_recovered"`
+	UsageUnavailable        int64                   `json:"usage_unavailable"`
+	UsageUnavailableReasons UsageUnavailableReasons `json:"usage_unavailable_reasons"`
+	TraceCoverage           TraceCoverage           `json:"trace_coverage"`
 }
 
 // NewRequestAccounting constructs the public accounting summary from the
@@ -80,6 +122,18 @@ type RequestAccounting struct {
 // population carried request-accounting metadata, so callers can omit the
 // source-specific contract rather than imply unsupported precision.
 func NewRequestAccounting(recorded, recovered, unavailable, observed, inferred, unknown int64) *RequestAccounting {
+	return NewRequestAccountingWithReasons(
+		recorded, recovered, unavailable, observed, inferred, unknown,
+		UsageUnavailableReasons{},
+	)
+}
+
+// NewRequestAccountingWithReasons constructs accounting with the persisted
+// unavailable-reason partition used by Kimi and cache rollups.
+func NewRequestAccountingWithReasons(
+	recorded, recovered, unavailable, observed, inferred, unknown int64,
+	reasons UsageUnavailableReasons,
+) *RequestAccounting {
 	hasUsageMetadata := recorded+recovered+unavailable > 0
 	hasTraceMetadata := observed+inferred > 0
 	if !hasUsageMetadata && !hasTraceMetadata {
@@ -95,10 +149,11 @@ func NewRequestAccounting(recorded, recovered, unavailable, observed, inferred, 
 		coverage = TraceCoverageMixed
 	}
 	return &RequestAccounting{
-		UsageRecorded:    recorded,
-		UsageRecovered:   recovered,
-		UsageUnavailable: unavailable,
-		TraceCoverage:    coverage,
+		UsageRecorded:           recorded,
+		UsageRecovered:          recovered,
+		UsageUnavailable:        unavailable,
+		UsageUnavailableReasons: NormalizeUsageUnavailableReasons(unavailable, reasons),
+		TraceCoverage:           coverage,
 	}
 }
 
@@ -116,6 +171,11 @@ func MergeRequestAccounting(values ...*RequestAccounting) *RequestAccounting {
 		result.UsageRecorded += value.UsageRecorded
 		result.UsageRecovered += value.UsageRecovered
 		result.UsageUnavailable += value.UsageUnavailable
+		normalized := NormalizeUsageUnavailableReasons(value.UsageUnavailable, value.UsageUnavailableReasons)
+		result.UsageUnavailableReasons.Cancelled += normalized.Cancelled
+		result.UsageUnavailableReasons.Interrupted += normalized.Interrupted
+		result.UsageUnavailableReasons.Failed += normalized.Failed
+		result.UsageUnavailableReasons.Unknown += normalized.Unknown
 		if coverage == "" {
 			coverage = value.TraceCoverage
 		} else if coverage != value.TraceCoverage {
@@ -131,6 +191,10 @@ func MergeRequestAccounting(values ...*RequestAccounting) *RequestAccounting {
 	if coverage == "" {
 		coverage = TraceCoverageUnknown
 	}
+	result.UsageUnavailableReasons = NormalizeUsageUnavailableReasons(
+		result.UsageUnavailable,
+		result.UsageUnavailableReasons,
+	)
 	result.TraceCoverage = coverage
 	return &result
 }
@@ -511,22 +575,23 @@ func parseMessageSortField(s string) MessageSortField {
 }
 
 type SessionMessage struct {
-	SourceID       string          `json:"source_id,omitempty"`
-	ID             string          `json:"id"`
-	Role           string          `json:"role"`
-	TimeCreated    time.Time       `json:"time_created"`
-	Cost           float64         `json:"cost,omitempty"`
-	Tokens         *TokenStats     `json:"tokens,omitempty"`
-	ModelID        string          `json:"model_id,omitempty"`
-	ProviderID     string          `json:"provider_id,omitempty"`
-	ServiceTier    string          `json:"service_tier,omitempty"`
-	ProcessingMode ProcessingMode  `json:"processing_mode,omitempty"`
-	Agent          string          `json:"agent,omitempty"`
-	IsSubagent     bool            `json:"is_subagent,omitempty"`
-	CostStatus     CostStatus      `json:"cost_status,omitempty"`
-	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
-	RequestTrace   RequestTrace    `json:"request_trace,omitempty"`
-	UsageStatus    UsageStatus     `json:"usage_status,omitempty"`
+	SourceID               string                 `json:"source_id,omitempty"`
+	ID                     string                 `json:"id"`
+	Role                   string                 `json:"role"`
+	TimeCreated            time.Time              `json:"time_created"`
+	Cost                   float64                `json:"cost,omitempty"`
+	Tokens                 *TokenStats            `json:"tokens,omitempty"`
+	ModelID                string                 `json:"model_id,omitempty"`
+	ProviderID             string                 `json:"provider_id,omitempty"`
+	ServiceTier            string                 `json:"service_tier,omitempty"`
+	ProcessingMode         ProcessingMode         `json:"processing_mode,omitempty"`
+	Agent                  string                 `json:"agent,omitempty"`
+	IsSubagent             bool                   `json:"is_subagent,omitempty"`
+	CostStatus             CostStatus             `json:"cost_status,omitempty"`
+	CostProvenance         *CostProvenance        `json:"cost_provenance,omitempty"`
+	RequestTrace           RequestTrace           `json:"request_trace,omitempty"`
+	UsageStatus            UsageStatus            `json:"usage_status,omitempty"`
+	UsageUnavailableReason UsageUnavailableReason `json:"usage_unavailable_reason,omitempty"`
 }
 
 type SessionDetail struct {
@@ -590,22 +655,23 @@ func (p Pagination) Offset() int {
 
 // MessageEntry represents a single message row in the requests history list.
 type MessageEntry struct {
-	SourceID       string          `json:"source_id,omitempty"`
-	ID             string          `json:"id"`
-	SessionID      string          `json:"session_id"`
-	SessionTitle   string          `json:"session_title"`
-	Role           string          `json:"role"`
-	TimeCreated    time.Time       `json:"time_created"`
-	Cost           float64         `json:"cost,omitempty"`
-	Tokens         *TokenStats     `json:"tokens,omitempty"`
-	ModelID        string          `json:"model_id,omitempty"`
-	ProviderID     string          `json:"provider_id,omitempty"`
-	ServiceTier    string          `json:"service_tier,omitempty"`
-	ProcessingMode ProcessingMode  `json:"processing_mode,omitempty"`
-	CostStatus     CostStatus      `json:"cost_status,omitempty"`
-	CostProvenance *CostProvenance `json:"cost_provenance,omitempty"`
-	RequestTrace   RequestTrace    `json:"request_trace,omitempty"`
-	UsageStatus    UsageStatus     `json:"usage_status,omitempty"`
+	SourceID               string                 `json:"source_id,omitempty"`
+	ID                     string                 `json:"id"`
+	SessionID              string                 `json:"session_id"`
+	SessionTitle           string                 `json:"session_title"`
+	Role                   string                 `json:"role"`
+	TimeCreated            time.Time              `json:"time_created"`
+	Cost                   float64                `json:"cost,omitempty"`
+	Tokens                 *TokenStats            `json:"tokens,omitempty"`
+	ModelID                string                 `json:"model_id,omitempty"`
+	ProviderID             string                 `json:"provider_id,omitempty"`
+	ServiceTier            string                 `json:"service_tier,omitempty"`
+	ProcessingMode         ProcessingMode         `json:"processing_mode,omitempty"`
+	CostStatus             CostStatus             `json:"cost_status,omitempty"`
+	CostProvenance         *CostProvenance        `json:"cost_provenance,omitempty"`
+	RequestTrace           RequestTrace           `json:"request_trace,omitempty"`
+	UsageStatus            UsageStatus            `json:"usage_status,omitempty"`
+	UsageUnavailableReason UsageUnavailableReason `json:"usage_unavailable_reason,omitempty"`
 
 	// Agent names the subagent type (e.g. "Explore", "Plan") when this row comes
 	// from a Claude Code subagent (Task tool) transcript. IsSubagent marks such

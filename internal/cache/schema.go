@@ -19,10 +19,10 @@ import (
 // from scratch, and the normal consolidation flow re-collects everything in
 // the background while reads fall back to the live sources.
 //
-// v7 persists outbound-request provenance and extends the hourly usage tables
-// with request and usage-coverage counters. Older caches rebuild so the new
-// totals can never silently treat missing provenance as known zeroes.
-const schemaVersion = 7
+// v8 persists unavailable-usage reasons and extends the hourly usage tables
+// with their fixed reason partition. Older caches rebuild so the new totals
+// can never silently treat unattributed missing usage as known zeroes.
+const schemaVersion = 8
 
 // schemaSQL is the complete current schema, applied in one transaction to a
 // fresh (or just-rebuilt) database. It must always describe the exact shape
@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS message_index (
 	processing_mode TEXT,
 	request_trace TEXT,
 	usage_status TEXT,
+	usage_unavailable_reason TEXT,
 	model_input_tokens INTEGER NOT NULL DEFAULT 0,
 	model_output_tokens INTEGER NOT NULL DEFAULT 0,
 	model_reasoning_tokens INTEGER NOT NULL DEFAULT 0,
@@ -125,6 +126,10 @@ CREATE TABLE IF NOT EXISTS hourly_usage (
 	usage_recorded INTEGER NOT NULL DEFAULT 0,
 	usage_recovered INTEGER NOT NULL DEFAULT 0,
 	usage_unavailable INTEGER NOT NULL DEFAULT 0,
+	usage_unavailable_cancelled INTEGER NOT NULL DEFAULT 0,
+	usage_unavailable_interrupted INTEGER NOT NULL DEFAULT 0,
+	usage_unavailable_failed INTEGER NOT NULL DEFAULT 0,
+	usage_unavailable_unknown INTEGER NOT NULL DEFAULT 0,
 	trace_observed INTEGER NOT NULL DEFAULT 0,
 	trace_inferred INTEGER NOT NULL DEFAULT 0,
 	cost REAL NOT NULL DEFAULT 0,
@@ -144,6 +149,10 @@ CREATE TABLE IF NOT EXISTS overview_hourly (
 	usage_recorded INTEGER NOT NULL DEFAULT 0,
 	usage_recovered INTEGER NOT NULL DEFAULT 0,
 	usage_unavailable INTEGER NOT NULL DEFAULT 0,
+	usage_unavailable_cancelled INTEGER NOT NULL DEFAULT 0,
+	usage_unavailable_interrupted INTEGER NOT NULL DEFAULT 0,
+	usage_unavailable_failed INTEGER NOT NULL DEFAULT 0,
+	usage_unavailable_unknown INTEGER NOT NULL DEFAULT 0,
 	trace_observed INTEGER NOT NULL DEFAULT 0,
 	trace_inferred INTEGER NOT NULL DEFAULT 0,
 	cost REAL NOT NULL DEFAULT 0,

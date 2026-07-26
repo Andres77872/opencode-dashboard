@@ -85,18 +85,6 @@ func (s *CachedSource) Info(ctx context.Context) source.SourceInfo {
 	if s.live != nil {
 		info = s.live.Info(ctx)
 	}
-	if s.store != nil {
-		if status, ok, err := s.store.SourceStatus(ctx, string(info.ID)); err == nil && ok {
-			if status.Status == "ready" {
-				info.Diagnostics.Status = "ok"
-			} else if status.Status != "" {
-				info.Diagnostics.Status = status.Status
-				if status.Reason != "" {
-					info.Diagnostics.Reason = status.Reason
-				}
-			}
-		}
-	}
 	return info
 }
 

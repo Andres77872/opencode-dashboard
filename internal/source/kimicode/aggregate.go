@@ -380,6 +380,7 @@ func (s *snapshot) sessionByID(id string) *stats.SessionDetail {
 			IsSubagent: msg.Entry.IsSubagent, CostStatus: msg.Entry.CostStatus,
 			CostProvenance: cloneProvenance(msg.Entry.CostProvenance),
 			RequestTrace:   msg.Entry.RequestTrace, UsageStatus: msg.Entry.UsageStatus,
+			UsageUnavailableReason: msg.Entry.UsageUnavailableReason,
 		})
 	}
 	cost, tokens, status, provenance := aggregateCostProvenance(session.Messages)
@@ -394,6 +395,7 @@ func (s *snapshot) sessionByID(id string) *stats.SessionDetail {
 
 func aggregateRequestAccounting(messages []*messageRecord) (int64, *stats.RequestAccounting) {
 	var requests, recorded, recovered, unavailable, observed, inferred, unknown int64
+	var reasons stats.UsageUnavailableReasons
 	for _, message := range messages {
 		if message == nil || message.Entry.Role != "assistant" {
 			continue
@@ -406,6 +408,16 @@ func aggregateRequestAccounting(messages []*messageRecord) (int64, *stats.Reques
 			recovered++
 		case stats.UsageStatusUnavailable:
 			unavailable++
+			switch message.Entry.UsageUnavailableReason {
+			case stats.UsageUnavailableCancelled:
+				reasons.Cancelled++
+			case stats.UsageUnavailableInterrupted:
+				reasons.Interrupted++
+			case stats.UsageUnavailableFailed:
+				reasons.Failed++
+			default:
+				reasons.Unknown++
+			}
 		}
 		switch message.Entry.RequestTrace {
 		case stats.RequestTraceObserved:
@@ -416,7 +428,7 @@ func aggregateRequestAccounting(messages []*messageRecord) (int64, *stats.Reques
 			unknown++
 		}
 	}
-	accounting := stats.NewRequestAccounting(recorded, recovered, unavailable, observed, inferred, unknown)
+	accounting := stats.NewRequestAccountingWithReasons(recorded, recovered, unavailable, observed, inferred, unknown, reasons)
 	if accounting == nil {
 		accounting = &stats.RequestAccounting{TraceCoverage: stats.TraceCoverageUnknown}
 	}

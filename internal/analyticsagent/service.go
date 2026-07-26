@@ -40,7 +40,7 @@ const (
 
 // PrivacyConsentVersion is returned by status and must be echoed by chat
 // requests after the browser has shown and accepted that version's disclosure.
-const PrivacyConsentVersion = "analytics-assistant-v3"
+const PrivacyConsentVersion = "analytics-assistant-v4"
 
 var (
 	ErrUnavailable     = errors.New("analytics assistant unavailable")
@@ -68,6 +68,7 @@ type StreamingClient interface {
 type ServiceOptions struct {
 	Client             Client
 	Registry           *source.Registry
+	CacheIntegrity     CacheIntegrityProvider
 	RunTimeout         time.Duration
 	MaxRounds          int
 	MaxToolCalls       int
@@ -154,7 +155,7 @@ type ChatResult struct {
 	Notices []string `json:"notices,omitempty"`
 }
 
-const privacyNotice = "Questions and aggregate usage metrics used to answer them are sent to MiniMax, including the model, provider, and tool names those metrics belong to and project names without their directories. Raw transcripts, prompts, reasoning, session titles, configuration, credentials, file paths, and tool input/output are never exposed as analytics tools."
+const privacyNotice = "Questions and aggregate usage metrics used to answer them are sent to MiniMax, including aggregate source diagnostics, request-accounting evidence, sanitized cache health, the model/provider/tool names those metrics belong to, and project names without their directories. Raw diagnostics and errors, transcripts, prompts, reasoning, session titles, configuration, credentials, file paths, timestamps, request/session identifiers, and tool input/output are never exposed as analytics tools."
 
 const crossSourceCostNotice = "Cost scope: source costs are not additive. OpenCode reports recorded spend, Claude Code may mix reported and computed values, and Codex/Kimi Code/Qwen Code values are API-equivalent estimates rather than subscription, membership, coding-plan, or token-plan spend."
 
@@ -167,6 +168,7 @@ var assistantCapabilities = []string{
 	"privacy-safe session analytics",
 	"per-model, per-tool, and per-project trends",
 	"delegated specialist investigations",
+	"source integrity audits",
 }
 
 func NewService(opts ServiceOptions) *Service {
@@ -203,7 +205,7 @@ func NewService(opts ServiceOptions) *Service {
 	}
 	return &Service{
 		client:             opts.Client,
-		tools:              NewToolRegistry(opts.Registry),
+		tools:              NewToolRegistryWithCache(opts.Registry, opts.CacheIntegrity),
 		runTimeout:         timeout,
 		maxRounds:          maxRounds,
 		maxToolCalls:       maxToolCalls,

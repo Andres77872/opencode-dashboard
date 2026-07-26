@@ -37,9 +37,46 @@ func TestMergeRequestAccountingPreservesCountsAndCoverage(t *testing.T) {
 	got := MergeRequestAccounting(
 		&RequestAccounting{UsageRecorded: 2, TraceCoverage: TraceCoverageSuccessfulOnly},
 		nil,
-		&RequestAccounting{UsageRecovered: 1, UsageUnavailable: 1, TraceCoverage: TraceCoverageComplete},
+		&RequestAccounting{
+			UsageRecovered: 1, UsageUnavailable: 1,
+			UsageUnavailableReasons: UsageUnavailableReasons{Cancelled: 1},
+			TraceCoverage:           TraceCoverageComplete,
+		},
 	)
-	if got == nil || got.UsageRecorded != 2 || got.UsageRecovered != 1 || got.UsageUnavailable != 1 || got.TraceCoverage != TraceCoverageMixed {
+	if got == nil || got.UsageRecorded != 2 || got.UsageRecovered != 1 || got.UsageUnavailable != 1 ||
+		got.UsageUnavailableReasons.Cancelled != 1 || got.TraceCoverage != TraceCoverageMixed {
 		t.Fatalf("MergeRequestAccounting() = %#v, want 2/1/1 mixed", got)
+	}
+}
+
+func TestNormalizeUsageUnavailableReasonsFailsClosed(t *testing.T) {
+	tests := []struct {
+		name        string
+		unavailable int64
+		input       UsageUnavailableReasons
+		want        UsageUnavailableReasons
+	}{
+		{
+			name: "remainder is unknown", unavailable: 3,
+			input: UsageUnavailableReasons{Cancelled: 1},
+			want:  UsageUnavailableReasons{Cancelled: 1, Unknown: 2},
+		},
+		{
+			name: "excess fails closed", unavailable: 2,
+			input: UsageUnavailableReasons{Interrupted: 3},
+			want:  UsageUnavailableReasons{Unknown: 2},
+		},
+		{
+			name: "negative fails closed", unavailable: 2,
+			input: UsageUnavailableReasons{Failed: -1},
+			want:  UsageUnavailableReasons{Unknown: 2},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeUsageUnavailableReasons(tt.unavailable, tt.input); got != tt.want {
+				t.Fatalf("NormalizeUsageUnavailableReasons() = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }

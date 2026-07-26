@@ -145,6 +145,71 @@ func TestKimiCanonicalUsageReplacesStepEndRecovery(t *testing.T) {
 	}
 }
 
+func TestKimiUnavailableUsageReasonsUseOnlyPersistedEvidence(t *testing.T) {
+	home := writeKimiHome(t, map[string]sessionFixture{
+		"reasons": {
+			State: sessionState{
+				WorkDir: "/private/reasons",
+				Agents: map[string]agentMeta{
+					"cancelled": {Type: "independent"},
+					"late":      {Type: "independent"},
+					"mismatch":  {Type: "independent"},
+					"retry":     {Type: "independent"},
+					"terminal":  {Type: "independent"},
+				},
+			},
+			Wires: map[string][]string{
+				"cancelled": {
+					`{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"c-step","turnId":"0","step":1},"time":1784196001000}`,
+					`{"type":"llm.request","provider":"kimi","modelAlias":"kimi-code/k3","turnStep":"0.1","time":1784196001010}`,
+					`{"type":"turn.cancel","time":1784196001020}`,
+					`{"type":"turn.prompt","input":[{"type":"text","text":"next"}],"origin":{"kind":"user"},"time":1784196001030}`,
+				},
+				"late": {
+					`{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"l-step","turnId":"1","step":1},"time":1784196002000}`,
+					`{"type":"llm.request","provider":"kimi","modelAlias":"kimi-code/k3","turnStep":"1.1","time":1784196002010}`,
+					`{"type":"turn.cancel","turnId":"1","time":1784196002020}`,
+					`{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":2,"output":1},"time":1784196002030}`,
+				},
+				"mismatch": {
+					`{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"m-step","turnId":"2","step":1},"time":1784196003000}`,
+					`{"type":"llm.request","provider":"kimi","modelAlias":"kimi-code/k3","turnStep":"2.1","time":1784196003010}`,
+					`{"type":"turn.cancel","turnId":"other","time":1784196003020}`,
+				},
+				"retry": {
+					`{"type":"llm.request","provider":"kimi","modelAlias":"kimi-code/k3","turnStep":"3.1","attempt":1,"time":1784196004000}`,
+					`{"type":"llm.request","provider":"kimi","modelAlias":"kimi-code/k3","turnStep":"3.1","attempt":2,"time":1784196004010}`,
+				},
+				"terminal": {
+					`{"type":"llm.request","provider":"kimi","modelAlias":"kimi-code/k3","turnStep":"4.1","time":1784196005000}`,
+					`{"type":"context.append_loop_event","event":{"type":"step.end","uuid":"t-step","turnId":"4","step":1},"time":1784196005010}`,
+				},
+			},
+		},
+	})
+	src := New(Options{KimiHome: home})
+	overview, err := src.Overview(testContext(t), stats.PeriodQuery{Period: "all"})
+	if err != nil {
+		t.Fatalf("Overview(all): %v", err)
+	}
+	wantReasons := stats.UsageUnavailableReasons{Cancelled: 1, Interrupted: 2, Failed: 1, Unknown: 1}
+	if overview.Requests != 6 || overview.RequestAccounting == nil ||
+		overview.RequestAccounting.UsageRecorded != 1 ||
+		overview.RequestAccounting.UsageUnavailable != 5 ||
+		overview.RequestAccounting.UsageUnavailableReasons != wantReasons {
+		t.Fatalf("request accounting = %#v, want recorded=1 unavailable=5 reasons=%#v", overview.RequestAccounting, wantReasons)
+	}
+	messages, err := src.Messages(testContext(t), stats.PeriodQuery{Period: "all"}, 1, 20, stats.DefaultMessageSort())
+	if err != nil {
+		t.Fatalf("Messages(all): %v", err)
+	}
+	for _, message := range messages.Messages {
+		if message.UsageStatus != stats.UsageStatusUnavailable && message.UsageUnavailableReason != "" {
+			t.Errorf("non-unavailable request %q retained reason %q", message.ID, message.UsageUnavailableReason)
+		}
+	}
+}
+
 func TestKimiDurableDedupeDoesNotCollapseIdentitylessUsage(t *testing.T) {
 	usage := `{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":7,"output":1},"time":1784196001300}`
 	home := writeKimiHome(t, map[string]sessionFixture{

@@ -146,12 +146,14 @@ func TestRequestAccountingSurvivesHourlyRollupsAndDetailReads(t *testing.T) {
 	ctx := context.Background()
 	store := openRollupTestStore(t)
 	base := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	unavailable := accountedRollupMessage("unavailable", "s3", base.Add(130*time.Minute), "m2", stats.RequestTraceObserved, stats.UsageStatusUnavailable)
+	unavailable.Entry.UsageUnavailableReason = stats.UsageUnavailableInterrupted
 	payload := rollupPayload([]messageRow{
 		rollupUserMessage("prompt", "s1", base.Add(5*time.Minute)),
 		accountedRollupMessage("recorded-observed", "s1", base.Add(10*time.Minute), "m1", stats.RequestTraceObserved, stats.UsageStatusRecorded),
 		accountedRollupMessage("recorded-inferred", "s1", base.Add(20*time.Minute), "m1", stats.RequestTraceInferred, stats.UsageStatusRecorded),
 		accountedRollupMessage("recovered", "s2", base.Add(70*time.Minute), "m2", stats.RequestTraceObserved, stats.UsageStatusRecovered),
-		accountedRollupMessage("unavailable", "s3", base.Add(130*time.Minute), "m2", stats.RequestTraceObserved, stats.UsageStatusUnavailable),
+		unavailable,
 	})
 	if err := store.replaceSource(ctx, payload, base.Add(4*time.Hour)); err != nil {
 		t.Fatalf("replaceSource() failed: %v", err)
@@ -163,6 +165,9 @@ func TestRequestAccountingSurvivesHourlyRollupsAndDetailReads(t *testing.T) {
 		t.Fatalf("Overview() failed: %v", err)
 	}
 	assertRequestAccounting(t, "overview", overview.Requests, overview.RequestAccounting, 2, 1, 1, stats.TraceCoverageMixed)
+	if overview.RequestAccounting.UsageUnavailableReasons.Interrupted != 1 {
+		t.Errorf("overview unavailable reasons = %#v, want one interrupted", overview.RequestAccounting.UsageUnavailableReasons)
+	}
 	if overview.Messages != 5 {
 		t.Errorf("overview messages = %d, want transcript count 5", overview.Messages)
 	}
@@ -192,7 +197,10 @@ func TestRequestAccountingSurvivesHourlyRollupsAndDetailReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MessageByID() failed: %v", err)
 	}
-	if entry == nil || entry.RequestTrace != stats.RequestTraceObserved || entry.UsageStatus != stats.UsageStatusUnavailable || entry.Tokens != nil {
+	if entry == nil || entry.RequestTrace != stats.RequestTraceObserved ||
+		entry.UsageStatus != stats.UsageStatusUnavailable ||
+		entry.UsageUnavailableReason != stats.UsageUnavailableInterrupted ||
+		entry.Tokens != nil {
 		t.Errorf("cached unavailable request = %#v, want observed/unavailable with unknown tokens", entry)
 	}
 	detail, err := store.SessionByID(ctx, string(rollupTestSourceID), "s2")

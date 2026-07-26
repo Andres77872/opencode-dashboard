@@ -55,27 +55,30 @@ type stepState struct {
 }
 
 type agentNormalizer struct {
-	snap         *snapshot
-	pricing      pricingSnapshot
-	session      *sessionRecord
-	sessionID    string
-	project      *projectRecord
-	directory    string
-	agentID      string
-	agentLabel   string
-	isMainAgent  bool
-	isSubagent   bool
-	file         agentFile
-	currentStep  stepState
-	lastModel    string
-	lastProvider string
-	requestSeq   int
-	userSeq      int
-	pending      *messageRecord
-	pendingKey   string
-	promptEcho   string
-	seenTools    map[string]bool
-	toolRefs     map[string]toolRef
+	snap            *snapshot
+	pricing         pricingSnapshot
+	session         *sessionRecord
+	sessionID       string
+	project         *projectRecord
+	directory       string
+	agentID         string
+	agentLabel      string
+	isMainAgent     bool
+	isSubagent      bool
+	file            agentFile
+	currentStep     stepState
+	lastModel       string
+	lastProvider    string
+	requestSeq      int
+	userSeq         int
+	pending         *messageRecord
+	pendingKey      string
+	pendingTurnStep string
+	pendingTurnID   string
+	pendingTerminal bool
+	promptEcho      string
+	seenTools       map[string]bool
+	toolRefs        map[string]toolRef
 }
 
 type toolRef struct {
@@ -134,7 +137,7 @@ func normalizeSessions(home string, parsed []parsedSession, pricing pricingSnaps
 				}
 				normalizer.apply(record, times[index])
 			}
-			normalizer.flushPending()
+			normalizer.finishAtEOF()
 		}
 
 		if session.Title == "" || isGenericSessionTitle(session.Title) {
@@ -204,6 +207,8 @@ func (n *agentNormalizer) apply(record wireRecord, timestamp time.Time) {
 		n.startRequest(record.Request, timestamp)
 	case record.Usage != nil:
 		n.closeUsage(record.Usage, timestamp)
+	case record.Cancel != nil:
+		n.applyTurnCancel(record.Cancel)
 	case record.Event != nil:
 		n.applyLoopEvent(record.Event, timestamp)
 	}
@@ -296,6 +301,12 @@ func promptParts(parts []contentPartRecord) []string {
 }
 
 func (n *agentNormalizer) startRequest(request *llmRequestRecord, timestamp time.Time) {
+	if n.pending != nil &&
+		n.pending.Entry.UsageStatus == stats.UsageStatusUnavailable &&
+		request.TurnStep != "" &&
+		request.TurnStep == n.pendingTurnStep {
+		n.pending.Entry.UsageUnavailableReason = stats.UsageUnavailableFailed
+	}
 	n.flushPending()
 	model := strings.TrimSpace(request.ModelAlias)
 	if model == "" {
@@ -324,9 +335,22 @@ func (n *agentNormalizer) startRequest(request *llmRequestRecord, timestamp time
 		key = strconv.FormatInt(timestamp.UnixMilli(), 10)
 	}
 	n.pendingKey = key
+	n.pendingTurnStep = strings.TrimSpace(request.TurnStep)
+	n.pendingTurnID = n.currentStep.TurnID
+	n.pendingTerminal = false
 	n.pending = n.newAssistantMessage(timestamp, key)
 	n.pending.Entry.RequestTrace = stats.RequestTraceObserved
 	n.pending.Entry.UsageStatus = stats.UsageStatusUnavailable
+}
+
+func (n *agentNormalizer) applyTurnCancel(cancel *turnCancelRecord) {
+	if cancel == nil || n.pending == nil || n.pending.Entry.UsageStatus != stats.UsageStatusUnavailable {
+		return
+	}
+	if cancel.TurnID != "" && cancel.TurnID != n.pendingTurnID {
+		return
+	}
+	n.pending.Entry.UsageUnavailableReason = stats.UsageUnavailableCancelled
 }
 
 func (n *agentNormalizer) closeUsage(usage *usageRecord, timestamp time.Time) {
@@ -371,6 +395,8 @@ func (n *agentNormalizer) applyLoopEvent(event *loopEventRecord, timestamp time.
 		}
 		if event.Usage != nil {
 			n.recoverStepUsage(*event.Usage, timestamp, event.UUID)
+		} else if n.pending != nil {
+			n.pendingTerminal = true
 		}
 	case "content.part":
 		msg := n.ensurePending(timestamp, event.StepUUID)
@@ -426,6 +452,7 @@ func (n *agentNormalizer) setPendingUsage(usage tokenUsage, status stats.UsageSt
 	}
 	n.pending.Entry.Tokens = &tokens
 	n.pending.Entry.UsageStatus = status
+	n.pending.Entry.UsageUnavailableReason = ""
 }
 
 func (n *agentNormalizer) ensurePending(timestamp time.Time, stepUUID string) *messageRecord {
@@ -552,6 +579,16 @@ func (n *agentNormalizer) flushPending() {
 	n.finishPending()
 }
 
+func (n *agentNormalizer) finishAtEOF() {
+	if n.pending != nil &&
+		n.pending.Entry.UsageStatus == stats.UsageStatusUnavailable &&
+		!n.pendingTerminal &&
+		n.pending.Entry.UsageUnavailableReason == "" {
+		n.pending.Entry.UsageUnavailableReason = stats.UsageUnavailableInterrupted
+	}
+	n.finishPending()
+}
+
 func (n *agentNormalizer) finishPending() {
 	if n.pending == nil {
 		return
@@ -570,10 +607,17 @@ func (n *agentNormalizer) finishPending() {
 	if n.pending.Entry.ProviderID == "" {
 		n.pending.Entry.ProviderID = inferProvider(n.pending.Entry.ModelID, n.lastProvider)
 	}
+	if n.pending.Entry.UsageStatus == stats.UsageStatusUnavailable &&
+		n.pending.Entry.UsageUnavailableReason == "" {
+		n.pending.Entry.UsageUnavailableReason = stats.UsageUnavailableUnknown
+	}
 	n.pending.recomputeCost(n.pricing)
 	n.register(n.pending)
 	n.pending = nil
 	n.pendingKey = ""
+	n.pendingTurnStep = ""
+	n.pendingTurnID = ""
+	n.pendingTerminal = false
 	n.requestSeq++
 }
 

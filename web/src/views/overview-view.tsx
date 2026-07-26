@@ -330,7 +330,7 @@ export function OverviewView() {
         </Notice>
       ))}
       {kimiAccounting && isIncompleteRequestAccounting(kimiAccounting) && (
-        <Notice tone="warning" title="Kimi request accounting is incomplete">{requestAccountingDisclosure(kimiAccounting)}</Notice>
+        <Notice tone="warning" title="Kimi usage evidence has gaps">{requestAccountingDisclosure(kimiAccounting)}</Notice>
       )}
       {grouping === 'model' && currentModelUsage?.errors.map((e) => (
         <Notice key={`model-${e.source_id}`} tone="warning" title={`${labelFor(e.source_id)} model usage is unavailable`}>{e.message}</Notice>

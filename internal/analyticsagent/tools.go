@@ -33,8 +33,9 @@ const (
 var errInvalidToolInput = errors.New("invalid analytics tool input")
 
 type ToolRegistry struct {
-	registry      *source.Registry
-	projectRefKey []byte
+	registry       *source.Registry
+	projectRefKey  []byte
+	cacheIntegrity CacheIntegrityProvider
 }
 
 type periodArgs struct {
@@ -96,13 +97,17 @@ type aggregateArgs struct {
 }
 
 func NewToolRegistry(registry *source.Registry) *ToolRegistry {
+	return NewToolRegistryWithCache(registry, nil)
+}
+
+func NewToolRegistryWithCache(registry *source.Registry, cacheIntegrity CacheIntegrityProvider) *ToolRegistry {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		// Fail privacy-safe: project metrics remain usable but uncorrelated if the
 		// operating system cannot provide entropy for an in-memory pseudonym key.
 		key = nil
 	}
-	return &ToolRegistry{registry: registry, projectRefKey: key}
+	return &ToolRegistry{registry: registry, projectRefKey: key, cacheIntegrity: cacheIntegrity}
 }
 
 // DefinitionsFor returns the definitions for an agent's tool allowlist, in the
@@ -134,6 +139,11 @@ func (r *ToolRegistry) Definitions() []ToolDefinition {
 			Name:        "get_overview",
 			Description: "Get source-specific sessions, transcript messages, outbound assistant/API requests, tokens, days, and source-specific cost with provenance for a validated period. Kimi results can include request-accounting coverage and unavailable-usage counts.",
 			Parameters:  rawSchema(sourcePeriodSchema(false)),
+		},
+		{
+			Name:        "get_source_integrity",
+			Description: "Audit aggregate source availability, ingestion, request accounting, cost evidence, and sanitized cache freshness for one source or every registered source. Returns no request/session identifiers, paths, transcripts, timestamps, or raw errors.",
+			Parameters:  rawSchema(`{"type":"object","properties":{"source":{"type":"string"},"period":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"additionalProperties":false}`),
 		},
 		{
 			Name:        "get_cross_source_overview",
@@ -189,7 +199,7 @@ func isAnalyticsToolName(name string) bool {
 	switch name {
 	case "list_sources", "get_overview", "get_cross_source_overview", "get_daily_usage",
 		"get_usage_trend_by_dimension", "get_session_usage",
-		"get_model_usage", "get_tool_usage", "get_project_usage":
+		"get_model_usage", "get_tool_usage", "get_project_usage", "get_source_integrity":
 		return true
 	default:
 		return false
@@ -252,6 +262,12 @@ func (r *ToolRegistry) execute(ctx context.Context, name string, arguments json.
 			return nil, errors.New("source overview failed")
 		}
 		return safeOverviewFrom(result, r.projectRefKey), nil
+	case "get_source_integrity":
+		var args integrityArgs
+		if err := decodeStrict(arguments, &args); err != nil {
+			return nil, err
+		}
+		return r.sourceIntegrity(ctx, args)
 	case "get_cross_source_overview":
 		var args aggregateArgs
 		if err := decodeStrict(arguments, &args); err != nil {
@@ -650,10 +666,11 @@ func marshalEnvelope(ok bool, data any, toolErr *safeToolError) json.RawMessage 
 }
 
 type safeSourceInfo struct {
-	ID           string         `json:"id"`
-	Available    bool           `json:"available"`
-	Capabilities []string       `json:"capabilities"`
-	CostPolicy   safeCostPolicy `json:"cost_policy,omitempty"`
+	ID            string                   `json:"id"`
+	Available     bool                     `json:"available"`
+	Capabilities  []string                 `json:"capabilities"`
+	CostPolicy    safeCostPolicy           `json:"cost_policy,omitempty"`
+	DataIntegrity *safeSourceScanIntegrity `json:"data_integrity,omitempty"`
 }
 
 type safeCostPolicy struct {
@@ -676,10 +693,11 @@ type safeCostProvenance struct {
 }
 
 type safeRequestAccounting struct {
-	UsageRecorded    int64               `json:"usage_recorded"`
-	UsageRecovered   int64               `json:"usage_recovered"`
-	UsageUnavailable int64               `json:"usage_unavailable"`
-	TraceCoverage    stats.TraceCoverage `json:"trace_coverage"`
+	UsageRecorded           int64                         `json:"usage_recorded"`
+	UsageRecovered          int64                         `json:"usage_recovered"`
+	UsageUnavailable        int64                         `json:"usage_unavailable"`
+	UsageUnavailableReasons stats.UsageUnavailableReasons `json:"usage_unavailable_reasons"`
+	TraceCoverage           stats.TraceCoverage           `json:"trace_coverage"`
 }
 
 func (r *ToolRegistry) listSources(ctx context.Context) []safeSourceInfo {
@@ -689,12 +707,16 @@ func (r *ToolRegistry) listSources(ctx context.Context) []safeSourceInfo {
 		if !isSafeSourceID(string(info.ID)) {
 			continue
 		}
-		result = append(result, safeSourceInfo{
+		item := safeSourceInfo{
 			ID:           string(info.ID),
 			Available:    info.Available,
 			Capabilities: safeCapabilities(info.Capabilities),
 			CostPolicy:   safeCostPolicyFrom(info.CostPolicy, r.projectRefKey),
-		})
+		}
+		if scan, assessed := safeScanIntegrity(info); assessed {
+			item.DataIntegrity = &scan
+		}
+		result = append(result, item)
 	}
 	return result
 }
@@ -1117,10 +1139,11 @@ func safeRequestAccountingFrom(value *stats.RequestAccounting) *safeRequestAccou
 		coverage = stats.TraceCoverageUnknown
 	}
 	return &safeRequestAccounting{
-		UsageRecorded:    value.UsageRecorded,
-		UsageRecovered:   value.UsageRecovered,
-		UsageUnavailable: value.UsageUnavailable,
-		TraceCoverage:    coverage,
+		UsageRecorded:           value.UsageRecorded,
+		UsageRecovered:          value.UsageRecovered,
+		UsageUnavailable:        value.UsageUnavailable,
+		UsageUnavailableReasons: stats.NormalizeUsageUnavailableReasons(value.UsageUnavailable, value.UsageUnavailableReasons),
+		TraceCoverage:           coverage,
 	}
 }
 

@@ -248,7 +248,7 @@ func cmdWeb(args []string) error {
 	if chatLog != nil {
 		defer chatLog.Close()
 	}
-	assistantService := newWebAnalyticsAgent(registry, logger, chatLog)
+	assistantService := newWebAnalyticsAgent(registry, cacheRuntime, logger, chatLog)
 
 	addr := web.DefaultHost + ":" + strconv.Itoa(*port)
 	var chatLogService web.AssistantChatStore
@@ -346,7 +346,7 @@ func openAssistantChatStore(ctx context.Context, logger *slog.Logger) *chatstore
 
 // newWebAnalyticsAgent intentionally appears only in cmdWeb wiring. The TUI
 // remains fully local/offline and never constructs an outbound LLM client.
-func newWebAnalyticsAgent(registry *source.Registry, logger *slog.Logger, chatLog *chatstore.Store) *analyticsagent.Service {
+func newWebAnalyticsAgent(registry *source.Registry, cacheIntegrity analyticsagent.CacheIntegrityProvider, logger *slog.Logger, chatLog *chatstore.Store) *analyticsagent.Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -367,7 +367,7 @@ func newWebAnalyticsAgent(registry *source.Registry, logger *slog.Logger, chatLo
 		}
 	}
 	serviceWithoutClient := func() *analyticsagent.Service {
-		return analyticsagent.NewService(analyticsagent.ServiceOptions{Registry: registry, RunTimeout: runTimeout, HistoryKey: historyKey})
+		return analyticsagent.NewService(analyticsagent.ServiceOptions{Registry: registry, CacheIntegrity: cacheIntegrity, RunTimeout: runTimeout, HistoryKey: historyKey})
 	}
 	key, err := config.ResolveMiniMaxAPIKey(config.DefaultOpenCodeAuthPath())
 	if err != nil {
@@ -387,7 +387,7 @@ func newWebAnalyticsAgent(registry *source.Registry, logger *slog.Logger, chatLo
 		logger.Warn("analytics assistant: MiniMax client configuration is invalid")
 		return serviceWithoutClient()
 	}
-	return analyticsagent.NewService(analyticsagent.ServiceOptions{Client: client, Registry: registry, RunTimeout: runTimeout, HistoryKey: historyKey})
+	return analyticsagent.NewService(analyticsagent.ServiceOptions{Client: client, Registry: registry, CacheIntegrity: cacheIntegrity, RunTimeout: runTimeout, HistoryKey: historyKey})
 }
 
 func cmdTUI(args []string) error {
@@ -1220,6 +1220,37 @@ func (c *cacheRuntime) Status(ctx context.Context) (web.CacheStatusResponse, err
 		resp.LastUpdatedMS = resp.Sync.UpdatedAtMS
 	}
 	return resp, nil
+}
+
+// AnalyticsCacheIntegrity exposes only normalized aggregate cache flags. Raw
+// paths, timestamps, labels, reasons, and errors remain inside the dashboard.
+func (c *cacheRuntime) AnalyticsCacheIntegrity(ctx context.Context) (analyticsagent.CacheIntegritySnapshot, error) {
+	status, err := c.Status(ctx)
+	if err != nil {
+		return analyticsagent.CacheIntegritySnapshot{}, err
+	}
+	result := analyticsagent.CacheIntegritySnapshot{Enabled: status.Enabled}
+	if status.Sync != nil {
+		result.SyncRunning = status.Sync.Running
+	}
+	result.Sources = make([]analyticsagent.CacheIntegritySource, 0, len(status.Sources))
+	for _, item := range status.Sources {
+		normalizedStatus := strings.ToLower(strings.TrimSpace(item.Status))
+		switch normalizedStatus {
+		case "ready", "syncing", "pending", "error", "unavailable":
+		default:
+			normalizedStatus = "unknown"
+		}
+		result.Sources = append(result.Sources, analyticsagent.CacheIntegritySource{
+			SourceID:               item.SourceID,
+			Cached:                 item.Cached,
+			NeedsSync:              item.NeedsSync,
+			Status:                 normalizedStatus,
+			FillFailed:             item.FillError != "",
+			RecentWindowIncomplete: item.RecentError != "",
+		})
+	}
+	return result, nil
 }
 
 // RecentWarnings reports sources whose latest live read of the recent

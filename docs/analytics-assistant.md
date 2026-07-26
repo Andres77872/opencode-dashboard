@@ -57,11 +57,13 @@ Each chat request can send the following to MiniMax:
   and each project's own name without its directories; and
 - only the aggregate usage metrics requested by the model, such as distinct
   request/message counts, tokens, daily buckets, model totals, tool totals,
-  request-coverage metadata, and cost provenance.
+  request-coverage metadata, cost provenance, normalized source scan counts,
+  and sanitized cache-health flags.
 
 The assistant tools do **not** send raw prompts, assistant text, reasoning,
 patches, tool inputs or outputs, configuration contents, secrets, filesystem
-paths, session titles, or message/session detail.
+paths, session titles, raw diagnostics/errors, timestamps, request/session
+identifiers, or message/session detail.
 
 ### Naming policy
 
@@ -97,6 +99,7 @@ investigations to specialists:
 | `cost_auditor` | Spend, token efficiency, cost provenance | `list_sources`, `get_overview`, `get_model_usage`, `get_session_usage`, `get_cross_source_overview` |
 | `tooling_analyst` | Tool adoption and failure patterns | `list_sources`, `get_tool_usage`, `get_usage_trend_by_dimension`, `get_overview` |
 | `workload_analyst` | Project and session concentration | `list_sources`, `get_project_usage`, `get_session_usage`, `get_usage_trend_by_dimension`, `get_overview` |
+| `integrity_auditor` | Source ingestion, accounting evidence, and cache freshness | `list_sources`, `get_source_integrity`, `get_overview` |
 
 Specialist runs are deliberately isolated:
 
@@ -195,6 +198,7 @@ same spirit as the dashboard's treatment of usage-unavailable source requests.
 |------|--------------|--------------------|
 | `list_sources` | Discover sources before selecting one | Dynamic registry metadata only; no source paths |
 | `get_overview` | Totals for one explicit source and range | Sessions, outbound requests, transcript messages, days, tokens, source cost/provenance, and Kimi coverage when available |
+| `get_source_integrity` | Audit one or all registered sources | Aggregate availability, source-wide ingestion, period accounting/cost evidence, and sanitized cache-window findings; no local identifiers or raw errors |
 | `get_cross_source_overview` | Compare all available sources | Additive request/message/token totals are combined; dollar costs remain per source; omitted source dimensions are explicit |
 | `get_daily_usage` | Find trends and spikes | Distinct request/message counts in a validated period/custom range and at most 1,000 daily/hourly buckets |
 | `get_usage_trend_by_dimension` | Attribute a change to a model, tool, or project | Bounded daily/hourly series grouped by one dimension |
@@ -228,8 +232,9 @@ The assistant treats `requests` and `messages` as different contracts:
   rows as requests, not transcript messages.
 
 Kimi aggregates can include `request_accounting`: `usage_recorded`,
-`usage_recovered`, `usage_unavailable`, and `trace_coverage`. Coverage values
-mean:
+`usage_recovered`, `usage_unavailable`, its fixed
+`cancelled`/`interrupted`/`failed`/`unknown` reason partition, and
+`trace_coverage`. Coverage values mean:
 
 - `complete` — durable request traces cover the attempts in the selected data;
 - `mixed` — observed request traces and requests inferred from legacy usage
@@ -240,6 +245,12 @@ mean:
 
 The assistant must report usage-unavailable requests when material. Their
 request count is known, but their tokens and cost are unknown, never zero.
+The reason partition classifies persisted evidence only: cancelled requests
+have a durable cancellation, failed requests were superseded by a same-step
+retry, interrupted requests were still open when the persisted log ended, and
+unknown requests have no stronger evidence. These categories may still be
+billable. Complete trace coverage only means attempts were traced; it does not
+mean usage or cost evidence is complete.
 Kimi Code versions before 0.23.1 can lack durable `llm.request` traces, so one
 successful request is inferred per standalone usage record without inventing
 missing failures. `step.end.usage` can recover token evidence when the canonical

@@ -85,6 +85,8 @@ func (s *Store) addOverviewTotals(ctx context.Context, sourceID string, parts ov
 	type totals struct {
 		messages, requests                              int64
 		usageRecorded, usageRecovered, usageUnavailable int64
+		usageCancelled, usageInterrupted                int64
+		usageFailed, usageUnknown                       int64
 		traceObserved, traceInferred                    int64
 		cost                                            float64
 		input, output, reasoning, cacheRead, cacheWrite int64
@@ -103,6 +105,10 @@ func (s *Store) addOverviewTotals(ctx context.Context, sourceID string, parts ov
 		accounting.usageRecorded += row.usageRecorded
 		accounting.usageRecovered += row.usageRecovered
 		accounting.usageUnavailable += row.usageUnavailable
+		accounting.usageCancelled += row.usageCancelled
+		accounting.usageInterrupted += row.usageInterrupted
+		accounting.usageFailed += row.usageFailed
+		accounting.usageUnknown += row.usageUnknown
 		accounting.traceObserved += row.traceObserved
 		accounting.traceInferred += row.traceInferred
 	}
@@ -111,6 +117,7 @@ func (s *Store) addOverviewTotals(ctx context.Context, sourceID string, parts ov
 		if err := s.db.QueryRowContext(ctx, query, args...).Scan(
 			&row.messages, &row.requests,
 			&row.usageRecorded, &row.usageRecovered, &row.usageUnavailable,
+			&row.usageCancelled, &row.usageInterrupted, &row.usageFailed, &row.usageUnknown,
 			&row.traceObserved, &row.traceInferred,
 			&row.cost, &row.input, &row.output, &row.reasoning,
 			&row.cacheRead, &row.cacheWrite,
@@ -125,7 +132,12 @@ func (s *Store) addOverviewTotals(ctx context.Context, sourceID string, parts ov
 			SELECT
 				COALESCE(SUM(messages), 0), COALESCE(SUM(requests), 0),
 				COALESCE(SUM(usage_recorded), 0), COALESCE(SUM(usage_recovered), 0),
-				COALESCE(SUM(usage_unavailable), 0), COALESCE(SUM(trace_observed), 0),
+				COALESCE(SUM(usage_unavailable), 0),
+				COALESCE(SUM(usage_unavailable_cancelled), 0),
+				COALESCE(SUM(usage_unavailable_interrupted), 0),
+				COALESCE(SUM(usage_unavailable_failed), 0),
+				COALESCE(SUM(usage_unavailable_unknown), 0),
+				COALESCE(SUM(trace_observed), 0),
 				COALESCE(SUM(trace_inferred), 0), COALESCE(SUM(cost), 0),
 				COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
 				COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(cache_read_tokens), 0),
@@ -144,6 +156,10 @@ func (s *Store) addOverviewTotals(ctx context.Context, sourceID string, parts ov
 				COALESCE(SUM(CASE WHEN role = 'assistant' AND usage_status = 'recorded' THEN 1 ELSE 0 END), 0),
 				COALESCE(SUM(CASE WHEN role = 'assistant' AND usage_status = 'recovered' THEN 1 ELSE 0 END), 0),
 				COALESCE(SUM(CASE WHEN role = 'assistant' AND usage_status = 'unavailable' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN role = 'assistant' AND usage_status = 'unavailable' AND usage_unavailable_reason = 'cancelled' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN role = 'assistant' AND usage_status = 'unavailable' AND usage_unavailable_reason = 'interrupted' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN role = 'assistant' AND usage_status = 'unavailable' AND usage_unavailable_reason = 'failed' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN role = 'assistant' AND usage_status = 'unavailable' AND COALESCE(usage_unavailable_reason, '') NOT IN ('cancelled', 'interrupted', 'failed') THEN 1 ELSE 0 END), 0),
 				COALESCE(SUM(CASE WHEN role = 'assistant' AND request_trace = 'observed' THEN 1 ELSE 0 END), 0),
 				COALESCE(SUM(CASE WHEN role = 'assistant' AND request_trace = 'inferred' THEN 1 ELSE 0 END), 0),
 				COALESCE(SUM(cost), 0), COALESCE(SUM(input_tokens), 0),
@@ -159,9 +175,13 @@ func (s *Store) addOverviewTotals(ctx context.Context, sourceID string, parts ov
 	if unknownTrace < 0 {
 		unknownTrace = 0
 	}
-	result.RequestAccounting = stats.NewRequestAccounting(
+	result.RequestAccounting = stats.NewRequestAccountingWithReasons(
 		accounting.usageRecorded, accounting.usageRecovered, accounting.usageUnavailable,
 		accounting.traceObserved, accounting.traceInferred, unknownTrace,
+		stats.UsageUnavailableReasons{
+			Cancelled: accounting.usageCancelled, Interrupted: accounting.usageInterrupted,
+			Failed: accounting.usageFailed, Unknown: accounting.usageUnknown,
+		},
 	)
 	return nil
 }

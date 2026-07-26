@@ -70,6 +70,7 @@ type wireRecord struct {
 	Event   *loopEventRecord
 	Request *llmRequestRecord
 	Usage   *usageRecord
+	Cancel  *turnCancelRecord
 	Config  *configUpdateRecord
 }
 
@@ -146,9 +147,12 @@ type usageRecord struct {
 	UsageScope string
 }
 
+type turnCancelRecord struct {
+	TurnID string
+}
+
 var ignoredRecordTypes = map[string]bool{
 	"forked":                            true,
-	"turn.cancel":                       true,
 	"permission.set_mode":               true,
 	"permission.record_approval_result": true,
 	"full_compaction.begin":             true,
@@ -396,6 +400,14 @@ func parseWireLine(lineNo int, line []byte) (wireRecord, bool, bool, bool) {
 			return wireRecord{}, false, true, false
 		}
 		record.Prompt = &promptRecord{Input: value.Input, Origin: value.Origin}
+	case "turn.cancel":
+		var value struct {
+			TurnID string `json:"turnId"`
+		}
+		if err := json.Unmarshal(line, &value); err != nil {
+			return wireRecord{}, false, true, false
+		}
+		record.Cancel = &turnCancelRecord{TurnID: strings.TrimSpace(value.TurnID)}
 	case "context.append_message":
 		var value struct {
 			Message struct {
@@ -548,7 +560,7 @@ func firstRawScalar(values ...json.RawMessage) string {
 
 func hasCanonicalAgentRecords(records []wireRecord) bool {
 	for _, record := range records {
-		if record.Prompt != nil || record.Message != nil || record.Event != nil || record.Request != nil || record.Usage != nil {
+		if record.Prompt != nil || record.Message != nil || record.Event != nil || record.Request != nil || record.Usage != nil || record.Cancel != nil {
 			return true
 		}
 	}

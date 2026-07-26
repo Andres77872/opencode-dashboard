@@ -42,7 +42,7 @@ import {
   safeDivide,
 } from '../lib/format'
 import { getNextSortState, type SortState } from '../lib/table-sort'
-import { isIncompleteRequestAccounting, requestAccountingDisclosure, usageStatusLabel } from '../lib/request-accounting'
+import { isIncompleteRequestAccounting, requestAccountingDisclosure, usageStatusLabel, usageUnavailableReasonDetail } from '../lib/request-accounting'
 import { groupModelDaysByDate } from '../lib/daily-models'
 import { getTokenBreakdownItems, getTokenTotal } from '../lib/token-breakdown'
 import {
@@ -527,7 +527,7 @@ export function DailyView() {
             key: 'usage_status',
             header: 'Usage evidence',
             render: (m: MessageEntry) => m.role === 'assistant' && m.usage_status
-              ? <Badge tone={getUsageStatusTone(m.usage_status)}>{usageStatusLabel(m.usage_status)}</Badge>
+              ? <Badge tone={getUsageStatusTone(m.usage_status)}>{usageStatusLabel(m.usage_status, m.usage_unavailable_reason)}</Badge>
               : <span style={{ color: 'var(--fg-faint)' }}>—</span>,
           } satisfies Column<MessageEntry>,
         ]
@@ -548,7 +548,7 @@ export function DailyView() {
       sortable: true,
       render: (m) => {
         const total = m.tokens ? getTokenTotal(m.tokens) : 0
-        if (m.usage_status === 'unavailable') return <span title="Kimi persisted this request but no usage evidence." style={{ color: 'var(--fg-faint)' }}>Unavailable</span>
+        if (m.usage_status === 'unavailable') return <span title={usageUnavailableReasonDetail(m.usage_unavailable_reason)} style={{ color: 'var(--fg-faint)' }}>Unavailable</span>
         return total > 0 ? <span title={`${formatInteger(total)} tokens`}>{formatTokenCount(total)}</span> : <span style={{ color: 'var(--fg-faint)' }}>—</span>
       },
     },
@@ -598,7 +598,7 @@ export function DailyView() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {error && <Notice tone="warning" title="Daily trends partially loaded">{error}</Notice>}
       {selectedSourceId === 'kimi_code' && data.request_accounting && isIncompleteRequestAccounting(data.request_accounting) && (
-        <Notice tone="warning" title="Kimi request accounting is incomplete">{requestAccountingDisclosure(data.request_accounting)}</Notice>
+        <Notice tone="warning" title="Kimi usage evidence has gaps">{requestAccountingDisclosure(data.request_accounting)}</Notice>
       )}
 
       {/* KPI row */}
@@ -883,14 +883,14 @@ function MessageDetailDrawer({ messageId, onClose }: { messageId: string | null;
               <RequestedTierBadge processingMode={detail.processing_mode} serviceTier={detail.service_tier} />
             )}
             {detail.usage_status && (
-              <Badge tone={getUsageStatusTone(detail.usage_status)}>{usageStatusLabel(detail.usage_status)}</Badge>
+              <Badge tone={getUsageStatusTone(detail.usage_status)}>{usageStatusLabel(detail.usage_status, detail.usage_unavailable_reason)}</Badge>
             )}
             {detail.request_trace && <Badge>{detail.request_trace === 'observed' ? 'Request observed' : 'Request inferred'}</Badge>}
           </div>
 
           {usageUnavailable && (
             <Notice tone="warning" title="Usage unavailable">
-              Kimi persisted this outbound request but no token usage evidence. Tokens and estimated API-equivalent cost are unknown, not zero.
+              {usageUnavailableReasonDetail(detail.usage_unavailable_reason)} Tokens and estimated API-equivalent cost are unknown, not zero.
             </Notice>
           )}
 

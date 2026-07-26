@@ -73,7 +73,7 @@ func TestOpenFreshDatabaseStampsSchemaVersion(t *testing.T) {
 		t.Errorf("source_state.data_version column missing")
 	}
 	for _, column := range []string{
-		"service_tier", "processing_mode", "request_trace", "usage_status",
+		"service_tier", "processing_mode", "request_trace", "usage_status", "usage_unavailable_reason",
 		"model_input_tokens", "model_output_tokens", "model_reasoning_tokens",
 		"model_cache_read_tokens", "model_cache_write_tokens",
 	} {
@@ -82,7 +82,12 @@ func TestOpenFreshDatabaseStampsSchemaVersion(t *testing.T) {
 		}
 	}
 	for _, table := range []string{"hourly_usage", "overview_hourly"} {
-		for _, column := range []string{"requests", "usage_recorded", "usage_recovered", "usage_unavailable", "trace_observed", "trace_inferred"} {
+		for _, column := range []string{
+			"requests", "usage_recorded", "usage_recovered", "usage_unavailable",
+			"usage_unavailable_cancelled", "usage_unavailable_interrupted",
+			"usage_unavailable_failed", "usage_unavailable_unknown",
+			"trace_observed", "trace_inferred",
+		} {
 			if got := queryInt(t, store.db, fmt.Sprintf(`SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = ?`, table), column); got != 1 {
 				t.Errorf("%s.%s column count = %d, want 1", table, column, got)
 			}
@@ -412,8 +417,8 @@ func TestOutdatedDataVersionRowsAreReset(t *testing.T) {
 // in schema.go AND update recordedSchemaVersion + recordedSchemaDigest below
 // in the same commit (the failure message prints the new digest).
 func TestSchemaSQLChangesRequireVersionBump(t *testing.T) {
-	const recordedSchemaVersion = 7
-	const recordedSchemaDigest = "77acfe1ace9c3a9b367231f8c9c44f3b275f44e66e344c44177a579acfbfecf0"
+	const recordedSchemaVersion = 8
+	const recordedSchemaDigest = "c847b6dca1646ebed397dd8dba2c4cc35c80da953c5b4652ebaebeeb59fb97a5"
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(schemaSQL)))
 	if schemaVersion != recordedSchemaVersion || digest != recordedSchemaDigest {
 		t.Fatalf("schemaSQL/schemaVersion drifted from the recorded pair.\n"+

@@ -145,6 +145,8 @@ export type RequestTrace = 'observed' | 'inferred'
 
 export type UsageStatus = 'recorded' | 'recovered' | 'unavailable'
 
+export type UsageUnavailableReason = 'cancelled' | 'interrupted' | 'failed' | 'unknown'
+
 export type TraceCoverage = 'complete' | 'mixed' | 'successful_only' | 'unknown'
 
 /** Kimi request/usage evidence. Missing usage means unknown tokens and cost, not zero. */
@@ -152,6 +154,12 @@ export interface RequestAccounting {
   usage_recorded: number
   usage_recovered: number
   usage_unavailable: number
+  usage_unavailable_reasons: {
+    cancelled: number
+    interrupted: number
+    failed: number
+    unknown: number
+  }
   trace_coverage: TraceCoverage
 }
 
@@ -363,6 +371,8 @@ export interface SessionMessage extends SourceTagged {
   request_trace?: RequestTrace
   /** Provenance of this request's token/cost evidence. */
   usage_status?: UsageStatus
+  /** Persisted evidence for why usage is unavailable; never a billing verdict. */
+  usage_unavailable_reason?: UsageUnavailableReason
 }
 
 export interface SessionDetail extends SourceTagged {
@@ -399,6 +409,8 @@ export interface MessageEntry extends SourceTagged {
   request_trace?: RequestTrace
   /** Provenance of this request's token/cost evidence. */
   usage_status?: UsageStatus
+  /** Persisted evidence for why usage is unavailable; never a billing verdict. */
+  usage_unavailable_reason?: UsageUnavailableReason
   folded_assistant_calls?: number
   folded_tool_calls?: number
   folded_token_updates?: number
