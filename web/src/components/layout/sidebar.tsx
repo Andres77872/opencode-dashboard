@@ -1,12 +1,12 @@
 /* Vael sidebar — constellation logo + Vael wordmark, nav rail, live status footer.
    Desktop: fixed 232px rail. Mobile: slide-over drawer (via sidebar-context). */
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import type { CSSProperties } from 'react'
 import { navItems } from './nav-items'
 import { Icon } from '../vael/icon'
 import { useDashboardContext } from './dashboard-context'
-import { useSidebar } from './sidebar-context'
+import { NAV_DRAWER_ID, useSidebar } from './sidebar-context'
 import { QuotaSection } from './quota-section'
 import { formatRelativeTime } from '../../lib/format'
 
@@ -108,6 +108,7 @@ const BrandRow = () => (
 export function Sidebar() {
   const { mobileOpen, closeMobile } = useSidebar()
   const search = globalSearch(useLocation().search)
+  const drawerRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
     if (!mobileOpen) return
@@ -115,6 +116,26 @@ export function Sidebar() {
     return () => {
       document.body.style.overflow = ''
     }
+  }, [mobileOpen])
+
+  // Escape closes the drawer, matching every other overlay in the app.
+  useEffect(() => {
+    if (!mobileOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeMobile()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [mobileOpen, closeMobile])
+
+  // The drawer covers the page, so focus has to follow it in and return to
+  // whatever opened it on the way out. Without this, tabbing from the open
+  // drawer walks into the content hidden behind the scrim.
+  useEffect(() => {
+    if (!mobileOpen) return
+    const opener = document.activeElement as HTMLElement | null
+    drawerRef.current?.focus()
+    return () => opener?.focus?.()
   }, [mobileOpen])
 
   return (
@@ -133,9 +154,18 @@ export function Sidebar() {
       {/* Mobile drawer */}
       {mobileOpen && (
         <div className="xl:hidden" style={{ position: 'fixed', inset: 0, zIndex: 90 }}>
-          <div onClick={closeMobile} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)' }} />
+          {/* Decorative scrim: clicking it closes the drawer, but Escape and
+              the nav links cover that for the keyboard, so it is not exposed. */}
+          <div aria-hidden="true" onClick={closeMobile} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)' }} />
           <aside
+            ref={drawerRef}
+            id={NAV_DRAWER_ID}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Main navigation"
+            tabIndex={-1}
             style={{
+              outline: 'none',
               position: 'absolute',
               left: 0,
               top: 0,

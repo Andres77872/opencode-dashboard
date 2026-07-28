@@ -417,8 +417,8 @@ func TestOutdatedDataVersionRowsAreReset(t *testing.T) {
 // in schema.go AND update recordedSchemaVersion + recordedSchemaDigest below
 // in the same commit (the failure message prints the new digest).
 func TestSchemaSQLChangesRequireVersionBump(t *testing.T) {
-	const recordedSchemaVersion = 8
-	const recordedSchemaDigest = "c847b6dca1646ebed397dd8dba2c4cc35c80da953c5b4652ebaebeeb59fb97a5"
+	const recordedSchemaVersion = 9
+	const recordedSchemaDigest = "a68bcc1910b99f6db518e200ff5b0dd9c5a858aff4127f78ff5cbe733ab79c8a"
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(schemaSQL)))
 	if schemaVersion != recordedSchemaVersion || digest != recordedSchemaDigest {
 		t.Fatalf("schemaSQL/schemaVersion drifted from the recorded pair.\n"+

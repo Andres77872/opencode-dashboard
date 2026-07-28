@@ -113,8 +113,24 @@ func (w *flushCountingRecorder) Flush() {
 	w.ResponseRecorder.Flush()
 }
 
+// deadlineRecorder captures what the handler asks of the connection's write
+// deadline. A real net/http connection exposes SetWriteDeadline; the plain
+// httptest recorder does not, so the assistant endpoints must be exercised
+// through this to observe that behaviour at all.
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadlines []time.Time
+}
+
+func (w *deadlineRecorder) SetWriteDeadline(t time.Time) error {
+	w.deadlines = append(w.deadlines, t)
+	return nil
+}
+
+func (w *deadlineRecorder) Flush() { w.ResponseRecorder.Flush() }
+
 func assistantTestServer(service AssistantService, logger *slog.Logger) *http.Server {
-	return NewServerWithAssistant("", source.NewRegistry(source.SourceOpenCode), logger, nil, nil, service)
+	return NewServer(ServerOptions{Registry: source.NewRegistry(source.SourceOpenCode), Logger: logger, Assistant: service})
 }
 
 func validAssistantBody(prompt string) string {
@@ -297,6 +313,62 @@ func TestAssistantChatStreamContractAndFlushesEveryFrame(t *testing.T) {
 		if strings.Contains(recorder.Body.String(), forbidden) {
 			t.Fatalf("private provider/tool data %q leaked in stream: %s", forbidden, recorder.Body.String())
 		}
+	}
+}
+
+// A run may legitimately take up to analyticsagent's five-minute ceiling, which
+// is longer than the server-wide WriteTimeout used for ordinary API calls. Both
+// assistant endpoints must widen the connection's write deadline, and the
+// stream must renew it per frame, or long runs are truncated by the transport.
+func TestAssistantEndpointsWidenWriteDeadlineBeyondServerWriteTimeout(t *testing.T) {
+	streamed := &fakeAssistantService{
+		streamResult: analyticsagent.ChatResult{
+			Message: analyticsagent.BrowserMessage{Role: "assistant", Content: "Report.", Signature: "signed"},
+			Model:   analyticsagent.MiniMaxM3Model,
+		},
+		streamEvents: []analyticsagent.StreamEvent{
+			{Type: analyticsagent.StreamEventContentDelta, Delta: "Working..."},
+			{Type: analyticsagent.StreamEventContentDelta, Delta: "Report."},
+		},
+	}
+	buffered := &fakeAssistantService{
+		result: analyticsagent.ChatResult{
+			Message: analyticsagent.BrowserMessage{Role: "assistant", Content: "Report.", Signature: "signed"},
+			Model:   analyticsagent.MiniMaxM3Model,
+		},
+	}
+
+	for _, tc := range []struct {
+		name      string
+		service   AssistantService
+		path      string
+		minWrites int
+	}{
+		// The buffered endpoint writes once, so one widened deadline is enough.
+		{"buffered", buffered, "/api/v1/assistant/chat", 1},
+		// start + two deltas + complete, each renewing the window.
+		{"stream", streamed, "/api/v1/assistant/chat/stream", 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+			server := assistantTestServer(tc.service, nil)
+			start := time.Now()
+			server.Handler.ServeHTTP(recorder, newAssistantRequest(http.MethodPost, tc.path, validAssistantBody("Take your time.")))
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if len(recorder.deadlines) < tc.minWrites {
+				t.Fatalf("write deadline set %d times, want at least %d", len(recorder.deadlines), tc.minWrites)
+			}
+			// Every deadline must outlast both the server's WriteTimeout and the
+			// longest run analyticsagent will admit.
+			for index, deadline := range recorder.deadlines {
+				if got := deadline.Sub(start); got <= writeTimeout || got <= 5*time.Minute {
+					t.Fatalf("deadline %d is %s after start; want more than WriteTimeout (%s) and the 5m run ceiling", index, got, writeTimeout)
+				}
+			}
+		})
 	}
 }
 
@@ -724,7 +796,7 @@ func assistantTestServerWithChatLog(t *testing.T, service AssistantService) (*ht
 		t.Fatalf("open chat store: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	server := NewServerWithChatLog("", source.NewRegistry(source.SourceOpenCode), slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, service, store)
+	server := NewServer(ServerOptions{Registry: source.NewRegistry(source.SourceOpenCode), Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Assistant: service, ChatLog: store})
 	return server, store
 }
 

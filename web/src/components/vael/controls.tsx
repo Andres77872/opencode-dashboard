@@ -223,11 +223,12 @@ export function Popover({ trigger, children, align = 'left', width, closeOnClick
 
   // Track the trigger's viewport box while open. Scroll and resize both move it,
   // and a fixed panel does not follow its anchor on its own.
+  //
+  // A closed panel is unmounted, so a stale anchor is never rendered and there
+  // is no need to clear it here. On reopen this effect repositions before the
+  // browser paints, so the panel is never shown at its previous location.
   useLayoutEffect(() => {
-    if (!portal || !open) {
-      setAnchor(null)
-      return
-    }
+    if (!portal || !open) return
     const reposition = () => {
       const trigger = ref.current
       if (!trigger) return

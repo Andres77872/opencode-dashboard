@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"opencode-dashboard/internal/source"
+	"opencode-dashboard/internal/stats"
 )
 
 type APIError struct {
@@ -43,6 +44,25 @@ func ServiceUnavailable(message string) APIError {
 		Error:   http.StatusText(http.StatusServiceUnavailable),
 		Message: message,
 		Code:    http.StatusServiceUnavailable,
+	}
+}
+
+// QueryError maps an aggregator failure to its HTTP response. Request-shaping
+// failures carry a message that tells the caller how to fix the request, so
+// they are echoed verbatim; anything else is a server fault reported as
+// fallback, which keeps internal detail out of the response body.
+//
+// Classification is by sentinel rather than by matching error text: the same
+// rejections are produced by every source and by the cache, and a reworded
+// message used to silently turn a 400 into a 500.
+func QueryError(err error, fallback string) APIError {
+	switch {
+	case errors.Is(err, stats.ErrInvalidPeriod),
+		errors.Is(err, stats.ErrInvalidDimension),
+		errors.Is(err, stats.ErrFilterUnavailable):
+		return BadRequest(err.Error())
+	default:
+		return InternalError(fallback)
 	}
 }
 

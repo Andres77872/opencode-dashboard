@@ -22,6 +22,24 @@ const assistantStatusTimeout = 4 * time.Second
 
 const maxAssistantSessionList = 100
 
+// assistantWriteWindow bounds how long the server keeps writing one assistant
+// response. The server-wide WriteTimeout is sized for ordinary API calls and is
+// shorter than a full agent run: analyticsagent caps a run at five minutes and
+// OPENCODE_DASHBOARD_MINIMAX_TIMEOUT documents that ceiling, so without a wider
+// window the transport silently truncates long runs — a buffered reply is lost
+// entirely and a stream stops mid-frame with no terminal frame. The extra
+// minute covers turn persistence and the terminal frame. The agent's own
+// context deadline, not this one, is what ends a run.
+const assistantWriteWindow = 6 * time.Minute
+
+// extendAssistantWriteDeadline widens the connection's write deadline for the
+// long-running assistant endpoints. Writers that cannot carry a deadline (the
+// httptest recorder, wrappers without Unwrap) report http.ErrNotSupported,
+// which leaves the server default in place and is not a failure.
+func extendAssistantWriteDeadline(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(assistantWriteWindow))
+}
+
 type AssistantService interface {
 	Status(context.Context) analyticsagent.Status
 	Chat(context.Context, analyticsagent.ChatInput) (analyticsagent.ChatResult, error)
@@ -91,6 +109,7 @@ func (h *Handlers) AssistantChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	extendAssistantWriteDeadline(w)
 	result, err := h.assistant.Chat(r.Context(), input)
 	if err != nil {
 		h.logAssistantFailure("buffered", false, err)
@@ -314,6 +333,7 @@ func (h *Handlers) AssistantChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	extendAssistantWriteDeadline(w)
 	stream := newAssistantNDJSONStream(w)
 	result, err := streaming.ChatStream(r.Context(), input, stream.forward)
 	if err != nil {
@@ -466,6 +486,10 @@ func newAssistantNDJSONStream(w http.ResponseWriter) *assistantNDJSONStream {
 }
 
 func (s *assistantNDJSONStream) write(frame any) error {
+	// Every frame pushes the window out again, so a stream stays open for as
+	// long as it keeps making progress rather than against a fixed budget set
+	// when the first frame was written.
+	_ = s.controller.SetWriteDeadline(time.Now().Add(assistantWriteWindow))
 	if !s.committed {
 		s.w.Header().Set("Content-Type", "application/x-ndjson")
 		s.w.Header().Set("Cache-Control", "no-store")

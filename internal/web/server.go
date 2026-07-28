@@ -29,46 +29,44 @@ type Server struct {
 	mux      *http.ServeMux
 }
 
-func NewServer(addr string, registry *source.Registry, logger *slog.Logger) *http.Server {
-	return NewServerWithCache(addr, registry, logger, nil)
+// ServerOptions collects everything the web service can be handed. Only
+// Registry, Addr and Logger have defaults; every service is optional and a nil
+// one degrades to that feature reporting itself unavailable rather than
+// stopping the server from starting.
+//
+// This is a struct rather than a parameter list because the service grew one
+// optional dependency at a time: each used to add another constructor that
+// delegated to the next with nils, and call sites ended up passing runs of
+// positional nils whose meaning was not visible.
+type ServerOptions struct {
+	Addr     string
+	Registry *source.Registry
+	Logger   *slog.Logger
+
+	Cache          CacheManager
+	Quotas         QuotaService
+	Assistant      AssistantService
+	ChatLog        AssistantChatStore
+	PricingAliases PricingAliasStore
+	// PricingRates is the cross-source catalog index; handlers only invalidate it.
+	PricingRates PricingRateInvalidator
 }
 
-func NewServerWithCache(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager) *http.Server {
-	return NewServerWithServices(addr, registry, logger, cache, nil)
-}
-
-func NewServerWithServices(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager, quotas QuotaService) *http.Server {
-	return NewServerWithAssistant(addr, registry, logger, cache, quotas, nil)
-}
-
-func NewServerWithAssistant(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager, quotas QuotaService, assistant AssistantService) *http.Server {
-	return NewServerWithChatLog(addr, registry, logger, cache, quotas, assistant, nil)
-}
-
-// NewServerWithChatLog preserves the previous complete constructor while
-// omitting the optional writable pricing-alias store.
-func NewServerWithChatLog(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager, quotas QuotaService, assistant AssistantService, chatlog AssistantChatStore) *http.Server {
-	return NewServerWithPricingAliases(addr, registry, logger, cache, quotas, assistant, chatlog, nil, nil)
-}
-
-// NewServerWithPricingAliases is the complete web service constructor. Older
-// constructors remain source-compatible for TUI/tests and delegate with nil for
-// services they do not provide.
-func NewServerWithPricingAliases(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager, quotas QuotaService, assistant AssistantService, chatlog AssistantChatStore, pricingAliases PricingAliasStore, pricingRates PricingRateInvalidator) *http.Server {
-	if addr == "" {
-		addr = defaultAddr
+func NewServer(opts ServerOptions) *http.Server {
+	if opts.Addr == "" {
+		opts.Addr = defaultAddr
 	}
-	if logger == nil {
-		logger = slog.Default()
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
 	}
-	if registry == nil {
-		registry = source.NewRegistry(source.SourceOpenCode)
+	if opts.Registry == nil {
+		opts.Registry = source.NewRegistry(source.SourceOpenCode)
 	}
 
 	srv := &Server{
-		Addr:     addr,
-		Registry: registry,
-		handlers: NewHandlersWithPricingAliases(registry, cache, quotas, assistant, chatlog, pricingAliases, pricingRates, logger),
+		Addr:     opts.Addr,
+		Registry: opts.Registry,
+		handlers: NewHandlers(opts),
 		mux:      http.NewServeMux(),
 	}
 
@@ -77,12 +75,12 @@ func NewServerWithPricingAliases(addr string, registry *source.Registry, logger 
 
 	handler := Chain(srv.mux,
 		corsMiddleware,
-		LoggingMiddleware(logger),
-		RecoveryMiddleware(logger),
+		LoggingMiddleware(opts.Logger),
+		RecoveryMiddleware(opts.Logger),
 	)
 
 	return &http.Server{
-		Addr:              addr,
+		Addr:              opts.Addr,
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,

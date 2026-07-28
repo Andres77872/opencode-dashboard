@@ -6,7 +6,7 @@ import { routeMeta } from './nav-items'
 import { Button, IconButton, Popover } from '../vael/controls'
 import { Icon } from '../vael/icon'
 import { useDashboardContext } from './dashboard-context'
-import { useSidebar } from './sidebar-context'
+import { NAV_DRAWER_ID, useSidebar } from './sidebar-context'
 import { formatRelativeTime } from '../../lib/format'
 import { getCacheStatus, syncCache } from '../../lib/api'
 import type { CacheLogEntry, CacheSourceStatus, CacheStatusResponse, CacheSyncMode, SourceID } from '../../types/api'
@@ -15,7 +15,7 @@ export function TopBar() {
   const location = useLocation()
   const { title, sub } = routeMeta(location.pathname)
   const { lastUpdatedAt, isRefreshing, requestRefresh, selectedSourceId } = useDashboardContext()
-  const { toggleMobile } = useSidebar()
+  const { mobileOpen, toggleMobile } = useSidebar()
   const [cacheStatus, setCacheStatus] = useState<CacheStatusResponse | null>(null)
   const [cacheSyncing, setCacheSyncing] = useState(false)
   const [pendingSourceId, setPendingSourceId] = useState<string | null>(null)
@@ -170,9 +170,15 @@ export function TopBar() {
         <button
           type="button"
           aria-label="Open navigation"
+          aria-expanded={mobileOpen}
+          aria-controls={NAV_DRAWER_ID}
           onClick={toggleMobile}
-          className="xl:hidden"
-          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, marginLeft: -6, color: 'var(--fg-muted)', background: 'transparent', border: '1px solid transparent', borderRadius: 'var(--radius-md)', cursor: 'pointer', flexShrink: 0 }}
+          // display lives in the class, not the inline style: an inline
+          // display always beats xl:hidden, which left this button on screen at
+          // desktop widths opening a drawer that CSS hides — the click looked
+          // inert while still locking page scroll.
+          className="inline-flex xl:hidden"
+          style={{ alignItems: 'center', justifyContent: 'center', width: 32, height: 32, marginLeft: -6, color: 'var(--fg-muted)', background: 'transparent', border: '1px solid transparent', borderRadius: 'var(--radius-md)', cursor: 'pointer', flexShrink: 0 }}
         >
           <Icon name="menu" size={18} />
         </button>

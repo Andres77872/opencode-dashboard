@@ -85,7 +85,7 @@ func splitPeriod(pq stats.PeriodQuery, cutoff, now time.Time) (splitWindows, err
 		} else {
 			n, ok := map[string]int{"1d": 1, "7d": 7, "14d": 14, "30d": 30, "1y": 365}[period]
 			if !ok {
-				return splitWindows{}, fmt.Errorf("invalid period: %q (supported: 1d, 7d, 14d, 30d, 1y, all, plus hour presets 1h, 6h, 12h, 24h, 72h)", period)
+				return splitWindows{}, stats.InvalidPeriodError(period)
 			}
 			end = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
 			start = end.AddDate(0, 0, -n)

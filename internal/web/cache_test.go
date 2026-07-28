@@ -68,7 +68,7 @@ func (m *fakeCacheManager) Sync(_ context.Context, sourceID string, mode string)
 func TestCacheEndpoints(t *testing.T) {
 	registry := source.NewRegistry(source.SourceOpenCode)
 	manager := &fakeCacheManager{}
-	server := NewServerWithCache("", registry, nil, manager)
+	server := NewServer(ServerOptions{Registry: registry, Cache: manager})
 
 	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/cache", nil)
 	statusRec := httptest.NewRecorder()

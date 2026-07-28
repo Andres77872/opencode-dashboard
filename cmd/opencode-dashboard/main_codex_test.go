@@ -420,7 +420,7 @@ func TestBuildWebRegistrySourcesEndpointReportsCodexStartupAndOpenCodeDefault(t 
 	}
 	defer registry.Close()
 
-	server := web.NewServer("", registry, nil)
+	server := web.NewServer(web.ServerOptions{Registry: registry})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sources", nil)
 
@@ -524,7 +524,7 @@ func TestBuildWebRegistryRegistersUnavailableConfiguredCodexSource(t *testing.T)
 		t.Fatalf("Resolve(codex) error = %v, want errors.Is(..., ErrUnavailableSource)", err)
 	}
 
-	server := web.NewServer("", registry, nil)
+	server := web.NewServer(web.ServerOptions{Registry: registry})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sources", nil)
 	server.Handler.ServeHTTP(rec, req)

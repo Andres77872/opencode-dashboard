@@ -19,10 +19,15 @@ import (
 // from scratch, and the normal consolidation flow re-collects everything in
 // the background while reads fall back to the live sources.
 //
+// v9 appends time_created_ms to the session, message-by-session and
+// message-by-project indexes so the read paths that already filter on those
+// keys get their rows in the order they ask for. Each new index has the old one
+// as its prefix, so no query that used the old form can plan worse.
+//
 // v8 persists unavailable-usage reasons and extends the hourly usage tables
 // with their fixed reason partition. Older caches rebuild so the new totals
 // can never silently treat unattributed missing usage as known zeroes.
-const schemaVersion = 8
+const schemaVersion = 9
 
 // schemaSQL is the complete current schema, applied in one transaction to a
 // fresh (or just-rebuilt) database. It must always describe the exact shape
@@ -198,11 +203,17 @@ CREATE TABLE IF NOT EXISTS hourly_model_cost (
 	PRIMARY KEY (source_id, bucket_start_ms, model_id, provider_id, cost_status)
 ) WITHOUT ROWID;
 
+-- Each of these trails time_created_ms so the reader that filters on the
+-- leading keys also gets its rows ordered: SessionByID orders a session's
+-- messages by time, ProjectByID bounds a project to a period window, and the
+-- per-project session list pages in reverse creation order. Without the
+-- trailing column SQLite sorts the match set into a temporary B-tree, or
+-- ignores the index in favour of the time index and filters afterwards.
 CREATE INDEX IF NOT EXISTS idx_message_index_source_time ON message_index(source_id, time_created_ms);
-CREATE INDEX IF NOT EXISTS idx_message_index_source_session ON message_index(source_id, session_id);
-CREATE INDEX IF NOT EXISTS idx_message_index_source_project ON message_index(source_id, project_id);
+CREATE INDEX IF NOT EXISTS idx_message_index_source_session ON message_index(source_id, session_id, time_created_ms);
+CREATE INDEX IF NOT EXISTS idx_message_index_source_project ON message_index(source_id, project_id, time_created_ms);
 CREATE INDEX IF NOT EXISTS idx_message_index_source_processing_mode ON message_index(source_id, role, processing_mode, time_created_ms);
-CREATE INDEX IF NOT EXISTS idx_sessions_source_project ON sessions(source_id, project_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_source_project ON sessions(source_id, project_id, time_created_ms);
 CREATE INDEX IF NOT EXISTS idx_tool_index_source_time ON tool_index(source_id, time_created_ms);
 CREATE INDEX IF NOT EXISTS idx_tool_index_source_message ON tool_index(source_id, message_id);
 `

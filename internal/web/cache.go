@@ -2,8 +2,21 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
+
+	"opencode-dashboard/internal/source"
+)
+
+// Rejections a CacheManager reports for a sync the caller could fix. They are
+// declared here because CacheManager is this package's interface; the runtime
+// that implements it wraps them. Classifying by sentinel replaced a substring
+// check that treated any error merely containing "unavailable" or "disabled"
+// as a client fault, so a genuine backend failure was reported as a 400.
+var (
+	ErrCacheDisabled   = errors.New("dashboard cache is disabled")
+	ErrInvalidSyncMode = errors.New("invalid cache sync mode")
 )
 
 type CacheManager interface {
@@ -99,7 +112,7 @@ func (h *Handlers) CacheSync(w http.ResponseWriter, r *http.Request) {
 	mode := strings.TrimSpace(r.URL.Query().Get("mode"))
 	result, err := h.cache.Sync(r.Context(), sourceID, mode)
 	if err != nil {
-		if strings.Contains(err.Error(), "invalid source") || strings.Contains(err.Error(), "invalid cache sync mode") || strings.Contains(err.Error(), "unavailable") || strings.Contains(err.Error(), "disabled") {
+		if errors.Is(err, ErrCacheDisabled) || errors.Is(err, ErrInvalidSyncMode) || errors.Is(err, source.ErrInvalidSource) {
 			BadRequest(err.Error()).Write(w)
 			return
 		}

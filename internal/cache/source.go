@@ -139,7 +139,7 @@ func (s *CachedSource) runFill(done chan struct{}) {
 // so honoring the request would silently return unfiltered data.
 func (s *CachedSource) rejectLiveOnlyFilter(pq stats.PeriodQuery) error {
 	if filterFromPQ(pq).active() {
-		return fmt.Errorf("model/provider filters need consolidated cache data; source %q has not been consolidated yet", s.sourceID())
+		return fmt.Errorf("%w: model/provider filters need consolidated cache data; source %q has not been consolidated yet", stats.ErrFilterUnavailable, s.sourceID())
 	}
 	return nil
 }

@@ -62,7 +62,7 @@ func (s *snapshot) daily(pq stats.PeriodQuery, granularity ...stats.Granularity)
 
 func (s *snapshot) dailyDimension(dimension string, pq stats.PeriodQuery, granularity ...stats.Granularity) (stats.DailyDimensionStats, error) {
 	if dimension != "model" && dimension != "tool" && dimension != "project" && dimension != "processing_mode" {
-		return stats.DailyDimensionStats{}, fmt.Errorf("invalid dimension %q: supported values are model, tool, project, processing_mode", dimension)
+		return stats.DailyDimensionStats{}, stats.InvalidDimensionError(dimension, "model, tool, project, processing_mode")
 	}
 	gran := stats.ResolveGranularity(pq, granularity...)
 	messages, err := s.filteredMessages(pq)
@@ -425,7 +425,7 @@ func (s *snapshot) presetWindow(pq stats.PeriodQuery) (periodWindow, error) {
 	}
 	days, ok := map[string]int{"1d": 1, "7d": 7, "14d": 14, "30d": 30, "1y": 365}[period]
 	if !ok {
-		return periodWindow{}, fmt.Errorf("invalid period: %q (supported: 1d, 7d, 14d, 30d, 1y, all, plus hour presets 1h, 6h, 12h, 24h, 72h)", period)
+		return periodWindow{}, stats.InvalidPeriodError(period)
 	}
 	now := time.Now().UTC()
 	endDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)

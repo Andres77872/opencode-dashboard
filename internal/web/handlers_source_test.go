@@ -258,7 +258,7 @@ func newSourceTestHandler(t *testing.T, sources ...source.Source) http.Handler {
 		}
 	}
 
-	server := NewServer("", registry, nil)
+	server := NewServer(ServerOptions{Registry: registry})
 	return server.Handler
 }
 

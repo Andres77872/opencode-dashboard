@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -33,42 +34,25 @@ type PricingRateInvalidator interface {
 	Invalidate()
 }
 
-func NewHandlers(registry *source.Registry) *Handlers {
-	return NewHandlersWithCache(registry, nil)
-}
-
-func NewHandlersWithCache(registry *source.Registry, cache CacheManager) *Handlers {
-	return NewHandlersWithServices(registry, cache, nil, nil)
-}
-
-func NewHandlersWithServices(registry *source.Registry, cache CacheManager, quotas QuotaService, logger *slog.Logger) *Handlers {
-	return NewHandlersWithAssistant(registry, cache, quotas, nil, logger)
-}
-
-func NewHandlersWithAssistant(registry *source.Registry, cache CacheManager, quotas QuotaService, assistant AssistantService, logger *slog.Logger) *Handlers {
-	return NewHandlersWithChatLog(registry, cache, quotas, assistant, nil, logger)
-}
-
-func NewHandlersWithChatLog(registry *source.Registry, cache CacheManager, quotas QuotaService, assistant AssistantService, chatlog AssistantChatStore, logger *slog.Logger) *Handlers {
-	return NewHandlersWithPricingAliases(registry, cache, quotas, assistant, chatlog, nil, nil, logger)
-}
-
-// NewHandlersWithPricingAliases is the complete handler constructor. Older
-// constructors remain source-compatible and omit the optional writable alias
-// store and cross-source catalog index.
-func NewHandlersWithPricingAliases(registry *source.Registry, cache CacheManager, quotas QuotaService, assistant AssistantService, chatlog AssistantChatStore, pricingAliases PricingAliasStore, pricingRates PricingRateInvalidator, logger *slog.Logger) *Handlers {
-	if logger == nil {
-		logger = slog.Default()
+// NewHandlers builds the API handlers from the same options the server takes,
+// so a service reaches the handlers exactly as it was configured. Every service
+// is optional; the endpoints that need one report it unavailable when it is nil.
+func NewHandlers(opts ServerOptions) *Handlers {
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+	if opts.Registry == nil {
+		opts.Registry = source.NewRegistry(source.SourceOpenCode)
 	}
 	return &Handlers{
-		registry:       registry,
-		cache:          cache,
-		quotas:         quotas,
-		assistant:      assistant,
-		chatlog:        chatlog,
-		pricingAliases: pricingAliases,
-		pricingRates:   pricingRates,
-		logger:         logger,
+		registry:       opts.Registry,
+		cache:          opts.Cache,
+		quotas:         opts.Quotas,
+		assistant:      opts.Assistant,
+		chatlog:        opts.ChatLog,
+		pricingAliases: opts.PricingAliases,
+		pricingRates:   opts.PricingRates,
+		logger:         opts.Logger,
 	}
 }
 
@@ -103,11 +87,7 @@ func (h *Handlers) Overview(w http.ResponseWriter, r *http.Request) {
 	applyModelFilterParams(r, &pq)
 	result, err := selected.Overview(ctx, pq)
 	if err != nil {
-		if strings.Contains(err.Error(), "invalid period") || strings.Contains(err.Error(), "model/provider filter") {
-			BadRequest(err.Error()).Write(w)
-			return
-		}
-		InternalError("failed to compute overview").Write(w)
+		QueryError(err, "failed to compute overview").Write(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -157,11 +137,7 @@ func (h *Handlers) OverviewAll(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := source.AggregateOverview(ctx, h.registry, pq, opts)
 	if err != nil {
-		if strings.Contains(err.Error(), "invalid period") {
-			BadRequest(err.Error()).Write(w)
-			return
-		}
-		InternalError("failed to compute aggregated overview").Write(w)
+		QueryError(err, "failed to compute aggregated overview").Write(w)
 		return
 	}
 	// Gap states were just recorded by the aggregation above, so the warnings
@@ -221,15 +197,7 @@ func (h *Handlers) Daily(w http.ResponseWriter, r *http.Request) {
 			result, err = selected.DailyDimension(ctx, dim, pq)
 		}
 		if err != nil {
-			if strings.Contains(err.Error(), "invalid dimension") {
-				BadRequest(err.Error()).Write(w)
-				return
-			}
-			if strings.Contains(err.Error(), "invalid period") {
-				BadRequest(err.Error()).Write(w)
-				return
-			}
-			InternalError("failed to compute dimension stats").Write(w)
+			QueryError(err, "failed to compute dimension stats").Write(w)
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
@@ -250,11 +218,7 @@ func (h *Handlers) Daily(w http.ResponseWriter, r *http.Request) {
 		result, err = selected.Daily(ctx, pq)
 	}
 	if err != nil {
-		if strings.Contains(err.Error(), "invalid period") || strings.Contains(err.Error(), "model/provider filter") {
-			BadRequest(err.Error()).Write(w)
-			return
-		}
-		InternalError("failed to compute daily stats").Write(w)
+		QueryError(err, "failed to compute daily stats").Write(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -273,11 +237,7 @@ func (h *Handlers) Models(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := selected.Models(ctx, pq)
 	if err != nil {
-		if strings.Contains(err.Error(), "invalid period") {
-			BadRequest(err.Error()).Write(w)
-			return
-		}
-		InternalError("failed to compute model stats").Write(w)
+		QueryError(err, "failed to compute model stats").Write(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -296,15 +256,11 @@ func (h *Handlers) Tools(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := selected.Tools(ctx, pq)
 	if err != nil {
-		if strings.Contains(err.Error(), "invalid period") {
-			BadRequest(err.Error()).Write(w)
-			return
-		}
-		if err == store.ErrInvalidSchema {
+		if errors.Is(err, store.ErrInvalidSchema) {
 			InternalError("database schema invalid").Write(w)
 			return
 		}
-		InternalError("failed to compute tool stats").Write(w)
+		QueryError(err, "failed to compute tool stats").Write(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -323,15 +279,11 @@ func (h *Handlers) Projects(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := selected.Projects(ctx, pq)
 	if err != nil {
-		if strings.Contains(err.Error(), "invalid period") {
-			BadRequest(err.Error()).Write(w)
-			return
-		}
-		if err == store.ErrInvalidSchema {
+		if errors.Is(err, store.ErrInvalidSchema) {
 			InternalError("database schema invalid").Write(w)
 			return
 		}
-		InternalError("failed to compute project stats").Write(w)
+		QueryError(err, "failed to compute project stats").Write(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -362,11 +314,7 @@ func (h *Handlers) ProjectDetail(w http.ResponseWriter, r *http.Request) {
 			InternalError("database schema invalid").Write(w)
 			return
 		}
-		if strings.Contains(err.Error(), "invalid period") {
-			BadRequest(err.Error()).Write(w)
-			return
-		}
-		InternalError("failed to get project detail").Write(w)
+		QueryError(err, "failed to get project detail").Write(w)
 		return
 	}
 	if result == nil {
@@ -406,15 +354,11 @@ func (h *Handlers) Sessions(w http.ResponseWriter, r *http.Request) {
 		To:        pq.To,
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "invalid period") {
-			BadRequest(err.Error()).Write(w)
-			return
-		}
-		if err == store.ErrInvalidSchema {
+		if errors.Is(err, store.ErrInvalidSchema) {
 			InternalError("database schema invalid").Write(w)
 			return
 		}
-		InternalError("failed to list sessions").Write(w)
+		QueryError(err, "failed to list sessions").Write(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -624,11 +568,7 @@ func (h *Handlers) Messages(w http.ResponseWriter, r *http.Request) {
 			InternalError("database schema invalid").Write(w)
 			return
 		}
-		if strings.Contains(err.Error(), "invalid period") || strings.Contains(err.Error(), "model/provider filter") {
-			BadRequest(err.Error()).Write(w)
-			return
-		}
-		InternalError("failed to list messages").Write(w)
+		QueryError(err, "failed to list messages").Write(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

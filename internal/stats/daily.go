@@ -112,9 +112,9 @@ func parsePeriod(period string) (int, error) {
 	case "all":
 		return allHistoricPeriodDays, nil
 	case "1h", "6h", "12h", "24h", "72h":
-		return 0, fmt.Errorf("invalid period: %q is an hour preset and should be handled by presetPeriodWindow directly", period)
+		return 0, fmt.Errorf("%w: %q is an hour preset and should be handled by presetPeriodWindow directly", ErrInvalidPeriod, period)
 	default:
-		return 0, fmt.Errorf("invalid period: %q (supported: 1d, 7d, 14d, 30d, 1y, all, plus hour presets 1h, 6h, 12h, 24h, 72h)", period)
+		return 0, InvalidPeriodError(period)
 	}
 }
 
@@ -508,7 +508,7 @@ func TrendBucketSQL(column string, gran Granularity) string {
 func DailyDimension(ctx context.Context, db *store.Store, dimension string, pq PeriodQuery, granularity ...Granularity) (DailyDimensionStats, error) {
 	path, ok := validDimensions[dimension]
 	if !ok {
-		return DailyDimensionStats{}, fmt.Errorf("invalid dimension %q: supported values are model, tool, project", dimension)
+		return DailyDimensionStats{}, InvalidDimensionError(dimension, "model, tool, project")
 	}
 
 	pw, err := ComputePeriodWindowFromQuery(ctx, db, pq)

@@ -268,7 +268,17 @@ func cmdWeb(args []string) error {
 	if chatLog != nil {
 		chatLogService = chatLog
 	}
-	server := web.NewServerWithPricingAliases(addr, registry, logger, cacheRuntime, quotaService, assistantService, chatLogService, pricingAliases, catalogIndex)
+	server := web.NewServer(web.ServerOptions{
+		Addr:           addr,
+		Registry:       registry,
+		Logger:         logger,
+		Cache:          cacheRuntime,
+		Quotas:         quotaService,
+		Assistant:      assistantService,
+		ChatLog:        chatLogService,
+		PricingAliases: pricingAliases,
+		PricingRates:   catalogIndex,
+	})
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)
@@ -1402,7 +1412,7 @@ func (c *cacheRuntime) startPendingPricingSync() {
 
 func (c *cacheRuntime) Sync(ctx context.Context, selected string, modeValue string) (web.CacheStatusResponse, error) {
 	if c == nil || c.disabled || c.store == nil {
-		return web.CacheStatusResponse{Enabled: false}, fmt.Errorf("dashboard cache is disabled")
+		return web.CacheStatusResponse{Enabled: false}, web.ErrCacheDisabled
 	}
 	mode, err := parseCacheSyncMode(modeValue)
 	if err != nil {
@@ -1443,7 +1453,7 @@ func parseCacheSyncMode(value string) (usagecache.SyncMode, error) {
 	case usagecache.SyncModeRebuild:
 		return usagecache.SyncModeRebuild, nil
 	default:
-		return "", fmt.Errorf("invalid cache sync mode %q", value)
+		return "", fmt.Errorf("%w %q", web.ErrInvalidSyncMode, value)
 	}
 }
 
@@ -1632,7 +1642,7 @@ func (c *cacheRuntime) syncTargetsLocked(selected string) ([]source.Source, erro
 	sourceID := source.SourceID(id)
 	src := c.live[sourceID]
 	if src == nil {
-		return nil, fmt.Errorf("invalid source %q", id)
+		return nil, fmt.Errorf("%w %q", source.ErrInvalidSource, id)
 	}
 	return []source.Source{src}, nil
 }

@@ -157,13 +157,13 @@ func (s *Store) DailyDimension(ctx context.Context, sourceID, dimension string, 
 		result, err = s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(project_id, '')", label, gran, startMs, endMs)
 	case "processing_mode":
 		if sourceID != "codex" {
-			return stats.DailyDimensionStats{}, fmt.Errorf("invalid dimension %q for source %q: supported only for codex", dimension, sourceID)
+			return stats.DailyDimensionStats{}, fmt.Errorf("%w %q for source %q: supported only for codex", stats.ErrInvalidDimension, dimension, sourceID)
 		}
 		result, err = s.dailyMessageDimension(ctx, sourceID, dimension, "COALESCE(NULLIF(processing_mode, ''), 'unknown')", label, gran, startMs, endMs)
 	case "tool":
 		result, err = s.dailyToolDimension(ctx, sourceID, dimension, label, gran, startMs, endMs)
 	default:
-		return stats.DailyDimensionStats{}, fmt.Errorf("invalid dimension %q: supported values are model, tool, project, processing_mode", dimension)
+		return stats.DailyDimensionStats{}, stats.InvalidDimensionError(dimension, "model, tool, project, processing_mode")
 	}
 	if err != nil {
 		return result, err
@@ -845,7 +845,7 @@ func (s *Store) presetOrExplicitWindow(ctx context.Context, sourceID string, pq 
 	days := map[string]int{"1d": 1, "7d": 7, "14d": 14, "30d": 30, "1y": 365}
 	n, ok := days[period]
 	if !ok {
-		return window{}, fmt.Errorf("invalid period: %q (supported: 1d, 7d, 14d, 30d, 1y, all, plus hour presets 1h, 6h, 12h, 24h, 72h)", period)
+		return window{}, stats.InvalidPeriodError(period)
 	}
 	now := time.Now().UTC()
 	end := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)

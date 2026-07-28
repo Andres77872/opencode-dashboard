@@ -1,6 +1,7 @@
 /* Vael component library — barrel export.
    Import design-system components from '@/components/vael' (relative paths). */
-export { Icon, ICON_PATHS, type IconName } from './icon'
+export { Icon } from './icon'
+export { ICON_PATHS, type IconName } from './icon-paths'
 export { VENDORS, vendorMeta, type VendorMeta } from './vendors'
 
 export {
@@ -46,14 +47,14 @@ export {
   Donut,
   BudgetRing,
   Heatmap,
-  useWidth,
-  niceMax,
   type AreaSeries,
   type StackedBarDay,
   type StackedBarKey,
   type DonutSegment,
   type HeatmapCell,
 } from './charts'
+
+export { useWidth, niceMax } from './chart-utils'
 
 export { Drawer, type DrawerProps } from './drawer'
 export { Tabs, type TabItem } from './tabs'

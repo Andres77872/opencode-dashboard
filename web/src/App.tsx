@@ -1,17 +1,22 @@
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, useEffect, useMemo, useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { ConfigView } from './views/config-view'
 import { DashboardLayout } from './components/layout/dashboard-layout'
 import { DashboardProvider } from './components/layout/dashboard-provider'
-import { DailyView } from './views/daily-view'
-import { ModelsView } from './views/models-view'
-import { OverviewView } from './views/overview-view'
-import { ProjectsView } from './views/projects-view'
-import { SessionsView } from './views/sessions-view'
-import { ToolsView } from './views/tools-view'
 import { getSources } from './lib/api'
 import { useSourceState } from './lib/use-source-state'
 import type { SourceListResponse } from './types/api'
+
+// Each view carries its own charts, tables and formatters, and a session only
+// ever opens a few of them. Loading them per route keeps the initial bundle to
+// the shell instead of every screen at once; DashboardLayout renders the
+// Suspense boundary, so the chrome stays put while a view arrives.
+const OverviewView = lazy(() => import('./views/overview-view').then((m) => ({ default: m.OverviewView })))
+const DailyView = lazy(() => import('./views/daily-view').then((m) => ({ default: m.DailyView })))
+const ModelsView = lazy(() => import('./views/models-view').then((m) => ({ default: m.ModelsView })))
+const ToolsView = lazy(() => import('./views/tools-view').then((m) => ({ default: m.ToolsView })))
+const ProjectsView = lazy(() => import('./views/projects-view').then((m) => ({ default: m.ProjectsView })))
+const SessionsView = lazy(() => import('./views/sessions-view').then((m) => ({ default: m.SessionsView })))
+const ConfigView = lazy(() => import('./views/config-view').then((m) => ({ default: m.ConfigView })))
 
 function fallbackSourceMetadata(reason: string): SourceListResponse {
   return {

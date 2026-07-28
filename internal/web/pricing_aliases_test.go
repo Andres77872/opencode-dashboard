@@ -158,7 +158,7 @@ func pricingAliasTestServer(t *testing.T, src source.Source, store PricingAliasS
 	if err := registry.Register(src); err != nil {
 		t.Fatalf("register source: %v", err)
 	}
-	return NewServerWithPricingAliases("", registry, nil, cache, nil, nil, nil, store, nil)
+	return NewServer(ServerOptions{Registry: registry, Cache: cache, PricingAliases: store})
 }
 
 func performPricingAliasRequest(t *testing.T, server *http.Server, method, target, body string) *httptest.ResponseRecorder {
@@ -203,37 +203,32 @@ func TestPricingAliasConstructorsAndRoutes(t *testing.T) {
 	}
 	store := newFakePricingAliasStore()
 
-	if got := NewHandlers(registry); got == nil || got.pricingAliases != nil {
-		t.Fatalf("NewHandlers() = %#v, want handler without alias store", got)
+	// An omitted alias store leaves the handlers read-only rather than
+	// substituting one, and a supplied store is used as given.
+	if got := NewHandlers(ServerOptions{Registry: registry}); got == nil || got.pricingAliases != nil {
+		t.Fatalf("NewHandlers() without a store = %#v, want no alias store", got)
 	}
-	if got := NewHandlersWithCache(registry, nil); got == nil || got.pricingAliases != nil {
-		t.Fatalf("NewHandlersWithCache() = %#v, want handler without alias store", got)
+	if got := NewHandlers(ServerOptions{Registry: registry, PricingAliases: store}); got == nil || got.pricingAliases != store {
+		t.Fatal("NewHandlers() did not retain the alias store it was given")
 	}
-	if got := NewHandlersWithServices(registry, nil, nil, nil); got == nil || got.pricingAliases != nil {
-		t.Fatalf("NewHandlersWithServices() = %#v, want handler without alias store", got)
+	// Services left unset must not be invented, since each nil one is what makes
+	// its endpoints report themselves unavailable.
+	if got := NewHandlers(ServerOptions{Registry: registry}); got.cache != nil || got.quotas != nil || got.assistant != nil || got.chatlog != nil || got.pricingRates != nil {
+		t.Fatalf("NewHandlers() populated services that were not configured: %#v", got)
 	}
-	if got := NewHandlersWithAssistant(registry, nil, nil, nil, nil); got == nil || got.pricingAliases != nil {
-		t.Fatalf("NewHandlersWithAssistant() = %#v, want handler without alias store", got)
-	}
-	if got := NewHandlersWithChatLog(registry, nil, nil, nil, nil, nil); got == nil || got.pricingAliases != nil {
-		t.Fatalf("NewHandlersWithChatLog() = %#v, want handler without alias store", got)
-	}
-	if got := NewHandlersWithPricingAliases(registry, nil, nil, nil, nil, store, nil, nil); got == nil || got.pricingAliases != store {
-		t.Fatalf("NewHandlersWithPricingAliases() did not retain the alias store")
+	// Registry and logger are the only fields with defaults.
+	if got := NewHandlers(ServerOptions{}); got.registry == nil || got.logger == nil {
+		t.Fatalf("NewHandlers() left required collaborators nil: %#v", got)
 	}
 
-	servers := []*http.Server{
-		NewServer("", registry, nil),
-		NewServerWithCache("", registry, nil, nil),
-		NewServerWithServices("", registry, nil, nil, nil),
-		NewServerWithAssistant("", registry, nil, nil, nil, nil),
-		NewServerWithChatLog("", registry, nil, nil, nil, nil, nil),
-		NewServerWithPricingAliases("", registry, nil, nil, nil, nil, nil, store, nil),
-	}
-	for index, server := range servers {
+	// The alias route answers whether or not a writable store is configured.
+	for name, server := range map[string]*http.Server{
+		"read-only": NewServer(ServerOptions{Registry: registry}),
+		"writable":  NewServer(ServerOptions{Registry: registry, PricingAliases: store}),
+	} {
 		rec := performPricingAliasRequest(t, server, http.MethodGet, "/api/v1/pricing/aliases?source=codex", "")
 		if rec.Code != http.StatusOK {
-			t.Fatalf("constructor %d GET route status = %d, want 200; body: %s", index, rec.Code, rec.Body.String())
+			t.Fatalf("%s GET route status = %d, want 200; body: %s", name, rec.Code, rec.Body.String())
 		}
 	}
 }
@@ -1031,7 +1026,7 @@ func pricingAliasMultiSourceServer(t *testing.T, store PricingAliasStore, source
 			t.Fatalf("register source: %v", err)
 		}
 	}
-	return NewServerWithPricingAliases("", registry, nil, nil, nil, nil, nil, store, nil)
+	return NewServer(ServerOptions{Registry: registry, PricingAliases: store})
 }
 
 // The screenshot case end to end: Claude Code observes gpt-5.6-sol, which only

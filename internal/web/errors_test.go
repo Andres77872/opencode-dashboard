@@ -2,9 +2,13 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"opencode-dashboard/internal/stats"
 )
 
 func TestBadRequest(t *testing.T) {
@@ -185,6 +189,68 @@ func TestWriteJSON(t *testing.T) {
 				if err := json.Unmarshal(w.Body.Bytes(), &decodeTarget); err != nil {
 					t.Errorf("writeJSON() body is not valid JSON: %v", err)
 				}
+			}
+		})
+	}
+}
+
+// QueryError must classify by sentinel, including through wrapping. The
+// previous substring matching broke whenever a message was reworded, and it
+// misclassified unrelated errors that happened to contain a matched word.
+func TestQueryErrorClassifiesBySentinelNotMessageText(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantCode int
+		wantMsg  string
+	}{
+		{
+			name:     "invalid period is the caller's to fix",
+			err:      stats.InvalidPeriodError("2d"),
+			wantCode: http.StatusBadRequest,
+			wantMsg:  stats.InvalidPeriodError("2d").Error(),
+		},
+		{
+			name:     "invalid dimension is the caller's to fix",
+			err:      stats.InvalidDimensionError("bogus", "model, tool, project"),
+			wantCode: http.StatusBadRequest,
+			wantMsg:  stats.InvalidDimensionError("bogus", "model, tool, project").Error(),
+		},
+		{
+			name:     "sentinel survives wrapping by an intermediate layer",
+			err:      fmt.Errorf("aggregate codex: %w", stats.ErrInvalidPeriod),
+			wantCode: http.StatusBadRequest,
+			wantMsg:  "aggregate codex: invalid period",
+		},
+		{
+			name:     "unfilterable source is reported to the caller",
+			err:      fmt.Errorf("%w: needs consolidated cache data", stats.ErrFilterUnavailable),
+			wantCode: http.StatusBadRequest,
+			wantMsg:  "filter unavailable: needs consolidated cache data",
+		},
+		{
+			// The old substring check turned this into a 400 because the text
+			// contains "invalid period", leaking internals as a client error.
+			name:     "backend failure mentioning a request term stays a server fault",
+			err:      errors.New("scan hourly rollup for invalid period bucket: disk I/O error"),
+			wantCode: http.StatusInternalServerError,
+			wantMsg:  "failed to compute overview",
+		},
+		{
+			name:     "unrelated failure is a server fault",
+			err:      errors.New("database is locked"),
+			wantCode: http.StatusInternalServerError,
+			wantMsg:  "failed to compute overview",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := QueryError(tc.err, "failed to compute overview")
+			if got.Code != tc.wantCode {
+				t.Fatalf("code = %d, want %d", got.Code, tc.wantCode)
+			}
+			if got.Message != tc.wantMsg {
+				t.Fatalf("message = %q, want %q", got.Message, tc.wantMsg)
 			}
 		})
 	}
