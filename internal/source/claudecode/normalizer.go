@@ -254,7 +254,7 @@ func computeAssistantCost(record parsedRecord, pricing pricingSnapshot) costResu
 	if record.ReportedUSDCumulative && record.HasUsage {
 		reported = nil
 	}
-	return computeCost(record.Model, record.Usage, record.HasUsage, reported, pricing)
+	return computeCost(record.Model, "anthropic", record.Usage, record.HasUsage, reported, pricing)
 }
 
 // applyContributionToEntry writes a single API request's cost and tokens onto its

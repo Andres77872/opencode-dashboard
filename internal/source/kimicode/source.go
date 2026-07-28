@@ -25,6 +25,8 @@ type Options struct {
 	KimiHome            string
 	PathSource          string
 	PricingSnapshotPath string
+	PricingAliases      source.PricingAliasResolver
+	PricingRates        source.PricingRateIndex
 	SnapshotTTL         time.Duration
 	ScanTimeout         time.Duration
 }
@@ -34,13 +36,16 @@ type Options struct {
 type Source struct {
 	opts Options
 
-	mu         sync.Mutex
-	snapshot   *snapshot
-	loadedAt   time.Time
-	lastDiag   source.SourceDiagnostics
-	lastStatus bool
-	pricing    pricingSnapshot
-	pricingErr error
+	mu             sync.Mutex
+	generation     uint64
+	snapshot       *snapshot
+	loadedAt       time.Time
+	lastDiag       source.SourceDiagnostics
+	lastStatus     bool
+	pricing        pricingSnapshot
+	pricingErr     error
+	pricingAliases source.PricingAliasResolver
+	pricingRates   source.PricingRateIndex
 
 	bounded         *snapshot
 	boundedFrom     time.Time
@@ -60,7 +65,7 @@ func New(opts Options) *Source {
 	if opts.ScanTimeout <= 0 {
 		opts.ScanTimeout = defaultSourceTimeout
 	}
-	return &Source{opts: opts}
+	return &Source{opts: opts, pricingAliases: opts.PricingAliases, pricingRates: opts.PricingRates}
 }
 
 func defaultKimiHome() string {
@@ -76,6 +81,7 @@ func (s *Source) Info(ctx context.Context) source.SourceInfo {
 		return unavailableInfo("", "", "Kimi Code source is not configured")
 	}
 	diag, available := s.currentDiagnostics(ctx)
+	pricing := s.loadPricing(ctx)
 	return source.SourceInfo{
 		ID:           source.SourceKimiCode,
 		Label:        "Kimi Code",
@@ -94,8 +100,8 @@ func (s *Source) Info(ctx context.Context) source.SourceInfo {
 		CostPolicy: source.CostPolicy{
 			Status:            string(stats.CostEstimatedAPIEquivalent),
 			Currency:          "USD",
-			PricingSnapshotID: s.pricingSnapshotID(ctx),
-			PricingSource:     s.loadPricing(ctx).Source,
+			PricingSnapshotID: pricing.ID,
+			PricingSource:     pricing.Source,
 			Note:              apiEquivalentNote,
 		},
 		Privacy: source.PrivacyInfo{
@@ -283,9 +289,11 @@ func (s *Source) Invalidate() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.generation++
 	s.snapshot = nil
 	s.loadedAt = time.Time{}
 	s.bounded = nil
+	s.boundedFrom = time.Time{}
 	s.boundedLoadedAt = time.Time{}
 }
 
@@ -335,30 +343,63 @@ func (s *Source) loadSnapshot(ctx context.Context) (*snapshot, error) {
 	ctx, cancel := s.contextWithTimeout(ctx)
 	defer cancel()
 
-	s.mu.Lock()
-	if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
-		snap := s.snapshot
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		s.mu.Lock()
+		if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
+			snap := s.snapshot
+			s.mu.Unlock()
+			return snap, nil
+		}
+		generation := s.generation
+		s.mu.Unlock()
+
+		disc := discoverSessions(ctx, s.opts.KimiHome)
+		if !disc.available {
+			s.mu.Lock()
+			if generation != s.generation {
+				s.mu.Unlock()
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				s.mu.Unlock()
+				return nil, err
+			}
+			s.lastDiag = disc.diagnostics
+			s.lastStatus = false
+			s.mu.Unlock()
+			return nil, source.UnavailableSourceError{ID: source.SourceKimiCode, Reason: disc.diagnostics.Reason}
+		}
+
+		snap, err := s.parseSessions(ctx, disc.sessions, disc.diagnostics)
+		s.mu.Lock()
+		if generation != s.generation {
+			s.mu.Unlock()
+			continue
+		}
+		if err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
+		if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
+			cached := s.snapshot
+			s.mu.Unlock()
+			return cached, nil
+		}
+		s.snapshot = snap
+		s.loadedAt = time.Now()
+		s.lastDiag = snap.diagnostics
+		s.lastStatus = snap.diagnostics.Status != "unavailable" && snap.diagnostics.Status != "empty"
 		s.mu.Unlock()
 		return snap, nil
 	}
-	s.mu.Unlock()
-
-	disc := discoverSessions(ctx, s.opts.KimiHome)
-	if !disc.available {
-		s.setLastDiagnostics(disc.diagnostics, false)
-		return nil, source.UnavailableSourceError{ID: source.SourceKimiCode, Reason: disc.diagnostics.Reason}
-	}
-	snap, err := s.parseSessions(ctx, disc.sessions, disc.diagnostics)
-	if err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	s.snapshot = snap
-	s.loadedAt = time.Now()
-	s.lastDiag = snap.diagnostics
-	s.lastStatus = snap.diagnostics.Status != "unavailable" && snap.diagnostics.Status != "empty"
-	s.mu.Unlock()
-	return snap, nil
 }
 
 func (s *Source) loadBoundedSnapshot(ctx context.Context, from time.Time) (*snapshot, error) {
@@ -369,40 +410,78 @@ func (s *Source) loadBoundedSnapshot(ctx context.Context, from time.Time) (*snap
 	defer cancel()
 	pruneT := from.UTC().Add(-boundedLoadMargin)
 
-	s.mu.Lock()
-	if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
-		snap := s.snapshot
-		s.mu.Unlock()
-		return snap, nil
-	}
-	if s.bounded != nil && time.Since(s.boundedLoadedAt) <= s.opts.SnapshotTTL && !s.boundedFrom.After(pruneT) {
-		snap := s.bounded
-		s.mu.Unlock()
-		return snap, nil
-	}
-	s.mu.Unlock()
-
-	disc := discoverSessions(ctx, s.opts.KimiHome)
-	if !disc.available {
-		s.setLastDiagnostics(disc.diagnostics, false)
-		return nil, source.UnavailableSourceError{ID: source.SourceKimiCode, Reason: disc.diagnostics.Reason}
-	}
-	selected := make([]sessionFiles, 0, len(disc.sessions))
-	for _, item := range disc.sessions {
-		if !item.ModTime.Before(pruneT) {
-			selected = append(selected, item)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
+
+		s.mu.Lock()
+		if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
+			snap := s.snapshot
+			s.mu.Unlock()
+			return snap, nil
+		}
+		if s.bounded != nil && time.Since(s.boundedLoadedAt) <= s.opts.SnapshotTTL && !s.boundedFrom.After(pruneT) {
+			snap := s.bounded
+			s.mu.Unlock()
+			return snap, nil
+		}
+		generation := s.generation
+		s.mu.Unlock()
+
+		disc := discoverSessions(ctx, s.opts.KimiHome)
+		if !disc.available {
+			s.mu.Lock()
+			if generation != s.generation {
+				s.mu.Unlock()
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				s.mu.Unlock()
+				return nil, err
+			}
+			s.lastDiag = disc.diagnostics
+			s.lastStatus = false
+			s.mu.Unlock()
+			return nil, source.UnavailableSourceError{ID: source.SourceKimiCode, Reason: disc.diagnostics.Reason}
+		}
+
+		selected := make([]sessionFiles, 0, len(disc.sessions))
+		for _, item := range disc.sessions {
+			if !item.ModTime.Before(pruneT) {
+				selected = append(selected, item)
+			}
+		}
+		snap, err := s.parseSessions(ctx, selected, disc.diagnostics)
+		s.mu.Lock()
+		if generation != s.generation {
+			s.mu.Unlock()
+			continue
+		}
+		if err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
+		if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
+			cached := s.snapshot
+			s.mu.Unlock()
+			return cached, nil
+		}
+		if s.bounded != nil && time.Since(s.boundedLoadedAt) <= s.opts.SnapshotTTL && !s.boundedFrom.After(pruneT) {
+			cached := s.bounded
+			s.mu.Unlock()
+			return cached, nil
+		}
+		s.bounded = snap
+		s.boundedFrom = pruneT
+		s.boundedLoadedAt = time.Now()
+		s.mu.Unlock()
+		return snap, nil
 	}
-	snap, err := s.parseSessions(ctx, selected, disc.diagnostics)
-	if err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	s.bounded = snap
-	s.boundedFrom = pruneT
-	s.boundedLoadedAt = time.Now()
-	s.mu.Unlock()
-	return snap, nil
 }
 
 func (s *Source) loadSessionSnapshot(ctx context.Context, id string) (*snapshot, bool, error) {
@@ -462,10 +541,6 @@ func (s *Source) contextWithTimeout(ctx context.Context) (context.Context, conte
 		return ctx, func() {}
 	}
 	return context.WithTimeout(ctx, s.opts.ScanTimeout)
-}
-
-func (s *Source) pricingSnapshotID(ctx context.Context) string {
-	return s.loadPricing(ctx).ID
 }
 
 func finalizeDiagnostics(diag source.SourceDiagnostics) source.SourceDiagnostics {

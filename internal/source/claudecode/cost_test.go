@@ -310,7 +310,7 @@ func TestBundledPricingRealClaudeModelsComputeNonMissingCosts(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := computeCost(tt.model, usage, true, nil, pricing)
+			result := computeCost(tt.model, "anthropic", usage, true, nil, pricing)
 			if result.Status == stats.CostMissing {
 				t.Fatalf("computeCost(%q) status = missing, want computed or approximate", tt.model)
 			}
@@ -384,6 +384,8 @@ func TestComputeCostBillsCacheCreationFiveMinuteAndOneHourSeparately(t *testing.
 		Currency: "USD",
 		Models: map[string]pricingRate{
 			"claude-cache-test": {
+				InputPerMillion:         1.0,
+				OutputPerMillion:        1.0,
 				CacheCreatePerMillion:   6.25,
 				CacheCreate1hPerMillion: 10.0,
 			},
@@ -409,7 +411,7 @@ func TestComputeCostBillsCacheCreationFiveMinuteAndOneHourSeparately(t *testing.
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := computeCost("claude-cache-test", tt.usage, true, nil, pricing)
+			result := computeCost("claude-cache-test", "anthropic", tt.usage, true, nil, pricing)
 			if result.Status != stats.CostComputed {
 				t.Errorf("CostStatus = %q, want %q", result.Status, stats.CostComputed)
 			}

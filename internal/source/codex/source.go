@@ -30,6 +30,8 @@ type Options struct {
 	CodexHome           string
 	PathSource          string
 	PricingSnapshotPath string
+	PricingAliases      source.PricingAliasResolver
+	PricingRates        source.PricingRateIndex
 	SnapshotTTL         time.Duration
 	ScanTimeout         time.Duration
 }
@@ -37,19 +39,26 @@ type Options struct {
 type Source struct {
 	opts Options
 
-	mu         sync.Mutex
-	snapshot   *snapshot
-	loadedAt   time.Time
-	lastDiag   source.SourceDiagnostics
-	lastStatus bool
-	pricing    pricingSnapshot
-	pricingErr error
+	mu             sync.Mutex
+	generation     uint64
+	snapshot       *snapshot
+	loadedAt       time.Time
+	lastDiag       source.SourceDiagnostics
+	lastStatus     bool
+	pricing        pricingSnapshot
+	pricingErr     error
+	pricingAliases source.PricingAliasResolver
+	pricingRates   source.PricingRateIndex
 
 	// Bounded (mtime-pruned) snapshot slot for recent-window queries. Kept
 	// separate so a partial load never poisons the full-snapshot cache above.
 	bounded         *snapshot
 	boundedFrom     time.Time // prune threshold the bounded slot was built with
 	boundedLoadedAt time.Time
+
+	// afterSnapshotParsed coordinates deterministic in-flight invalidation tests.
+	// It is nil in production and runs outside mu after normalization.
+	afterSnapshotParsed func()
 }
 
 func New(opts Options) *Source {
@@ -65,7 +74,7 @@ func New(opts Options) *Source {
 	if opts.ScanTimeout <= 0 {
 		opts.ScanTimeout = defaultSourceTimeout
 	}
-	return &Source{opts: opts}
+	return &Source{opts: opts, pricingAliases: opts.PricingAliases, pricingRates: opts.PricingRates}
 }
 
 func defaultCodexHome() string {
@@ -283,8 +292,12 @@ func (s *Source) Invalidate() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.generation++
 	s.snapshot = nil
 	s.loadedAt = time.Time{}
+	s.bounded = nil
+	s.boundedFrom = time.Time{}
+	s.boundedLoadedAt = time.Time{}
 }
 
 func (s *Source) currentDiagnostics(ctx context.Context) (source.SourceDiagnostics, bool) {
@@ -327,30 +340,58 @@ func (s *Source) loadSnapshot(ctx context.Context) (*snapshot, error) {
 	ctx, cancel := s.contextWithTimeout(ctx)
 	defer cancel()
 
-	s.mu.Lock()
-	if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
-		snap := s.snapshot
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		s.mu.Lock()
+		if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
+			snap := s.snapshot
+			s.mu.Unlock()
+			return snap, nil
+		}
+		generation := s.generation
+		s.mu.Unlock()
+
+		disc := discoverTranscripts(ctx, s.opts.CodexHome)
+		if !disc.available {
+			s.mu.Lock()
+			if s.generation != generation {
+				s.mu.Unlock()
+				continue
+			}
+			s.lastDiag = disc.diagnostics
+			s.lastStatus = false
+			s.mu.Unlock()
+			return nil, source.UnavailableSourceError{ID: source.SourceCodex, Reason: disc.diagnostics.Reason}
+		}
+		snap, err := s.parseFiles(ctx, disc.files, disc.diagnostics)
+		if err != nil {
+			s.mu.Lock()
+			stale := s.generation != generation
+			s.mu.Unlock()
+			if stale {
+				continue
+			}
+			return nil, err
+		}
+		if s.afterSnapshotParsed != nil {
+			s.afterSnapshotParsed()
+		}
+
+		s.mu.Lock()
+		if s.generation != generation {
+			s.mu.Unlock()
+			continue
+		}
+		s.snapshot = snap
+		s.loadedAt = time.Now()
+		s.lastDiag = snap.diagnostics
+		s.lastStatus = snap.diagnostics.Status != "unavailable" && snap.diagnostics.Status != "empty"
 		s.mu.Unlock()
 		return snap, nil
 	}
-	s.mu.Unlock()
-
-	disc := discoverTranscripts(ctx, s.opts.CodexHome)
-	if !disc.available {
-		s.setLastDiagnostics(disc.diagnostics, false)
-		return nil, source.UnavailableSourceError{ID: source.SourceCodex, Reason: disc.diagnostics.Reason}
-	}
-	snap, err := s.parseFiles(ctx, disc.files, disc.diagnostics)
-	if err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	s.snapshot = snap
-	s.loadedAt = time.Now()
-	s.lastDiag = snap.diagnostics
-	s.lastStatus = snap.diagnostics.Status != "unavailable" && snap.diagnostics.Status != "empty"
-	s.mu.Unlock()
-	return snap, nil
 }
 
 func (s *Source) parseFiles(ctx context.Context, files []transcriptFile, diag source.SourceDiagnostics) (*snapshot, error) {
@@ -431,75 +472,109 @@ func (s *Source) loadBoundedSnapshot(ctx context.Context, from time.Time) (*snap
 	defer cancel()
 	pruneT := from.UTC().Add(-boundedLoadMargin)
 
-	s.mu.Lock()
-	if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
-		snap := s.snapshot
-		s.mu.Unlock()
-		return snap, nil // a fresh full snapshot is a superset
-	}
-	if s.bounded != nil && time.Since(s.boundedLoadedAt) <= s.opts.SnapshotTTL && !s.boundedFrom.After(pruneT) {
-		snap := s.bounded
-		s.mu.Unlock()
-		return snap, nil // cached bounded superset
-	}
-	s.mu.Unlock()
-
-	disc := discoverTranscripts(ctx, s.opts.CodexHome)
-	if !disc.available {
-		s.setLastDiagnostics(disc.diagnostics, false)
-		return nil, source.UnavailableSourceError{ID: source.SourceCodex, Reason: disc.diagnostics.Reason}
-	}
-	files := make([]transcriptFile, 0, len(disc.files))
-	included := make(map[string]bool, len(disc.files))
-	for _, file := range disc.files {
-		if !file.ModTime.Before(pruneT) {
-			files = append(files, file)
-			included[file.Path] = true
-		}
-	}
-	records, diag, err := s.parseFileRecords(ctx, files, disc.diagnostics)
-	if err != nil {
-		return nil, err
-	}
-	// Forked/resumed threads replay their parent thread's whole token ladder
-	// with fresh timestamps. If the (possibly long-inactive, mtime-pruned)
-	// parent transcript is missing from the parse set, that replay would be
-	// indistinguishable from new usage inside the window. Pull parent files
-	// back in by their filename thread id, transitively for chained forks.
-	byFilenameID := make(map[string][]transcriptFile, len(disc.files))
-	for _, file := range disc.files {
-		if file.SessionID != "" {
-			byFilenameID[file.SessionID] = append(byFilenameID[file.SessionID], file)
-		}
-	}
+loadAttempts:
 	for {
-		added := make([]transcriptFile, 0)
-		for id := range wantedParentThreadIDs(records) {
-			for _, file := range byFilenameID[id] {
-				if !included[file.Path] {
-					included[file.Path] = true
-					added = append(added, file)
-				}
-			}
-		}
-		if len(added) == 0 {
-			break
-		}
-		var parentRecords []codexRecord
-		parentRecords, diag, err = s.parseFileRecords(ctx, added, diag)
-		if err != nil {
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		records = append(records, parentRecords...)
-	}
-	snap := normalizeRecords(s.opts.CodexHome, records, s.loadPricing(ctx), diag)
 
-	s.mu.Lock()
-	s.bounded = snap
-	s.boundedFrom = pruneT
-	s.boundedLoadedAt = time.Now()
-	s.mu.Unlock()
-	return snap, nil
+		s.mu.Lock()
+		if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
+			snap := s.snapshot
+			s.mu.Unlock()
+			return snap, nil // a fresh full snapshot is a superset
+		}
+		if s.bounded != nil && time.Since(s.boundedLoadedAt) <= s.opts.SnapshotTTL && !s.boundedFrom.After(pruneT) {
+			snap := s.bounded
+			s.mu.Unlock()
+			return snap, nil // cached bounded superset
+		}
+		generation := s.generation
+		s.mu.Unlock()
+
+		disc := discoverTranscripts(ctx, s.opts.CodexHome)
+		if !disc.available {
+			s.mu.Lock()
+			if s.generation != generation {
+				s.mu.Unlock()
+				continue
+			}
+			s.lastDiag = disc.diagnostics
+			s.lastStatus = false
+			s.mu.Unlock()
+			return nil, source.UnavailableSourceError{ID: source.SourceCodex, Reason: disc.diagnostics.Reason}
+		}
+		files := make([]transcriptFile, 0, len(disc.files))
+		included := make(map[string]bool, len(disc.files))
+		for _, file := range disc.files {
+			if !file.ModTime.Before(pruneT) {
+				files = append(files, file)
+				included[file.Path] = true
+			}
+		}
+		records, diag, err := s.parseFileRecords(ctx, files, disc.diagnostics)
+		if err != nil {
+			s.mu.Lock()
+			stale := s.generation != generation
+			s.mu.Unlock()
+			if stale {
+				continue
+			}
+			return nil, err
+		}
+		// Forked/resumed threads replay their parent thread's whole token ladder
+		// with fresh timestamps. If the (possibly long-inactive, mtime-pruned)
+		// parent transcript is missing from the parse set, that replay would be
+		// indistinguishable from new usage inside the window. Pull parent files
+		// back in by their filename thread id, transitively for chained forks.
+		byFilenameID := make(map[string][]transcriptFile, len(disc.files))
+		for _, file := range disc.files {
+			if file.SessionID != "" {
+				byFilenameID[file.SessionID] = append(byFilenameID[file.SessionID], file)
+			}
+		}
+		for {
+			added := make([]transcriptFile, 0)
+			for id := range wantedParentThreadIDs(records) {
+				for _, file := range byFilenameID[id] {
+					if !included[file.Path] {
+						included[file.Path] = true
+						added = append(added, file)
+					}
+				}
+			}
+			if len(added) == 0 {
+				break
+			}
+			parentRecords, nextDiag, parseErr := s.parseFileRecords(ctx, added, diag)
+			if parseErr != nil {
+				s.mu.Lock()
+				stale := s.generation != generation
+				s.mu.Unlock()
+				if stale {
+					continue loadAttempts
+				}
+				return nil, parseErr
+			}
+			diag = nextDiag
+			records = append(records, parentRecords...)
+		}
+		snap := normalizeRecords(s.opts.CodexHome, records, s.loadPricing(ctx), diag)
+		if s.afterSnapshotParsed != nil {
+			s.afterSnapshotParsed()
+		}
+
+		s.mu.Lock()
+		if s.generation != generation {
+			s.mu.Unlock()
+			continue
+		}
+		s.bounded = snap
+		s.boundedFrom = pruneT
+		s.boundedLoadedAt = time.Now()
+		s.mu.Unlock()
+		return snap, nil
+	}
 }
 
 // fileThreadMeta is the lightweight identity of one rollout file, recovered from

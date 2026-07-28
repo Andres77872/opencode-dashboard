@@ -11,6 +11,10 @@ import type {
   MessageList,
   ModelStats,
   OverviewStats,
+  PricingAliasDeleteInput,
+  PricingAliasMutationInput,
+  PricingAliasMutationResponse,
+  PricingAliasesResponse,
   ProjectDetail,
   ProjectStats,
   QuotasResponse,
@@ -237,6 +241,36 @@ export function getProjects(period: string, signal?: AbortSignal, sourceId?: Sou
 
 export function getConfig(signal?: AbortSignal, sourceId?: SourceID) {
   return request<ConfigStats>(buildDetailUrl('/api/v1/config', sourceId), { signal })
+}
+
+export function getPricingAliases(sourceId: SourceID, signal?: AbortSignal) {
+  const params = new URLSearchParams({ source: sourceId })
+  return request<PricingAliasesResponse>(`/api/v1/pricing/aliases?${params.toString()}`, { signal })
+}
+
+// target_source_id is always sent: the server treats an omitted value as the
+// observing source, and being explicit keeps a cross-source target unambiguous.
+export function upsertPricingAlias(input: PricingAliasMutationInput, signal?: AbortSignal) {
+  return request<PricingAliasMutationResponse>('/api/v1/pricing/aliases', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+    signal,
+  })
+}
+
+export function deletePricingAlias(input: PricingAliasDeleteInput, signal?: AbortSignal) {
+  const params = new URLSearchParams()
+  params.set('source', input.source_id)
+  // The provider parameter is mandatory even when the exact provider id is empty.
+  params.set('provider', input.provider_id)
+  params.set('model', input.model_id)
+  return request<PricingAliasMutationResponse>(`/api/v1/pricing/aliases?${params.toString()}`, {
+    method: 'DELETE',
+    signal,
+  })
 }
 
 export function getSessions(

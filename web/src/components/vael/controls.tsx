@@ -1,7 +1,8 @@
 /* Vael controls — Button, IconButton, SegmentedControl, Popover, MenuItem,
    Select. Ported from the Vael ui_kit (inline styles + CSS vars). */
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Icon, type IconName } from './icon'
 
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost'
@@ -167,46 +168,115 @@ export function SegmentedControl<V extends string>({ options, value, onChange, s
 
 export interface PopoverProps {
   trigger: (open: boolean, toggle: () => void) => ReactNode
-  children: ReactNode
+  /** A render prop receives a close callback, for panels that stay open on click. */
+  children: ReactNode | ((close: () => void) => ReactNode)
   align?: 'left' | 'right'
   width?: number
   closeOnClick?: boolean
+  /**
+   * Render the panel into document.body instead of next to the trigger. An
+   * absolutely positioned panel is clipped by any scroll container it sits in
+   * (a DataTable's horizontal scroller, for one), which silently truncates the
+   * list. Opt in wherever the trigger can live inside such a container.
+   */
+  portal?: boolean
+  /** Notified when the panel opens or closes, for focus handling. */
+  onOpenChange?: (open: boolean) => void
 }
 
 /** Anchored dropdown surface — render-prop trigger toggles a floating panel; closes on outside click. @category Controls */
-export function Popover({ trigger, children, align = 'left', width, closeOnClick = true }: PopoverProps) {
+export function Popover({ trigger, children, align = 'left', width, closeOnClick = true, portal, onOpenChange }: PopoverProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [anchor, setAnchor] = useState<CSSProperties | null>(null)
+
+  const setOpenState = useCallback((next: boolean) => setOpen(next), [])
+
+  // Notified from an effect rather than from the setter: React may invoke a
+  // state updater more than once, which would double-fire the callback.
+  const notifiedRef = useRef(open)
+  useEffect(() => {
+    if (notifiedRef.current === open) return
+    notifiedRef.current = open
+    onOpenChange?.(open)
+  }, [open, onOpenChange])
+
   useEffect(() => {
     const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+      const target = e.target as Node
+      if (ref.current?.contains(target) || panelRef.current?.contains(target)) return
+      setOpenState(false)
     }
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
-  }, [])
+  }, [setOpenState])
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenState(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open, setOpenState])
+
+  // Track the trigger's viewport box while open. Scroll and resize both move it,
+  // and a fixed panel does not follow its anchor on its own.
+  useLayoutEffect(() => {
+    if (!portal || !open) {
+      setAnchor(null)
+      return
+    }
+    const reposition = () => {
+      const trigger = ref.current
+      if (!trigger) return
+      const box = trigger.getBoundingClientRect()
+      const panelHeight = panelRef.current?.offsetHeight ?? 0
+      const below = window.innerHeight - box.bottom
+      // Flip above only when the panel genuinely does not fit below.
+      const flip = panelHeight > 0 && below < panelHeight + 12 && box.top > below
+      const horizontal: CSSProperties = align === 'right'
+        ? { right: Math.max(8, window.innerWidth - box.right) }
+        : { left: Math.min(box.left, window.innerWidth - (width ?? 240) - 8) }
+      setAnchor({
+        position: 'fixed',
+        ...horizontal,
+        ...(flip ? { bottom: window.innerHeight - box.top + 6 } : { top: box.bottom + 6 }),
+        maxHeight: Math.max(160, (flip ? box.top : below) - 16),
+      })
+    }
+    reposition()
+    window.addEventListener('scroll', reposition, true)
+    window.addEventListener('resize', reposition)
+    return () => {
+      window.removeEventListener('scroll', reposition, true)
+      window.removeEventListener('resize', reposition)
+    }
+  }, [align, open, portal, width])
+
   const alignStyle: CSSProperties = align === 'right' ? { right: 0 } : { left: 0 }
+  const panelStyle: CSSProperties = {
+    ...(portal ? { position: 'fixed', visibility: anchor ? 'visible' : 'hidden', overflowY: 'auto', ...anchor } : { position: 'absolute', top: 'calc(100% + 6px)', ...alignStyle }),
+    zIndex: portal ? 90 : 60,
+    width,
+    background: 'var(--ink-700)',
+    border: '1px solid var(--border-strong)',
+    borderRadius: 'var(--radius-lg)',
+    boxShadow: 'var(--shadow-lg)',
+    padding: 5,
+  }
+  const close = () => setOpenState(false)
+  const panel = open ? (
+    <div ref={panelRef} style={panelStyle} onClick={closeOnClick ? close : undefined}>
+      {typeof children === 'function' ? children(close) : children}
+    </div>
+  ) : null
+
   return (
     <div ref={ref} style={{ position: 'relative', display: 'inline-flex' }}>
-      {trigger(open, () => setOpen((v) => !v))}
-      {open && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 6px)',
-            ...alignStyle,
-            zIndex: 60,
-            width,
-            background: 'var(--ink-700)',
-            border: '1px solid var(--border-strong)',
-            borderRadius: 'var(--radius-lg)',
-            boxShadow: 'var(--shadow-lg)',
-            padding: 5,
-          }}
-          onClick={closeOnClick ? () => setOpen(false) : undefined}
-        >
-          {children}
-        </div>
-      )}
+      {trigger(open, () => setOpenState(!open))}
+      {portal && panel ? createPortal(panel, document.body) : portal ? null : panel}
     </div>
   )
 }

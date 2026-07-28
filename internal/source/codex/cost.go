@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"os"
 	"regexp"
+	"sort"
 	"time"
 
+	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/stats"
 )
 
@@ -30,6 +32,8 @@ type pricingSnapshot struct {
 	Source      string                 `json:"source"`
 	Currency    string                 `json:"currency"`
 	Models      map[string]pricingRate `json:"models"`
+	aliases     source.PricingAliasSnapshot
+	rates       source.PricingRateIndex
 }
 
 type pricingRate struct {
@@ -53,6 +57,22 @@ type tierPricingRate struct {
 	CacheWriteInputPerMillion float64 `json:"cache_write_input_per_million"`
 }
 
+type pricingMatch struct {
+	Rate             pricingRate
+	CanonicalModelID string
+	Kind             source.PricingResolutionKind
+	// TargetSourceID is set only when a user alias borrowed another source's
+	// catalog, in which case Rate was adapted from the shared rate summary.
+	TargetSourceID source.SourceID
+	// OverridesNative reports that the user alias displaced an otherwise usable
+	// native catalog match.
+	OverridesNative bool
+}
+
+func (m pricingMatch) foreign() bool {
+	return m.TargetSourceID != "" && m.TargetSourceID != source.SourceCodex
+}
+
 type costResult struct {
 	Cost       float64
 	Status     stats.CostStatus
@@ -60,6 +80,13 @@ type costResult struct {
 }
 
 func (s *Source) loadPricing(ctx context.Context) pricingSnapshot {
+	return s.bindPricingAliases(s.loadBasePricing(ctx))
+}
+
+// loadBasePricing returns the bundled snapshot with no alias state attached. It
+// is the leaf that BasePricingCatalog and cross-source lookups read, so it must
+// never touch the alias store or the catalog index.
+func (s *Source) loadBasePricing(ctx context.Context) pricingSnapshot {
 	s.mu.Lock()
 	if s.pricing.ID != "" || s.pricingErr != nil {
 		pricing := s.pricing
@@ -101,6 +128,17 @@ func (s *Source) loadPricing(ctx context.Context) pricingSnapshot {
 	return result
 }
 
+// bindPricingAliases attaches alias state outside s.mu. Capture may read other
+// sources' base catalogs, so holding this source's lock here would make the
+// lock order depend on which source aliases which.
+func (s *Source) bindPricingAliases(pricing pricingSnapshot) pricingSnapshot {
+	aliases := source.CapturePricingAliases(s.pricingAliases, s.pricingRates, source.SourceCodex)
+	pricing.ID = source.EffectivePricingSnapshotIDForAliases(pricing.ID, aliases)
+	pricing.aliases = aliases
+	pricing.rates = s.pricingRates
+	return pricing
+}
+
 func (p pricingSnapshot) isStale(now time.Time) bool {
 	if p.RetrievedAt == "" {
 		return true
@@ -112,27 +150,27 @@ func (p pricingSnapshot) isStale(now time.Time) bool {
 	return now.Sub(retrieved.UTC()) > 365*24*time.Hour
 }
 
-func computeCost(model string, tokens stats.TokenStats, maxInputSnapshot int64, pricing pricingSnapshot, processingModes ...stats.ProcessingMode) costResult {
+func computeCost(model, providerID string, tokens stats.TokenStats, maxInputSnapshot int64, pricing pricingSnapshot, processingModes ...stats.ProcessingMode) costResult {
 	currency := pricing.Currency
 	if currency == "" {
 		currency = "USD"
 	}
-	if model == "" || len(pricing.Models) == 0 {
+	if model == "" {
 		return missingCost(currency)
 	}
-	rate, ok := lookupRate(model, pricing.Models)
-	if !ok || rate.InputPerMillion == 0 || rate.OutputPerMillion == 0 {
+	match := pricing.resolve(providerID, model)
+	if !usablePricingRate(match.Rate) {
 		return missingCost(currency)
 	}
 	processingMode := stats.ProcessingModeUnknown
 	if len(processingModes) > 0 {
 		processingMode = processingModes[0]
 	}
-	selectedRate, note, ok := selectTierRate(rate, processingMode)
+	selectedRate, note, ok := selectTierRate(match, processingMode)
 	if !ok {
 		return missingTierCost(currency, processingMode, "official per-token rates are unavailable for this model")
 	}
-	if processingMode == stats.ProcessingModeFast && maxInputSnapshot > priorityMaxInputTokens {
+	if !match.foreign() && processingMode == stats.ProcessingModeFast && maxInputSnapshot > priorityMaxInputTokens {
 		return missingTierCost(currency, processingMode, "official Priority pricing is unavailable above the model's 272K input-token threshold")
 	}
 	// TokenStats buckets are disjoint: Input excludes cache reads/writes, and
@@ -143,9 +181,9 @@ func computeCost(model string, tokens stats.TokenStats, maxInputSnapshot int64, 
 	outputBillable := tokens.Output + tokens.Reasoning
 	inputMultiplier := 1.0
 	outputMultiplier := 1.0
-	if rate.LongContextThresholdTokens > 0 && maxInputSnapshot > rate.LongContextThresholdTokens {
-		inputMultiplier = nonZero(rate.LongContextInputMultiplier, 1)
-		outputMultiplier = nonZero(rate.LongContextOutputMultiplier, 1)
+	if match.Rate.LongContextThresholdTokens > 0 && maxInputSnapshot > match.Rate.LongContextThresholdTokens {
+		inputMultiplier = nonZero(match.Rate.LongContextInputMultiplier, 1)
+		outputMultiplier = nonZero(match.Rate.LongContextOutputMultiplier, 1)
 	}
 	cost := ((float64(normalInput)*selectedRate.InputPerMillion + float64(cachedInput)*selectedRate.CachedInputPerMillion + float64(cacheWriteInput)*selectedRate.CacheWriteInputPerMillion) * inputMultiplier / 1_000_000) +
 		(float64(outputBillable) * selectedRate.OutputPerMillion * outputMultiplier / 1_000_000)
@@ -163,7 +201,15 @@ func computeCost(model string, tokens stats.TokenStats, maxInputSnapshot int64, 
 	}
 }
 
-func selectTierRate(rate pricingRate, processingMode stats.ProcessingMode) (tierPricingRate, string, bool) {
+func selectTierRate(match pricingMatch, processingMode stats.ProcessingMode) (tierPricingRate, string, bool) {
+	rate := match.Rate
+	if match.foreign() {
+		// A borrowed catalog publishes one rate per model, not one per OpenAI
+		// processing tier. Charging the standard rate for every tier keeps the
+		// cost present and says so, which beats reporting Fast/Flex requests as
+		// unpriced purely because the target vendor has no tier concept.
+		return standardTierRate(rate), crossSourceNote(match), true
+	}
 	switch processingMode {
 	case stats.ProcessingModeFast:
 		if rate.Priority == nil || rate.Priority.InputPerMillion == 0 || rate.Priority.OutputPerMillion == 0 {
@@ -194,21 +240,169 @@ func standardTierRate(rate pricingRate) tierPricingRate {
 // dateSuffixPattern matches dated model releases like "gpt-5.5-2026-01-15".
 var dateSuffixPattern = regexp.MustCompile(`-\d{4}-\d{2}-\d{2}$`)
 
-// lookupRate resolves a transcript model id against the pricing snapshot:
-// exact key first, then with one trailing release-date suffix stripped (a dated
-// release is unambiguously the same model). Named variants ("-spark", "-nova")
-// deliberately stay unresolved: variant models carry materially different rates
-// and an honest CostMissing beats a wrong estimate.
-func lookupRate(model string, models map[string]pricingRate) (pricingRate, bool) {
-	if rate, ok := models[model]; ok {
-		return rate, true
+// nativePricing resolves a transcript model id against the bundled snapshot:
+// exact key first, then with one trailing release-date suffix stripped. Named
+// variants deliberately stay unresolved because they can carry different rates.
+func (p pricingSnapshot) nativePricing(model string) (pricingMatch, bool) {
+	if rate, ok := p.Models[model]; ok {
+		return pricingMatch{Rate: rate, CanonicalModelID: model, Kind: source.PricingResolutionExact}, true
 	}
 	if stripped := dateSuffixPattern.ReplaceAllString(model, ""); stripped != model {
-		if rate, ok := models[stripped]; ok {
-			return rate, true
+		if rate, ok := p.Models[stripped]; ok {
+			return pricingMatch{Rate: rate, CanonicalModelID: stripped, Kind: source.PricingResolutionFallback}, true
 		}
 	}
-	return pricingRate{}, false
+	return pricingMatch{}, false
+}
+
+func (p pricingSnapshot) resolve(providerID, model string) pricingMatch {
+	native, nativeFound := p.nativePricing(model)
+	nativeUsable := nativeFound && usablePricingRate(native.Rate)
+
+	// The user alias is tried first: it is an explicit statement about what the
+	// model really is, so it outranks even an exact catalog row.
+	if alias, ok := p.aliasPricing(providerID, model); ok {
+		alias.OverridesNative = nativeUsable
+		return alias
+	}
+	if nativeUsable {
+		return native
+	}
+	if len(p.Models) == 0 {
+		return pricingMatch{Kind: source.PricingResolutionUnavailable}
+	}
+	if nativeFound {
+		native.Kind = source.PricingResolutionUnpriced
+		return native
+	}
+	return pricingMatch{Kind: source.PricingResolutionUnknown}
+}
+
+func (p pricingSnapshot) aliasPricing(providerID, model string) (pricingMatch, bool) {
+	if p.aliases == nil {
+		return pricingMatch{}, false
+	}
+	target, ok := p.aliases.ResolvePricingAlias(providerID, model)
+	if !ok || target.ModelID == "" {
+		return pricingMatch{}, false
+	}
+	if target.SourceID == "" || target.SourceID == source.SourceCodex {
+		rate, exact := p.Models[target.ModelID]
+		if !exact || !usablePricingRate(rate) {
+			return pricingMatch{}, false
+		}
+		return pricingMatch{
+			Rate:             rate,
+			CanonicalModelID: target.ModelID,
+			Kind:             source.PricingResolutionUserAlias,
+			TargetSourceID:   source.SourceCodex,
+		}, true
+	}
+	if p.rates == nil {
+		return pricingMatch{}, false
+	}
+	foreign, meta, found := p.rates.LookupPricingRate(target.SourceID, target.ModelID)
+	if !found || !source.UsablePricingRate(foreign.Rate) {
+		return pricingMatch{}, false
+	}
+	// Rates are per-million values in the catalog's own currency; borrowing one
+	// denominated differently would silently mix units into a single total.
+	if meta.Currency != defaultCurrency(p) {
+		return pricingMatch{}, false
+	}
+	return pricingMatch{
+		Rate:             foreignRate(foreign.Rate),
+		CanonicalModelID: target.ModelID,
+		Kind:             source.PricingResolutionUserAlias,
+		TargetSourceID:   target.SourceID,
+	}, true
+}
+
+// foreignRate adapts another catalog's shared rate summary to Codex's rate
+// shape. Processing-tier rates and long-context multipliers are OpenAI-specific
+// and have no cross-vendor equivalent, so they are deliberately absent and
+// selectTierRate falls back to the standard rate for every tier.
+func foreignRate(summary source.PricingRateSummary) pricingRate {
+	return pricingRate{
+		InputPerMillion:           summary.InputPerMillion,
+		CachedInputPerMillion:     summary.CachedInputPerMillion,
+		OutputPerMillion:          summary.OutputPerMillion,
+		CacheWriteInputPerMillion: summary.CacheWritePerMillion,
+	}
+}
+
+func crossSourceNote(match pricingMatch) string {
+	return "priced from the " + string(match.TargetSourceID) + " catalog model " + match.CanonicalModelID +
+		" by a user pricing alias; only input, cached input, cache write and output rates carry across catalogs, so processing-tier and long-context rates do not apply"
+}
+
+func usablePricingRate(rate pricingRate) bool {
+	return rate.InputPerMillion > 0 && rate.OutputPerMillion > 0
+}
+
+func rateSummary(rate pricingRate) source.PricingRateSummary {
+	return source.PricingRateSummary{
+		InputPerMillion:       rate.InputPerMillion,
+		CachedInputPerMillion: rate.CachedInputPerMillion,
+		CacheWritePerMillion:  rate.CacheWriteInputPerMillion,
+		OutputPerMillion:      rate.OutputPerMillion,
+		Note:                  rate.CacheWriteNote,
+	}
+}
+
+func (s *Source) PricingCatalog(ctx context.Context) source.PricingCatalog {
+	return catalogFrom(s.loadPricing(ctx))
+}
+
+// BasePricingCatalog reports the bundled catalog without alias state, which is
+// what other sources borrow rates from. It reads loadBasePricing directly so it
+// stays a leaf call in cross-source resolution.
+func (s *Source) BasePricingCatalog(ctx context.Context) source.PricingCatalog {
+	return catalogFrom(s.loadBasePricing(ctx))
+}
+
+func catalogFrom(pricing pricingSnapshot) source.PricingCatalog {
+	catalog := source.PricingCatalog{
+		SourceID:   source.SourceCodex,
+		SnapshotID: pricing.ID,
+		Currency:   defaultCurrency(pricing),
+		Models:     []source.PricingCatalogModel{},
+		Note:       apiEquivalentNote,
+	}
+	keys := make([]string, 0, len(pricing.Models))
+	for modelID := range pricing.Models {
+		keys = append(keys, modelID)
+	}
+	sort.Strings(keys)
+	for _, modelID := range keys {
+		catalog.Models = append(catalog.Models, source.PricingCatalogModel{
+			ModelID: modelID,
+			Rate:    rateSummary(pricing.Models[modelID]),
+		})
+	}
+	return catalog
+}
+
+func (s *Source) ResolvePricing(ctx context.Context, providerID, modelID string) source.PricingResolution {
+	pricing := s.loadPricing(ctx)
+	match := pricing.resolve(providerID, modelID)
+	resolution := source.PricingResolution{
+		SourceID:        source.SourceCodex,
+		TargetSourceID:  match.TargetSourceID,
+		ProviderID:      providerID,
+		ModelID:         modelID,
+		TargetModelID:   match.CanonicalModelID,
+		Kind:            match.Kind,
+		OverridesNative: match.OverridesNative,
+	}
+	if usablePricingRate(match.Rate) {
+		rate := rateSummary(match.Rate)
+		resolution.Rate = &rate
+	}
+	if match.foreign() {
+		resolution.Note = crossSourceNote(match)
+	}
+	return resolution
 }
 
 func nonZero(value, fallback float64) float64 {

@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "test:source-state": "node --test src/lib/source-selection.test.ts src/lib/use-source-state.test.ts src/lib/persisted-prefs.test.ts src/lib/message-display.test.ts src/lib/request-accounting.test.ts src/lib/processing-mode.test.ts src/lib/period-label.test.ts src/lib/overview-all.test.ts src/lib/format.test.ts src/lib/daily-models.test.ts src/lib/quotas.test.ts src/lib/assistant-position.test.ts src/lib/assistant-history.test.ts src/lib/assistant-stream.test.ts src/lib/assistant-activity.test.ts src/lib/assistant-transcript.test.ts src/lib/markdown.test.ts src/lib/syntax.test.ts src/lib/config-utils.test.ts src/lib/api-bypass.test.ts",
+    "test:source-state": "node --test src/lib/source-selection.test.ts src/lib/use-source-state.test.ts src/lib/persisted-prefs.test.ts src/lib/message-display.test.ts src/lib/request-accounting.test.ts src/lib/processing-mode.test.ts src/lib/period-label.test.ts src/lib/overview-all.test.ts src/lib/format.test.ts src/lib/daily-models.test.ts src/lib/quotas.test.ts src/lib/assistant-position.test.ts src/lib/assistant-history.test.ts src/lib/assistant-stream.test.ts src/lib/assistant-activity.test.ts src/lib/assistant-transcript.test.ts src/lib/markdown.test.ts src/lib/syntax.test.ts src/lib/config-utils.test.ts src/lib/pricing-aliases.test.ts src/lib/pricing-target-catalog.test.ts src/lib/api-pricing-aliases.test.ts src/lib/api-bypass.test.ts",
     "test:assistant-stream": "node --test src/lib/assistant-stream.test.ts",
     "preview": "vite preview"
   },

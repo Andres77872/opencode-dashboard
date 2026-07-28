@@ -534,6 +534,135 @@ export interface AllSourcesModelUsage {
   partial_errors?: SourceDimensionError[]
 }
 
+export type PricingResolutionKind =
+  | 'exact'
+  | 'native_alias'
+  | 'fallback'
+  | 'user_alias'
+  | 'unpriced'
+  | 'unknown'
+  | 'unavailable'
+
+export interface PricingRateSummary {
+  input_per_million: number
+  cached_input_per_million: number
+  /** Absent for catalogs that bill cache writes at the normal input rate. */
+  cache_write_per_million?: number
+  output_per_million: number
+  note?: string
+}
+
+export interface PricingCatalogModel {
+  model_id: string
+  display_name?: string
+  rate: PricingRateSummary
+  targetable: boolean
+}
+
+export interface PricingAliasCatalog {
+  source_id: SourceID
+  /** Human-readable source name, used to group targets in the picker. */
+  source_label?: string
+  snapshot_id?: string
+  currency?: string
+  note?: string
+  models: PricingCatalogModel[]
+}
+
+/**
+ * Lifecycle of a saved alias relative to the current pricing catalogs. A user
+ * alias outranks native pricing, so no state makes one read-only; only a target
+ * that no longer exists stops it applying.
+ */
+export type PricingAliasState =
+  | 'active'
+  | 'not_detected'
+  | 'target_missing'
+  | 'ineffective'
+
+export interface PricingAlias {
+  source_id: SourceID
+  provider_id: string
+  model_id: string
+  /** Catalog the rate is read from; differs from source_id for a cross-source alias. */
+  target_source_id: SourceID
+  target_model_id: string
+  created_ms: number
+  updated_ms: number
+  detected: boolean
+  sessions: number
+  messages: number
+  tokens: TokenStats
+  state: PricingAliasState
+  state_reason: string
+  /** Whether this alias currently supplies the model's pricing. */
+  active: boolean
+  /** False when the server would reject a new target for this alias. */
+  editable: boolean
+  /** Whether the saved target is still an exact priced catalog model. */
+  target_valid: boolean
+  /** Whether this alias displaced pricing the source would have resolved natively. */
+  overrides_native: boolean
+  resolution_kind?: PricingResolutionKind
+}
+
+/**
+ * One provider/model pair the source has seen. Every observed model is listed,
+ * including already-priced ones, because a user alias can re-point any of them.
+ */
+export interface PricingObservedModel {
+  source_id: SourceID
+  provider_id: string
+  model_id: string
+  sessions: number
+  messages: number
+  tokens: TokenStats
+  resolution_kind: PricingResolutionKind
+  resolution_reason: string
+  resolution_note?: string
+  /** Whether the model already has usable pricing without a user alias. */
+  resolved: boolean
+  aliasable: boolean
+}
+
+export interface PricingAliasesResponse {
+  source_id: SourceID
+  supported: boolean
+  /** False when alias persistence is unavailable, making the view read-only. */
+  writable: boolean
+  /** Set when observed models could not be read; aliases still render. */
+  observation_error?: string
+  /** The selected source's own catalog, whose snapshot id and note describe it. */
+  catalog: PricingAliasCatalog
+  /** Every source's catalog, including the selected one; any may be targeted. */
+  catalogs: PricingAliasCatalog[]
+  aliases: PricingAlias[]
+  observed_models: PricingObservedModel[]
+}
+
+export type PricingRepriceStatus = 'started' | 'queued' | 'disabled' | 'unavailable'
+
+export interface PricingAliasMutationResponse extends PricingAliasesResponse {
+  reprice: PricingRepriceStatus
+  /** The change was saved, but the refreshed view could not be rebuilt. */
+  refresh_error?: string
+}
+
+export interface PricingAliasMutationInput {
+  source_id: SourceID
+  provider_id: string
+  model_id: string
+  /** Omitted or equal to source_id means "price from this source's own catalog". */
+  target_source_id: SourceID
+  target_model_id: string
+}
+
+export interface PricingAliasDeleteInput {
+  source_id: SourceID
+  provider_id: string
+  model_id: string
+}
+
 export interface ApiErrorResponse {
   error: string
   message: string

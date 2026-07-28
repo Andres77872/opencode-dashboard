@@ -181,6 +181,12 @@ func DefaultCacheDBPath() string {
 	return filepath.Join(XDGDataHome(), DashboardAppName, "usage-cache.sqlite")
 }
 
+// DefaultSettingsDBPath is the durable dashboard settings database. Unlike the
+// usage cache, settings stored here are user-authored and must survive rebuilds.
+func DefaultSettingsDBPath() string {
+	return filepath.Join(XDGDataHome(), DashboardAppName, "dashboard-settings.sqlite")
+}
+
 // DefaultClaudeRateLimitsPath is where the claude-statusline subcommand
 // persists the latest Claude rate-limit snapshot for the dashboard to read.
 // It lives next to the cache DB so `uninstall` removes it too.

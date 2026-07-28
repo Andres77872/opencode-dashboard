@@ -312,11 +312,11 @@ func TestQwenPricingCatalogPricesKnownModelsAndRefusesToGuess(t *testing.T) {
 	}
 	// qwen3.8-max-preview is listed with zero rates on purpose: no public
 	// per-token price exists, so cost must be missing rather than guessed.
-	preview := computeCost("qwen3.8-max-preview", stats.TokenStats{Input: 1000, Output: 100}, pricing)
+	preview := computeCost("qwen3.8-max-preview", "qwen", stats.TokenStats{Input: 1000, Output: 100}, pricing)
 	if preview.Cost != 0 || preview.Status != stats.CostMissing {
 		t.Errorf("qwen3.8-max-preview cost = %#v, want missing", preview)
 	}
-	unknown := computeCost("custom-endpoint/private-model", stats.TokenStats{Input: 1000, Output: 100}, pricing)
+	unknown := computeCost("custom-endpoint/private-model", "custom-endpoint", stats.TokenStats{Input: 1000, Output: 100}, pricing)
 	if unknown.Cost != 0 || unknown.Status != stats.CostMissing || unknown.Provenance == nil || unknown.Provenance.MissingCount != 1 {
 		t.Errorf("unknown model cost = %#v, want explicitly missing instead of guessed", unknown)
 	}

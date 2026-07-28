@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Card, EmptyState, ErrorState, Notice, Skeleton, vendorMeta } from '../components/vael'
 import { ConfigHeader } from '../components/config/config-header'
+import { PricingAliases } from '../components/config/pricing-aliases'
 import { ConfigTreePane } from '../components/config/config-tree'
 import { SectionNav } from '../components/config/section-nav'
 import { SourcePane } from '../components/config/source-pane'
@@ -28,6 +29,15 @@ import type { ConfigViewMode } from '../types/config'
 const COPY_RESET_MS = 1600
 
 export function ConfigView() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <SourceConfigExplorer />
+      <PricingAliases />
+    </div>
+  )
+}
+
+function SourceConfigExplorer() {
   const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [searchValue, setSearchValue] = useState('')
   const [viewMode, setViewMode] = useState<ConfigViewMode>('tree')

@@ -343,3 +343,13 @@ func TestOpenCodeAndClaudePathControlsDoNotLeakIntoCodexResolution(t *testing.T)
 		}
 	})
 }
+
+func TestDefaultSettingsDBPathUsesDashboardDataDirectory(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	want := filepath.Join(dataHome, DashboardAppName, "dashboard-settings.sqlite")
+	if got := DefaultSettingsDBPath(); got != want {
+		t.Fatalf("DefaultSettingsDBPath() = %q, want %q", got, want)
+	}
+}

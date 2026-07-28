@@ -34,8 +34,8 @@ func TestCodexCostUsesGPT55EstimatedAPIEquivalentPricing(t *testing.T) {
 	if entry.CostProvenance.Status != stats.CostEstimatedAPIEquivalent {
 		t.Errorf("provenance status = %q, want %q", entry.CostProvenance.Status, stats.CostEstimatedAPIEquivalent)
 	}
-	if entry.CostProvenance.PricingSnapshotID != "openai-codex-api-pricing-2026-07-17" {
-		t.Errorf("PricingSnapshotID = %q, want openai-codex-api-pricing-2026-07-17", entry.CostProvenance.PricingSnapshotID)
+	if entry.CostProvenance.PricingSnapshotID != "openai-codex-api-pricing-2026-07-27" {
+		t.Errorf("PricingSnapshotID = %q, want openai-codex-api-pricing-2026-07-27", entry.CostProvenance.PricingSnapshotID)
 	}
 	if !strings.Contains(strings.ToLower(entry.CostProvenance.Note), "api-equivalent") || !strings.Contains(strings.ToLower(entry.CostProvenance.Note), "not actual") {
 		t.Errorf("provenance note = %q, want API-equivalent/not actual spend caveat", entry.CostProvenance.Note)
@@ -157,7 +157,7 @@ func TestBundledCodexPricingCoversCurrentModels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			result := computeCost(tt.model, tokens, 100_000, pricing)
+			result := computeCost(tt.model, "openai", tokens, 100_000, pricing)
 			if result.Status != stats.CostEstimatedAPIEquivalent {
 				t.Fatalf("computeCost(%q) status = %q, want %q", tt.model, result.Status, stats.CostEstimatedAPIEquivalent)
 			}
@@ -190,15 +190,19 @@ func TestBundledCodexPricingCoversPriorityAndFlexTiers(t *testing.T) {
 		{model: "gpt-5.4", priorityCost: 65.5, flexCost: 16.375, flexSupported: true},
 		{model: "gpt-5.4-mini", priorityCost: 19.65, flexCost: 4.9125, flexSupported: true},
 		{model: "gpt-5.3-codex", priorityCost: 59.85},
+		{model: "gpt-5.2-codex", priorityCost: 59.85},
+		{model: "gpt-5.1-codex", priorityCost: 42.75},
+		{model: "gpt-5.1-codex-max", priorityCost: 42.75},
+		{model: "gpt-5-codex", priorityCost: 42.75},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			priority := computeCost(tt.model, tokens, 100_000, pricing, stats.ProcessingModeFast)
+			priority := computeCost(tt.model, "openai", tokens, 100_000, pricing, stats.ProcessingModeFast)
 			if priority.Status != stats.CostEstimatedAPIEquivalent || !approxEqual(priority.Cost, tt.priorityCost) {
 				t.Errorf("Priority computeCost(%q) = %.9f (%q), want %.9f (%q)", tt.model, priority.Cost, priority.Status, tt.priorityCost, stats.CostEstimatedAPIEquivalent)
 			}
-			flex := computeCost(tt.model, tokens, 100_000, pricing, stats.ProcessingModeFlex)
+			flex := computeCost(tt.model, "openai", tokens, 100_000, pricing, stats.ProcessingModeFlex)
 			if !tt.flexSupported {
 				if flex.Status != stats.CostMissing || flex.Cost != 0 {
 					t.Errorf("Flex computeCost(%q) = %.9f (%q), want missing because no official Flex catalog entry exists", tt.model, flex.Cost, flex.Status)
@@ -213,7 +217,7 @@ func TestBundledCodexPricingCoversPriorityAndFlexTiers(t *testing.T) {
 func TestCodexPriorityLongContextIsMissingWithoutOfficialRates(t *testing.T) {
 	pricing := New(Options{PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json")}).loadPricing(testContext(t))
 	for _, model := range []string{"gpt-5.6-sol", "gpt-5.4-mini", "gpt-5.3-codex"} {
-		result := computeCost(model, stats.TokenStats{Input: 272_001, Output: 1}, 272_001, pricing, stats.ProcessingModeFast)
+		result := computeCost(model, "openai", stats.TokenStats{Input: 272_001, Output: 1}, 272_001, pricing, stats.ProcessingModeFast)
 		if result.Status != stats.CostMissing || result.Cost != 0 {
 			t.Fatalf("long-context Priority result for %q = %#v, want missing zero-cost estimate", model, result)
 		}
@@ -226,8 +230,8 @@ func TestCodexPriorityLongContextIsMissingWithoutOfficialRates(t *testing.T) {
 func TestGPT56AliasUsesSolPricing(t *testing.T) {
 	pricing := New(Options{PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json")}).loadPricing(testContext(t))
 	tokens := stats.TokenStats{Input: 500_000, Output: 100_000, Cache: stats.CacheStats{Read: 250_000, Write: 50_000}}
-	alias := computeCost("gpt-5.6", tokens, 250_000, pricing)
-	sol := computeCost("gpt-5.6-sol", tokens, 250_000, pricing)
+	alias := computeCost("gpt-5.6", "openai", tokens, 250_000, pricing)
+	sol := computeCost("gpt-5.6-sol", "openai", tokens, 250_000, pricing)
 	if !approxEqual(alias.Cost, sol.Cost) {
 		t.Errorf("gpt-5.6 cost = %.9f, gpt-5.6-sol cost = %.9f; want equal alias pricing", alias.Cost, sol.Cost)
 	}
@@ -252,8 +256,8 @@ func TestCodexLongContextRulesByModel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			standard := computeCost(tt.model, tokens, 272_000, pricing)
-			long := computeCost(tt.model, tokens, 272_001, pricing)
+			standard := computeCost(tt.model, "openai", tokens, 272_000, pricing)
+			long := computeCost(tt.model, "openai", tokens, 272_001, pricing)
 			if tt.wantMultiplier && !(long.Cost > standard.Cost) {
 				t.Errorf("long-context cost %.9f is not greater than standard cost %.9f", long.Cost, standard.Cost)
 			}

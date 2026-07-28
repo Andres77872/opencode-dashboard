@@ -61,11 +61,12 @@ type CachedSource struct {
 	nextFillCheck time.Time
 
 	// gapMu guards the memoized unfiltered gap read (see gapMessages).
-	gapMu       sync.Mutex
-	gapRaw      gapData
-	gapFrom     time.Time
-	gapAt       time.Time     // completion time of the memoized fetch; zero = empty
-	gapInflight chan struct{} // non-nil while a fetch is running (single-flight)
+	gapMu         sync.Mutex
+	gapRaw        gapData
+	gapFrom       time.Time
+	gapAt         time.Time     // completion time of the memoized fetch; zero = empty
+	gapInflight   chan struct{} // non-nil while a fetch is running (single-flight)
+	gapGeneration uint64        // incremented on invalidation so in-flight stale fetches are not memoized
 }
 
 func WrapSource(store *Store, live source.Source) *CachedSource {
@@ -214,6 +215,7 @@ func (s *CachedSource) gapMessages(ctx context.Context, livePQ stats.PeriodQuery
 		}
 		inflight := make(chan struct{})
 		s.gapInflight = inflight
+		generation := s.gapGeneration
 		s.gapMu.Unlock()
 
 		raw, err := retryLiveOnce(ctx, func() (gapData, error) {
@@ -222,7 +224,7 @@ func (s *CachedSource) gapMessages(ctx context.Context, livePQ stats.PeriodQuery
 
 		s.gapMu.Lock()
 		s.gapInflight = nil
-		if err == nil {
+		if err == nil && generation == s.gapGeneration {
 			s.gapRaw, s.gapFrom, s.gapAt = raw, livePQ.FromTime, time.Now()
 		}
 		close(inflight)
@@ -546,6 +548,64 @@ func (s *CachedSource) Config(ctx context.Context) (stats.ConfigView, error) {
 	return s.live.Config(ctx)
 }
 
+func (s *CachedSource) PricingCatalog(ctx context.Context) source.PricingCatalog {
+	if s != nil && s.live != nil {
+		if catalogSource, ok := s.live.(source.PricingCatalogSource); ok {
+			return catalogSource.PricingCatalog(ctx)
+		}
+	}
+	return source.PricingCatalog{
+		SourceID: source.SourceID(s.sourceID()),
+		Models:   []source.PricingCatalogModel{},
+	}
+}
+
+// BasePricingCatalog forwards the alias-free catalog. The registry hands out
+// these wrappers, so without this passthrough the catalog index would see no
+// bundled rates and every cross-source alias would fail to resolve.
+func (s *CachedSource) BasePricingCatalog(ctx context.Context) source.PricingCatalog {
+	if s != nil && s.live != nil {
+		if base, ok := s.live.(source.BasePricingCatalogSource); ok {
+			return base.BasePricingCatalog(ctx)
+		}
+	}
+	return source.PricingCatalog{
+		SourceID: source.SourceID(s.sourceID()),
+		Models:   []source.PricingCatalogModel{},
+	}
+}
+
+func (s *CachedSource) ResolvePricing(ctx context.Context, providerID, modelID string) source.PricingResolution {
+	if s != nil && s.live != nil {
+		if catalogSource, ok := s.live.(source.PricingCatalogSource); ok {
+			return catalogSource.ResolvePricing(ctx, providerID, modelID)
+		}
+	}
+	return source.PricingResolution{
+		SourceID:   source.SourceID(s.sourceID()),
+		ProviderID: providerID,
+		ModelID:    modelID,
+		Kind:       source.PricingResolutionUnavailable,
+	}
+}
+
+func (s *CachedSource) Invalidate() {
+	if s == nil {
+		return
+	}
+	if s.live != nil {
+		if invalidator, ok := s.live.(source.PricingInvalidator); ok {
+			invalidator.Invalidate()
+		}
+	}
+	s.gapMu.Lock()
+	s.gapGeneration++
+	s.gapRaw = gapData{}
+	s.gapFrom = time.Time{}
+	s.gapAt = time.Time{}
+	s.gapMu.Unlock()
+}
+
 func (s *CachedSource) Close() error {
 	if s == nil {
 		return nil
@@ -561,16 +621,10 @@ func (s *CachedSource) Close() error {
 	if done != nil {
 		<-done
 	}
-	var err error
 	if s.live != nil {
 		if closer, ok := s.live.(closeable); ok {
-			err = closer.Close()
+			return closer.Close()
 		}
 	}
-	if s.store != nil {
-		if closeErr := s.store.Close(); err == nil {
-			err = closeErr
-		}
-	}
-	return err
+	return nil
 }

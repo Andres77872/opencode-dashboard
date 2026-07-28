@@ -366,7 +366,7 @@ func (m *messageRecord) recomputeCost(pricing pricingSnapshot) {
 		m.Entry.CostProvenance = result.Provenance
 		return
 	}
-	result := computeCost(m.Entry.ModelID, *m.Entry.Tokens, pricing)
+	result := computeCost(m.Entry.ModelID, m.Entry.ProviderID, *m.Entry.Tokens, pricing)
 	m.Entry.Cost = result.Cost
 	m.Entry.CostStatus = result.Status
 	m.Entry.CostProvenance = result.Provenance

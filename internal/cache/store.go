@@ -244,9 +244,10 @@ type SourceStatus struct {
 }
 
 type SyncNeed struct {
-	Needed bool
-	Reason string
-	Status SourceStatus
+	Needed        bool
+	PricingChange bool
+	Reason        string
+	Status        SourceStatus
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -369,7 +370,7 @@ func (s *Store) NeedsSync(ctx context.Context, src source.Source) (SyncNeed, err
 		return SyncNeed{Needed: true, Reason: "cache has no consolidated data for this source"}, nil
 	}
 	if pricingIdentityChanged(current.Fingerprint, fp, info.CostPolicy.PricingSnapshotID) {
-		return SyncNeed{Needed: true, Reason: pricingSnapshotChangeReason, Status: current}, nil
+		return SyncNeed{Needed: true, PricingChange: true, Reason: pricingSnapshotChangeReason, Status: current}, nil
 	}
 	if current.Status != "ready" {
 		reason := "cache is not ready"

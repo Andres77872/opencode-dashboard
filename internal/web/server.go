@@ -45,10 +45,16 @@ func NewServerWithAssistant(addr string, registry *source.Registry, logger *slog
 	return NewServerWithChatLog(addr, registry, logger, cache, quotas, assistant, nil)
 }
 
-// NewServerWithChatLog is the complete web service constructor. Older
-// constructors remain source-compatible for TUI/tests and simply omit the
-// optional web-only analytics assistant and its durable chat log.
+// NewServerWithChatLog preserves the previous complete constructor while
+// omitting the optional writable pricing-alias store.
 func NewServerWithChatLog(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager, quotas QuotaService, assistant AssistantService, chatlog AssistantChatStore) *http.Server {
+	return NewServerWithPricingAliases(addr, registry, logger, cache, quotas, assistant, chatlog, nil, nil)
+}
+
+// NewServerWithPricingAliases is the complete web service constructor. Older
+// constructors remain source-compatible for TUI/tests and delegate with nil for
+// services they do not provide.
+func NewServerWithPricingAliases(addr string, registry *source.Registry, logger *slog.Logger, cache CacheManager, quotas QuotaService, assistant AssistantService, chatlog AssistantChatStore, pricingAliases PricingAliasStore, pricingRates PricingRateInvalidator) *http.Server {
 	if addr == "" {
 		addr = defaultAddr
 	}
@@ -62,7 +68,7 @@ func NewServerWithChatLog(addr string, registry *source.Registry, logger *slog.L
 	srv := &Server{
 		Addr:     addr,
 		Registry: registry,
-		handlers: NewHandlersWithChatLog(registry, cache, quotas, assistant, chatlog, logger),
+		handlers: NewHandlersWithPricingAliases(registry, cache, quotas, assistant, chatlog, pricingAliases, pricingRates, logger),
 		mux:      http.NewServeMux(),
 	}
 
@@ -100,6 +106,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/config", s.handlers.Config)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/cache", s.handlers.CacheStatus)
 	s.mux.HandleFunc("POST "+apiV1Prefix+"/cache/sync", s.handlers.CacheSync)
+	s.mux.HandleFunc("GET "+apiV1Prefix+"/pricing/aliases", s.handlers.PricingAliases)
+	s.mux.HandleFunc("POST "+apiV1Prefix+"/pricing/aliases", s.handlers.PricingAliasUpsert)
+	s.mux.HandleFunc("DELETE "+apiV1Prefix+"/pricing/aliases", s.handlers.PricingAliasDelete)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/quotas", s.handlers.Quotas)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/version", s.handlers.Version)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/assistant/status", s.handlers.AssistantStatus)

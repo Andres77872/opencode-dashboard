@@ -10,8 +10,8 @@ func TestCodexLookupRateStripsDatedReleaseSuffix(t *testing.T) {
 	pricing := New(Options{PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json")}).loadPricing(testContext(t))
 	tokens := stats.TokenStats{Input: 500_000, Output: 100_000, Reasoning: 50_000, Cache: stats.CacheStats{Read: 250_000}}
 
-	dated := computeCost("gpt-5.5-2026-01-15", tokens, 100_000, pricing)
-	base := computeCost("gpt-5.5", tokens, 100_000, pricing)
+	dated := computeCost("gpt-5.5-2026-01-15", "openai", tokens, 100_000, pricing)
+	base := computeCost("gpt-5.5", "openai", tokens, 100_000, pricing)
 	if dated.Status != stats.CostEstimatedAPIEquivalent {
 		t.Fatalf("dated release status = %q, want %q", dated.Status, stats.CostEstimatedAPIEquivalent)
 	}
@@ -20,7 +20,7 @@ func TestCodexLookupRateStripsDatedReleaseSuffix(t *testing.T) {
 	}
 
 	// Named variants may have entirely different rates; never guess by prefix.
-	variant := computeCost("gpt-5.5-preview", tokens, 100_000, pricing)
+	variant := computeCost("gpt-5.5-preview", "openai", tokens, 100_000, pricing)
 	if variant.Status != stats.CostMissing {
 		t.Errorf("named variant status = %q, want %q (no prefix guessing)", variant.Status, stats.CostMissing)
 	}

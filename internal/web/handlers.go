@@ -15,12 +15,22 @@ import (
 )
 
 type Handlers struct {
-	registry  *source.Registry
-	cache     CacheManager
-	quotas    QuotaService
-	assistant AssistantService
-	chatlog   AssistantChatStore
-	logger    *slog.Logger
+	registry       *source.Registry
+	cache          CacheManager
+	quotas         QuotaService
+	assistant      AssistantService
+	chatlog        AssistantChatStore
+	pricingAliases PricingAliasStore
+	// pricingRates is the cross-source catalog index. Handlers only invalidate
+	// it; the sources themselves read it while resolving alias targets.
+	pricingRates PricingRateInvalidator
+	logger       *slog.Logger
+}
+
+// PricingRateInvalidator drops the cached cross-source catalog index after a
+// source's bundled pricing may have changed.
+type PricingRateInvalidator interface {
+	Invalidate()
 }
 
 func NewHandlers(registry *source.Registry) *Handlers {
@@ -40,10 +50,26 @@ func NewHandlersWithAssistant(registry *source.Registry, cache CacheManager, quo
 }
 
 func NewHandlersWithChatLog(registry *source.Registry, cache CacheManager, quotas QuotaService, assistant AssistantService, chatlog AssistantChatStore, logger *slog.Logger) *Handlers {
+	return NewHandlersWithPricingAliases(registry, cache, quotas, assistant, chatlog, nil, nil, logger)
+}
+
+// NewHandlersWithPricingAliases is the complete handler constructor. Older
+// constructors remain source-compatible and omit the optional writable alias
+// store and cross-source catalog index.
+func NewHandlersWithPricingAliases(registry *source.Registry, cache CacheManager, quotas QuotaService, assistant AssistantService, chatlog AssistantChatStore, pricingAliases PricingAliasStore, pricingRates PricingRateInvalidator, logger *slog.Logger) *Handlers {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handlers{registry: registry, cache: cache, quotas: quotas, assistant: assistant, chatlog: chatlog, logger: logger}
+	return &Handlers{
+		registry:       registry,
+		cache:          cache,
+		quotas:         quotas,
+		assistant:      assistant,
+		chatlog:        chatlog,
+		pricingAliases: pricingAliases,
+		pricingRates:   pricingRates,
+		logger:         logger,
+	}
 }
 
 func (h *Handlers) Sources(w http.ResponseWriter, r *http.Request) {

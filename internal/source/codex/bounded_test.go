@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -78,5 +79,111 @@ func TestBoundedSnapshotPrunesByFileMtime(t *testing.T) {
 	}
 	if !fullSessions["pruned-session"] || !fullSessions["recent-session"] {
 		t.Fatalf("full load = %v, want both recent rollouts (bounded load must not poison the full snapshot)", fullSessions)
+	}
+}
+
+func TestSnapshotLoadsRetryAfterInFlightInvalidation(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		bounded bool
+	}{
+		{name: "full"},
+		{name: "bounded", bounded: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+			relPath := "sessions/current/rollout-invalidation.jsonl"
+			home := writeTempCodexHome(t, map[string][]string{
+				relPath: invalidationRollout(now, "stale-session"),
+			})
+			path := filepath.Join(home, filepath.FromSlash(relPath))
+			src := New(Options{
+				CodexHome:           home,
+				PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json"),
+			})
+
+			parsed := make(chan struct{})
+			release := make(chan struct{})
+			var parsedOnce sync.Once
+			var releaseOnce sync.Once
+			releaseLoad := func() {
+				releaseOnce.Do(func() { close(release) })
+			}
+			t.Cleanup(releaseLoad)
+			src.afterSnapshotParsed = func() {
+				parsedOnce.Do(func() {
+					close(parsed)
+					<-release
+				})
+			}
+
+			query := stats.PeriodQuery{Period: "all"}
+			if tt.bounded {
+				query = stats.PeriodQuery{FromTime: now.Add(-time.Hour)}
+			}
+			type loadResult struct {
+				messages stats.MessageList
+				err      error
+			}
+			resultC := make(chan loadResult, 1)
+			ctx := testContext(t)
+			go func() {
+				messages, err := src.Messages(ctx, query, 1, 200, chronologicalMessageSort())
+				resultC <- loadResult{messages: messages, err: err}
+			}()
+
+			select {
+			case <-parsed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for the first snapshot parse")
+			}
+			content := strings.Join(invalidationRollout(now, "fresh-session"), "\n") + "\n"
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatalf("replace transcript during load: %v", err)
+			}
+			src.Invalidate()
+			releaseLoad()
+
+			var result loadResult
+			select {
+			case result = <-resultC:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for the retried snapshot load")
+			}
+			if result.err != nil {
+				t.Fatalf("Messages() after in-flight invalidation failed: %v", result.err)
+			}
+			sessions := make(map[string]bool)
+			for _, message := range result.messages.Messages {
+				sessions[message.SessionID] = true
+			}
+			if !sessions["fresh-session"] || sessions["stale-session"] {
+				t.Fatalf("retried %s load returned sessions %v, want only fresh-session", tt.name, sessions)
+			}
+
+			src.mu.Lock()
+			generation := src.generation
+			fullCached := src.snapshot != nil
+			boundedCached := src.bounded != nil
+			src.mu.Unlock()
+			if generation != 1 {
+				t.Errorf("generation after in-flight invalidation = %d, want 1", generation)
+			}
+			if tt.bounded && !boundedCached {
+				t.Error("stable bounded snapshot was not cached")
+			}
+			if !tt.bounded && !fullCached {
+				t.Error("stable full snapshot was not cached")
+			}
+		})
+	}
+}
+
+func invalidationRollout(now time.Time, sessionID string) []string {
+	turnID := sessionID + "-turn"
+	return []string{
+		`{"timestamp":"` + now.Format(time.RFC3339) + `","type":"session_meta","payload":{"id":"` + sessionID + `","model_provider":"openai"}}`,
+		`{"timestamp":"` + now.Add(time.Second).Format(time.RFC3339) + `","type":"turn_context","payload":{"turn_id":"` + turnID + `","model":"gpt-5.2-codex","model_provider":"openai"}}`,
+		`{"timestamp":"` + now.Add(2*time.Second).Format(time.RFC3339) + `","type":"event_msg","payload":{"type":"token_count","turn_id":"` + turnID + `","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":125}}}}`,
 	}
 }

@@ -27,6 +27,7 @@ import (
 	usagecache "opencode-dashboard/internal/cache"
 	"opencode-dashboard/internal/chatstore"
 	"opencode-dashboard/internal/config"
+	"opencode-dashboard/internal/pricingalias"
 	"opencode-dashboard/internal/quota"
 	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/source/claudecode"
@@ -221,12 +222,24 @@ func cmdWeb(args []string) error {
 		return err
 	}
 	cacheRuntime.SetLogger(logger)
+	pricingAliases, err := openPricingAliasStore(ctx)
+	if err != nil {
+		_ = cacheRuntime.Close()
+		if st != nil {
+			_ = st.Close()
+		}
+		return err
+	}
+	defer pricingAliases.Close()
+	catalogIndex := source.NewCatalogIndex()
 	registry, err := buildWebRegistry(
 		cacheRuntime, st, selection, selectedSource,
 		claudeSelection, *claudeHome, codexSelection, *codexHome,
 		extraRegistrySelection{
-			kimi: &homeRegistrySelection{selection: kimiSelection, explicitHome: *kimiHome},
-			qwen: &homeRegistrySelection{selection: qwenSelection, explicitHome: *qwenHome},
+			kimi:           &homeRegistrySelection{selection: kimiSelection, explicitHome: *kimiHome},
+			qwen:           &homeRegistrySelection{selection: qwenSelection, explicitHome: *qwenHome},
+			pricingAliases: pricingAliases,
+			pricingRates:   catalogIndex,
 		},
 	)
 	if err != nil {
@@ -255,7 +268,7 @@ func cmdWeb(args []string) error {
 	if chatLog != nil {
 		chatLogService = chatLog
 	}
-	server := web.NewServerWithChatLog(addr, registry, logger, cacheRuntime, quotaService, assistantService, chatLogService)
+	server := web.NewServerWithPricingAliases(addr, registry, logger, cacheRuntime, quotaService, assistantService, chatLogService, pricingAliases, catalogIndex)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)
@@ -276,6 +289,9 @@ func cmdWeb(args []string) error {
 	fmt.Printf("database:   %s\n", selection.Path)
 	fmt.Printf("db source:  %s\n", selection.Source)
 	printCacheStartup(cacheRuntime, cacheSelection)
+	if pricingAliases != nil {
+		fmt.Printf("settings:   %s (pricing aliases)\n", pricingAliases.Path())
+	}
 	fmt.Printf("source:     %s\n", selectedSource)
 	if selectedSource == source.SourceClaudeCode || *claudeHome != "" || os.Getenv(config.EnvClaudeConfigDir) != "" {
 		fmt.Printf("claude:    %s (%s)\n", claudeSelection.Path, claudeSelection.Source)
@@ -326,6 +342,17 @@ func cmdWeb(args []string) error {
 	}
 
 	return nil
+}
+
+// openPricingAliasStore opens the durable dashboard settings database. Alias
+// state is part of pricing identity, so startup fails rather than silently
+// treating an unreadable store as an intentionally empty alias set.
+func openPricingAliasStore(ctx context.Context) (*pricingalias.Store, error) {
+	store, err := pricingalias.Open(ctx, config.DefaultSettingsDBPath())
+	if err != nil {
+		return nil, fmt.Errorf("open dashboard settings: %w", err)
+	}
+	return store, nil
 }
 
 // openAssistantChatStore opens the durable assistant chat history database.
@@ -454,12 +481,24 @@ func cmdTUI(args []string) error {
 		}
 		return err
 	}
+	pricingAliases, err := openPricingAliasStore(ctx)
+	if err != nil {
+		_ = cacheRuntime.Close()
+		if st != nil {
+			_ = st.Close()
+		}
+		return err
+	}
+	defer pricingAliases.Close()
+	catalogIndex := source.NewCatalogIndex()
 	registry, err := buildWebRegistry(
 		cacheRuntime, st, selection, selectedSource,
 		claudeSelection, *claudeHome, codexSelection, *codexHome,
 		extraRegistrySelection{
-			kimi: &homeRegistrySelection{selection: kimiSelection, explicitHome: *kimiHome},
-			qwen: &homeRegistrySelection{selection: qwenSelection, explicitHome: *qwenHome},
+			kimi:           &homeRegistrySelection{selection: kimiSelection, explicitHome: *kimiHome},
+			qwen:           &homeRegistrySelection{selection: qwenSelection, explicitHome: *qwenHome},
+			pricingAliases: pricingAliases,
+			pricingRates:   catalogIndex,
 		},
 	)
 	if err != nil {
@@ -689,6 +728,7 @@ type cacheRuntime struct {
 	live           map[source.SourceID]source.Source
 	cached         map[source.SourceID]bool
 	pendingInitial []source.SourceID
+	pendingPricing map[source.SourceID]struct{}
 	job            cacheJobState
 	disabled       bool
 	logger         *slog.Logger
@@ -698,6 +738,7 @@ type cacheRuntime struct {
 	lifeCtx    context.Context
 	lifeCancel context.CancelFunc
 	autoDone   chan struct{}
+	jobWG      sync.WaitGroup
 }
 
 // lifecycleCtx is the context sync jobs run under; falls back to Background
@@ -778,11 +819,12 @@ func validateCacheFlags(noCache, rebuildCache bool) error {
 
 func openCacheRuntime(ctx context.Context, selection config.PathSelection, rebuild bool, disabled bool) (*cacheRuntime, error) {
 	runtime := &cacheRuntime{
-		path:     selection.Path,
-		source:   selection.Source,
-		live:     make(map[source.SourceID]source.Source),
-		cached:   make(map[source.SourceID]bool),
-		disabled: disabled,
+		path:           selection.Path,
+		source:         selection.Source,
+		live:           make(map[source.SourceID]source.Source),
+		cached:         make(map[source.SourceID]bool),
+		pendingPricing: make(map[source.SourceID]struct{}),
+		disabled:       disabled,
 	}
 	if disabled {
 		return runtime, nil
@@ -839,6 +881,7 @@ func (c *cacheRuntime) Close() error {
 	if done != nil {
 		<-done
 	}
+	c.jobWG.Wait()
 	if c.store == nil {
 		return nil
 	}
@@ -854,13 +897,28 @@ type homeRegistrySelection struct {
 // entry means the caller did not configure that source, so its default home
 // is never probed (tests rely on this isolation).
 type extraRegistrySelection struct {
-	kimi *homeRegistrySelection
-	qwen *homeRegistrySelection
+	kimi           *homeRegistrySelection
+	qwen           *homeRegistrySelection
+	pricingAliases source.PricingAliasResolver
+	// pricingRates lets one source price a model from another source's bundled
+	// catalog. It is bound to the registry once every source is registered,
+	// because the sources it indexes are constructed before the registry exists.
+	pricingRates *source.CatalogIndex
 }
 
 func buildWebRegistry(cache *cacheRuntime, st *store.Store, selection dbSelection, startup source.SourceID, claudeSelection config.PathSelection, explicitClaudeHome string, codexSelection config.PathSelection, explicitCodexHome string, extraOptions ...extraRegistrySelection) (*source.Registry, error) {
 	registry := source.NewRegistry(source.SourceOpenCode)
 	registry.SetStartupID(startup)
+	var extra extraRegistrySelection
+	if len(extraOptions) > 0 {
+		extra = extraOptions[0]
+	}
+	// A typed nil would satisfy the interface and hide the "no index" case from
+	// the sources, so an absent index stays a nil interface.
+	var pricingRates source.PricingRateIndex
+	if extra.pricingRates != nil {
+		pricingRates = extra.pricingRates
+	}
 	if cache != nil {
 		cache.registry = registry
 	}
@@ -890,7 +948,7 @@ func buildWebRegistry(cache *cacheRuntime, st *store.Store, selection dbSelectio
 		return nil, err
 	}
 
-	claude := claudecode.New(claudecode.Options{ClaudeHome: claudeSelection.Path, PathSource: claudeSelection.Source})
+	claude := claudecode.New(claudecode.Options{ClaudeHome: claudeSelection.Path, PathSource: claudeSelection.Source, PricingAliases: extra.pricingAliases, PricingRates: pricingRates})
 	claudeInfo := claude.Info(context.Background())
 	claudeConfigured := startup == source.SourceClaudeCode || explicitClaudeHome != "" || os.Getenv(config.EnvClaudeConfigDir) != ""
 	if claudeInfo.Available {
@@ -903,7 +961,7 @@ func buildWebRegistry(cache *cacheRuntime, st *store.Store, selection dbSelectio
 		}
 	}
 
-	codexSrc := codex.New(codex.Options{CodexHome: codexSelection.Path, PathSource: codexSelection.Source})
+	codexSrc := codex.New(codex.Options{CodexHome: codexSelection.Path, PathSource: codexSelection.Source, PricingAliases: extra.pricingAliases, PricingRates: pricingRates})
 	codexInfo := codexSrc.Info(context.Background())
 	codexConfigured := startup == source.SourceCodex || explicitCodexHome != "" || os.Getenv(config.EnvCodexHome) != ""
 	if codexInfo.Available {
@@ -916,18 +974,13 @@ func buildWebRegistry(cache *cacheRuntime, st *store.Store, selection dbSelectio
 		}
 	}
 
-	var extra extraRegistrySelection
-	if len(extraOptions) > 0 {
-		extra = extraOptions[0]
-	}
-
 	if extra.kimi != nil {
 		kimiSelection := extra.kimi.selection
 		if kimiSelection.Path == "" {
 			kimiSelection = config.ResolveKimiHome("")
 		}
 		explicitKimiHome := extra.kimi.explicitHome
-		kimiSrc := kimicode.New(kimicode.Options{KimiHome: kimiSelection.Path, PathSource: kimiSelection.Source})
+		kimiSrc := kimicode.New(kimicode.Options{KimiHome: kimiSelection.Path, PathSource: kimiSelection.Source, PricingAliases: extra.pricingAliases, PricingRates: pricingRates})
 		kimiInfo := kimiSrc.Info(context.Background())
 		kimiConfigured := startup == source.SourceKimiCode || explicitKimiHome != "" || os.Getenv(config.EnvKimiCodeHome) != ""
 		if kimiInfo.Available {
@@ -947,7 +1000,7 @@ func buildWebRegistry(cache *cacheRuntime, st *store.Store, selection dbSelectio
 			qwenSelection = config.ResolveQwenHome("")
 		}
 		explicitQwenHome := extra.qwen.explicitHome
-		qwenSrc := qwencode.New(qwencode.Options{QwenHome: qwenSelection.Path, PathSource: qwenSelection.Source})
+		qwenSrc := qwencode.New(qwencode.Options{QwenHome: qwenSelection.Path, PathSource: qwenSelection.Source, PricingAliases: extra.pricingAliases, PricingRates: pricingRates})
 		qwenInfo := qwenSrc.Info(context.Background())
 		qwenConfigured := startup == source.SourceQwenCode || explicitQwenHome != "" || os.Getenv(config.EnvQwenCodeHome) != ""
 		if qwenInfo.Available {
@@ -960,6 +1013,10 @@ func buildWebRegistry(cache *cacheRuntime, st *store.Store, selection dbSelectio
 			}
 		}
 	}
+
+	// The index reads bundled catalogs off the registry, so it can only be bound
+	// once every source is registered.
+	extra.pricingRates.Bind(registry)
 
 	cache.startPendingInitialSync()
 	cache.startAutoSync()
@@ -1057,9 +1114,10 @@ func registerCachedSource(ctx context.Context, registry *source.Registry, cache 
 	if err != nil {
 		return err
 	}
-	if need.Needed && need.Status.Status != "ready" {
-		// Cache is empty or unhealthy: serve live raw reads for now and let the
-		// startup background sync swap in the cached wrapper when it finishes.
+	if need.Needed && (need.PricingChange || need.Status.Status != "ready") {
+		// Empty/unhealthy caches and pricing-identity mismatches serve live raw
+		// reads until startup sync completes. Serving a ready-but-stale pricing
+		// cache would mix old historical costs with newly aliased recent data.
 		cache.queueInitialSync(sourceIDOf(src))
 		return registry.Register(src)
 	}
@@ -1113,7 +1171,7 @@ func (c *cacheRuntime) startPendingInitialSync() {
 	}
 	c.log().Info("cache: starting initial background consolidation; views serve live data until it finishes",
 		"sources", strings.Join(ids, ","))
-	go c.runSyncJob(c.lifecycleCtx(), targets, usagecache.SyncModeIncremental, cutoff)
+	c.launchSyncJob(targets, usagecache.SyncModeIncremental, cutoff)
 }
 
 func (c *cacheRuntime) rememberSource(src source.Source) {
@@ -1188,9 +1246,10 @@ func (c *cacheRuntime) Status(ctx context.Context) (web.CacheStatusResponse, err
 				item.Status = "error"
 				item.Reason = err.Error()
 			} else {
-				// A ready cache self-heals on read (gap-fill), so a fingerprint
-				// mismatch alone does not require a manual sync.
-				item.NeedsSync = need.Needed && need.Status.Status != "ready"
+				// Ordinary content drift self-heals through gap-fill, but a pricing
+				// identity mismatch requires immediate historical repricing even when
+				// the previously persisted cache status was ready.
+				item.NeedsSync = need.PricingChange || (need.Needed && need.Status.Status != "ready")
 				if item.NeedsSync {
 					item.Reason = need.Reason
 				}
@@ -1275,6 +1334,72 @@ func (c *cacheRuntime) RecentWarnings(context.Context) []web.SourceWarning {
 	return warnings
 }
 
+// NotifyPricingChange starts or queues a targeted incremental sync. The cache
+// store compares the source's effective pricing identity and promotes this to a
+// full historical recollection when an alias revision changed.
+func (c *cacheRuntime) NotifyPricingChange(_ context.Context, sourceID source.SourceID) web.PricingChangeStatus {
+	if c == nil || c.disabled || c.store == nil {
+		return web.PricingChangeStatusDisabled
+	}
+	c.mu.Lock()
+	src := c.live[sourceID]
+	if src == nil {
+		c.mu.Unlock()
+		return web.PricingChangeStatusUnavailable
+	}
+	if c.pendingPricing == nil {
+		c.pendingPricing = make(map[source.SourceID]struct{})
+	}
+	if c.job.Running {
+		c.pendingPricing[sourceID] = struct{}{}
+		c.appendLogLocked("info", sourceID, "Queued historical repricing after the current database sync")
+		c.mu.Unlock()
+		return web.PricingChangeStatusQueued
+	}
+	delete(c.pendingPricing, sourceID)
+	cutoff := usagecache.DefaultSafeCutoff(time.Now().UTC())
+	c.startJobLocked(string(sourceID), []source.Source{src}, usagecache.SyncModeIncremental, cutoff)
+	c.mu.Unlock()
+	c.log().Info("cache: starting pricing-change sync", "source", sourceID)
+	c.launchSyncJob([]source.Source{src}, usagecache.SyncModeIncremental, cutoff)
+	return web.PricingChangeStatusStarted
+}
+
+// startPendingPricingSync drains alias changes that arrived while another cache
+// job was running. IDs are emitted in registry order for stable progress output.
+func (c *cacheRuntime) startPendingPricingSync() {
+	if c == nil || c.disabled || c.store == nil || c.lifecycleCtx().Err() != nil {
+		return
+	}
+	c.mu.Lock()
+	if c.job.Running || len(c.pendingPricing) == 0 {
+		c.mu.Unlock()
+		return
+	}
+	targets := make([]source.Source, 0, len(c.pendingPricing))
+	ids := make([]string, 0, len(c.pendingPricing))
+	for _, sourceID := range c.order {
+		if _, pending := c.pendingPricing[sourceID]; !pending {
+			continue
+		}
+		delete(c.pendingPricing, sourceID)
+		if src := c.live[sourceID]; src != nil {
+			targets = append(targets, src)
+			ids = append(ids, string(sourceID))
+		}
+	}
+	if len(targets) == 0 {
+		c.mu.Unlock()
+		return
+	}
+	cutoff := usagecache.DefaultSafeCutoff(time.Now().UTC())
+	target := strings.Join(ids, ",")
+	c.startJobLocked(target, targets, usagecache.SyncModeIncremental, cutoff)
+	c.mu.Unlock()
+	c.log().Info("cache: starting queued pricing-change sync", "sources", target)
+	c.launchSyncJob(targets, usagecache.SyncModeIncremental, cutoff)
+}
+
 func (c *cacheRuntime) Sync(ctx context.Context, selected string, modeValue string) (web.CacheStatusResponse, error) {
 	if c == nil || c.disabled || c.store == nil {
 		return web.CacheStatusResponse{Enabled: false}, fmt.Errorf("dashboard cache is disabled")
@@ -1306,7 +1431,7 @@ func (c *cacheRuntime) Sync(ctx context.Context, selected string, modeValue stri
 	if err != nil {
 		return web.CacheStatusResponse{}, err
 	}
-	go c.runSyncJob(c.lifecycleCtx(), targets, mode, cutoff)
+	c.launchSyncJob(targets, mode, cutoff)
 	return status, nil
 }
 
@@ -1320,6 +1445,14 @@ func parseCacheSyncMode(value string) (usagecache.SyncMode, error) {
 	default:
 		return "", fmt.Errorf("invalid cache sync mode %q", value)
 	}
+}
+
+func (c *cacheRuntime) launchSyncJob(targets []source.Source, mode usagecache.SyncMode, cutoff time.Time) {
+	c.jobWG.Add(1)
+	go func() {
+		defer c.jobWG.Done()
+		c.runSyncJob(c.lifecycleCtx(), targets, mode, cutoff)
+	}()
 }
 
 // runSyncJob consolidates each target in turn. One failing or unavailable
@@ -1407,6 +1540,7 @@ func (c *cacheRuntime) runSyncJob(ctx context.Context, targets []source.Source, 
 		c.log().Info("cache job complete", "targets", len(targets), "duration", time.Since(start).Round(time.Millisecond))
 	}
 	c.finishJob(err)
+	c.startPendingPricingSync()
 }
 
 // updateJobProgress records page-level progress for the source currently being

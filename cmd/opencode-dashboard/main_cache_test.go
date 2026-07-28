@@ -12,6 +12,7 @@ import (
 	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/source/codex"
 	"opencode-dashboard/internal/stats"
+	"opencode-dashboard/internal/web"
 )
 
 func newTestCache(t *testing.T) *usagecache.Store {
@@ -276,6 +277,75 @@ func TestSyncRebuildAlwaysTargetsAllSources(t *testing.T) {
 	if status.Sync == nil || status.Sync.Running {
 		t.Fatalf("sync job never finished: %#v", status.Sync)
 	}
+}
+
+func TestNotifyPricingChangeStartsAndQueuesTargetedSync(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("disabled and unknown source states", func(t *testing.T) {
+		disabled := &cacheRuntime{disabled: true}
+		if got := disabled.NotifyPricingChange(ctx, source.SourceCodex); got != web.PricingChangeStatusDisabled {
+			t.Fatalf("disabled status = %q, want %q", got, web.PricingChangeStatusDisabled)
+		}
+		cache := newTestCacheRuntime(t)
+		if got := cache.NotifyPricingChange(ctx, source.SourceCodex); got != web.PricingChangeStatusUnavailable {
+			t.Fatalf("unknown source status = %q, want %q", got, web.PricingChangeStatusUnavailable)
+		}
+	})
+
+	t.Run("starts immediately", func(t *testing.T) {
+		cache := newTestCacheRuntime(t)
+		codexSrc := codex.New(codex.Options{CodexHome: codexFixtureHome(), PathSource: "test fixture"})
+		cache.rememberSource(codexSrc)
+		if got := cache.NotifyPricingChange(ctx, source.SourceCodex); got != web.PricingChangeStatusStarted {
+			t.Fatalf("status = %q, want %q", got, web.PricingChangeStatusStarted)
+		}
+		waitForCacheJob(t, cache)
+		cache.mu.Lock()
+		target := cache.job.Target
+		cache.mu.Unlock()
+		if target != string(source.SourceCodex) {
+			t.Fatalf("target = %q, want %q", target, source.SourceCodex)
+		}
+	})
+
+	t.Run("queues behind running job", func(t *testing.T) {
+		cache := newTestCacheRuntime(t)
+		codexSrc := codex.New(codex.Options{CodexHome: codexFixtureHome(), PathSource: "test fixture"})
+		cache.rememberSource(codexSrc)
+		cache.mu.Lock()
+		cache.job = cacheJobState{Running: true, Status: "running"}
+		cache.mu.Unlock()
+
+		if got := cache.NotifyPricingChange(ctx, source.SourceCodex); got != web.PricingChangeStatusQueued {
+			t.Fatalf("status = %q, want %q", got, web.PricingChangeStatusQueued)
+		}
+		cache.finishJob(nil)
+		cache.startPendingPricingSync()
+		waitForCacheJob(t, cache)
+		cache.mu.Lock()
+		pending := len(cache.pendingPricing)
+		target := cache.job.Target
+		cache.mu.Unlock()
+		if pending != 0 || target != string(source.SourceCodex) {
+			t.Fatalf("queued sync state: pending=%d target=%q", pending, target)
+		}
+	})
+}
+
+func waitForCacheJob(t *testing.T, cache *cacheRuntime) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		cache.mu.Lock()
+		running := cache.job.Running
+		cache.mu.Unlock()
+		if !running {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("cache job did not finish")
 }
 
 type failingTestSource struct{}

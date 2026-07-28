@@ -29,6 +29,8 @@ type Options struct {
 	ClaudeHome          string
 	PathSource          string
 	PricingSnapshotPath string
+	PricingAliases      source.PricingAliasResolver
+	PricingRates        source.PricingRateIndex
 	SnapshotTTL         time.Duration
 	ScanTimeout         time.Duration
 }
@@ -38,13 +40,16 @@ type Options struct {
 type Source struct {
 	opts Options
 
-	mu         sync.Mutex
-	snapshot   *snapshot
-	loadedAt   time.Time
-	lastDiag   source.SourceDiagnostics
-	lastStatus bool
-	pricing    pricingSnapshot
-	pricingErr error
+	mu             sync.Mutex
+	snapshot       *snapshot
+	loadedAt       time.Time
+	lastDiag       source.SourceDiagnostics
+	lastStatus     bool
+	pricing        pricingSnapshot
+	pricingErr     error
+	pricingAliases source.PricingAliasResolver
+	pricingRates   source.PricingRateIndex
+	generation     uint64
 
 	// Bounded (mtime-pruned) snapshot slot for recent-window queries. Kept
 	// separate so a partial load never poisons the full-snapshot cache above.
@@ -66,7 +71,7 @@ func New(opts Options) *Source {
 	if opts.ScanTimeout <= 0 {
 		opts.ScanTimeout = defaultSourceTimeout
 	}
-	return &Source{opts: opts}
+	return &Source{opts: opts, pricingAliases: opts.PricingAliases, pricingRates: opts.PricingRates}
 }
 
 func defaultClaudeHome() string {
@@ -289,8 +294,12 @@ func (s *Source) Invalidate() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.generation++
 	s.snapshot = nil
 	s.loadedAt = time.Time{}
+	s.bounded = nil
+	s.boundedFrom = time.Time{}
+	s.boundedLoadedAt = time.Time{}
 }
 
 func (s *Source) currentDiagnostics(ctx context.Context) (source.SourceDiagnostics, bool) {
@@ -333,33 +342,57 @@ func (s *Source) loadSnapshot(ctx context.Context) (*snapshot, error) {
 	ctx, cancel := s.contextWithTimeout(ctx)
 	defer cancel()
 
-	s.mu.Lock()
-	if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
-		snap := s.snapshot
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		s.mu.Lock()
+		if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
+			snap := s.snapshot
+			s.mu.Unlock()
+			return snap, nil
+		}
+		generation := s.generation
 		s.mu.Unlock()
+
+		disc := discoverTranscripts(ctx, s.opts.ClaudeHome)
+		if !disc.available {
+			s.mu.Lock()
+			if s.generation != generation {
+				s.mu.Unlock()
+				continue
+			}
+			s.lastDiag = disc.diagnostics
+			s.lastStatus = false
+			s.mu.Unlock()
+			return nil, source.UnavailableSourceError{ID: source.SourceClaudeCode, Reason: disc.diagnostics.Reason}
+		}
+
+		snap, err := s.parseFiles(ctx, disc.files, disc.diagnostics)
+		if err != nil {
+			s.mu.Lock()
+			stale := s.generation != generation
+			s.mu.Unlock()
+			if stale {
+				continue
+			}
+			return nil, err
+		}
+
+		s.mu.Lock()
+		if s.generation != generation {
+			s.mu.Unlock()
+			continue
+		}
+		s.snapshot = snap
+		s.loadedAt = time.Now()
+		s.lastDiag = snap.diagnostics
+		s.lastStatus = snap.diagnostics.Status != "unavailable"
+		s.mu.Unlock()
+
 		return snap, nil
 	}
-	s.mu.Unlock()
-
-	disc := discoverTranscripts(ctx, s.opts.ClaudeHome)
-	if !disc.available {
-		s.setLastDiagnostics(disc.diagnostics, false)
-		return nil, source.UnavailableSourceError{ID: source.SourceClaudeCode, Reason: disc.diagnostics.Reason}
-	}
-
-	snap, err := s.parseFiles(ctx, disc.files, disc.diagnostics)
-	if err != nil {
-		return nil, err
-	}
-
-	s.mu.Lock()
-	s.snapshot = snap
-	s.loadedAt = time.Now()
-	s.lastDiag = snap.diagnostics
-	s.lastStatus = snap.diagnostics.Status != "unavailable"
-	s.mu.Unlock()
-
-	return snap, nil
 }
 
 func (s *Source) parseFiles(ctx context.Context, files []transcriptFile, diag source.SourceDiagnostics) (*snapshot, error) {
@@ -411,41 +444,65 @@ func (s *Source) loadBoundedSnapshot(ctx context.Context, from time.Time) (*snap
 	defer cancel()
 	pruneT := from.UTC().Add(-boundedLoadMargin)
 
-	s.mu.Lock()
-	if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
-		snap := s.snapshot
-		s.mu.Unlock()
-		return snap, nil // a fresh full snapshot is a superset
-	}
-	if s.bounded != nil && time.Since(s.boundedLoadedAt) <= s.opts.SnapshotTTL && !s.boundedFrom.After(pruneT) {
-		snap := s.bounded
-		s.mu.Unlock()
-		return snap, nil // cached bounded superset
-	}
-	s.mu.Unlock()
-
-	disc := discoverTranscripts(ctx, s.opts.ClaudeHome)
-	if !disc.available {
-		s.setLastDiagnostics(disc.diagnostics, false)
-		return nil, source.UnavailableSourceError{ID: source.SourceClaudeCode, Reason: disc.diagnostics.Reason}
-	}
-	files := make([]transcriptFile, 0, len(disc.files))
-	for _, file := range disc.files {
-		if !file.ModTime.Before(pruneT) {
-			files = append(files, file)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-	}
-	snap, err := s.parseFiles(ctx, files, disc.diagnostics)
-	if err != nil {
-		return nil, err
-	}
 
-	s.mu.Lock()
-	s.bounded = snap
-	s.boundedFrom = pruneT
-	s.boundedLoadedAt = time.Now()
-	s.mu.Unlock()
-	return snap, nil
+		s.mu.Lock()
+		if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
+			snap := s.snapshot
+			s.mu.Unlock()
+			return snap, nil // a fresh full snapshot is a superset
+		}
+		if s.bounded != nil && time.Since(s.boundedLoadedAt) <= s.opts.SnapshotTTL && !s.boundedFrom.After(pruneT) {
+			snap := s.bounded
+			s.mu.Unlock()
+			return snap, nil // cached bounded superset
+		}
+		generation := s.generation
+		s.mu.Unlock()
+
+		disc := discoverTranscripts(ctx, s.opts.ClaudeHome)
+		if !disc.available {
+			s.mu.Lock()
+			if s.generation != generation {
+				s.mu.Unlock()
+				continue
+			}
+			s.lastDiag = disc.diagnostics
+			s.lastStatus = false
+			s.mu.Unlock()
+			return nil, source.UnavailableSourceError{ID: source.SourceClaudeCode, Reason: disc.diagnostics.Reason}
+		}
+		files := make([]transcriptFile, 0, len(disc.files))
+		for _, file := range disc.files {
+			if !file.ModTime.Before(pruneT) {
+				files = append(files, file)
+			}
+		}
+		snap, err := s.parseFiles(ctx, files, disc.diagnostics)
+		if err != nil {
+			s.mu.Lock()
+			stale := s.generation != generation
+			s.mu.Unlock()
+			if stale {
+				continue
+			}
+			return nil, err
+		}
+
+		s.mu.Lock()
+		if s.generation != generation {
+			s.mu.Unlock()
+			continue
+		}
+		s.bounded = snap
+		s.boundedFrom = pruneT
+		s.boundedLoadedAt = time.Now()
+		s.mu.Unlock()
+		return snap, nil
+	}
 }
 
 func (s *Source) contextWithTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

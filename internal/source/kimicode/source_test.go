@@ -403,7 +403,7 @@ func TestKimiPricingCatalogIncludesRequestedModelsAndManagedAliases(t *testing.T
 			t.Errorf("alias %q = %q, want %q", alias, got, canonical)
 		}
 	}
-	unknown := computeCost("custom-provider/private-model", stats.TokenStats{Input: 1000, Output: 100}, pricing)
+	unknown := computeCost("custom-provider/private-model", "custom-provider", stats.TokenStats{Input: 1000, Output: 100}, pricing)
 	if unknown.Cost != 0 || unknown.Status != stats.CostMissing || unknown.Provenance == nil || unknown.Provenance.MissingCount != 1 {
 		t.Errorf("unknown custom model cost = %#v, want explicitly missing instead of guessed", unknown)
 	}

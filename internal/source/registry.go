@@ -183,6 +183,29 @@ func (r *Registry) Available(ctx context.Context) []Source {
 	return out
 }
 
+// registered returns the live Source instances in registration order without
+// consulting any of them.
+//
+// Available filters on Info(), which for transcript sources loads pricing and
+// therefore captures alias state. A caller that Info() itself depends on — the
+// cross-source catalog index — must use this instead, or it recurses back into
+// itself. It also releases the lock before returning, so callers never hold the
+// registry read lock while doing work of their own.
+func (r *Registry) registered() []Source {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]Source, 0, len(r.order))
+	for _, id := range r.order {
+		if entry := r.entries[id]; entry.source != nil {
+			out = append(out, entry.source)
+		}
+	}
+	return out
+}
+
 func (r *Registry) Close() error {
 	if r == nil {
 		return nil
