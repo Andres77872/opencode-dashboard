@@ -21,7 +21,7 @@ It supports five data sources, all read **read-only** and **local-only**:
 | Kimi Code | `kimi_code` | Session state + agent wire JSONL | `~/.kimi-code` |
 | Qwen Code | `qwen_code` | Chat transcripts + token-usage JSONL | `~/.qwen` |
 
-Most views are scoped to one selected source. The **Overview** is the exception: it merges every available source into combined totals plus a per-source breakdown. You can switch the active source and time range live in both interfaces. No OpenCode (or other) server needs to be running, and at least one source's local data is all that's required. The dashboard creates `~/.local/share/opencode-dashboard/usage-cache.sqlite` by default; an empty cache is consolidated by a background sync at startup while views are served live from raw data. Once a source is cached, views load from the cache and the gap since the finality cutoff (six hours behind the last sync) is automatically re-mirrored from raw content when the source changes, so recent activity is never missing. The web UI also offers an explicit incremental resync and a clear-and-rebuild action.
+Most views are scoped to one selected source. The **Overview** is the exception: it merges every available source into combined totals plus a per-source breakdown. You can switch the active source and time range live in both interfaces. No OpenCode (or other) server needs to be running, and at least one source's local data is all that's required. The dashboard creates `~/.local/share/opencode-dashboard/usage-cache.sqlite` by default; an empty cache is consolidated by a background sync at startup while views are served live from raw data. Once a source is cached, hours older than the finality cutoff (six hours behind now, truncated to the hour) are served from the cache, and the window after the cutoff is always read live from raw content and merged into the result — so recent activity is never missing, whether or not the source changed. Consolidation catches up on its own: a background sync runs every 30 minutes, and a read also starts one when the last successful sync is older than seven hours. The web UI additionally offers an explicit incremental resync and a clear-and-rebuild action.
 
 ## Data sources
 
@@ -76,7 +76,7 @@ Kimi does not persist a separate reasoning-token counter. Its reported generated
 
 ### Kimi model pricing catalog
 
-The bundled snapshot uses Kimi's official per-million-token API prices. Cache creation is priced as a cache miss because the public tables expose cache-hit and cache-miss input rates. These values are an API-equivalent estimate for requests with persisted usage evidence, including usage recovered from `step.end`; they are not actual membership/coding-plan spend. Requests without usage evidence have unknown cost and are never priced as zero.
+The bundled snapshot (`kimi-api-pricing-2026-07-16`) uses Kimi's official per-million-token API prices, in USD. Cache creation is priced as a cache miss because the public tables expose cache-hit and cache-miss input rates. These values are an API-equivalent estimate for requests with persisted usage evidence, including usage recovered from `step.end`; they are not actual membership/coding-plan spend. Requests without usage evidence have unknown cost and are never priced as zero.
 
 | Canonical API model | Context | Cache hit | Input cache miss | Output |
 |---------------------|---------|-----------|------------------|--------|
@@ -102,29 +102,84 @@ Token counters overlap in the raw data (`cachedTokens ⊆ inputTokens` always; `
 
 ### Qwen model pricing catalog
 
-The bundled snapshot uses Alibaba Cloud Model Studio international list prices (promotional discounts not applied). Tiered-context models use their base tier; longer contexts are billed higher upstream, so those estimates are conservative lower bounds.
+The bundled snapshot (`qwen-modelstudio-pricing-2026-07-19`) uses Alibaba Cloud Model Studio international list prices, in USD per million tokens, with promotional discounts not applied. Tiered-context models use their base tier; longer contexts are billed higher upstream, so those estimates are conservative lower bounds.
 
-| Model | Cache hit | Input | Output |
-|-------|-----------|-------|--------|
-| `qwen3.7-max` | $0.25 | $2.50 | $7.50 |
-| `qwen3.7-plus` | $0.04 | $0.40 | $1.60 |
-| `qwen3-coder-plus` | $0.10 | $1.00 | $5.00 |
-| `qwen3-max` | $0.24 | $1.20 | $6.00 |
-| `qwen3.8-max-preview` | — | — | — |
+| Model | Cache hit | Input | Output | Base tier |
+|-------|-----------|-------|--------|-----------|
+| `qwen3.7-max` | $0.25 | $2.50 | $7.50 | 256K |
+| `qwen3.7-plus` | $0.04 | $0.40 | $1.60 | non-thinking 0–256K |
+| `qwen3-coder-plus` | $0.10 | $1.00 | $5.00 | 0–32K; cache hit estimated at 10% of input |
+| `qwen3-max` | $0.24 | $1.20 | $6.00 | 0–32K; cache hit estimated at 20% of input |
+| `qwen3.8-max-preview` | — | — | — | no public per-token price |
 
-`qwen3.8-max-preview` has no public per-token list price (it is sold through Token Plan bundles), so its cost is reported as `missing` rather than guessed — as is any unknown or custom-endpoint model. The qwen-oauth alias `coder-model` maps to the current mainline coder model (`qwen3.7-max`).
+Two cache-hit rates are marked estimated because Model Studio does not publish a separate cache-hit price for those models; the input and output rates are published values.
+
+`qwen3.8-max-preview` has no public per-token list price (it is sold through Token Plan bundles), so its cost is reported as `missing` rather than guessed — as is any unknown or custom-endpoint model. Aliases map `coder-model` (qwen-oauth) to the current mainline coder model `qwen3.7-max`, `qwen-max` to `qwen3-max`, and `qwen-coder-plus` to `qwen3-coder-plus`.
 
 Sources: [Model Studio pricing](https://www.alibabacloud.com/help/en/model-studio/model-pricing), [qwen-code token usage service](https://github.com/QwenLM/qwen-code/blob/main/packages/core/src/services/tokenUsageService.ts).
+
+### Bundled pricing snapshots
+
+Computed and estimated costs come from pinned, dated catalogs compiled into the binary — never a live pricing lookup — so a given transcript prices identically on every machine running the same release. Each snapshot carries its ID and retrieval date, and the API reports them alongside the rates:
+
+| Source | Snapshot ID | Retrieved | Models |
+|--------|-------------|-----------|--------|
+| Claude Code | `anthropic-bundled-2026-07-24` | 2026-07-24 | 21 |
+| Codex | `openai-codex-api-pricing-2026-07-27` | 2026-07-27 | 14 |
+| Kimi Code | `kimi-api-pricing-2026-07-16` | 2026-07-16 | 5 |
+| Qwen Code | `qwen-modelstudio-pricing-2026-07-19` | 2026-07-19 | 5 |
+
+OpenCode has no snapshot: it records real spend, which is read as reported. A model outside its source's snapshot stays `missing` rather than being priced by a guess — see [pricing aliases](#pricing-aliases) to map one by hand.
+
+### Pricing aliases
+
+A bundled catalog can only price models it knows. Proxied endpoints, renamed
+deployments, and brand-new releases show up as `missing` rather than being
+guessed. The web **Config** surface lets you resolve those by hand: every
+provider/model pair a source has actually observed is listed with its current
+pricing resolution, and you can point one at an exact catalog model.
+
+- Aliases may target **any** source's bundled catalog, not just the selected
+  source's own — a CLI often reports a model another vendor prices, and only
+  that vendor's catalog has the right rates.
+- A model that already prices natively is still aliasable. Name-based matching
+  guesses; you are the authority on what a proxied model really is, so a user
+  alias outranks native pricing.
+- A target must be an exact catalog model with positive input and output rates,
+  and both catalogs must price in the same currency — rates are per-million
+  values in their own currency, so borrowing across currencies would silently
+  mix units.
+- An alias cannot point a model at itself, and a source whose own catalog failed
+  to load is refused (a broken snapshot, not a mapping problem).
+
+Aliases are user-authored, so they live in `dashboard-settings.sqlite` rather
+than the rebuildable usage cache and survive a clear-and-rebuild. Changing one
+changes the source's pricing identity, which starts (or queues, if a sync is
+already running) a historical recollection so old and newly aliased costs are
+never mixed in the same view. Each alias is reported back with its state:
+`active`, `not_detected` (no matching observed model), `target_missing` (the
+catalog entry is gone), or `ineffective`.
+
+The equivalent API is `GET`/`POST`/`DELETE /api/v1/pricing/aliases`.
 
 ### Privacy
 
 - **Read-only source history** — no transcript, session file, source database, or source configuration is ever written to or mutated. The Kimi quota monitor may refresh Kimi's OAuth credential file using the same atomic flow and cross-process lock as Kimi Code itself; it does not alter session history.
 - **Local by default** — historical dashboard data is read from local paths and served on `127.0.0.1`. The quota monitor makes authenticated requests only for providers whose quota is exposed through an official live API (Kimi Code and MiniMax), and the optional analytics assistant sends the disclosed chat and aggregate metrics to MiniMax when used.
-- **Dashboard cache** — aggregate metadata is stored in `~/.local/share/opencode-dashboard/usage-cache.sqlite` by default; override with `--cache-db` or `OPENCODE_DASHBOARD_CACHE_DB`.
-- **Self-maintaining consolidation** — an empty cache is built by a background sync at startup (views serve live raw data meanwhile); a ready cache re-mirrors recent raw activity on read, so cached views stay complete through now. The web top bar database action opens a sync panel with status, progress, last update, logs, incremental resync, and clear-and-rebuild.
+- **Dashboard-owned local state** — everything the dashboard writes lives under `~/.local/share/opencode-dashboard/` and is removed by `opencode-dashboard uninstall` (listed below).
+- **Self-maintaining consolidation** — an empty cache is built by a background sync at startup (views serve live raw data meanwhile). Once ready, the cache covers only hours older than the finality cutoff; the window after it is read live from raw content on every read and merged, so cached views stay complete through now. A background sync also runs every 30 minutes, and a read starts one when the last successful sync is stale. The web top bar database action opens a sync panel with status, progress, last update, logs, incremental resync, and clear-and-rebuild.
 - **No cached transcripts** — raw conversation text, reasoning text, tool input, tool output, and patches are not stored in the dashboard cache.
 - **Plaintext transcripts** — Claude Code, Codex, Kimi Code, and Qwen Code JSONL data is local plaintext and may contain prompts, reasoning, tool output, file paths, patches, and secrets.
 - **Redaction** — config previews (`/api/v1/config`) redact obvious secrets before display.
+
+#### Dashboard-owned files
+
+| File | Contents | Rebuildable |
+|------|----------|-------------|
+| `usage-cache.sqlite` | Aggregate usage metadata; override with `--cache-db` or `OPENCODE_DASHBOARD_CACHE_DB` | Yes — from the sources |
+| `dashboard-settings.sqlite` | User-authored settings, currently [pricing aliases](#pricing-aliases) | No — survives cache rebuilds |
+| `assistant-chat.sqlite` | Saved analytics-assistant conversations (web assistant only) | No — and never migrated: a database from another schema version is rebuilt empty and the reset is logged |
+| `claude-rate-limits.json` | Latest Claude Pro/Max quota snapshot from the statusline command | Yes — on the next Claude Code response |
 
 ## Quota tracking
 
@@ -147,7 +202,9 @@ With the binary on `PATH` and Claude Code signed in (Pro/Max), run once:
 opencode-dashboard claude-statusline --install
 ```
 
-This writes the statusline entry into `~/.claude/settings.json`, preserving your other settings:
+This writes the statusline entry into `settings.json` inside your Claude Code
+config directory (`~/.claude` unless `CLAUDE_CONFIG_DIR` says otherwise),
+preserving your other settings:
 
 ```json
 { "statusLine": { "type": "command", "command": "opencode-dashboard claude-statusline" } }
@@ -175,6 +232,9 @@ Set `OPENCODE_DASHBOARD_MINIMAX_API_KEY`, restart `opencode-dashboard web`, and 
 |-------------|---------|-------|
 | At least one source | — | OpenCode DB, Claude Code (`~/.claude`), Codex (`~/.codex`), Kimi Code (`~/.kimi-code`), or Qwen Code (`~/.qwen`) data on disk |
 | Go | 1.26+ | Only required to build from source |
+| Node.js | 22.12+ | Only required to build from source (frontend); CI pins 22.12.0 |
+
+Released binaries need none of the build tooling — only source data on disk.
 
 ## Installation
 
@@ -194,7 +254,11 @@ Verify:
 opencode-dashboard version
 ```
 
-### Environment overrides
+### Installer environment overrides
+
+These apply to `install.sh` only; see [Runtime environment
+variables](#runtime-environment-variables) for the ones the dashboard itself
+reads.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -257,6 +321,8 @@ Commands:
   version    Print version and build metadata
   uninstall  Remove dashboard-owned local files
   update     Update to the latest release (or a specific version)
+  claude-statusline  Claude Code statusline command that records Pro/Max
+             rate limits for the dashboard quota view
 ```
 
 ### Web dashboard
@@ -301,6 +367,7 @@ Key bindings:
 | `S` | Switch data source |
 | `T` | Open the time-range picker |
 | `t` | Cycle the displayed metric |
+| `d` | Daily: toggle the overall / requested-processing-mode lens (Codex only) |
 | `/` | Filter the current table |
 | `s` | Sort the current table |
 | `r` | Refresh |
@@ -322,6 +389,28 @@ Key bindings:
 | `--rebuild-cache` | `web`, `tui` | Delete the dashboard cache before start |
 | `--no-cache` | `web`, `tui` | Run against live sources without using the dashboard cache |
 | `--no-open` | `web` | Do not launch the browser automatically |
+
+`--no-cache` and `--rebuild-cache` are mutually exclusive.
+
+### Runtime environment variables
+
+Every path override below is outranked by its equivalent flag.
+
+| Variable | Read by | Purpose |
+|----------|---------|---------|
+| `OPENCODE_DASHBOARD_DB` | `web`, `tui` | OpenCode SQLite database path (below `--db` and `--channel`) |
+| `OPENCODE_DASHBOARD_CACHE_DB` | `web`, `tui` | Dashboard usage-cache path (below `--cache-db`) |
+| `CLAUDE_CONFIG_DIR` | `web`, `tui` | Claude Code config directory (below `--claude-home`) |
+| `OPENCODE_DASHBOARD_CODEX_HOME` | `web`, `tui` | Codex home (below `--codex-home`) |
+| `KIMI_CODE_HOME` | `web`, `tui` | Kimi Code home (below `--kimi-home`); also used by Kimi Code itself |
+| `QWEN_CODE_HOME` | `web`, `tui` | Qwen Code home (below `--qwen-home`) |
+| `OPENCODE_DASHBOARD_MINIMAX_API_KEY` | `web` | Enables the [analytics assistant](#analytics-assistant-web-only); falls back to opencode's auth store |
+| `OPENCODE_DASHBOARD_MINIMAX_BASE_URL` | `web` | MiniMax API base override (China region, integration tests); never accepted from the browser |
+| `OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` | `web` | Whole-run assistant budget, `10s`–`5m` (default `90s`) |
+
+Setting a source's home directory — by flag or by environment variable — also
+registers that source even when its data is missing, so it appears as
+*unavailable* with a diagnostic instead of silently disappearing.
 
 ### Time ranges
 
@@ -360,9 +449,13 @@ opencode-dashboard uninstall --force      # Remove without confirmation
 | Target | Path | Condition |
 |--------|------|-----------|
 | Binary | `~/.local/bin/opencode-dashboard` | If not currently running |
-| Data dir | `~/.local/share/opencode-dashboard` | If exists, including the default dashboard cache |
+| Data dir | `~/.local/share/opencode-dashboard` | If exists — the usage cache, pricing aliases, saved assistant conversations, and the Claude quota snapshot |
 | Config dir | `~/.config/opencode-dashboard` | If exists |
 | State dir | `~/.local/state/opencode-dashboard` | If exists |
+
+Removing the data directory discards user-authored state that is **not**
+rebuildable — pricing aliases and saved assistant conversations. Use
+`--dry-run` first if you want to keep them.
 
 **Never removed:**
 
@@ -370,7 +463,11 @@ opencode-dashboard uninstall --force      # Remove without confirmation
 |------|--------|
 | `~/.local/share/opencode/`, `~/.config/opencode/` | OpenCode-owned data and config |
 | `opencode*.db` | Channel databases |
-| `~/.claude`, `~/.codex`, `~/.kimi-code` | Claude Code / Codex / Kimi Code source data |
+| `~/.claude`, `~/.codex`, `~/.kimi-code`, `~/.qwen` | Claude Code / Codex / Kimi Code / Qwen Code source data |
+
+`uninstall` never edits `~/.claude/settings.json`, so a statusline entry
+installed by `claude-statusline --install` stays behind. Remove that
+`statusLine` block yourself if you uninstall the binary.
 
 ## API endpoints
 
@@ -391,6 +488,11 @@ The web command also serves a JSON API under `/api/v1`. Most endpoints accept a 
 | `GET /api/v1/messages` | Paginated message list | `page`, `limit` (≤100), `sort`, period |
 | `GET /api/v1/messages/{id}` | Message detail | `source` |
 | `GET /api/v1/config` | Source configuration preview (redacted) | `source` |
+| `GET /api/v1/cache` | Dashboard cache status: per-source readiness, freshness, and any running sync job | — |
+| `POST /api/v1/cache/sync` | Start an incremental resync or a clear-and-rebuild | `source`, `mode=incremental\|rebuild` (default `incremental`); `rebuild` ignores `source` and always rebuilds every source |
+| `GET /api/v1/pricing/aliases` | [Pricing aliases](#pricing-aliases) for one source, plus every source's catalog and the models this source has observed | `source` |
+| `POST /api/v1/pricing/aliases` | Create or replace one alias | JSON body: `source_id`, `provider_id`, `model_id`, `target_model_id`, optional `target_source_id` |
+| `DELETE /api/v1/pricing/aliases` | Remove one alias | `source`, `provider`, `model` |
 | `GET /api/v1/quotas` | Provider quota (Codex / Claude Code / Kimi Code / MiniMax), including Kimi Extra Usage when available | — |
 | `GET /api/v1/assistant/status` | MiniMax M3 entitlement, assistant privacy metadata, and the specialist roster | — |
 | `POST /api/v1/assistant/chat` | Run the backend report-agent loop | bounded user/assistant history |
@@ -425,7 +527,7 @@ Both web and TUI expose the same seven surfaces:
 
 Sessions and daily entries drill down into individual messages.
 
-The web build additionally provides the optional floating analytics assistant; it is intentionally not a TUI surface.
+Two capabilities are web-only by design: the [pricing-alias editor](#pricing-aliases), which lives on the Config surface, and the optional floating [analytics assistant](#analytics-assistant-web-only). The TUI stays fully local and never constructs an outbound LLM client.
 
 ## Building from source
 
@@ -452,38 +554,49 @@ The `embedassets` build tag is required for production builds. Without it the bi
 ./scripts/dev.sh --no-cache      # Skip cache during local development
 ```
 
-For a fast frontend-only loop, run the Vite dev server, which proxies the API to a running `web` instance:
+For a fast frontend-only loop, run the Vite dev server, which serves on `:7451` and proxies `/api` and `/health` to a running `web` instance:
 
 ```bash
 opencode-dashboard web --no-open   # API on :7450 in one terminal
-cd web && npm run dev              # Vite dev server in another
+cd web && npm run dev              # Vite dev server on :7451 in another
 ```
 
 ## Frontend
 
-The web UI is a Vite + React 19 + TypeScript SPA built on **Vael**, an in-house component system: inline-style components under `web/src/components/vael`, CSS design tokens (`web/src/styles/tokens`), self-hosted fonts (Hanken Grotesk, JetBrains Mono), and pure-SVG charts — no Radix, Recharts, or icon libraries. The compiled assets are embedded into the Go binary at build time.
+The web UI is a Vite + React 19 + TypeScript SPA built on **Vael**, an in-house component system: inline-style components under `web/src/components/vael`, CSS design tokens (`web/src/styles/tokens`), self-hosted fonts (Hanken Grotesk, JetBrains Mono), SVG icons drawn from a local path table, and pure-SVG charts — no Radix, Recharts, or icon libraries. Tailwind CSS v4 is loaded for layout utilities alongside the tokens; the only other runtime UI dependencies are `react-router-dom` and `react-day-picker`/`date-fns`, used by the custom-range period picker. The compiled assets are embedded into the Go binary at build time.
+
+See [`web/README.md`](web/README.md) for the frontend's layout, scripts, tests, and conventions.
 
 ## Project structure
 
 ```
 opencode-dashboard/
-├── cmd/opencode-dashboard/main.go   # CLI entry point and source wiring
+├── cmd/opencode-dashboard/          # CLI entry point, source wiring, cache runtime
+│   ├── main.go
+│   └── claude_statusline.go         # claude-statusline subcommand
 ├── internal/
 │   ├── config/                      # XDG paths, DB/channel + source-home resolution
 │   ├── cache/                       # Dashboard-owned SQLite aggregate cache
+│   ├── chatstore/                   # Saved analytics-assistant conversations
+│   ├── pricingalias/                # Durable user-authored pricing aliases
+│   ├── analyticsagent/              # MiniMax report agent, tools, specialists
 │   ├── quota/                       # Codex / Claude / Kimi / MiniMax quota collectors
 │   ├── store/                       # SQLite read-only store (OpenCode)
 │   ├── source/                      # Source registry + cross-source aggregate
 │   │   ├── opencode/                # OpenCode (SQLite) source
 │   │   ├── claudecode/              # Claude Code (JSONL) source
 │   │   ├── codex/                   # Codex (JSONL) source
-│   │   └── kimicode/                # Kimi Code (state + wire JSONL) source
+│   │   ├── kimicode/                # Kimi Code (state + wire JSONL) source
+│   │   └── qwencode/                # Qwen Code (transcripts + token-usage JSONL) source
 │   ├── stats/                       # Period, aggregation, and view domain types
 │   ├── web/                         # HTTP server, API handlers, embedded SPA
 │   ├── tui/                         # Bubble Tea terminal UI
+│   ├── update/                      # Self-update via the official installer
 │   ├── uninstall/                   # Self-cleanup
 │   └── version/                     # Build metadata
 ├── web/                             # Vite + React + Vael frontend
+├── docs/
+│   └── analytics-assistant.md       # Assistant architecture and privacy model
 ├── scripts/
 │   ├── build.sh                     # Production build (frontend + embed + binary)
 │   ├── dev.sh                       # Dev build + run
@@ -493,18 +606,30 @@ opencode-dashboard/
 └── LICENSE                          # Apache 2.0
 ```
 
+`web/` carries its own `go.mod` on purpose. It contains no Go code; the file
+exists only to cut the subtree out of the root module, because an npm
+dependency vendors a Go package that would otherwise be compiled by
+`go build ./...` once `node_modules` exists.
+
 ## Development
 
 ```bash
-go test ./...              # Run all Go tests
-cd web && npm run lint     # Frontend lint
-cd web && npm run build    # Type-check + frontend build
+go test ./...                        # Run all Go tests
+go test -short -race ./...           # What CI runs
+cd web && npm run lint               # Frontend lint
+cd web && npm run build              # Type-check + frontend build
+cd web && npm run test:source-state  # Frontend unit tests (node --test)
 ```
+
+The frontend tests cover the pure logic in `web/src/lib` — source selection,
+persisted preferences, formatting, request accounting, pricing aliases,
+markdown/syntax rendering, and assistant stream parsing. They run on Node's
+built-in test runner, so no test framework is installed.
 
 ## Limitations
 
 - **Read-only** — cannot modify any source database, transcript, or settings.
-- **Cache refresh** — source fingerprints are re-checked on read (debounced ~15s); when raw data changes, the window after the finality cutoff is re-mirrored from raw content before serving. Data older than the cutoff is treated as final — use the rebuild action to re-read full history.
+- **Cache refresh** — the window after the finality cutoff is read live from raw content on every read and merged, so recent activity is always current (one live pass is memoized for ~2s so the several aggregates behind a single page load share it). Hours older than the cutoff are treated as final and served from the cache; consolidation of newly finalized hours happens in the background every 30 minutes, or on a read once the last successful sync is over seven hours old, retried at most once a minute. Reads never block on it. To re-read full history — after correcting pricing, for example — use the rebuild action.
 - **Release targets** — Linux and macOS on `amd64` and `arm64`, built CGO-free with embedded assets (see `.goreleaser.yaml`).
 
 ## License
