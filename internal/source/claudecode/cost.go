@@ -137,8 +137,13 @@ func computeCost(model, providerID string, usage tokenUsage, hasUsage bool, repo
 		return missingCost(currency)
 	}
 	cacheCreate5m, cacheCreate1h := usage.cacheCreateForPricing()
+	// TokenStats buckets are disjoint here as they are in every other adapter:
+	// Output excludes Reasoning, and reasoning bills at the output rate. Claude
+	// Code folds thinking into output_tokens and emits no reasoning_tokens, so
+	// this only matters for a proxied model that reports them separately.
+	outputBillable := usage.Output + usage.Reasoning
 	cost := (float64(usage.Input)*match.Rate.InputPerMillion +
-		float64(usage.Output)*match.Rate.OutputPerMillion +
+		float64(outputBillable)*match.Rate.OutputPerMillion +
 		float64(usage.CacheRead)*match.Rate.CacheReadPerMillion +
 		float64(cacheCreate5m)*match.Rate.CacheCreatePerMillion +
 		float64(cacheCreate1h)*match.Rate.cacheCreate1hPerMillion()) / 1_000_000
@@ -187,6 +192,23 @@ func (r pricingRate) cacheCreate1hPerMillion() float64 {
 		return r.InputPerMillion * 2
 	}
 	return r.CacheCreatePerMillion
+}
+
+// incompleteUsageCost reports a request whose transcript records only a
+// mid-stream usage stub. The request was billed, but the evidence needed to
+// price it was never persisted, so the cost is missing rather than derived
+// from counts that would overstate fresh input and understate output.
+func incompleteUsageCost(pricing pricingSnapshot) costResult {
+	currency := defaultCurrency(pricing)
+	return costResult{
+		Status: stats.CostMissing,
+		Provenance: &stats.CostProvenance{
+			Status:       stats.CostMissing,
+			Currency:     currency,
+			MissingCount: 1,
+			Note:         "cost is unknown because the Claude Code transcript recorded only a partial streaming usage snapshot for this request, whose input count is the whole prompt rather than a fresh-input total",
+		},
+	}
 }
 
 func missingCost(currency string) costResult {
@@ -291,21 +313,27 @@ func (p pricingSnapshot) aliasPricing(providerID, model string) (pricingMatch, b
 }
 
 // foreignRate adapts another catalog's shared rate summary to Claude's rate
-// shape. Only input, cached input, cache write and output carry across; the
-// 1h cache-creation tier has no cross-vendor equivalent and falls back to the
-// existing input-derived estimate. Catalogs that bill cache writes at the
-// input rate publish no separate price, so input stands in.
+// shape. Only input, cached input, cache write and output carry across.
+// Catalogs that bill cache writes at the input rate publish no separate price,
+// so input stands in.
+//
+// The 1h cache-creation tier is Anthropic-specific and has no cross-vendor
+// equivalent, so it is pinned to the borrowed cache-write rate. Leaving it
+// unset would fall through to the native 2x-input rule in
+// cacheCreate1hPerMillion — a rate that exists nowhere in the borrowed catalog
+// and that contradicts the cache-write price this function just carried over.
 func foreignRate(summary source.PricingRateSummary) pricingRate {
 	cacheCreate := summary.CacheWritePerMillion
 	if cacheCreate <= 0 {
 		cacheCreate = summary.InputPerMillion
 	}
 	return pricingRate{
-		InputPerMillion:       summary.InputPerMillion,
-		OutputPerMillion:      summary.OutputPerMillion,
-		CacheReadPerMillion:   summary.CachedInputPerMillion,
-		CacheCreatePerMillion: cacheCreate,
-		Approximate:           true,
+		InputPerMillion:         summary.InputPerMillion,
+		OutputPerMillion:        summary.OutputPerMillion,
+		CacheReadPerMillion:     summary.CachedInputPerMillion,
+		CacheCreatePerMillion:   cacheCreate,
+		CacheCreate1hPerMillion: cacheCreate,
+		Approximate:             true,
 	}
 }
 

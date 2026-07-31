@@ -39,7 +39,13 @@ const (
 	// Codex API-equivalent USD estimates use the requested processing tier's
 	// official Standard, Priority, or Flex per-token catalog. v8: OpenCode
 	// model analytics use additive step-finish usage without changing Overview.
-	dataVersion            = 8
+	// v9: Claude Code reports a request whose transcript holds only a partial
+	// streaming usage snapshot as usage-unavailable instead of asserting its
+	// prompt total as fresh input with zero cache reads and zero output, bills
+	// reasoning tokens at the output rate, and every source's assistant rows
+	// carry a derived usage status so unknown usage stays distinct from a
+	// measured zero across the cache round trip.
+	dataVersion            = 9
 	busyTimeout            = 5000 * time.Millisecond
 	DefaultSyncSafetyDelay = 6 * time.Hour
 	// collectCallTimeout bounds one bulk snapshot or one generic pagination
@@ -1009,6 +1015,32 @@ func insertSessions(ctx context.Context, tx *sql.Tx, sourceID string, rows []ses
 	return nil
 }
 
+// usageStatusForRow derives the usage status persisted for one message.
+//
+// The token columns are NOT NULL DEFAULT 0, so a nil Tokens pointer and a
+// measured all-zero usage serialize identically. A source that signals "no
+// usage was recorded" only by leaving Tokens nil would therefore read back as
+// an authoritative zero — zero cache reads, zero output — for a request whose
+// usage is simply unknown. Recording the absence explicitly keeps the two
+// apart, and scanMessageEntry already restores a nil Tokens from it.
+//
+// A status the source set itself always wins; this only fills the gap for
+// adapters that do not populate the field. Both sides of the partition are
+// derived, never just the unavailable side: reporting only the gaps would
+// leave a source looking like it had zero requests with usable usage.
+func usageStatusForRow(entry stats.MessageEntry) stats.UsageStatus {
+	if entry.UsageStatus != "" {
+		return entry.UsageStatus
+	}
+	if entry.Role != "assistant" {
+		return ""
+	}
+	if entry.Tokens == nil {
+		return stats.UsageStatusUnavailable
+	}
+	return stats.UsageStatusRecorded
+}
+
 func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []messageRow) error {
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO message_index(
@@ -1070,6 +1102,7 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 		if row.ModelTokens != nil {
 			modelTokens = *row.ModelTokens
 		}
+		usageStatus := usageStatusForRow(entry)
 		prov, err := marshalProvenance(entry.CostProvenance)
 		if err != nil {
 			return err
@@ -1079,7 +1112,7 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sourceID string, rows []mes
 			entry.Cost, tokens.Input, tokens.Output, tokens.Reasoning, tokens.Cache.Read, tokens.Cache.Write,
 			modelTokens.Input, modelTokens.Output, modelTokens.Reasoning, modelTokens.Cache.Read, modelTokens.Cache.Write,
 			nullEmpty(entry.ModelID), nullEmpty(entry.ProviderID), nullEmpty(entry.ServiceTier), nullEmpty(string(entry.ProcessingMode)),
-			nullEmpty(string(entry.RequestTrace)), nullEmpty(string(entry.UsageStatus)),
+			nullEmpty(string(entry.RequestTrace)), nullEmpty(string(usageStatus)),
 			nullEmpty(string(entry.UsageUnavailableReason)),
 			nullEmpty(entry.Agent), boolInt(entry.IsSubagent),
 			entry.FoldedAssistantCalls, entry.FoldedToolCalls, entry.FoldedTokenUpdates,

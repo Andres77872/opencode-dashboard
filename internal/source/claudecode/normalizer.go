@@ -62,8 +62,12 @@ type assistantMessageState struct {
 }
 
 type assistantContribution struct {
-	usage      tokenUsage
-	hasUsage   bool
+	usage    tokenUsage
+	hasUsage bool
+	// complete distinguishes a finalized usage report from a mid-stream stub.
+	// A stub's token counts are not a usable accounting of the request, so the
+	// row reports usage as unavailable rather than asserting the stub's values.
+	complete   bool
 	cost       costResult
 	cumulative bool
 }
@@ -215,6 +219,7 @@ func (s *snapshot) addAssistantRequest(sessionID string, record parsedRecord, ti
 	contribution := assistantContribution{
 		usage:      record.Usage,
 		hasUsage:   record.HasUsage,
+		complete:   record.UsageComplete,
 		cost:       computeAssistantCost(record, pricing),
 		cumulative: record.ReportedUSDCumulative,
 	}
@@ -254,6 +259,13 @@ func computeAssistantCost(record parsedRecord, pricing pricingSnapshot) costResu
 	if record.ReportedUSDCumulative && record.HasUsage {
 		reported = nil
 	}
+	// A mid-stream usage stub cannot be priced: its input_tokens is the whole
+	// prompt rather than the fresh-input count the rates apply to, and its
+	// output is still zero. Pricing it anyway would charge cached tokens at the
+	// fresh input rate. A cost the transcript reported outright still stands.
+	if reported == nil && record.HasUsage && !record.UsageComplete {
+		return incompleteUsageCost(pricing)
+	}
 	return computeCost(record.Model, "anthropic", record.Usage, record.HasUsage, reported, pricing)
 }
 
@@ -267,13 +279,24 @@ func applyContributionToEntry(entry *stats.MessageEntry, c assistantContribution
 	}
 	entry.CostStatus = status
 	entry.CostProvenance = c.cost.Provenance
-	if c.hasUsage {
+	// Every assistant row is a persisted record of one outbound API request,
+	// so the request itself is always observed; only its usage may be missing.
+	entry.RequestTrace = stats.RequestTraceObserved
+	if c.hasUsage && c.complete {
 		var tokens stats.TokenStats
 		addUsageToTokens(&tokens, c.usage)
 		entry.Tokens = tokenPointer(tokens, true)
-	} else {
-		entry.Tokens = nil
+		entry.UsageStatus = stats.UsageStatusRecorded
+		entry.UsageUnavailableReason = ""
+		return
 	}
+	// No usable usage: report it as unknown rather than as zeros. A stub's
+	// counts describe the prompt, not the request's token accounting, so
+	// carrying them forward would read as measured input with no cache reads
+	// and no output.
+	entry.Tokens = nil
+	entry.UsageStatus = stats.UsageStatusUnavailable
+	entry.UsageUnavailableReason = stats.UsageUnavailableUnknown
 }
 
 func assistantBillingKey(sessionID string, record parsedRecord) string {
@@ -290,10 +313,18 @@ func mergeRepeatedBillingContribution(previous, current assistantContribution) a
 	if !current.hasUsage && current.cost.Status == stats.CostMissing && current.cost.Cost == 0 {
 		return previous
 	}
+	// A finalized usage report always beats a mid-stream stub for the same
+	// request, whichever order the chunks happen to be written in. Otherwise a
+	// trailing stub would replace a recorded cache-read and output with the
+	// prompt total and zero, and the folded row's cost with it.
+	if previous.hasUsage && previous.complete && current.hasUsage && !current.complete {
+		return previous
+	}
 	if current.cost.Status == stats.CostMissing && previous.cost.Status != stats.CostMissing {
 		if current.hasUsage {
 			previous.usage = current.usage
 			previous.hasUsage = true
+			previous.complete = current.complete
 		}
 		return previous
 	}

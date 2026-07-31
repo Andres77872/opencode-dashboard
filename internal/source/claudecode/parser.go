@@ -55,12 +55,16 @@ type parsedRecord struct {
 	IsSidechain bool
 	// Agent names the subagent type for sidechain records (e.g. "Explore", "Plan"),
 	// taken from attributionAgent or agentId. Empty for main-conversation records.
-	Agent       string
-	Timestamp   time.Time
-	Model       string
-	Usage       tokenUsage
-	HasUsage    bool
-	ReportedUSD *float64
+	Agent     string
+	Timestamp time.Time
+	Model     string
+	Usage     tokenUsage
+	HasUsage  bool
+	// UsageComplete reports that the usage object carried the cache-accounting
+	// fields, which is what makes its input_tokens a fresh-input count rather
+	// than a whole-prompt total. See usageIsComplete.
+	UsageComplete bool
+	ReportedUSD   *float64
 	// ReportedUSDCumulative is true when the transcript field name explicitly
 	// indicates a cumulative total rather than a per-call delta. Claude JSONL
 	// field semantics are not fully public, so normalization uses this only as a
@@ -179,8 +183,10 @@ func normalizeRawRecord(file transcriptFile, lineNo int, raw map[string]any) (pa
 
 	if usage := mapValue(message["usage"]); usage != nil {
 		record.Usage, record.HasUsage = parseUsage(usage)
+		record.UsageComplete = usageIsComplete(usage)
 	} else if usage := mapValue(raw["usage"]); usage != nil {
 		record.Usage, record.HasUsage = parseUsage(usage)
+		record.UsageComplete = usageIsComplete(usage)
 	}
 	if reported, key := firstFloatPointer(raw, "costUSD", "cost_usd", "total_cost_usd", "totalCostUSD", "totalCostUsd", "cost"); reported != nil {
 		record.ReportedUSD = reported
@@ -267,6 +273,36 @@ func parseContentItem(item any, record *parsedRecord) {
 			SpillFile: firstString(m, "spill_file", "spillFile", "content_file", "contentFile"),
 		})
 	}
+}
+
+// usageIsComplete reports whether a usage object is a finalized usage report
+// rather than a mid-stream snapshot.
+//
+// Models proxied through Claude Code (the GPT models) emit one usage stub per
+// streamed content block before the request finishes. A stub carries only
+// input_tokens and output_tokens, where input_tokens is the whole prompt — the
+// value the finalizing record later splits into fresh input plus cache reads —
+// and output_tokens is still 0. Treating a stub as finalized usage therefore
+// bills cached tokens at the fresh-input rate and asserts an output of zero for
+// a request that did produce output.
+//
+// Two properties together identify a stub, and a record is only refused when
+// both hold: it carries no cache-accounting field at all, and it reports no
+// output. Requiring both keeps a genuinely cache-less provider's finalized
+// usage usable — that record still reports its output — and limits the refusal
+// to records that show no evidence of a completed generation. Anthropic's own
+// usage always carries the cache fields even when they are zero, so native
+// records never reach the second test.
+func usageIsComplete(raw map[string]any) bool {
+	for _, key := range []string{
+		"cache_read_input_tokens", "cache_creation_input_tokens", "cache_creation",
+		"cache_read", "cache_write",
+	} {
+		if _, ok := raw[key]; ok {
+			return true
+		}
+	}
+	return intValue(raw["output_tokens"]) != 0
 }
 
 func parseUsage(raw map[string]any) (tokenUsage, bool) {
