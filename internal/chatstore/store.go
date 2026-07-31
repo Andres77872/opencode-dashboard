@@ -5,7 +5,8 @@
 //
 // The store persists the browser-visible conversation plus everything the
 // assistant generated to produce it: the analytics tool invocations (name,
-// input arguments, output envelope, status, duration), each delegated
+// normalized accepted arguments or redacted rejected arguments, output
+// envelope, status, duration), each delegated
 // specialist run with its finding and usage, per-turn provider token
 // accounting, and the dashboard context the question was asked from.
 // Everything stored here is data the local user already saw in the dashboard
@@ -209,8 +210,8 @@ type Session struct {
 }
 
 // ToolCall is one analytics tool invocation made while producing an assistant
-// message, including the exact input arguments and output envelope that were
-// exchanged with the tool.
+// message, including normalized arguments for an accepted call (or {} for a
+// rejected proposal) and the output envelope exchanged with the tool.
 type ToolCall struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`

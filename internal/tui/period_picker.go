@@ -18,7 +18,7 @@ const (
 )
 
 // periodPresets is the global set of quick ranges, ordered shortest → longest.
-var periodPresets = []string{"1h", "6h", "12h", "24h", "72h", "1d", "7d", "14d", "30d", "1y", "all"}
+var periodPresets = stats.SupportedPeriodPresets()
 
 var periodPresetLabels = map[string]string{
 	"1h":  "Last hour",
@@ -26,7 +26,7 @@ var periodPresetLabels = map[string]string{
 	"12h": "Last 12 hours",
 	"24h": "Last 24 hours",
 	"72h": "Last 72 hours",
-	"1d":  "Today",
+	"1d":  "Today (UTC)",
 	"7d":  "Last 7 days",
 	"14d": "Last 14 days",
 	"30d": "Last 30 days",
@@ -63,7 +63,7 @@ func periodLabel(pq stats.PeriodQuery) string {
 		return pq.From + " → " + pq.To
 	}
 	if pq.Period == "" {
-		return "7d"
+		return stats.DefaultPeriodPreset
 	}
 	return pq.Period
 }
@@ -78,7 +78,7 @@ func (m *model) openPeriodPicker() {
 	} else if idx := indexOfPreset(m.period.Period); idx >= 0 {
 		p.cursor = idx
 	} else {
-		p.cursor = indexOfPreset("7d")
+		p.cursor = indexOfPreset(stats.DefaultPeriodPreset)
 	}
 	m.periodPicker = p
 }

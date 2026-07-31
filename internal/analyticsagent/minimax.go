@@ -343,6 +343,10 @@ func makeWireChatPayload(request ChatRequest, stream bool) ([]byte, error) {
 		if len(tool.Parameters) == 0 || !json.Valid(tool.Parameters) {
 			return nil, fmt.Errorf("MiniMax tool %q parameters are not valid JSON", tool.Name)
 		}
+		var schema map[string]any
+		if err := json.Unmarshal(tool.Parameters, &schema); err != nil || schema == nil || schema["type"] != "object" {
+			return nil, fmt.Errorf("MiniMax tool %q parameters must be a JSON Schema object", tool.Name)
+		}
 		tools[i] = wireTool{
 			Type: "function",
 			Function: wireFunction{

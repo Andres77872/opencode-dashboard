@@ -449,7 +449,7 @@ func parseIntQuery(r *http.Request, key string, defaultVal, maxVal int) int {
 }
 
 // parsePeriodQuery parses period, from, and to query parameters into a PeriodQuery.
-// Priority: from > period > default "7d".
+// Priority: from > period > stats.DefaultPeriodPreset.
 // Returns an APIError (HTTP 400) on validation failure.
 func parsePeriodQuery(r *http.Request) (stats.PeriodQuery, *APIError) {
 	from := r.URL.Query().Get("from")
@@ -509,28 +509,19 @@ func parsePeriodQuery(r *http.Request) (stats.PeriodQuery, *APIError) {
 		return stats.PeriodQuery{From: from, To: to}, nil
 	}
 
-	// Period mode: use period or default to "7d"
+	// Period mode: use period or the shared backend default.
 	if period == "" {
-		period = "7d"
+		period = stats.DefaultPeriodPreset
 	}
-	if !isSupportedPeriodPreset(period) {
+	if !stats.IsSupportedPeriodPreset(period) {
 		return stats.PeriodQuery{}, &APIError{
 			Error:   http.StatusText(http.StatusBadRequest),
 			Code:    http.StatusBadRequest,
-			Message: "invalid period: supported presets are 1h, 6h, 12h, 24h, 72h, 1d, 7d, 14d, 30d, 1y, and all",
+			Message: stats.InvalidPeriodError(period).Error(),
 		}
 	}
 
 	return stats.PeriodQuery{Period: period}, nil
-}
-
-func isSupportedPeriodPreset(period string) bool {
-	switch period {
-	case "1h", "6h", "12h", "24h", "72h", "1d", "7d", "14d", "30d", "1y", "all":
-		return true
-	default:
-		return false
-	}
 }
 
 func extractSessionID(path string) string {

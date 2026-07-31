@@ -13,7 +13,7 @@ export const PRESET_LABELS: Record<DailyPeriod, string> = {
   '12h': 'Last 12 hours',
   '24h': 'Last 24 hours',
   '72h': 'Last 72 hours',
-  '1d': 'Today',
+  '1d': 'Today (UTC)',
   '7d': 'Last 7 days',
   '14d': 'Last 14 days',
   '30d': 'Last 30 days',

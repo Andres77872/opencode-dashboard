@@ -1,3 +1,5 @@
+import type { DailyPeriod } from './api'
+
 export type AssistantRole = 'user' | 'assistant'
 
 export interface AssistantMessage {
@@ -28,6 +30,23 @@ export interface AssistantStatusResponse {
 export interface AssistantRequestContext {
   route?: string
   source?: string
+  /** A supported preset. Mutually exclusive with from/to. */
+  period?: DailyPeriod
+  /** Inclusive UTC calendar date for a custom range. */
+  from?: string
+  /** Inclusive UTC calendar date; omitted for an open-ended range through now. */
+  to?: string
+  timezone?: string
+}
+
+/**
+ * Display-only context reconstructed from persisted chat history. The server
+ * intentionally keeps one period label in storage for backward compatibility,
+ * even when a request originally used structured from/to fields.
+ */
+export interface AssistantStoredContext {
+  route?: string
+  source?: string
   period?: string
   timezone?: string
 }
@@ -54,9 +73,10 @@ export interface AssistantUsage {
 }
 
 /**
- * One analytics tool invocation in a completed turn: the validated input
- * arguments and the safe result envelope the model received. Calls made by a
- * specialist carry its agent id and the delegation they belong to.
+ * One analytics tool invocation in a completed turn: normalized arguments for
+ * executable calls, or redacted arguments for rejected calls, plus the
+ * safe result envelope the model received. Specialist calls carry their agent
+ * id and parent delegation.
  */
 export interface AssistantToolCall {
   call_id: string
@@ -273,7 +293,7 @@ export interface AssistantChatStoredMessage {
   rounds?: number
   duration_ms?: number
   usage?: AssistantUsage
-  context?: AssistantRequestContext
+  context?: AssistantStoredContext
   notices?: string[]
   tool_calls?: AssistantChatStoredToolCall[]
   subagents?: AssistantChatStoredSubagentRun[]

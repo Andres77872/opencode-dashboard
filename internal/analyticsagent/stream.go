@@ -22,10 +22,10 @@ const (
 )
 
 // StreamEvent is the progress contract between the analytics service and the
-// web transport. Tool arguments and results carry only the validated,
-// privacy-scrubbed JSON that is already exchanged with the provider, so the
-// local dashboard can show exactly what each analytics tool received and
-// returned. Provider reasoning and raw provider messages deliberately have no
+// web transport. Executable tool calls carry normalized, validated arguments;
+// rejected calls carry {} plus their public
+// failure envelope. Results are privacy-scrubbed JSON exchanged with the
+// provider. Provider reasoning and raw provider messages deliberately have no
 // representation in this type.
 type StreamEvent struct {
 	Type string `json:"type"`
@@ -64,8 +64,9 @@ type SubagentEvent struct {
 }
 
 // ToolCallRecord is the canonical record of one analytics tool invocation in a
-// completed chat turn: the validated input arguments, the safe result envelope
-// returned to the model, and outcome metadata. Callers persist and display it.
+// completed chat turn: normalized input arguments (or {} for a rejected
+// proposal), the safe result envelope returned to the model, and outcome
+// metadata. Callers persist and display it.
 type ToolCallRecord struct {
 	CallID string `json:"call_id"`
 	Name   string `json:"name"`

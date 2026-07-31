@@ -29,12 +29,17 @@ func stripLeadingThinkBlocks(content string) (string, error) {
 // Finish reconciles the streamed text with the provider's authoritative final
 // content before the signed browser message is returned.
 type visibleContentStream struct {
-	raw     string
-	emitted string
+	raw             string
+	emitted         string
+	maxVisibleBytes int
 }
 
-func newVisibleContentStream() *visibleContentStream {
-	return &visibleContentStream{}
+func newVisibleContentStream(limit ...int) *visibleContentStream {
+	maxBytes := maxFinalResponseBytes
+	if len(limit) > 0 {
+		maxBytes = limit[0]
+	}
+	return &visibleContentStream{maxVisibleBytes: maxBytes}
 }
 
 func (s *visibleContentStream) Push(delta string) (string, error) {
@@ -49,7 +54,7 @@ func (s *visibleContentStream) Push(delta string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(visible) > maxFinalResponseBytes {
+	if len(visible) > s.maxVisibleBytes {
 		return "", errors.New("provider visible content is too large")
 	}
 	if !strings.HasPrefix(visible, s.emitted) {

@@ -200,8 +200,29 @@ func storedTurnContext(value *analyticsagent.BrowserContext) chatstore.TurnConte
 		return chatstore.TurnContext{}
 	}
 	return chatstore.TurnContext{
-		Route: value.Route, Source: value.Source, Period: value.Period, Timezone: value.Timezone,
+		Route: value.Route, Source: value.Source, Period: storedPeriodLabel(value), Timezone: value.Timezone,
 	}
+}
+
+// storedPeriodLabel preserves the existing one-column chat-history contract.
+// Structured custom ranges are persisted as display-only labels; new requests
+// continue to use separate from/to fields and no chatstore schema change is
+// required.
+func storedPeriodLabel(value *analyticsagent.BrowserContext) string {
+	if value == nil {
+		return ""
+	}
+	if value.Period != "" {
+		return value.Period
+	}
+	if value.From == "" {
+		return ""
+	}
+	to := value.To
+	if to == "" {
+		to = "now"
+	}
+	return value.From + " to " + to
 }
 
 func storedUsage(value analyticsagent.Usage) chatstore.Usage {
@@ -412,11 +433,17 @@ func decodeAssistantChatInput(w http.ResponseWriter, r *http.Request) (analytics
 		writeAssistantError(w, http.StatusBadRequest, "assistant request must contain one JSON object")
 		return analyticsagent.ChatInput{}, false
 	}
-	if err := analyticsagent.ValidateChatInput(input); err != nil {
+	normalized, err := analyticsagent.NormalizeChatInput(input)
+	if err != nil {
+		var contextErr *analyticsagent.ContextValidationError
+		if errors.As(err, &contextErr) {
+			writeAssistantError(w, http.StatusBadRequest, "assistant context is invalid: "+contextErr.Detail)
+			return analyticsagent.ChatInput{}, false
+		}
 		writeAssistantError(w, http.StatusBadRequest, "assistant messages are invalid")
 		return analyticsagent.ChatInput{}, false
 	}
-	return input, true
+	return normalized, true
 }
 
 type assistantNDJSONStream struct {

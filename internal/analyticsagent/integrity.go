@@ -115,6 +115,13 @@ func (r *ToolRegistry) sourceIntegrity(ctx context.Context, args integrityArgs) 
 		return safeIntegrityReport{}, invalidInput("source is invalid or unavailable")
 	}
 	infos := r.registry.List(ctx)
+	safeInfos := make([]source.SourceInfo, 0, len(infos))
+	for _, info := range infos {
+		if isSafeSourceID(string(info.ID)) {
+			safeInfos = append(safeInfos, info)
+		}
+	}
+	infos = safeInfos
 	if requestedSource != "" {
 		filtered := make([]source.SourceInfo, 0, 1)
 		for _, info := range infos {

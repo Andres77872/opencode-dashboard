@@ -3,11 +3,60 @@ package stats
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"time"
 
 	"opencode-dashboard/internal/store"
 )
+
+// DefaultPeriodPreset is the preset used when callers omit both a preset and
+// an explicit from/to range.
+const (
+	DefaultPeriodPreset   = "7d"
+	allHistoricPeriodDays = -1
+)
+
+type periodPreset struct {
+	name  string
+	hours int
+	days  int
+	all   bool
+}
+
+// periodPresets is the canonical backend period catalog and its executable
+// meaning, ordered from the shortest rolling window to complete history.
+// Keeping names and resolution in one table prevents a schema-valid preset
+// from drifting away from the runtime parser.
+var periodPresets = []periodPreset{
+	{name: "1h", hours: 1}, {name: "6h", hours: 6},
+	{name: "12h", hours: 12}, {name: "24h", hours: 24},
+	{name: "72h", hours: 72}, {name: "1d", days: 1},
+	{name: "7d", days: 7}, {name: "14d", days: 14},
+	{name: "30d", days: 30}, {name: "1y", days: 365},
+	{name: "all", all: true},
+}
+
+// SupportedPeriodPresets returns a defensive copy of the canonical period
+// catalog. Callers may safely sort or filter the result without changing the
+// presets seen by another backend surface.
+func SupportedPeriodPresets() []string {
+	result := make([]string, 0, len(periodPresets))
+	for _, preset := range periodPresets {
+		result = append(result, preset.name)
+	}
+	return result
+}
+
+// IsSupportedPeriodPreset reports whether period is one of the exact,
+// case-sensitive backend presets. An empty period is not itself a preset;
+// entrypoints that support omission should substitute DefaultPeriodPreset.
+func IsSupportedPeriodPreset(period string) bool {
+	for _, candidate := range periodPresets {
+		if period == candidate.name {
+			return true
+		}
+	}
+	return false
+}
 
 // PeriodWindow holds the computed start and end boundaries for a statistical period.
 // StartDate and EndDate are UTC midnight times; StartMs and EndMs are their
@@ -20,7 +69,7 @@ type PeriodWindow struct {
 }
 
 // ComputePeriodWindow is a backward-compatible wrapper around ComputePeriodWindowFromQuery.
-// Supported period values: "1d", "7d", "30d", "1y", "all", "1h", "6h", "12h", "24h", "72h", "14d".
+// Supported period values are exposed by SupportedPeriodPresets.
 func ComputePeriodWindow(ctx context.Context, s *store.Store, period string) (PeriodWindow, error) {
 	return ComputePeriodWindowFromQuery(ctx, s, PeriodQuery{Period: period})
 }
@@ -28,7 +77,7 @@ func ComputePeriodWindow(ctx context.Context, s *store.Store, period string) (Pe
 // ComputePeriodWindowFromQuery dispatches to preset or explicit window computation.
 // If pq.From is set, it delegates to explicitPeriodWindow.
 // Otherwise it delegates to presetPeriodWindow based on pq.Period.
-// If both are empty, defaults to "7d" preset.
+// If both are empty, defaults to DefaultPeriodPreset.
 func ComputePeriodWindowFromQuery(ctx context.Context, s *store.Store, pq PeriodQuery) (PeriodWindow, error) {
 	// Internal time-precision bounds beat everything (cache gap-merge layer).
 	if from, to, ok := pq.TimeBounds(); ok {
@@ -57,10 +106,10 @@ func ComputePeriodWindowFromQuery(ctx context.Context, s *store.Store, pq Period
 		return capWindowEnd(explicitPeriodWindow(from, to), pq.ToTime), nil
 	}
 
-	// Default to "7d" if period is empty
+	// Apply the shared default if period is empty.
 	period := pq.Period
 	if period == "" {
-		period = "7d"
+		period = DefaultPeriodPreset
 	}
 
 	window, err := presetPeriodWindow(ctx, s, period)
@@ -102,7 +151,7 @@ func presetPeriodWindow(ctx context.Context, s *store.Store, period string) (Per
 		}, nil
 	}
 
-	// Day-based presets (calendar-aligned in server timezone)
+	// Day-based presets (calendar-aligned in UTC)
 	days, err := parsePeriod(period)
 	if err != nil {
 		return PeriodWindow{}, err
@@ -176,29 +225,30 @@ func BucketKey(t time.Time, gran Granularity) string {
 	return t.UTC().Format("2006-01-02")
 }
 
-// hourPresetRegex matches hour-preset strings like "1h", "6h", "72h".
-var hourPresetRegex = regexp.MustCompile(`^(\d+)h$`)
+// HourPresetHours resolves a canonical rolling-hour preset. Cache and snapshot
+// adapters use this instead of maintaining executable copies of the catalog.
+func HourPresetHours(period string) (int, bool) {
+	for _, preset := range periodPresets {
+		if preset.name == period && preset.hours > 0 {
+			return preset.hours, true
+		}
+	}
+	return 0, false
+}
 
-// parseHourPreset parses an hour preset string and returns the number of hours.
-// Returns (0, false) if the string is not a valid hour preset.
 func parseHourPreset(period string) (int, bool) {
-	matches := hourPresetRegex.FindStringSubmatch(period)
-	if matches == nil {
-		return 0, false
-	}
+	return HourPresetHours(period)
+}
 
-	switch matches[1] {
-	case "1", "6", "12", "24", "72":
-		// valid hour presets
-	default:
-		return 0, false
+func calendarPresetDays(period string) (int, bool) {
+	for _, preset := range periodPresets {
+		if preset.name != period || preset.hours > 0 {
+			continue
+		}
+		if preset.all {
+			return allHistoricPeriodDays, true
+		}
+		return preset.days, preset.days > 0
 	}
-
-	var hours int
-	_, err := fmt.Sscanf(matches[1], "%d", &hours)
-	if err != nil {
-		return 0, false
-	}
-
-	return hours, true
+	return 0, false
 }

@@ -116,6 +116,22 @@ func oneUserMessage(content string) ChatInput {
 func TestSharedPolicyDefinesRequestAndKimiCompletenessSemanticsForEveryAgent(t *testing.T) {
 	wants := []string{
 		"Use requests—not messages",
+		"Before EVERY analytics tool call",
+		`PRESET mode: use a time fragment like {"period":"7d"}`,
+		`CUSTOM mode: use {"from":"2026-07-01","to":"2026-07-31"}`,
+		"DEFAULT mode: omit period, from, and to",
+		`INVALID: {"period":"7d","from":"2026-07-01"}`,
+		"explicit time range in the latest user question overrides navigation context",
+		"explicitly compares a range with the current view",
+		"After selecting CUSTOM, remove period and verify from is present",
+		"After selecting PRESET, remove from and to and verify period is present",
+		"Do not apply both corrections",
+		"Supported presets are 1h, 6h, 12h, 24h, 72h, 1d, 7d, 14d, 30d, 1y, all",
+		"Browser timezone is context only",
+		"invalid_arguments",
+		"every *_truncated",
+		"[finding truncated]",
+		"Dimension trends expose requests",
 		"usage_unavailable",
 		"successful_only",
 		"does not persist a separate reasoning-token counter",
@@ -127,6 +143,21 @@ func TestSharedPolicyDefinesRequestAndKimiCompletenessSemanticsForEveryAgent(t *
 			if !strings.Contains(prompt, want) {
 				t.Errorf("%s system prompt is missing %q", id, want)
 			}
+		}
+	}
+}
+
+func TestSpecialistPromptsMatchToolOutputSemantics(t *testing.T) {
+	tooling, _ := agentByID(AgentTooling)
+	for _, want := range []string{"get_tool_usage over explicit comparison windows", "not invocations or outcomes"} {
+		if !strings.Contains(tooling.systemPrompt(), want) {
+			t.Errorf("tooling prompt lacks %q", want)
+		}
+	}
+	workload, _ := agentByID(AgentWorkload)
+	for _, want := range []string{"Use project_name", "no exact activity timestamps"} {
+		if !strings.Contains(workload.systemPrompt(), want) {
+			t.Errorf("workload prompt lacks %q", want)
 		}
 	}
 }
@@ -441,6 +472,68 @@ func TestServiceAppendsDeterministicCrossSourceCostScope(t *testing.T) {
 	}
 }
 
+func TestServiceAppendsDeterministicTruncationNotice(t *testing.T) {
+	src := newAnalyticsTestSource(source.SourceOpenCode, 2)
+	model := src.models.Models[0]
+	for len(src.models.Models) <= defaultListLimit {
+		model.ModelID += "x"
+		src.models.Models = append(src.models.Models, model)
+	}
+	registry := source.NewRegistry(source.SourceOpenCode)
+	if err := registry.Register(src); err != nil {
+		t.Fatal(err)
+	}
+	client := &scriptedAgentClient{responses: []*ChatResponse{
+		assistantResponse(t, "tool_calls", "", []ToolCall{functionToolCall("models", "get_model_usage", `{"source":"opencode","period":"7d"}`)}, nil),
+		assistantResponse(t, "stop", "Model report.", nil, nil),
+	}}
+	result, err := NewService(ServiceOptions{Client: client, Registry: registry}).Chat(context.Background(), oneUserMessage("Rank models."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Message.Content, truncationNotice) || len(result.Notices) != 1 || result.Notices[0] != truncationNotice {
+		t.Fatalf("truncation notice missing: %#v", result)
+	}
+}
+
+func TestDeterministicNoticesStayInsideBrowserHistoryLimit(t *testing.T) {
+	suffix := "\n\n" + crossSourceCostNotice
+	maxProviderContent := maxFinalResponseBytes - len(suffix)
+	tests := []struct {
+		name    string
+		length  int
+		wantErr bool
+	}{
+		{name: "exact fit", length: maxProviderContent},
+		{name: "one byte too large", length: maxProviderContent + 1, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &scriptedAgentClient{responses: []*ChatResponse{
+				assistantResponse(t, "tool_calls", "", []ToolCall{
+					functionToolCall("cross", "get_cross_source_overview", `{"period":"7d"}`),
+				}, nil),
+				assistantResponse(t, "stop", strings.Repeat("r", test.length), nil, nil),
+			}}
+			result, err := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)}).Chat(
+				context.Background(), oneUserMessage("Compare sources."),
+			)
+			if test.wantErr {
+				if !errors.Is(err, ErrProviderFailure) {
+					t.Fatalf("result=%#v err=%v, want ErrProviderFailure", result, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Message.Content) != maxFinalResponseBytes || !strings.HasSuffix(result.Message.Content, crossSourceCostNotice) {
+				t.Fatalf("bounded content length=%d suffix=%v", len(result.Message.Content), strings.HasSuffix(result.Message.Content, crossSourceCostNotice))
+			}
+		})
+	}
+}
+
 func TestServiceRejectsUnsafeOrIncompleteFinalResponses(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -512,7 +605,7 @@ func TestServiceRejectsRepeatedToolCallWithoutEndingTheRun(t *testing.T) {
 		assistantResponse(t, "tool_calls", "", []ToolCall{functionToolCall("call-2", "list_sources", `{}`)}, nil),
 		assistantResponse(t, "stop", "Report from the first result.", nil, nil),
 	}}
-	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
+	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode), MaxToolCalls: 2})
 
 	result, err := service.Chat(context.Background(), oneUserMessage("Report usage."))
 	if err != nil {
@@ -529,8 +622,15 @@ func TestServiceRejectsRepeatedToolCallWithoutEndingTheRun(t *testing.T) {
 		t.Fatalf("repeated call result = %s", repeat.Result)
 	}
 	// The rejection must reach the model as ordinary tool evidence.
-	if !strings.Contains(string(client.requests[2].Messages[len(client.requests[2].Messages)-1]), "duplicate_call") {
+	sawDuplicateEvidence := false
+	for _, message := range client.requests[2].Messages {
+		sawDuplicateEvidence = sawDuplicateEvidence || strings.Contains(string(message), "duplicate_call")
+	}
+	if !sawDuplicateEvidence {
 		t.Fatal("the duplicate rejection was not sent back to the model")
+	}
+	if len(client.requests[2].Tools) != 0 {
+		t.Fatalf("duplicate did not consume the final tool allowance: %d tools offered", len(client.requests[2].Tools))
 	}
 }
 
@@ -539,7 +639,7 @@ func TestServiceRejectsUnavailableToolWithoutEchoingItsName(t *testing.T) {
 		assistantResponse(t, "tool_calls", "", []ToolCall{functionToolCall("call-1", "read_local_file", `{"path":"/etc/passwd"}`)}, nil),
 		assistantResponse(t, "stop", "I cannot read files; here is the usage report.", nil, nil),
 	}}
-	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
+	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode), MaxToolCalls: 1})
 
 	result, err := service.Chat(context.Background(), oneUserMessage("Read a file."))
 	if err != nil {
@@ -554,6 +654,9 @@ func TestServiceRejectsUnavailableToolWithoutEchoingItsName(t *testing.T) {
 	}
 	if record.Name == "read_local_file" || strings.Contains(string(record.Arguments), "passwd") {
 		t.Fatalf("provider-controlled tool name or arguments were echoed: %#v", record)
+	}
+	if len(client.requests[1].Tools) != 0 {
+		t.Fatalf("unknown tool did not consume the only tool allowance: %d tools offered", len(client.requests[1].Tools))
 	}
 }
 
@@ -865,7 +968,7 @@ func TestBrowserContextIsValidatedAndNeverGetsSystemAuthority(t *testing.T) {
 	client := &scriptedAgentClient{responses: []*ChatResponse{assistantResponse(t, "stop", "Report.", nil, nil)}}
 	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
 	input := oneUserMessage("Summarize this view.")
-	input.Context = &BrowserContext{Route: "/models", Source: "codex", Period: "7d", Timezone: "America/Mexico_City"}
+	input.Context = &BrowserContext{Route: "/models", Source: "codex", From: "2026-01-01", To: "2026-01-31", Timezone: "America/Mexico_City"}
 	if _, err := service.Chat(context.Background(), input); err != nil {
 		t.Fatal(err)
 	}
@@ -876,8 +979,113 @@ func TestBrowserContextIsValidatedAndNeverGetsSystemAuthority(t *testing.T) {
 	if strings.Contains(string(request.Messages[0]), "America/Mexico_City") {
 		t.Fatalf("browser context was injected into system message: %s", request.Messages[0])
 	}
-	if !strings.Contains(string(request.Messages[1]), "America/Mexico_City") || !strings.Contains(string(request.Messages[1]), `"role":"user"`) || !strings.Contains(string(request.Messages[1]), "untrusted_navigation_context") {
+	if !strings.Contains(string(request.Messages[1]), "America/Mexico_City") || !strings.Contains(string(request.Messages[1]), `\"from\":\"2026-01-01\"`) || !strings.Contains(string(request.Messages[1]), `\"to\":\"2026-01-31\"`) || !strings.Contains(string(request.Messages[1]), `"role":"user"`) || !strings.Contains(string(request.Messages[1]), "untrusted_navigation_context") {
 		t.Fatalf("browser context was not isolated as untrusted user data: %s", request.Messages[1])
+	}
+	var providerMessage struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(request.Messages[1], &providerMessage); err != nil {
+		t.Fatal(err)
+	}
+	contextIndex := strings.Index(providerMessage.Content, "<untrusted_navigation_context>")
+	questionIndex := strings.Index(providerMessage.Content, "Summarize this view.")
+	if contextIndex < 0 || questionIndex <= contextIndex {
+		t.Fatalf("navigation context must precede the latest question so user range intent stays most salient: %q", providerMessage.Content)
+	}
+}
+
+func TestNormalizeBrowserContextMatchesToolTimeModes(t *testing.T) {
+	now := time.Date(2026, time.July, 31, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		input      BrowserContext
+		wantPeriod string
+		wantFrom   string
+		wantTo     string
+		wantErr    string
+	}{
+		{name: "preset", input: BrowserContext{Period: "30d"}, wantPeriod: "30d"},
+		{name: "default", input: BrowserContext{Route: "/overview"}, wantPeriod: "7d"},
+		{name: "closed custom range", input: BrowserContext{From: "2026-01-01", To: "2026-01-31"}, wantFrom: "2026-01-01", wantTo: "2026-01-31"},
+		{name: "open custom range", input: BrowserContext{From: "2026-01-01"}, wantFrom: "2026-01-01"},
+		{name: "legacy closed range", input: BrowserContext{Period: "2026-01-01 to 2026-01-31"}, wantFrom: "2026-01-01", wantTo: "2026-01-31"},
+		{name: "legacy open range", input: BrowserContext{Period: "2026-01-01 to now"}, wantFrom: "2026-01-01"},
+		{name: "unsupported preset", input: BrowserContext{Period: "90d"}, wantErr: "period must be one of"},
+		{name: "mixed modes", input: BrowserContext{Period: "7d", From: "2026-01-01"}, wantErr: "time mode conflict"},
+		{name: "legacy mixed with structured", input: BrowserContext{Period: "2026-01-01 to now", From: "2026-01-01"}, wantErr: "either period or from/to"},
+		{name: "to without from", input: BrowserContext{To: "2026-01-31"}, wantErr: "to requires from"},
+		{name: "malformed from", input: BrowserContext{From: "01-01-2026"}, wantErr: "YYYY-MM-DD"},
+		{name: "future from", input: BrowserContext{From: "2026-08-01"}, wantErr: "future"},
+		{name: "inverted range", input: BrowserContext{From: "2026-02-01", To: "2026-01-01"}, wantErr: "not before from"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := normalizeBrowserContextAt(test.input, now)
+			if test.wantErr != "" {
+				var contextErr *ContextValidationError
+				if !errors.Is(err, ErrInvalidChat) || !errors.As(err, &contextErr) || !strings.Contains(contextErr.Detail, test.wantErr) {
+					t.Fatalf("err = %v, want ErrInvalidChat containing %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Period != test.wantPeriod || got.From != test.wantFrom || got.To != test.wantTo {
+				t.Fatalf("normalized time context = period %q from %q to %q", got.Period, got.From, got.To)
+			}
+		})
+	}
+}
+
+func TestServiceNormalizesLegacyRangeBeforeProviderRequest(t *testing.T) {
+	client := &scriptedAgentClient{responses: []*ChatResponse{assistantResponse(t, "stop", "Report.", nil, nil)}}
+	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
+	input := oneUserMessage("Summarize this view.")
+	input.Context = &BrowserContext{Period: "2026-01-01 to now"}
+	if _, err := service.Chat(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	prompt := string(client.requests[0].Messages[1])
+	if !strings.Contains(prompt, `\"from\":\"2026-01-01\"`) || strings.Contains(prompt, "2026-01-01 to now") || strings.Contains(prompt, `\"period\"`) {
+		t.Fatalf("legacy context was not normalized before provider request: %s", prompt)
+	}
+}
+
+func TestCurrentDateNotePublishesExactUTCPeriodContract(t *testing.T) {
+	note := currentDateNote()
+	for _, want := range []string{
+		"1h, 6h, 12h, 24h, 72h, 1d, 7d, 14d, 30d, 1y, all",
+		"Hour presets are rolling UTC windows",
+		"day presets are UTC calendar-aligned",
+		"choose exactly one time mode",
+		`PRESET uses {"period":"7d"} with no from/to`,
+		`CUSTOM uses {"from":"2026-07-01","to":"2026-07-31"}`,
+		"DEFAULT omits all three",
+		"For CUSTOM remove period and verify from exists",
+		"For PRESET remove from and to and verify period exists",
+		"Do not apply both corrections",
+		"Browser timezone is only a navigation/display hint",
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("current-date note is missing %q: %s", want, note)
+		}
+	}
+	if strings.Contains(note, "…") {
+		t.Fatalf("current-date note invites invented periods with an ellipsis: %s", note)
+	}
+}
+
+func TestPrivacyNoticeDisclosesNavigationAndAggregateBucketLabels(t *testing.T) {
+	status := BaseStatus()
+	if status.ConsentVersion != "analytics-assistant-v5" {
+		t.Fatalf("consent version = %q", status.ConsentVersion)
+	}
+	for _, want := range []string{"dashboard route", "custom date range", "browser timezone", "aggregate UTC day/hour bucket labels", "per-session activity timestamps"} {
+		if !strings.Contains(status.PrivacyNotice, want) {
+			t.Errorf("privacy notice is missing %q: %s", want, status.PrivacyNotice)
+		}
 	}
 }
 

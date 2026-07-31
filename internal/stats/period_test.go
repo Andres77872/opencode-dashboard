@@ -257,7 +257,7 @@ func TestComputePeriodWindowFromQuery_explicitRange(t *testing.T) {
 }
 
 func TestComputePeriodWindowFromQuery_explicitFromOnly(t *testing.T) {
-	// from only → to defaults to now (server timezone)
+	// from only → to defaults to now (UTC)
 	before := time.Now()
 	pw, err := ComputePeriodWindowFromQuery(context.Background(), nil, PeriodQuery{
 		From: "2026-04-01",

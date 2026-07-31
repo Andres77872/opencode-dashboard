@@ -5,7 +5,7 @@ import { customRangeLabel, periodTriggerLabel, presetLabel } from './period-labe
 test('presetLabel maps every preset to a human label', () => {
   assert.equal(presetLabel('1h'), 'Last hour')
   assert.equal(presetLabel('7d'), 'Last 7 days')
-  assert.equal(presetLabel('1d'), 'Today')
+  assert.equal(presetLabel('1d'), 'Today (UTC)')
   assert.equal(presetLabel('all'), 'All time')
 })
 

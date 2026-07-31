@@ -838,7 +838,7 @@ func (s *Store) presetOrExplicitWindow(ctx context.Context, sourceID string, pq 
 		}
 		return window{start: start, end: end, all: true}, nil
 	}
-	if hours, ok := parseHourPeriod(period); ok {
+	if hours, ok := stats.HourPresetHours(period); ok {
 		now := time.Now().UTC()
 		return window{start: now.Add(-time.Duration(hours) * time.Hour), end: now}, nil
 	}
@@ -892,23 +892,6 @@ func dayStartMs(day string) int64 {
 		return 0
 	}
 	return t.UnixMilli()
-}
-
-func parseHourPeriod(period string) (int, bool) {
-	switch period {
-	case "1h":
-		return 1, true
-	case "6h":
-		return 6, true
-	case "12h":
-		return 12, true
-	case "24h":
-		return 24, true
-	case "72h":
-		return 72, true
-	default:
-		return 0, false
-	}
 }
 
 func messageOrderBy(sortSpec stats.MessageSort) string {

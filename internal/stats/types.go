@@ -430,7 +430,7 @@ type SessionQuery struct {
 	Filter    string
 	ProjectID string // exact project ID filter, empty = no filter
 	Sort      SessionSortMode
-	Period    string // "1d", "7d", "30d", "1y", "all" — filters by message activity time
+	Period    string // preset from SupportedPeriodPresets — filters by message activity time
 	From      string // ISO 8601 date "2006-01-02" for custom range
 	To        string // ISO 8601 date "2006-01-02" for custom range (optional)
 
@@ -447,9 +447,9 @@ type SessionQuery struct {
 //   - Period != ""  → preset mode (from/to ignored)
 //   - From != ""    → explicit range mode (Period ignored)
 type PeriodQuery struct {
-	Period string // preset: "1h", "6h", "12h", "24h", "72h", "1d", "7d", "14d", "30d", "1y", "all"
+	Period string // exact preset from SupportedPeriodPresets
 	From   string // ISO 8601 date "2006-01-02". When From is set, Period is ignored.
-	To     string // ISO 8601 date "2006-01-02". Optional — empty = now in server timezone.
+	To     string // ISO 8601 date "2006-01-02". Optional — empty = now in UTC.
 
 	// Model/Provider restrict Overview, Daily, and Messages to assistant
 	// messages attributed to one model (and optionally one provider). Only the

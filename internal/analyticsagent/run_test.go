@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -205,6 +206,152 @@ func TestServiceCountsRoundsEvenWithoutProviderTokenCounters(t *testing.T) {
 	}
 }
 
+func TestServiceRecoversFromInvalidAnalyticsArguments(t *testing.T) {
+	client := &scriptedAgentClient{responses: []*ChatResponse{
+		assistantResponse(t, "tool_calls", "", []ToolCall{
+			functionToolCall("call-invalid", "get_overview", `{"source":"opencode","period":"90d"}`),
+		}, nil),
+		assistantResponse(t, "tool_calls", "", []ToolCall{
+			functionToolCall("call-corrected", "get_overview", `{"source":"opencode","period":"30d"}`),
+		}, nil),
+		assistantResponse(t, "stop", "Corrected report.", nil, nil),
+	}}
+	registry := source.NewRegistry(source.SourceOpenCode)
+	if err := registry.Register(newAnalyticsTestSource(source.SourceOpenCode, 2)); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(ServiceOptions{Client: client, Registry: registry})
+	result, err := service.Chat(context.Background(), oneUserMessage("Report the last 30 days."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Message.Content != "Corrected report." || len(result.ToolCalls) != 2 {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.ToolCalls[0].OK || !strings.Contains(string(result.ToolCalls[0].Result), "for custom dates omit period and use from/to") {
+		t.Fatalf("invalid call result = %s", result.ToolCalls[0].Result)
+	}
+	if !result.ToolCalls[1].OK || !strings.Contains(string(result.ToolCalls[1].Arguments), `"period":"30d"`) {
+		t.Fatalf("corrected call = %#v", result.ToolCalls[1])
+	}
+	if len(client.requests) != 3 || !strings.Contains(string(client.requests[1].Messages[len(client.requests[1].Messages)-1]), "invalid_arguments") {
+		t.Fatalf("model did not receive actionable rejection: %#v", client.requests)
+	}
+}
+
+func TestServiceRecoversFromConflictingTimeModes(t *testing.T) {
+	tests := []struct {
+		name          string
+		question      string
+		rejected      string
+		corrected     string
+		wantError     string
+		wantCorrected []string
+		wantOmitted   []string
+	}{
+		{
+			name:      "keep custom range and remove period",
+			question:  "Report July 1 through July 15, 2020.",
+			rejected:  `{"source":"opencode","period":"7d","from":"2020-07-01","to":"2020-07-15"}`,
+			corrected: `{"source":"opencode","from":"2020-07-01","to":"2020-07-15"}`,
+			wantError: "CUSTOM mode keeps required from plus optional to and removes period",
+			wantCorrected: []string{
+				`"from":"2020-07-01"`, `"to":"2020-07-15"`,
+			},
+			wantOmitted: []string{`"period"`},
+		},
+		{
+			name:          "keep preset and remove custom keys",
+			question:      "Report the 7d preset.",
+			rejected:      `{"source":"opencode","period":"7d","from":"2020-07-01"}`,
+			corrected:     `{"source":"opencode","period":"7d"}`,
+			wantError:     "PRESET mode keeps period and removes from/to",
+			wantCorrected: []string{`"period":"7d"`},
+			wantOmitted:   []string{`"from"`, `"to"`},
+		},
+		{
+			name:      "custom correction adds from when only to was proposed",
+			question:  "Report July 1 through July 15, 2020.",
+			rejected:  `{"source":"opencode","period":"7d","to":"2020-07-15"}`,
+			corrected: `{"source":"opencode","from":"2020-07-01","to":"2020-07-15"}`,
+			wantError: "CUSTOM mode removes period and must add the required from date",
+			wantCorrected: []string{
+				`"from":"2020-07-01"`, `"to":"2020-07-15"`,
+			},
+			wantOmitted: []string{`"period"`},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &scriptedAgentClient{responses: []*ChatResponse{
+				assistantResponse(t, "tool_calls", "", []ToolCall{
+					functionToolCall("call-invalid", "get_overview", test.rejected),
+				}, nil),
+				assistantResponse(t, "tool_calls", "", []ToolCall{
+					functionToolCall("call-corrected", "get_overview", test.corrected),
+				}, nil),
+				assistantResponse(t, "stop", "Corrected report.", nil, nil),
+			}}
+			registry := source.NewRegistry(source.SourceOpenCode)
+			if err := registry.Register(newAnalyticsTestSource(source.SourceOpenCode, 2)); err != nil {
+				t.Fatal(err)
+			}
+			service := NewService(ServiceOptions{Client: client, Registry: registry})
+			result, err := service.Chat(context.Background(), oneUserMessage(test.question))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Message.Content != "Corrected report." || len(result.ToolCalls) != 2 {
+				t.Fatalf("result = %#v", result)
+			}
+			if result.ToolCalls[0].OK || string(result.ToolCalls[0].Arguments) != `{}` {
+				t.Fatalf("rejected call was not safely recorded: %#v", result.ToolCalls[0])
+			}
+			if !strings.Contains(string(result.ToolCalls[0].Result), test.wantError) {
+				t.Fatalf("rejection is not actionable: %s", result.ToolCalls[0].Result)
+			}
+			if !result.ToolCalls[1].OK {
+				t.Fatalf("corrected call failed: %#v", result.ToolCalls[1])
+			}
+			arguments := string(result.ToolCalls[1].Arguments)
+			for _, want := range test.wantCorrected {
+				if !strings.Contains(arguments, want) {
+					t.Errorf("corrected arguments %s lack %s", arguments, want)
+				}
+			}
+			for _, forbidden := range test.wantOmitted {
+				if strings.Contains(arguments, forbidden) {
+					t.Errorf("corrected arguments %s contain %s", arguments, forbidden)
+				}
+			}
+			if len(client.requests) != 3 || !strings.Contains(string(client.requests[1].Messages[len(client.requests[1].Messages)-1]), test.wantError) {
+				t.Fatalf("model did not receive the mode-preserving correction: %#v", client.requests)
+			}
+		})
+	}
+}
+
+func TestRejectedAllowedToolArgumentsAreFullyRedacted(t *testing.T) {
+	const secret = "/private/project/credential.txt"
+	client := &scriptedAgentClient{responses: []*ChatResponse{
+		assistantResponse(t, "tool_calls", "", []ToolCall{
+			functionToolCall("bad", "get_overview", `{"source":"opencode","period":"90d","path":"`+secret+`"}`),
+		}, nil),
+		assistantResponse(t, "stop", "The invalid proposal was rejected.", nil, nil),
+	}}
+	service := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)})
+	result, err := service.Chat(context.Background(), oneUserMessage("Report."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ToolCalls) != 1 || string(result.ToolCalls[0].Arguments) != `{}` {
+		t.Fatalf("rejected arguments were not redacted: %#v", result.ToolCalls)
+	}
+	if strings.Contains(string(result.ToolCalls[0].Result), secret) {
+		t.Fatalf("rejection leaked provider-controlled content: %s", result.ToolCalls[0].Result)
+	}
+}
+
 func TestServiceDelegatesToASpecialistAndRecordsItsWork(t *testing.T) {
 	const task = "Determine which model drove the opencode token increase over the last 7 days."
 	client := newRoutedClient()
@@ -297,6 +444,30 @@ func TestServiceDelegatesToASpecialistAndRecordsItsWork(t *testing.T) {
 	}
 }
 
+func TestTruncatedSpecialistFindingTriggersDeterministicNotice(t *testing.T) {
+	const task = "Analyze the complete opencode trend and return a detailed evidence-backed finding."
+	client := newRoutedClient()
+	client.script(AgentLead,
+		assistantResponse(t, "tool_calls", "", []ToolCall{delegationCall("delegate", AgentTrend, task)}, nil),
+		assistantResponse(t, "stop", "Lead summary.", nil, nil),
+	)
+	client.script(AgentTrend,
+		assistantResponse(t, "stop", strings.Repeat("x", maxSubagentReportBytes+100), nil, nil),
+	)
+	result, err := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)}).Chat(
+		context.Background(), oneUserMessage("Investigate."),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Subagents) != 1 || !strings.HasSuffix(result.Subagents[0].Report, "[finding truncated]") {
+		t.Fatalf("specialist report was not visibly bounded: %#v", result.Subagents)
+	}
+	if len(result.Notices) != 1 || result.Notices[0] != truncationNotice || !strings.Contains(result.Message.Content, truncationNotice) {
+		t.Fatalf("specialist truncation was not disclosed deterministically: %#v", result)
+	}
+}
+
 func TestServiceReportsSpecialistFailureAsEvidenceNotRunFailure(t *testing.T) {
 	client := newRoutedClient()
 	client.script(AgentLead,
@@ -354,6 +525,32 @@ func TestServiceRejectsInvalidAndOverusedDelegations(t *testing.T) {
 	}
 	if !strings.Contains(string(result.ToolCalls[1].Result), "invalid_arguments") {
 		t.Fatalf("short task result = %s", result.ToolCalls[1].Result)
+	}
+}
+
+func TestEquivalentDelegationsShareCanonicalDuplicateFingerprint(t *testing.T) {
+	const task = "Analyze the opencode request trend and identify the strongest aggregate driver."
+	firstArgs := `{"task":"  ` + task + `  ","agent":"trend_analyst"}`
+	secondArgs := `{"agent":"trend_analyst","task":"` + task + `"}`
+	client := newRoutedClient()
+	client.script(AgentLead,
+		assistantResponse(t, "tool_calls", "", []ToolCall{functionToolCall("first", delegateToolName, firstArgs)}, nil),
+		assistantResponse(t, "tool_calls", "", []ToolCall{functionToolCall("second", delegateToolName, secondArgs)}, nil),
+		assistantResponse(t, "stop", "Used the original specialist finding.", nil, nil),
+	)
+	client.script(AgentTrend, assistantResponse(t, "stop", "Trend finding.", nil, nil))
+
+	result, err := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)}).Chat(
+		context.Background(), oneUserMessage("Investigate."),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Subagents) != 1 || len(client.requestsFor(AgentTrend)) != 1 {
+		t.Fatalf("equivalent delegation ran more than once: subagents=%#v requests=%d", result.Subagents, len(client.requestsFor(AgentTrend)))
+	}
+	if len(result.ToolCalls) != 1 || !strings.Contains(string(result.ToolCalls[0].Result), "duplicate_call") {
+		t.Fatalf("second delegation was not rejected as duplicate: %#v", result.ToolCalls)
 	}
 }
 
@@ -418,6 +615,22 @@ func TestServiceGathersIndependentEvidenceConcurrently(t *testing.T) {
 		if record.CallID != "tool-"+string(rune('1'+index)) {
 			t.Fatalf("call ids are not stable: %#v", result.ToolCalls)
 		}
+	}
+}
+
+func TestProviderCannotProposeUnboundedCallsInOneRound(t *testing.T) {
+	calls := make([]ToolCall, maxToolCallsPerRound+1)
+	for index := range calls {
+		calls[index] = functionToolCall(fmt.Sprintf("call-%d", index), "list_sources", `{}`)
+	}
+	client := &scriptedAgentClient{responses: []*ChatResponse{
+		assistantResponse(t, "tool_calls", "", calls, nil),
+	}}
+	result, err := NewService(ServiceOptions{Client: client, Registry: source.NewRegistry(source.SourceOpenCode)}).Chat(
+		context.Background(), oneUserMessage("Report."),
+	)
+	if !errors.Is(err, ErrProviderFailure) {
+		t.Fatalf("result=%#v err=%v, want bounded provider failure", result, err)
 	}
 }
 
@@ -524,6 +737,40 @@ func TestBoundReportTruncatesOnARuneBoundary(t *testing.T) {
 	short, truncated := boundReport("  concise finding  ")
 	if truncated || short != "concise finding" {
 		t.Fatalf("short report = %q truncated=%v", short, truncated)
+	}
+}
+
+func TestDelegationLengthMatchesJSONSchemaCharacterCounts(t *testing.T) {
+	task := strings.Repeat("界", minDelegatedTaskChars)
+	encoded, err := json.Marshal(delegationArgs{Agent: string(AgentTrend), Task: "  " + task + "  "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, gotTask, err := parseDelegation(string(encoded))
+	if err != nil {
+		t.Fatalf("unicode task rejected by byte length: %v", err)
+	}
+	if agent != AgentTrend || gotTask != task {
+		t.Fatalf("delegation = %q/%q", agent, gotTask)
+	}
+	tooLong, _ := json.Marshal(delegationArgs{Agent: string(AgentTrend), Task: strings.Repeat("界", maxDelegatedTaskChars+1)})
+	if _, _, err := parseDelegation(string(tooLong)); err == nil {
+		t.Fatal("overlong unicode task accepted")
+	}
+}
+
+func TestResultReportsNestedTruncation(t *testing.T) {
+	for _, result := range []json.RawMessage{
+		json.RawMessage(`{"ok":true,"data":{"truncated":true}}`),
+		json.RawMessage(`{"ok":true,"data":{"sources":[{"trend_truncated":true}]}}`),
+		json.RawMessage(`{"ok":true,"data":{"top_models_truncated":true}}`),
+	} {
+		if !resultReportsTruncation(result) {
+			t.Fatalf("truncation not detected: %s", result)
+		}
+	}
+	if resultReportsTruncation(json.RawMessage(`{"ok":true,"data":{"truncated":false}}`)) {
+		t.Fatal("false truncation flag was treated as truncated")
 	}
 }
 

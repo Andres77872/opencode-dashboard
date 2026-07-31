@@ -3,6 +3,7 @@ package stats
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Sentinels for the request-shaping failures every aggregator can raise. The
@@ -21,13 +22,9 @@ var (
 	ErrFilterUnavailable = errors.New("filter unavailable")
 )
 
-// supportedPeriods is echoed by InvalidPeriodError so the list users see is
-// defined once rather than repeated at each aggregator that validates a period.
-const supportedPeriods = "1d, 7d, 14d, 30d, 1y, all, plus hour presets 1h, 6h, 12h, 24h, 72h"
-
 // InvalidPeriodError is the canonical rejection for an unresolvable period.
 func InvalidPeriodError(period string) error {
-	return fmt.Errorf("%w: %q (supported: %s)", ErrInvalidPeriod, period, supportedPeriods)
+	return fmt.Errorf("%w: %q (supported presets: %s)", ErrInvalidPeriod, period, strings.Join(SupportedPeriodPresets(), ", "))
 }
 
 // InvalidDimensionError rejects a daily-breakdown dimension. supported is the

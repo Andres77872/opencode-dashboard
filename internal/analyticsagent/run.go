@@ -9,19 +9,23 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
 	// maxDelegationsPerTurn bounds how many specialists one question may start.
 	maxDelegationsPerTurn = 3
-	minDelegatedTaskBytes = 24
-	maxDelegatedTaskBytes = 1200
+	minDelegatedTaskChars = 24
+	maxDelegatedTaskChars = 1200
 	// maxSubagentReportBytes bounds a specialist finding before it is handed
 	// back to the lead agent as tool evidence.
 	maxSubagentReportBytes = 6 << 10
 	// maxConcurrentToolCalls bounds parallel evidence gathering. Analytics tools
 	// are read-only, so a round's calls are independent by construction.
 	maxConcurrentToolCalls = 4
+	// maxToolCallsPerRound bounds provider-controlled rejection records as well
+	// as executable calls. Keep it aligned with the concurrency envelope.
+	maxToolCallsPerRound = maxConcurrentToolCalls
 	// maxProviderAttempts includes the first attempt: one bounded retry.
 	maxProviderAttempts      = 2
 	providerRetryBaseDelay   = 400 * time.Millisecond
@@ -151,6 +155,7 @@ type turnRunner struct {
 	toolsUsed       []string
 	costSources     map[string]struct{}
 	crossSourceCost bool
+	truncatedData   bool
 }
 
 func (t *turnRunner) nextCallID() string {
@@ -165,6 +170,9 @@ func (t *turnRunner) recordTool(record ToolCallRecord) {
 	defer t.mu.Unlock()
 	t.toolCalls = append(t.toolCalls, record)
 	t.toolsUsed = appendUnique(t.toolsUsed, record.Name)
+	if record.OK && resultReportsTruncation(record.Result) {
+		t.truncatedData = true
+	}
 }
 
 // noteToolName records that a tool was invoked even when the invocation itself
@@ -179,6 +187,12 @@ func (t *turnRunner) recordSubagent(record SubagentRunRecord) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.subagents = append(t.subagents, record)
+}
+
+func (t *turnRunner) noteTruncation() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.truncatedData = true
 }
 
 // noteCostScope tracks whether the answer mixes cost from more than one source,
@@ -206,10 +220,57 @@ func (t *turnRunner) noteCostScope(name, arguments string) {
 	}
 }
 
-func (t *turnRunner) needsCrossSourceNotice() bool {
+func (t *turnRunner) deterministicNotices() []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.crossSourceCost
+	notices := make([]string, 0, 2)
+	if t.crossSourceCost {
+		notices = append(notices, crossSourceCostNotice)
+	}
+	if t.truncatedData {
+		notices = append(notices, truncationNotice)
+	}
+	return notices
+}
+
+func noticeSuffix(notices []string) string {
+	if len(notices) == 0 {
+		return ""
+	}
+	return "\n\n" + strings.Join(notices, "\n\n")
+}
+
+func resultReportsTruncation(result json.RawMessage) bool {
+	var envelope struct {
+		Data any `json:"data"`
+	}
+	if json.Unmarshal(result, &envelope) != nil {
+		return false
+	}
+	var visit func(any) bool
+	visit = func(value any) bool {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				if key == "truncated" || strings.HasSuffix(key, "_truncated") {
+					if flag, ok := child.(bool); ok && flag {
+						return true
+					}
+				}
+				if visit(child) {
+					return true
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if visit(child) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return visit(envelope.Data)
 }
 
 func (t *turnRunner) results() ([]string, []ToolCallRecord, []SubagentRunRecord) {
@@ -349,7 +410,7 @@ func (r *agentRun) callModel(ctx context.Context, withoutTools bool) (*ChatRespo
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-		visible := &roundStream{run: r, content: newVisibleContentStream()}
+		visible := &roundStream{run: r, content: newVisibleContentStream(r.visibleContentLimit())}
 		response, err := r.invokeProvider(ctx, tools, visible)
 		if err == nil {
 			// A completed round is always one provider request, even when the
@@ -472,7 +533,7 @@ func (r *agentRun) finalContent(response *ChatResponse, visible *roundStream) (s
 		}
 		return "", fmt.Errorf("%w: provider returned an empty final response", ErrProviderFailure)
 	}
-	if r.visible && len(content) > maxFinalResponseBytes {
+	if r.visible && len(content) > r.visibleContentLimit() {
 		if resetErr := visible.reset(); resetErr != nil {
 			return "", resetErr
 		}
@@ -482,6 +543,20 @@ func (r *agentRun) finalContent(response *ChatResponse, visible *roundStream) (s
 		return "", err
 	}
 	return content, nil
+}
+
+// visibleContentLimit reserves space for deterministic backend notices before
+// provider prose is streamed or accepted. The signed answer therefore always
+// remains a valid browser-history message on the next turn.
+func (r *agentRun) visibleContentLimit() int {
+	limit := maxFinalResponseBytes
+	if r.visible {
+		limit -= len(noticeSuffix(r.turn.deterministicNotices()))
+	}
+	if limit < 0 {
+		return 0
+	}
+	return limit
 }
 
 func (r *agentRun) emit(event StreamEvent) error {
@@ -520,6 +595,9 @@ func (c *plannedCall) delegation() bool { return c.specialist != nil }
 // them. Recoverable mistakes become tool results the model can react to; only
 // protocol violations and transport failures end the run.
 func (r *agentRun) runToolCalls(ctx context.Context, calls []ToolCall, round int) ([]json.RawMessage, error) {
+	if len(calls) > maxToolCallsPerRound {
+		return nil, fmt.Errorf("%w: provider requested more than %d tools in one round", ErrProviderFailure, maxToolCallsPerRound)
+	}
 	planned := make([]*plannedCall, 0, len(calls))
 	for _, call := range calls {
 		item, err := r.planCall(call)
@@ -532,6 +610,7 @@ func (r *agentRun) runToolCalls(ctx context.Context, calls []ToolCall, round int
 	executable := make([]*plannedCall, 0, len(planned))
 	for _, item := range planned {
 		if item.rejection != nil {
+			item.arguments = redactedRejectedToolArguments()
 			item.result = item.rejection
 			item.ok = false
 			continue
@@ -590,9 +669,23 @@ func (r *agentRun) planCall(call ToolCall) (*plannedCall, error) {
 		streamCallID: r.turn.nextCallID(),
 		name:         name,
 		displayName:  name,
-		arguments:    safeToolArguments(call.Function.Arguments),
+		arguments:    json.RawMessage(`{}`),
 		rawArguments: call.Function.Arguments,
 	}
+
+	// Every provider-proposed call consumes the same bounded allowance,
+	// including unknown names, invalid arguments, and duplicates. Otherwise a
+	// model could generate an unbounded rejection transcript without spending
+	// the evidence budget.
+	if r.toolCallCount >= r.maxToolCalls {
+		item.rejection = toolErrorEnvelope("agent_budget_exhausted", "This agent has no tool calls left. Answer from the evidence already gathered.")
+		return item, nil
+	}
+	if !r.turn.budget.takeToolCall() {
+		item.rejection = toolErrorEnvelope("budget_exhausted", "The evidence budget for this question is spent. Answer from the evidence already gathered and state what is unverified.")
+		return item, nil
+	}
+	r.toolCallCount++
 
 	if !r.allows(name) {
 		// The name is provider-supplied and outside the allowlist, so it is
@@ -603,7 +696,46 @@ func (r *agentRun) planCall(call ToolCall) (*plannedCall, error) {
 		return item, nil
 	}
 
-	fingerprint := toolCallFingerprint(name, call.Function.Arguments)
+	var preparationErr error
+	preparationCode := "invalid_arguments"
+	var delegationDefinition *agentDefinition
+	var delegationTask string
+	if name != delegateToolName {
+		prepared, err := r.turn.service.tools.Prepare(name, json.RawMessage(call.Function.Arguments))
+		if err != nil {
+			preparationErr = err
+			item.arguments = redactedRejectedToolArguments()
+		} else {
+			item.arguments = prepared
+			item.rawArguments = string(prepared)
+		}
+	} else {
+		agentID, task, err := parseDelegation(item.rawArguments)
+		if err != nil {
+			preparationErr = err
+			item.arguments = redactedRejectedToolArguments()
+		} else {
+			normalized, marshalErr := json.Marshal(delegationArgs{Agent: string(agentID), Task: task})
+			if marshalErr != nil {
+				return nil, fmt.Errorf("%w: normalize delegation arguments", ErrProviderFailure)
+			}
+			item.arguments = normalized
+			item.rawArguments = string(normalized)
+			delegationTask = task
+			definition, found := agentByID(agentID)
+			if !found || !isSpecialistAgent(agentID) {
+				preparationErr = errors.New("That specialist does not exist. Choose one from the tool schema.")
+				preparationCode = "unknown_specialist"
+			} else {
+				delegationDefinition = definition
+			}
+		}
+	}
+
+	// Fingerprint only canonical arguments. Equivalent analytics calls and
+	// delegation tasks therefore share one identity even if the provider used
+	// different whitespace or JSON key order.
+	fingerprint := toolCallFingerprint(name, item.rawArguments)
 	if previous, exists := r.seen[fingerprint]; exists {
 		item.rejection = toolErrorEnvelope("duplicate_call",
 			fmt.Sprintf("This exact call already ran in this investigation as %s. Reuse that result or change the arguments.", previous))
@@ -611,48 +743,32 @@ func (r *agentRun) planCall(call ToolCall) (*plannedCall, error) {
 	}
 	r.seen[fingerprint] = item.streamCallID
 
-	if r.toolCallCount >= r.maxToolCalls {
-		item.rejection = toolErrorEnvelope("agent_budget_exhausted", "This agent has no tool calls left. Answer from the evidence already gathered.")
-		return item, nil
-	}
-	if !r.turn.budget.takeToolCall() {
-		item.rejection = toolErrorEnvelope("budget_exhausted", "The evidence budget for this question is spent. Answer from the evidence already gathered and state what is unverified.")
-		return item, nil
-	}
-	r.toolCallCount++
 	r.toolsUsed = appendUnique(r.toolsUsed, name)
 	r.turn.noteToolName(name)
-
-	if name == delegateToolName {
-		r.planDelegation(item)
+	if preparationErr != nil {
+		item.arguments = redactedRejectedToolArguments()
+		item.rejection = toolErrorEnvelope(preparationCode, preparationErr.Error())
 		return item, nil
 	}
-	r.turn.noteCostScope(name, call.Function.Arguments)
+
+	if name == delegateToolName {
+		if !r.turn.budget.takeDelegation() {
+			item.rejection = toolErrorEnvelope("delegation_budget_exhausted",
+				fmt.Sprintf("At most %d specialists may run for one question. Finish the analysis yourself.", maxDelegationsPerTurn))
+			return item, nil
+		}
+		item.specialist = delegationDefinition
+		item.task = delegationTask
+		return item, nil
+	}
+	r.turn.noteCostScope(name, item.rawArguments)
 	return item, nil
 }
 
-// planDelegation resolves a delegation completely before anything is announced,
-// so a rejected delegation is reported as an ordinary failed tool call and an
-// accepted one is always announced as the specialist that will actually run.
-func (r *agentRun) planDelegation(item *plannedCall) {
-	agentID, task, err := parseDelegation(item.rawArguments)
-	if err != nil {
-		item.rejection = toolErrorEnvelope("invalid_arguments", err.Error())
-		return
-	}
-	definition, found := agentByID(agentID)
-	if !found || !isSpecialistAgent(agentID) {
-		item.rejection = toolErrorEnvelope("unknown_specialist", "That specialist does not exist. Choose one from the tool schema.")
-		return
-	}
-	if !r.turn.budget.takeDelegation() {
-		item.rejection = toolErrorEnvelope("delegation_budget_exhausted",
-			fmt.Sprintf("At most %d specialists may run for one question. Finish the analysis yourself.", maxDelegationsPerTurn))
-		return
-	}
-	item.specialist = definition
-	item.task = task
-}
+// Rejected provider proposals are fully redacted. Even a syntactically valid
+// object can carry unknown prompt, path, or credential-shaped fields, and the
+// field-specific error envelope is sufficient for one corrected retry.
+func redactedRejectedToolArguments() json.RawMessage { return json.RawMessage(`{}`) }
 
 func (r *agentRun) allows(name string) bool {
 	if name == delegateToolName {
@@ -757,7 +873,7 @@ func (r *agentRun) executeCall(ctx context.Context, item *plannedCall, round int
 		})
 	}
 
-	result := r.turn.service.tools.Execute(ctx, item.name, json.RawMessage(item.rawArguments))
+	result := r.turn.service.tools.executePrepared(ctx, item.name, json.RawMessage(item.rawArguments))
 	item.durationMS = time.Since(startedAt).Milliseconds()
 	if len(result) == 0 {
 		result = toolErrorEnvelope("tool_failed", "The analytics tool failed safely.")
@@ -803,6 +919,9 @@ func (r *agentRun) delegate(ctx context.Context, item *plannedCall) (json.RawMes
 	}
 
 	report, truncated := boundReport(outcome.content)
+	if truncated {
+		r.turn.noteTruncation()
+	}
 	record.Report = report
 	record.Status = outcome.status
 	record.Rounds = outcome.rounds
@@ -867,11 +986,12 @@ func parseDelegation(arguments string) (AgentID, string, error) {
 		return "", "", errors.New("delegation arguments must be a JSON object with agent and task")
 	}
 	task := strings.TrimSpace(args.Task)
-	if len(task) < minDelegatedTaskBytes {
-		return "", "", fmt.Errorf("task must describe a complete investigation in at least %d characters", minDelegatedTaskBytes)
+	length := utf8.RuneCountInString(task)
+	if length < minDelegatedTaskChars {
+		return "", "", fmt.Errorf("task must describe a complete investigation in at least %d characters", minDelegatedTaskChars)
 	}
-	if len(task) > maxDelegatedTaskBytes {
-		return "", "", fmt.Errorf("task must be at most %d characters", maxDelegatedTaskBytes)
+	if length > maxDelegatedTaskChars {
+		return "", "", fmt.Errorf("task must be at most %d characters", maxDelegatedTaskChars)
 	}
 	return AgentID(strings.TrimSpace(args.Agent)), task, nil
 }

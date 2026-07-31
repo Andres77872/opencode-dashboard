@@ -52,18 +52,22 @@ Each chat request can send the following to MiniMax:
   conversation;
 - a short system policy defining the report-only role;
 - tool schemas;
+- the allowlist-validated dashboard route, selected source, structured preset or
+  custom range, and browser timezone used as navigation context;
 - the task text the lead agent writes when it delegates an investigation;
 - the model, provider, tool, and pricing-snapshot names those metrics belong to,
   and each project's own name without its directories; and
 - only the aggregate usage metrics requested by the model, such as distinct
-  request/message counts, tokens, daily buckets, model totals, tool totals,
+  request/message counts, tokens, UTC day/hour bucket labels, model totals, tool totals,
   request-coverage metadata, cost provenance, normalized source scan counts,
   and sanitized cache-health flags.
 
 The assistant tools do **not** send raw prompts, assistant text, reasoning,
-patches, tool inputs or outputs, configuration contents, secrets, filesystem
-paths, session titles, raw diagnostics/errors, timestamps, request/session
-identifiers, or message/session detail.
+patches, coding-tool inputs or outputs, configuration contents, secrets,
+filesystem paths, session titles, raw diagnostics/errors, raw event or
+per-session activity timestamps, raw request/session identifiers, or
+message/session detail. Aggregate UTC bucket labels are the deliberate exception
+needed to report trends.
 
 ### Naming policy
 
@@ -143,8 +147,12 @@ For every model round the backend:
    enter the system message.
 2. If M3 returns tool calls, appends the complete assistant message—including
    its private interleaved-reasoning fields—to the server-side request history.
-3. Validates every function name and JSON argument against the agent's
-   allowlist and the shared budget.
+3. Strictly validates and normalizes every function name and JSON argument
+   against the advertised schema, the agent's allowlist, and the shared budget
+   before a source is queried. Executable calls are streamed/persisted with
+   canonical arguments; rejected calls carry `{}` and a public error. Rejected
+   proposals consume the tool budget, and one provider round may propose at
+   most four calls.
 4. Executes the round's read-only analytics tools concurrently through
    `source.Registry`, and starts any delegated specialist run.
 5. Appends bounded JSON tool results, in the order the model asked for them, and
@@ -159,11 +167,13 @@ For every model round the backend:
 ### Recovering instead of failing
 
 A model mistake the model can correct is returned to it as a failed tool
-result rather than ending the run: an unavailable tool name, a repeated
-identical call, an invalid delegation, a result too large for the remaining
-budget, and an exhausted budget all produce `ok:false` envelopes with a code the
-model can act on. Provider-supplied names outside the allowlist are never
-echoed to the browser or the chat log.
+result rather than ending the run: an unsupported period, a wrong field/type,
+an unavailable tool name, a repeated identical call, an invalid delegation, a
+result too large for the remaining budget, and an exhausted budget all produce
+`ok:false` envelopes with a code and actionable correction. The policy permits
+one corrected `invalid_arguments` call and forbids treating failure as zero.
+Provider-supplied names outside the allowlist are never echoed to the browser
+or chat log.
 
 When the round budget or the evidence budget is spent, the last round is sent
 with **no tools at all** plus a notice telling the model to answer from the
@@ -200,22 +210,45 @@ same spirit as the dashboard's treatment of usage-unavailable source requests.
 | `get_overview` | Totals for one explicit source and range | Sessions, outbound requests, transcript messages, days, tokens, source cost/provenance, and Kimi coverage when available |
 | `get_source_integrity` | Audit one or all registered sources | Aggregate availability, source-wide ingestion, period accounting/cost evidence, and sanitized cache-window findings; no local identifiers or raw errors |
 | `get_cross_source_overview` | Compare all available sources | Additive request/message/token totals are combined; dollar costs remain per source; omitted source dimensions are explicit |
-| `get_daily_usage` | Find trends and spikes | Distinct request/message counts in a validated period/custom range and at most 1,000 daily/hourly buckets |
-| `get_usage_trend_by_dimension` | Attribute a change to a model, tool, or project | Bounded daily/hourly series grouped by one dimension |
+| `get_daily_usage` | Find trends and spikes | Distinct request/message counts in at most 1,000 daily/hourly buckets; defaults to the latest 120 and marks truncation |
+| `get_usage_trend_by_dimension` | Attribute associated activity to a model, tool, or project | Bounded request/token series; tool rows are not invocation or outcome counts |
 | `get_model_usage` | Compare models for one source | Bounded rows with outbound requests, tokens, sessions, and cost provenance; legacy `messages` remains additive compatibility data |
-| `get_tool_usage` | Analyze tool adoption and failures | Bounded invocation/success/failure/session counts |
+| `get_tool_usage` | Analyze tool adoption and failures | Bounded invocation/success/failure/session counts; call explicit comparison windows for reliability changes |
 | `get_project_usage` | Analyze project concentration | Ranked projects with a stable reference and the project's leaf name; local IDs and paths omitted |
-| `get_session_usage` | Rank coding sessions | Opaque session references, aggregate metrics, and the owning project's name |
+| `get_session_usage` | Rank coding sessions | Opaque references, relative rank, aggregate metrics, and owning project; no exact activity timestamps |
 | `delegate_to_specialist` | Hand off a focused investigation | Lead agent only; bounded specialist run returning a written finding |
 
-Tools accept the dashboard's period presets (`1h`, `6h`, `12h`, `24h`, `72h`,
-`1d`, `7d`, `14d`, `30d`, `1y`, and `all`) or validated ISO dates. A source
-must be explicit for single-source tools; there is no implicit fallback inside
-the agent. Time-series tools reject `all` and oversized custom/hourly windows
-before source execution; all-time totals and rankings remain available through
-the non-bucketed overview/model/tool/project tools. Cross-source payloads list
-any unavailable source and any model/tool/project/trend dimension that failed,
-so a partial ranking cannot silently look complete.
+Tools accept only the exact presets `1h`, `6h`, `12h`, `24h`, `72h`, `1d`,
+`7d`, `14d`, `30d`, `1y`, and `all`; omission defaults to `7d`. Custom ranges
+must omit `period` and send inclusive `from` plus optional inclusive `to` as
+separate `YYYY-MM-DD` fields. Omitted `to` means through now. Hour presets are
+rolling UTC windows; day presets are UTC calendar-aligned, so `1d` (today UTC)
+differs from rolling `24h`. Browser timezone never changes query bounds.
+Every range-bearing tool advertises three mutually exclusive schema modes:
+PRESET (`period` only), CUSTOM (`from` and optional `to`, with no `period`), and
+DEFAULT (all three keys omitted). The runtime applies the default only after
+validation, so the model-facing `period` property deliberately has no default
+annotation. A mixed call is rejected with instructions for preserving either
+the PRESET or CUSTOM intent.
+
+For a single-range question, an explicit range in the latest user question
+overrides the navigation range; otherwise the assistant copies the navigation
+mode exactly. It never merges the two sources of time intent. If the user asks
+to compare a stated range with the current view, the assistant uses both as
+separate valid tool calls, one range mode per call.
+For one compatibility release, the browser request decoder normalizes the old
+`YYYY-MM-DD to YYYY-MM-DD|now` navigation label into structured fields; that
+display label is never valid analytics-tool input.
+
+A source must be explicit for single-source tools. Time-series tools reject
+`all`, hourly `1y`, and any custom/granularity combination above 1,000 buckets
+before source execution. All-time totals and rankings remain available through
+non-bucketed tools. Time-series and ranking outputs expose `truncated` or
+dimension-specific `*_truncated` flags; dimension-trend limits retain complete
+time buckets. A bounded specialist finding is marked `[finding truncated]`.
+The assistant must request a sufficient explicit limit when complete coverage
+is required or disclose the partial result. The backend also appends a
+deterministic truncation notice when retained evidence is incomplete.
 
 ## Request and usage completeness
 
@@ -292,8 +325,8 @@ last-good quota visible, clearly marked stale.
 Completed turns are persisted to a dedicated SQLite database
 (`$XDG_DATA_HOME/opencode-dashboard/assistant-chat.sqlite`), separate from the
 rebuildable usage cache. Each turn stores the prompt and the signed answer plus
-everything that produced it: every analytics tool call with its exact input
-arguments and result envelope, every specialist run with its task, finding,
+everything that produced it: every analytics tool call with normalized accepted
+arguments (or `{}` when rejected) and its result envelope, every specialist run with its task, finding,
 status, rounds and usage, the turn's provider token accounting and duration, the
 dashboard view the question was asked from, and any deterministic notice the
 backend appended.

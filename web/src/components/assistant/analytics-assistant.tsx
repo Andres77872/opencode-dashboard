@@ -36,6 +36,7 @@ import {
   type AssistantViewport,
 } from '../../lib/assistant-position'
 import { usePeriodState } from '../../lib/use-period-state'
+import { buildAssistantTimeContext } from '../../lib/assistant-context'
 import { boundAssistantHistory, dropAbandonedTurns } from '../../lib/assistant-history'
 import { conversationToMarkdown } from '../../lib/assistant-transcript'
 import { CopyButton } from './copy-button'
@@ -116,13 +117,6 @@ function currentViewport(): AssistantViewport {
         top: visual.offsetTop,
       }
     : { width: window.innerWidth, height: window.innerHeight }
-}
-
-function periodHint(state: ReturnType<typeof usePeriodState>): string {
-  if (state.mode === 'custom' && state.customRange?.from) {
-    return `${state.customRange.from} to ${state.customRange.to ?? 'now'}`
-  }
-  return state.preset
 }
 
 function safeTimezone(): string | undefined {
@@ -222,12 +216,15 @@ function PrivacyDisclosure({
       <div>
         <h3>Before you start</h3>
         <p>
-          Your prompts and the aggregate usage metrics requested to answer them are sent to MiniMax,
-          including the model, provider, and tool names behind those numbers and project names
-          without their directories. Integrity audits can also send normalized source scan counts,
-          request-accounting evidence, and sanitized cache-health flags.
-          Transcripts, prompts, session titles, file paths, raw diagnostics or errors, timestamps,
-          request/session identifiers, raw configuration, and secrets are not included.
+          Your assistant conversation and the aggregate usage metrics requested to answer it are sent
+          to MiniMax, including the model, provider, and tool names behind those numbers and project
+          names without their directories. The current dashboard route, source, selected preset or
+          custom date range, browser timezone, and aggregate UTC day/hour bucket labels can also be
+          sent. Session rankings can include opaque session references. Integrity audits can include
+          normalized source scan counts, request-accounting evidence, and sanitized cache-health
+          flags. Coding transcripts and prompts, session titles, file paths, raw diagnostics or errors,
+          raw event and per-session activity timestamps, raw request/session identifiers, raw
+          configuration, and secrets are not included.
         </p>
         {status.privacy_notice && <p className="analytics-assistant-privacy-note">{status.privacy_notice}</p>}
       </div>
@@ -488,15 +485,16 @@ export function AnalyticsAssistant() {
     historyAbortRef.current?.abort()
   }, [])
 
+  const timeContext = useMemo(() => buildAssistantTimeContext(periodState), [periodState])
   const context = useMemo<AssistantRequestContext>(() => {
     const route = routeHint(location.pathname)
     return {
       route,
       source: route === '/overview' ? undefined : selectedSourceId,
-      period: periodHint(periodState),
+      ...timeContext.context,
       timezone: safeTimezone(),
     }
-  }, [location.pathname, periodState, selectedSourceId])
+  }, [location.pathname, selectedSourceId, timeContext.context])
   const consentAccepted = preferences.privacyAcceptedVersion === status?.consent_version
   const sessionsPersisted = status?.sessions_persisted === true
 
@@ -885,7 +883,7 @@ export function AnalyticsAssistant() {
 
   const submitPrompt = useCallback(async (rawPrompt: string) => {
     const prompt = rawPrompt.trim()
-    if (!prompt || sending || abortRef.current || !consentAccepted || !status) return
+    if (!prompt || sending || abortRef.current || !consentAccepted || !status || timeContext.error) return
 
     const userMessage: DisplayMessage = {
       id: messageIDRef.current++,
@@ -1047,7 +1045,7 @@ export function AnalyticsAssistant() {
         setSending(false)
       }
     }
-  }, [consentAccepted, context, messages, sending, sessionId, status])
+  }, [consentAccepted, context, messages, sending, sessionId, status, timeContext.error])
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -1251,10 +1249,10 @@ export function AnalyticsAssistant() {
             aria-live={completedAnnouncement ? 'off' : 'polite'}
             aria-atomic="true"
           >
-            {error ? (
+            {error || timeContext.error ? (
               <>
-                <span className="error" role="alert">{error}</span>
-                {failedPrompt && (
+                <span className="error" role="alert">{error ?? timeContext.error}</span>
+                {error && failedPrompt && (
                   <button
                     type="button"
                     className="analytics-assistant-retry"
@@ -1282,23 +1280,23 @@ export function AnalyticsAssistant() {
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
-                  if (!sending && draft.trim()) void submitPrompt(draft)
+                  if (!sending && !timeContext.error && draft.trim()) void submitPrompt(draft)
                 }
               }}
             />
             <div className="analytics-assistant-composer-actions">
               <span>{draft.length.toLocaleString()} / {MAX_PROMPT_LENGTH.toLocaleString()}</span>
-              {/* Only sending is gated while a response streams — the composer
-                  itself stays live so a follow-up can be drafted meanwhile. Both
-                  buttons are shown so the disabled Ask explains the gate. */}
+              {/* The composer stays live while a response streams so a follow-up
+                  can be drafted. Asking is also gated when the dashboard has an
+                  unfinished or invalid time selection. */}
               {sending && (
                 <button type="button" className="analytics-assistant-button secondary" onClick={() => stopRequest()}>Stop</button>
               )}
               <button
                 type="submit"
                 className="analytics-assistant-button primary"
-                disabled={sending || !draft.trim()}
-                title={sending ? 'Waiting for the current answer' : undefined}
+                disabled={sending || !draft.trim() || timeContext.error !== null}
+                title={sending ? 'Waiting for the current answer' : timeContext.error ?? undefined}
               >
                 Ask
               </button>

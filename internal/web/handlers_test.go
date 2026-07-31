@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"opencode-dashboard/internal/stats"
 )
 
 func TestParseIntQuery(t *testing.T) {
@@ -283,6 +285,17 @@ func TestParsePeriodQuery_fromBeatsPeriod(t *testing.T) {
 	}
 }
 
+func TestParsePeriodQuery_fromBeatsInvalidPeriod(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?from=2026-02-01&to=2026-02-10&period=not-a-preset", nil)
+	pq, apierr := parsePeriodQuery(req)
+	if apierr != nil {
+		t.Fatalf("from/to range should preserve compatibility by ignoring period: %v", apierr)
+	}
+	if pq != (stats.PeriodQuery{From: "2026-02-01", To: "2026-02-10"}) {
+		t.Fatalf("query = %+v, want explicit range without period", pq)
+	}
+}
+
 func TestParsePeriodQuery_invalidFromFormat(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -407,8 +420,7 @@ func TestParsePeriodQuery_sameFromAndTo(t *testing.T) {
 }
 
 func TestParsePeriodQuery_allPresetsPassthrough(t *testing.T) {
-	presets := []string{"1h", "6h", "12h", "24h", "72h", "1d", "7d", "14d", "30d", "1y", "all"}
-	for _, p := range presets {
+	for _, p := range stats.SupportedPeriodPresets() {
 		t.Run("preset_"+p, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?period="+p, nil)
 			pq, apierr := parsePeriodQuery(req)
@@ -431,8 +443,8 @@ func TestParsePeriodQuery_rejectsUnknownPreset(t *testing.T) {
 	if apierr.Code != http.StatusBadRequest {
 		t.Fatalf("error code = %d, want %d", apierr.Code, http.StatusBadRequest)
 	}
-	if !strings.Contains(apierr.Message, "invalid period") {
-		t.Fatalf("error message = %q, want invalid period", apierr.Message)
+	if want := stats.InvalidPeriodError("bogus").Error(); apierr.Message != want {
+		t.Fatalf("error message = %q, want %q", apierr.Message, want)
 	}
 }
 

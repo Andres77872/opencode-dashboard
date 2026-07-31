@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"opencode-dashboard/internal/source"
+	"opencode-dashboard/internal/stats"
 )
 
 const (
@@ -40,7 +41,7 @@ const (
 
 // PrivacyConsentVersion is returned by status and must be echoed by chat
 // requests after the browser has shown and accepted that version's disclosure.
-const PrivacyConsentVersion = "analytics-assistant-v4"
+const PrivacyConsentVersion = "analytics-assistant-v5"
 
 var (
 	ErrUnavailable     = errors.New("analytics assistant unavailable")
@@ -49,6 +50,23 @@ var (
 	ErrLoopLimit       = errors.New("analytics assistant loop limit reached")
 	ErrInvalidChat     = errors.New("invalid analytics assistant chat")
 )
+
+// ContextValidationError identifies an invalid browser navigation context.
+// Detail is intentionally limited to server-authored, non-reflective text so
+// the local HTTP layer can return an actionable message without echoing input.
+type ContextValidationError struct {
+	Detail string
+}
+
+func (e *ContextValidationError) Error() string {
+	return ErrInvalidChat.Error() + ": context " + e.Detail
+}
+
+func (e *ContextValidationError) Unwrap() error { return ErrInvalidChat }
+
+func invalidBrowserContext(detail string) error {
+	return &ContextValidationError{Detail: detail}
+}
 
 // Client is the narrow provider boundary used by Service. MiniMaxClient
 // implements it, while tests can script complete responses without network I/O.
@@ -123,6 +141,8 @@ type BrowserContext struct {
 	Route    string `json:"route,omitempty"`
 	Source   string `json:"source,omitempty"`
 	Period   string `json:"period,omitempty"`
+	From     string `json:"from,omitempty"`
+	To       string `json:"to,omitempty"`
 	Timezone string `json:"timezone,omitempty"`
 }
 
@@ -155,9 +175,11 @@ type ChatResult struct {
 	Notices []string `json:"notices,omitempty"`
 }
 
-const privacyNotice = "Questions and aggregate usage metrics used to answer them are sent to MiniMax, including aggregate source diagnostics, request-accounting evidence, sanitized cache health, the model/provider/tool names those metrics belong to, and project names without their directories. Raw diagnostics and errors, transcripts, prompts, reasoning, session titles, configuration, credentials, file paths, timestamps, request/session identifiers, and tool input/output are never exposed as analytics tools."
+const privacyNotice = "Questions, the assistant conversation included with them, and aggregate usage metrics used to answer them are sent to MiniMax. The current dashboard route, source, selected preset or custom date range, browser timezone, aggregate UTC day/hour bucket labels, aggregate source diagnostics, request-accounting evidence, sanitized cache health, model/provider/tool names, and project names without their directories may also be sent. Raw source diagnostics and errors, coding transcripts, coding prompts or reasoning, session titles, raw configuration, credentials, file paths, raw event or per-session activity timestamps, raw request/session identifiers, and coding-tool input/output are never exposed by analytics tools."
 
 const crossSourceCostNotice = "Cost scope: source costs are not additive. OpenCode reports recorded spend, Claude Code may mix reported and computed values, and Codex/Kimi Code/Qwen Code values are API-equivalent estimates rather than subscription, membership, coding-plan, or token-plan spend."
+
+const truncationNotice = "Evidence scope: at least one analytics result or specialist finding was truncated to its configured limit. Treat omitted rows, earlier buckets, or report text as unknown unless the answer explicitly states that fuller evidence was fetched."
 
 var assistantCapabilities = []string{
 	"cross-source usage reports",
@@ -284,9 +306,11 @@ func (s *Service) runChat(ctx context.Context, input ChatInput, emit func(Stream
 	if s == nil || s.client == nil || len(s.historyKey) == 0 {
 		return ChatResult{}, ErrUnavailable
 	}
-	if err := ValidateChatInput(input); err != nil {
+	normalized, err := NormalizeChatInput(input)
+	if err != nil {
 		return ChatResult{}, err
 	}
+	input = normalized
 	if err := s.verifyBrowserHistory(input.Messages); err != nil {
 		return ChatResult{}, err
 	}
@@ -330,14 +354,12 @@ func (s *Service) runChat(ctx context.Context, input ChatInput, emit func(Stream
 	}
 
 	content := outcome.content
-	notices := make([]string, 0, 1)
-	if turn.needsCrossSourceNotice() {
-		content += "\n\n" + crossSourceCostNotice
-		notices = append(notices, crossSourceCostNotice)
-		if stream {
-			if err := turn.sink.send(StreamEvent{Type: StreamEventContentDelta, Agent: AgentLead, Delta: "\n\n" + crossSourceCostNotice}); err != nil {
-				return ChatResult{}, err
-			}
+	notices := turn.deterministicNotices()
+	suffix := noticeSuffix(notices)
+	content += suffix
+	if stream && suffix != "" {
+		if err := turn.sink.send(StreamEvent{Type: StreamEventContentDelta, Agent: AgentLead, Delta: suffix}); err != nil {
+			return ChatResult{}, err
 		}
 	}
 
@@ -414,27 +436,35 @@ func (s *Service) newSpecialistRun(turn *turnRunner, definition *agentDefinition
 	}, nil
 }
 
-func ValidateChatInput(input ChatInput) error {
+// NormalizeChatInput validates the public request and returns a canonical copy.
+// In particular, it converts the legacy "YYYY-MM-DD to YYYY-MM-DD|now"
+// navigation hint into the same period/from/to shape accepted by analytics
+// tools. Callers must use the returned value; the input is not mutated.
+func NormalizeChatInput(input ChatInput) (ChatInput, error) {
 	if input.ConsentVersion != PrivacyConsentVersion {
-		return fmt.Errorf("%w: privacy consent version is missing or stale", ErrInvalidChat)
+		return ChatInput{}, fmt.Errorf("%w: privacy consent version is missing or stale", ErrInvalidChat)
 	}
 	if input.SessionID != "" && !isSafeChatSessionID(input.SessionID) {
-		return fmt.Errorf("%w: session id is invalid", ErrInvalidChat)
+		return ChatInput{}, fmt.Errorf("%w: session id is invalid", ErrInvalidChat)
 	}
 	if input.Context != nil {
-		for name, value := range map[string]string{
-			"route": input.Context.Route, "source": input.Context.Source,
-			"period": input.Context.Period, "timezone": input.Context.Timezone,
-		} {
-			if len(value) > 256 {
-				return fmt.Errorf("%w: context %s is too long", ErrInvalidChat, name)
-			}
+		normalized, err := normalizeBrowserContextAt(*input.Context, time.Now().UTC())
+		if err != nil {
+			return ChatInput{}, err
 		}
-		if err := validateBrowserContext(*input.Context); err != nil {
-			return err
-		}
+		input.Context = &normalized
 	}
-	return validateBrowserMessages(input.Messages)
+	if err := validateBrowserMessages(input.Messages); err != nil {
+		return ChatInput{}, err
+	}
+	return input, nil
+}
+
+// ValidateChatInput preserves the validation-only API for callers that do not
+// need the canonical copy.
+func ValidateChatInput(input ChatInput) error {
+	_, err := NormalizeChatInput(input)
+	return err
 }
 
 func validateBrowserMessages(messages []BrowserMessage) error {
@@ -486,7 +516,11 @@ func validateBrowserMessages(messages []BrowserMessage) error {
 // training cutoff, producing confidently empty reports.
 func currentDateNote() string {
 	return "\nToday's date (UTC) is " + time.Now().UTC().Format("2006-01-02") +
-		". For relative questions prefer period presets (7d, 30d, …) over absolute from/to dates.\n"
+		". Analytics accepts only these exact period presets: " + strings.Join(stats.SupportedPeriodPresets(), ", ") +
+		". Hour presets are rolling UTC windows; day presets are UTC calendar-aligned. " +
+		"Before every tool call choose exactly one time mode: PRESET uses {\"period\":\"7d\"} with no from/to; CUSTOM uses {\"from\":\"2026-07-01\",\"to\":\"2026-07-31\"} (or from alone) with no period; DEFAULT omits all three and uses " + stats.DefaultPeriodPreset + ". " +
+		"Final key check: first select one mode. For CUSTOM remove period and verify from exists. For PRESET remove from and to and verify period exists. Do not apply both corrections. " +
+		"Browser timezone is only a navigation/display hint and never changes analytics query bounds.\n"
 }
 
 func leadMessages(definition *agentDefinition, input ChatInput) ([]json.RawMessage, error) {
@@ -506,10 +540,12 @@ func leadMessages(definition *agentDefinition, input ChatInput) ([]json.RawMessa
 	}
 	for index, message := range input.Messages {
 		content := message.Content
-		if index == len(input.Messages)-1 {
+		if index == len(input.Messages)-1 && contextNote != "" {
 			// Navigation hints have user/data authority, never system authority.
-			// Their fields are allowlist-validated before reaching this point.
-			content += contextNote
+			// Their fields are allowlist-validated before reaching this point. Put
+			// them before the question so an explicit range in the question is the
+			// final and most salient time intent.
+			content = contextNote + "\n\n" + content
 		}
 		raw, err := makeTextMessage(message.Role, content)
 		if err != nil {
@@ -520,43 +556,69 @@ func leadMessages(definition *agentDefinition, input ChatInput) ([]json.RawMessa
 	return out, nil
 }
 
-func validateBrowserContext(value BrowserContext) error {
+func normalizeBrowserContextAt(value BrowserContext, now time.Time) (BrowserContext, error) {
+	for name, field := range map[string]string{
+		"route": value.Route, "source": value.Source, "period": value.Period,
+		"from": value.From, "to": value.To, "timezone": value.Timezone,
+	} {
+		if len(field) > 256 {
+			return BrowserContext{}, invalidBrowserContext(name + " is too long")
+		}
+	}
 	if value.Route != "" {
 		switch value.Route {
 		case "/overview", "/daily", "/models", "/tools", "/projects", "/sessions", "/config":
 		default:
-			return fmt.Errorf("%w: context route is invalid", ErrInvalidChat)
+			return BrowserContext{}, invalidBrowserContext("route is invalid")
 		}
 	}
 	if value.Source != "" && !isSafeSourceID(value.Source) {
-		return fmt.Errorf("%w: context source is invalid", ErrInvalidChat)
-	}
-	if value.Period != "" && !isBrowserPeriodHint(value.Period) {
-		return fmt.Errorf("%w: context period is invalid", ErrInvalidChat)
+		return BrowserContext{}, invalidBrowserContext("source is invalid")
 	}
 	if value.Timezone != "" && !isSafeTimezone(value.Timezone) {
-		return fmt.Errorf("%w: context timezone is invalid", ErrInvalidChat)
+		return BrowserContext{}, invalidBrowserContext("timezone is invalid")
 	}
-	return nil
+
+	value.Period = strings.TrimSpace(value.Period)
+	value.From = strings.TrimSpace(value.From)
+	value.To = strings.TrimSpace(value.To)
+	// Compatibility bridge for browser clients from the release immediately
+	// before structured ranges. Analytics tools themselves never accept this
+	// display label; remove the bridge after one compatibility release.
+	if legacyFrom, legacyTo, ok := parseLegacyBrowserPeriod(value.Period); ok {
+		if value.From != "" || value.To != "" {
+			return BrowserContext{}, invalidBrowserContext("must use either period or from/to, not both")
+		}
+		value.Period = ""
+		value.From = legacyFrom
+		value.To = legacyTo
+	}
+
+	pq, err := validatePeriodAt(periodArgs{Period: value.Period, From: value.From, To: value.To}, now.UTC())
+	if err != nil {
+		return BrowserContext{}, invalidBrowserContext("time selection is invalid: " + err.Error())
+	}
+	value.Period = pq.Period
+	value.From = pq.From
+	value.To = pq.To
+	return value, nil
 }
 
-func isBrowserPeriodHint(value string) bool {
-	switch value {
-	case "1h", "6h", "12h", "24h", "72h", "1d", "7d", "14d", "30d", "1y", "all":
-		return true
-	}
-	parts := strings.Split(value, " to ")
+func parseLegacyBrowserPeriod(value string) (string, string, bool) {
+	parts := strings.Split(strings.TrimSpace(value), " to ")
 	if len(parts) != 2 {
-		return false
+		return "", "", false
 	}
 	if _, err := time.Parse("2006-01-02", parts[0]); err != nil {
-		return false
+		return "", "", false
 	}
 	if parts[1] == "now" {
-		return true
+		return parts[0], "", true
 	}
-	_, err := time.Parse("2006-01-02", parts[1])
-	return err == nil
+	if _, err := time.Parse("2006-01-02", parts[1]); err != nil {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 // isSafeChatSessionID bounds persisted-chat session ids to a URL- and
@@ -644,24 +706,6 @@ func mapProviderError(err error) error {
 		return fmt.Errorf("%w: MiniMax M3 is unavailable: %w", ErrUnavailable, err)
 	}
 	return fmt.Errorf("%w: MiniMax request failed: %w", ErrProviderFailure, err)
-}
-
-// safeToolArguments normalizes provider-supplied tool arguments into valid
-// JSON for streaming and persistence: empty input becomes {}, and content that
-// is not valid JSON is wrapped as a JSON string rather than forwarded raw.
-func safeToolArguments(arguments string) json.RawMessage {
-	trimmed := strings.TrimSpace(arguments)
-	if trimmed == "" {
-		return json.RawMessage(`{}`)
-	}
-	if json.Valid([]byte(trimmed)) {
-		return json.RawMessage(trimmed)
-	}
-	encoded, err := json.Marshal(arguments)
-	if err != nil {
-		return json.RawMessage(`{}`)
-	}
-	return json.RawMessage(encoded)
 }
 
 func toolResultOK(result json.RawMessage) bool {

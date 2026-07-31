@@ -174,7 +174,7 @@ func newModel(reg *source.Registry, startup source.SourceID, opts Options) *mode
 		width:          120,
 		height:         36,
 		activeTab:      tabOverview,
-		period:         stats.PeriodQuery{Period: "7d"},
+		period:         stats.PeriodQuery{Period: stats.DefaultPeriodPreset},
 		dailyMetric:    dailyMetricCost,
 		dailyBreakdown: dailyBreakdownOverall,
 		loading:        true,

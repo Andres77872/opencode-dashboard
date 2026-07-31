@@ -125,6 +125,21 @@ func TestIndexOfPreset(t *testing.T) {
 	}
 }
 
+func TestPeriodPickerUsesCanonicalStatsCatalog(t *testing.T) {
+	want := stats.SupportedPeriodPresets()
+	if len(periodPresets) != len(want) {
+		t.Fatalf("periodPresets = %v, want %v", periodPresets, want)
+	}
+	for index, preset := range want {
+		if periodPresets[index] != preset {
+			t.Fatalf("periodPresets[%d] = %q, want %q", index, periodPresets[index], preset)
+		}
+		if periodPresetLabels[preset] == "" {
+			t.Errorf("canonical preset %q has no TUI label", preset)
+		}
+	}
+}
+
 func TestNextDailyMetric(t *testing.T) {
 	tests := []struct {
 		name     string

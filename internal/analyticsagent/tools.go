@@ -49,7 +49,7 @@ type sourcePeriodArgs struct {
 	Period string `json:"period,omitempty"`
 	From   string `json:"from,omitempty"`
 	To     string `json:"to,omitempty"`
-	Limit  int    `json:"limit,omitempty"`
+	Limit  *int   `json:"limit,omitempty"`
 }
 
 type sourcePeriodNoLimitArgs struct {
@@ -65,7 +65,7 @@ type dailyArgs struct {
 	From        string `json:"from,omitempty"`
 	To          string `json:"to,omitempty"`
 	Granularity string `json:"granularity,omitempty"`
-	Limit       int    `json:"limit,omitempty"`
+	Limit       *int   `json:"limit,omitempty"`
 }
 
 type dimensionTrendArgs struct {
@@ -75,7 +75,7 @@ type dimensionTrendArgs struct {
 	From        string `json:"from,omitempty"`
 	To          string `json:"to,omitempty"`
 	Granularity string `json:"granularity,omitempty"`
-	Limit       int    `json:"limit,omitempty"`
+	Limit       *int   `json:"limit,omitempty"`
 }
 
 type sessionUsageArgs struct {
@@ -83,7 +83,7 @@ type sessionUsageArgs struct {
 	Period string `json:"period,omitempty"`
 	From   string `json:"from,omitempty"`
 	To     string `json:"to,omitempty"`
-	Limit  int    `json:"limit,omitempty"`
+	Limit  *int   `json:"limit,omitempty"`
 	Sort   string `json:"sort,omitempty"`
 }
 
@@ -91,9 +91,9 @@ type aggregateArgs struct {
 	Period       string `json:"period,omitempty"`
 	From         string `json:"from,omitempty"`
 	To           string `json:"to,omitempty"`
-	Limit        int    `json:"limit,omitempty"`
+	Limit        *int   `json:"limit,omitempty"`
 	IncludeTrend bool   `json:"include_trend,omitempty"`
-	TrendLimit   int    `json:"trend_limit,omitempty"`
+	TrendLimit   *int   `json:"trend_limit,omitempty"`
 }
 
 func NewToolRegistry(registry *source.Registry) *ToolRegistry {
@@ -132,67 +132,239 @@ func (r *ToolRegistry) Definitions() []ToolDefinition {
 	return []ToolDefinition{
 		{
 			Name:        "list_sources",
-			Description: "List the currently registered analytics sources and whether each source is available. Call this before choosing source IDs.",
-			Parameters:  rawSchema(`{"type":"object","properties":{},"additionalProperties":false}`),
+			Description: "List registered analytics sources, availability, safe capabilities, and cost policy. Call this before choosing an exact source ID.",
+			Parameters:  objectSchema(nil, nil, "This tool takes no arguments."),
 		},
 		{
 			Name:        "get_overview",
-			Description: "Get source-specific sessions, transcript messages, outbound assistant/API requests, tokens, days, and source-specific cost with provenance for a validated period. Kimi results can include request-accounting coverage and unavailable-usage counts.",
-			Parameters:  rawSchema(sourcePeriodSchema(false)),
+			Description: "Get source-specific sessions, transcript messages, outbound assistant/API requests, tokens, days, and source-specific cost with provenance. Kimi results can include request-accounting coverage and unavailable-usage counts.",
+			Parameters:  sourceRangeSchema(false, false),
 		},
 		{
 			Name:        "get_source_integrity",
-			Description: "Audit aggregate source availability, ingestion, request accounting, cost evidence, and sanitized cache freshness for one source or every registered source. Returns no request/session identifiers, paths, transcripts, timestamps, or raw errors.",
-			Parameters:  rawSchema(`{"type":"object","properties":{"source":{"type":"string"},"period":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"additionalProperties":false}`),
+			Description: "Audit aggregate source availability, ingestion, request accounting, cost evidence, and sanitized cache freshness for one source or all registered sources. Returns no request/session identifiers, paths, transcripts, event timestamps, or raw errors.",
+			Parameters:  integritySchema(),
 		},
 		{
 			Name:        "get_cross_source_overview",
-			Description: "Compare every available source, including additive outbound request totals. Combined totals intentionally omit cost; source-specific costs retain provenance and must never be added together.",
-			Parameters:  rawSchema(`{"type":"object","properties":{"period":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":25},"include_trend":{"type":"boolean"},"trend_limit":{"type":"integer","minimum":1,"maximum":1000}},"additionalProperties":false}`),
+			Description: "Compare every available source, including additive outbound request totals. Combined totals omit cost; source-specific costs retain provenance and must never be added. Top-ranking truncation is reported per dimension. With include_trend=true, use a bounded period because all-time time series are unavailable.",
+			Parameters:  crossSourceSchema(),
 		},
 		{
 			Name:        "get_daily_usage",
-			Description: "Get a bounded daily or hourly aggregate time series for one explicit source, including distinct transcript-message and outbound-request counts. Use requests for API-call/attempt questions. Use the dedicated model, tool, and project tools for accurate dimension rankings.",
-			Parameters:  rawSchema(`{"type":"object","properties":{"source":{"type":"string"},"period":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"granularity":{"type":"string","enum":["day","hour"]},"limit":{"type":"integer","minimum":1,"maximum":1000}},"required":["source"],"additionalProperties":false}`),
+			Description: "Get a bounded daily or hourly aggregate time series for one source, including distinct transcript-message and outbound-request counts. The default returns the latest 120 buckets and reports truncated=true when earlier buckets were omitted. Use requests for API-call/attempt questions.",
+			Parameters:  dailySchema(false),
 		},
 		{
 			Name:        "get_usage_trend_by_dimension",
-			Description: "Get a bounded daily or hourly time series for one explicit source grouped by model, tool, or project. Best for questions about which dimension member grew, shrank, or spiked over time.",
-			Parameters:  rawSchema(`{"type":"object","properties":{"source":{"type":"string"},"dimension":{"type":"string","enum":["model","tool","project"]},"period":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"granularity":{"type":"string","enum":["day","hour"]},"limit":{"type":"integer","minimum":1,"maximum":1000}},"required":["source","dimension"],"additionalProperties":false}`),
+			Description: "Get a bounded daily or hourly series grouped by model, tool, or project. Counts are outbound assistant/API requests associated with the dimension, not tool invocations or outcomes. The default returns the latest 120 buckets and reports truncated=true when incomplete.",
+			Parameters:  dailySchema(true),
 		},
 		{
 			Name:        "get_session_usage",
-			Description: "Rank coding sessions for one explicit source by recency, cost, or message volume using opaque session references and aggregate metrics, plus the project each session belongs to. Session titles, prompts, and transcripts are never returned.",
-			Parameters:  rawSchema(`{"type":"object","properties":{"source":{"type":"string"},"period":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":50},"sort":{"type":"string","enum":["newest","oldest","cost","messages"]}},"required":["source"],"additionalProperties":false}`),
+			Description: "Rank coding sessions by relative recency, cost, or message volume using opaque session references and aggregate metrics. Exact activity timestamps, session titles, prompts, and transcripts are never returned. The default returns the first 10 newest sessions.",
+			Parameters:  sessionSchema(),
 		},
 		{
 			Name:        "get_model_usage",
 			Description: "Rank models for one explicit source by outbound assistant/API requests, tokens, sessions, and source-specific cost provenance. The requests field is the unambiguous request count; messages is retained for compatibility.",
-			Parameters:  rawSchema(sourcePeriodSchema(true)),
+			Parameters:  sourceRangeSchema(true, false),
 		},
 		{
 			Name:        "get_tool_usage",
-			Description: "Rank coding-assistant tool names by invocations, successes, failures, and sessions. No tool input or output is available.",
-			Parameters:  rawSchema(sourcePeriodSchema(true)),
+			Description: "Rank coding-assistant tool names by invocations, successes, failures, and sessions. Compare explicit windows with this tool for reliability changes; dimension trends do not contain invocation outcomes. No tool input or output is available.",
+			Parameters:  sourceRangeSchema(true, false),
 		},
 		{
 			Name:        "get_project_usage",
 			Description: "Rank projects by aggregate metrics. Each row carries a stable project_ref and, when it is safe to read, the project's own name without its directories. Local project IDs and filesystem paths are never returned.",
-			Parameters:  rawSchema(sourcePeriodSchema(true)),
+			Parameters:  sourceRangeSchema(true, false),
 		},
 	}
 }
 
-func sourcePeriodSchema(includeLimit bool) string {
-	limit := ""
-	if includeLimit {
-		limit = `,"limit":{"type":"integer","minimum":1,"maximum":50}`
-	}
-	return `{"type":"object","properties":{"source":{"type":"string"},"period":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}` + limit + `},"required":["source"],"additionalProperties":false}`
+const (
+	sourceIDPattern = `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`
+	datePattern     = `^[0-9]{4}-[0-9]{2}-[0-9]{2}$`
+)
+
+func objectSchema(properties map[string]any, required []string, description string) json.RawMessage {
+	return objectSchemaWithAlternatives(properties, required, description, nil)
 }
 
-func rawSchema(value string) json.RawMessage {
-	return json.RawMessage(value)
+func timeObjectSchema(properties map[string]any, required []string, description string) json.RawMessage {
+	return objectSchemaWithAlternatives(properties, required, description, timeModeAlternatives())
+}
+
+func objectSchemaWithAlternatives(properties map[string]any, required []string, description string, alternatives []any) json.RawMessage {
+	if properties == nil {
+		properties = map[string]any{}
+	}
+	schema := map[string]any{
+		"type":                 "object",
+		"properties":           properties,
+		"additionalProperties": false,
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	if description != "" {
+		schema["description"] = description
+	}
+	if len(alternatives) > 0 {
+		schema["oneOf"] = alternatives
+	}
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
+	}
+	return json.RawMessage(encoded)
+}
+
+// timeModeAlternatives makes the mutually exclusive time contract structural,
+// not merely prose. Keeping DEFAULT separate from PRESET gives the model three
+// unambiguous construction templates. CUSTOM requires from, so to cannot appear
+// alone.
+func timeModeAlternatives() []any {
+	return []any{
+		map[string]any{
+			"title":       "PRESET time mode",
+			"description": "Require period by itself. Never include from or to in this mode.",
+			"required":    []string{"period"},
+			"not": map[string]any{"anyOf": []any{
+				map[string]any{"required": []string{"from"}},
+				map[string]any{"required": []string{"to"}},
+			}},
+		},
+		map[string]any{
+			"title":       "CUSTOM time mode",
+			"description": "Require from, optionally include to, and never include period.",
+			"required":    []string{"from"},
+			"not":         map[string]any{"required": []string{"period"}},
+		},
+		map[string]any{
+			"title":       "DEFAULT " + stats.DefaultPeriodPreset + " time mode",
+			"description": "Omit period, from, and to. The backend applies the " + stats.DefaultPeriodPreset + " default.",
+			"not": map[string]any{"anyOf": []any{
+				map[string]any{"required": []string{"period"}},
+				map[string]any{"required": []string{"from"}},
+				map[string]any{"required": []string{"to"}},
+			}},
+		},
+	}
+}
+
+func sourceProperty() map[string]any {
+	return map[string]any{
+		"type": "string", "pattern": sourceIDPattern, "minLength": 1, "maxLength": 64,
+		"description": "Exact source ID returned by list_sources.",
+	}
+}
+
+func periodProperties(boundedSeries bool) map[string]any {
+	presets := stats.SupportedPeriodPresets()
+	if boundedSeries {
+		bounded := make([]string, 0, len(presets)-1)
+		for _, preset := range presets {
+			if preset != "all" {
+				bounded = append(bounded, preset)
+			}
+		}
+		presets = bounded
+	}
+	return map[string]any{
+		"period": map[string]any{
+			"type": "string", "enum": presets, "examples": []string{"7d", "30d"},
+			"description": "PRESET time mode only. Use one exact preset and NEVER include from or to in the same call. Omit all time fields to use the " + stats.DefaultPeriodPreset + " default. Hour presets are rolling UTC windows; day presets are UTC calendar-aligned.",
+		},
+		"from": map[string]any{
+			"type": "string", "pattern": datePattern, "examples": []string{"2026-07-01"},
+			"description": "CUSTOM time mode only. Inclusive UTC start date in YYYY-MM-DD format. When from is present, period MUST be absent.",
+		},
+		"to": map[string]any{
+			"type": "string", "pattern": datePattern, "examples": []string{"2026-07-31"},
+			"description": "CUSTOM time mode only. Inclusive UTC end date in YYYY-MM-DD format. Requires from and forbids period; omit to to continue through now.",
+		},
+	}
+}
+
+func timeModeSchemaDescription(detail string) string {
+	description := "TIME MODE IS EXCLUSIVE. PRESET: send period only. CUSTOM: send required from plus optional to and no period. DEFAULT: omit period, from, and to; the backend applies " + stats.DefaultPeriodPreset + "."
+	if detail != "" {
+		description += " " + detail
+	}
+	return description
+}
+
+func sourceRangeSchema(includeLimit, boundedSeries bool) json.RawMessage {
+	properties := periodProperties(boundedSeries)
+	properties["source"] = sourceProperty()
+	if includeLimit {
+		properties["limit"] = map[string]any{
+			"type": "integer", "minimum": 1, "maximum": maxListLimit, "default": defaultListLimit,
+			"description": "Maximum ranked rows to return. Results report truncated=true when more rows exist.",
+		}
+	}
+	return timeObjectSchema(properties, []string{"source"}, timeModeSchemaDescription(""))
+}
+
+func integritySchema() json.RawMessage {
+	properties := periodProperties(false)
+	properties["source"] = sourceProperty()
+	return timeObjectSchema(properties, nil, timeModeSchemaDescription("Omit source to audit every registered source."))
+}
+
+func crossSourceSchema() json.RawMessage {
+	properties := periodProperties(false)
+	properties["limit"] = map[string]any{
+		"type": "integer", "minimum": 1, "maximum": maxAggregateTopN, "default": defaultListLimit,
+		"description": "Maximum top models, tools, and projects to return. Each ranking reports its own *_truncated flag when more rows exist.",
+	}
+	properties["include_trend"] = map[string]any{
+		"type": "boolean", "default": false,
+		"description": "Include per-source time series. When true, all is invalid and the range must fit at most 1000 buckets.",
+	}
+	properties["trend_limit"] = map[string]any{
+		"type": "integer", "minimum": 1, "maximum": maxDailyLimit, "default": 90,
+		"description": "Most recent trend buckets retained per source; trend_truncated=true means earlier buckets were omitted.",
+	}
+	return timeObjectSchema(properties, nil, timeModeSchemaDescription("With include_trend=true, use a bounded period or custom range."))
+}
+
+func dailySchema(withDimension bool) json.RawMessage {
+	properties := periodProperties(true)
+	properties["source"] = sourceProperty()
+	properties["granularity"] = map[string]any{
+		"type": "string", "enum": []string{"day", "hour"},
+		"description": "Bucket size. Omit for automatic selection: hour for 1d and hour presets, otherwise day.",
+	}
+	properties["limit"] = map[string]any{
+		"type": "integer", "minimum": 1, "maximum": maxDailyLimit, "default": defaultDailyLimit,
+		"description": "Most recent buckets retained. Dimension trends retain every row in each selected bucket. Set high enough for complete coverage; truncated=true means earlier buckets were omitted.",
+	}
+	required := []string{"source"}
+	if withDimension {
+		properties["dimension"] = map[string]any{
+			"type": "string", "enum": []string{"model", "tool", "project"},
+			"description": "Dimension to group. Tool rows count associated assistant/API requests, not tool invocations or outcomes.",
+		}
+		required = append(required, "dimension")
+	}
+	return timeObjectSchema(properties, required, timeModeSchemaDescription("All-time series are unavailable; the selected granularity may contain at most 1000 buckets."))
+}
+
+func sessionSchema() json.RawMessage {
+	properties := periodProperties(false)
+	properties["source"] = sourceProperty()
+	properties["limit"] = map[string]any{
+		"type": "integer", "minimum": 1, "maximum": maxListLimit, "default": defaultListLimit,
+		"description": "Maximum ranked sessions to return.",
+	}
+	properties["sort"] = map[string]any{
+		"type": "string", "enum": []string{"newest", "oldest", "cost", "messages"}, "default": "newest",
+		"description": "Ranking order. Recency sorts reveal relative ordering only, never exact timestamps.",
+	}
+	return timeObjectSchema(properties, []string{"source"}, timeModeSchemaDescription(""))
 }
 
 func isAnalyticsToolName(name string) bool {
@@ -224,17 +396,32 @@ func isSafeSourceID(value string) bool {
 // provider. Internal errors and source diagnostics are deliberately collapsed
 // so filesystem paths and transcript parsing details cannot escape.
 func (r *ToolRegistry) Execute(ctx context.Context, name string, arguments json.RawMessage) json.RawMessage {
+	prepared, err := r.Prepare(name, arguments)
+	if err != nil {
+		return toolExecutionError(err)
+	}
+	return r.executePrepared(ctx, name, prepared)
+}
+
+// executePrepared executes arguments that already passed Prepare. Keeping this
+// boundary explicit lets the runner validate before it streams or persists a
+// call while direct registry callers receive the same behavior through Execute.
+func (r *ToolRegistry) executePrepared(ctx context.Context, name string, arguments json.RawMessage) json.RawMessage {
 	data, err := r.execute(ctx, name, arguments)
 	if err != nil {
-		code := "tool_failed"
-		message := "The analytics tool failed safely."
-		if errors.Is(err, errInvalidToolInput) {
-			code = "invalid_arguments"
-			message = err.Error()
-		}
-		return marshalEnvelope(false, nil, &safeToolError{Code: code, Message: message})
+		return toolExecutionError(err)
 	}
 	return marshalEnvelope(true, data, nil)
+}
+
+func toolExecutionError(err error) json.RawMessage {
+	code := "tool_failed"
+	message := "The analytics tool failed safely."
+	if errors.Is(err, errInvalidToolInput) {
+		code = "invalid_arguments"
+		message = err.Error()
+	}
+	return marshalEnvelope(false, nil, &safeToolError{Code: code, Message: message})
 }
 
 func (r *ToolRegistry) execute(ctx context.Context, name string, arguments json.RawMessage) (any, error) {
@@ -290,9 +477,11 @@ func (r *ToolRegistry) execute(ctx context.Context, name string, arguments json.
 				return nil, err
 			}
 		}
+		// Fetch one sentinel row beyond the public limit so the privacy-safe
+		// response can state whether each independent ranking is complete.
 		result, err := source.AggregateOverview(ctx, r.registry, pq, source.AggregateOptions{
 			IncludeTrend:     args.IncludeTrend,
-			TopN:             topN,
+			TopN:             topN + 1,
 			PerSourceTimeout: 3 * time.Second,
 		})
 		if err != nil {
@@ -304,7 +493,7 @@ func (r *ToolRegistry) execute(ctx context.Context, name string, arguments json.
 				unavailable = appendUnique(unavailable, string(info.ID))
 			}
 		}
-		return safeCrossOverviewFrom(result, trendLimit, unavailable, r.projectRefKey), nil
+		return safeCrossOverviewFrom(result, trendLimit, topN, unavailable, r.projectRefKey), nil
 	case "get_daily_usage":
 		var args dailyArgs
 		if err := decodeStrict(arguments, &args); err != nil {
@@ -482,11 +671,18 @@ func (r *ToolRegistry) resolveList(ctx context.Context, args sourcePeriodArgs) (
 }
 
 func validatePeriod(args periodArgs) (stats.PeriodQuery, error) {
+	return validatePeriodAt(args, time.Now().UTC())
+}
+
+func validatePeriodAt(args periodArgs, now time.Time) (stats.PeriodQuery, error) {
 	args.Period = strings.TrimSpace(args.Period)
 	args.From = strings.TrimSpace(args.From)
 	args.To = strings.TrimSpace(args.To)
-	if args.From != "" && args.Period != "" {
-		return stats.PeriodQuery{}, invalidInput("use either period or from/to, not both")
+	if args.Period != "" && args.To != "" && args.From == "" {
+		return stats.PeriodQuery{}, invalidInput("time mode conflict: PRESET mode removes to and keeps period; CUSTOM mode removes period and must add the required from date before keeping to")
+	}
+	if args.Period != "" && (args.From != "" || args.To != "") {
+		return stats.PeriodQuery{}, invalidInput("time mode conflict: PRESET mode keeps period and removes from/to; CUSTOM mode keeps required from plus optional to and removes period")
 	}
 	if args.To != "" && args.From == "" {
 		return stats.PeriodQuery{}, invalidInput("to requires from")
@@ -496,7 +692,7 @@ func validatePeriod(args periodArgs) (stats.PeriodQuery, error) {
 		if err != nil {
 			return stats.PeriodQuery{}, invalidInput("from must use YYYY-MM-DD")
 		}
-		if from.After(time.Now().UTC()) {
+		if from.After(now.UTC()) {
 			return stats.PeriodQuery{}, invalidInput("from cannot be in the future")
 		}
 		if args.To != "" {
@@ -504,21 +700,22 @@ func validatePeriod(args periodArgs) (stats.PeriodQuery, error) {
 			if err != nil {
 				return stats.PeriodQuery{}, invalidInput("to must use YYYY-MM-DD")
 			}
-			if to.After(time.Now().UTC()) || from.After(to) {
+			if to.After(now.UTC()) || from.After(to) {
 				return stats.PeriodQuery{}, invalidInput("to must be current or past and not before from")
 			}
 		}
 		return stats.PeriodQuery{From: args.From, To: args.To}, nil
 	}
 	if args.Period == "" {
-		args.Period = "7d"
+		args.Period = stats.DefaultPeriodPreset
 	}
-	switch args.Period {
-	case "1h", "6h", "12h", "24h", "72h", "1d", "7d", "14d", "30d", "1y", "all":
+	if stats.IsSupportedPeriodPreset(args.Period) {
 		return stats.PeriodQuery{Period: args.Period}, nil
-	default:
-		return stats.PeriodQuery{}, invalidInput("period is not supported")
 	}
+	return stats.PeriodQuery{}, invalidInput(fmt.Sprintf(
+		"period must be one of %s; for custom dates omit period and use from/to in YYYY-MM-DD format",
+		strings.Join(stats.SupportedPeriodPresets(), ", "),
+	))
 }
 
 // validateBucketWindow prevents provider-generated ranges from reaching source
@@ -526,9 +723,6 @@ func validatePeriod(args periodArgs) (stats.PeriodQuery, error) {
 // result can be truncated. Aggregate-only tools may still query all time; only
 // time-series allocation is capped here.
 func validateBucketWindow(args periodArgs, granularity string, maximum int) error {
-	args.Period = strings.TrimSpace(args.Period)
-	args.From = strings.TrimSpace(args.From)
-	args.To = strings.TrimSpace(args.To)
 	if maximum <= 0 {
 		return invalidInput("time-series bucket limit is invalid")
 	}
@@ -536,55 +730,19 @@ func validateBucketWindow(args periodArgs, granularity string, maximum int) erro
 		return invalidInput("granularity must be day or hour")
 	}
 
-	var start, end time.Time
-	if args.From != "" {
-		var err error
-		start, err = time.Parse("2006-01-02", args.From)
-		if err != nil {
-			return invalidInput("from must use YYYY-MM-DD")
-		}
-		if args.To == "" {
-			end = time.Now().UTC()
-		} else {
-			end, err = time.Parse("2006-01-02", args.To)
-			if err != nil {
-				return invalidInput("to must use YYYY-MM-DD")
-			}
-			end = end.AddDate(0, 0, 1)
-		}
-	} else {
-		period := args.Period
-		if period == "" {
-			period = "7d"
-		}
-		if period == "all" {
-			return invalidInput("all-time time series are not available; use an all-time overview or a bounded trend period")
-		}
-		now := time.Now().UTC()
-		end = now
-		switch period {
-		case "1h":
-			start = now.Add(-time.Hour)
-		case "6h":
-			start = now.Add(-6 * time.Hour)
-		case "12h":
-			start = now.Add(-12 * time.Hour)
-		case "24h", "1d":
-			start = now.Add(-24 * time.Hour)
-		case "72h":
-			start = now.Add(-72 * time.Hour)
-		case "7d":
-			start = now.AddDate(0, 0, -7)
-		case "14d":
-			start = now.AddDate(0, 0, -14)
-		case "30d":
-			start = now.AddDate(0, 0, -30)
-		case "1y":
-			start = now.AddDate(-1, 0, 0)
-		default:
-			return invalidInput("period is not supported")
-		}
+	pq, err := validatePeriod(args)
+	if err != nil {
+		return err
 	}
+	if pq.Period == "all" {
+		return invalidInput("all-time time series are not available; use an all-time overview or a bounded trend period")
+	}
+	window, err := stats.ComputePeriodWindowFromQuery(context.Background(), nil, pq)
+	if err != nil {
+		return invalidInput("time-series period could not be resolved")
+	}
+	start := time.UnixMilli(window.StartMs).UTC()
+	end := time.UnixMilli(window.EndMs).UTC()
 
 	unit := 24 * time.Hour
 	if granularity == "hour" {
@@ -605,23 +763,17 @@ func validateBucketWindow(args periodArgs, granularity string, maximum int) erro
 }
 
 func automaticTrendGranularity(period string) string {
-	period = strings.TrimSpace(period)
-	switch period {
-	case "1h", "6h", "12h", "24h", "72h", "1d":
-		return "hour"
-	default:
-		return "day"
-	}
+	return string(stats.ResolveGranularity(stats.PeriodQuery{Period: strings.TrimSpace(period)}))
 }
 
-func validatedLimit(value, defaultValue, maximum int) (int, error) {
-	if value == 0 {
+func validatedLimit(value *int, defaultValue, maximum int) (int, error) {
+	if value == nil {
 		return defaultValue, nil
 	}
-	if value < 1 || value > maximum {
+	if *value < 1 || *value > maximum {
 		return 0, invalidInput(fmt.Sprintf("limit must be between 1 and %d", maximum))
 	}
-	return value, nil
+	return *value, nil
 }
 
 func decodeStrict(raw json.RawMessage, target any) error {
@@ -633,10 +785,30 @@ func decodeStrict(raw json.RawMessage, target any) error {
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return invalidInput("arguments must be a valid JSON object")
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &fields); err == nil {
+		for field, value := range fields {
+			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return invalidInput(field + " cannot be null; omit it or use the type required by the tool schema")
+			}
+		}
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return invalidInput("arguments must be a valid JSON object")
+		var typeErr *json.UnmarshalTypeError
+		switch {
+		case errors.As(err, &typeErr):
+			field := strings.TrimSpace(typeErr.Field)
+			if field == "" {
+				field = "argument"
+			}
+			return invalidInput(fmt.Sprintf("%s must have the type required by the tool schema", field))
+		case strings.HasPrefix(err.Error(), "json: unknown field "):
+			return invalidInput(strings.TrimPrefix(err.Error(), "json: "))
+		default:
+			return invalidInput("arguments must be a valid JSON object matching the tool schema")
+		}
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return invalidInput("arguments must contain one JSON object")
@@ -645,8 +817,13 @@ func decodeStrict(raw json.RawMessage, target any) error {
 }
 
 func invalidInput(message string) error {
-	return fmt.Errorf("%w: %s", errInvalidToolInput, message)
+	return &invalidToolInputError{message: message}
 }
+
+type invalidToolInputError struct{ message string }
+
+func (e *invalidToolInputError) Error() string { return e.message }
+func (e *invalidToolInputError) Unwrap() error { return errInvalidToolInput }
 
 type safeToolError struct {
 	Code    string `json:"code"`
@@ -722,7 +899,7 @@ func (r *ToolRegistry) listSources(ctx context.Context) []safeSourceInfo {
 }
 
 func safeCapabilities(values []string) []string {
-	allowed := map[string]bool{"overview": true, "daily": true, "models": true, "tools": true, "projects": true}
+	allowed := map[string]bool{"overview": true, "daily": true, "models": true, "tools": true, "projects": true, "sessions": true}
 	out := make([]string, 0, len(values))
 	for _, value := range values {
 		if allowed[value] {
@@ -795,8 +972,11 @@ type safeCrossOverview struct {
 	MessagesPerSession   float64                 `json:"messages_per_session"`
 	TokensPerMessage     stats.AvgTokenStats     `json:"tokens_per_message"`
 	TopModels            []safeModel             `json:"top_models"`
+	TopModelsTruncated   bool                    `json:"top_models_truncated,omitempty"`
 	TopProjects          []safeProjectMetric     `json:"top_projects"`
+	TopProjectsTruncated bool                    `json:"top_projects_truncated,omitempty"`
 	TopTools             []safeTool              `json:"top_tools"`
+	TopToolsTruncated    bool                    `json:"top_tools_truncated,omitempty"`
 	UnavailableSources   []string                `json:"unavailable_sources,omitempty"`
 	IncompleteDimensions []safeDimensionOmission `json:"incomplete_dimensions,omitempty"`
 }
@@ -806,20 +986,23 @@ type safeDimensionOmission struct {
 	Dimension string `json:"dimension"`
 }
 
-func safeCrossOverviewFrom(value source.AllSourcesOverview, trendLimit int, unavailable []string, projectRefKey []byte) safeCrossOverview {
+func safeCrossOverviewFrom(value source.AllSourcesOverview, trendLimit, topN int, unavailable []string, projectRefKey []byte) safeCrossOverview {
 	result := safeCrossOverview{
 		CombinedTotals: safeCombinedTotals{
 			Sessions: value.Total.Sessions, Messages: value.Total.Messages, Requests: value.Total.Requests,
 			Tokens: value.Total.Tokens, Days: value.Total.Days,
 		},
-		MessagesPerSession: value.MessagesPerSession,
-		TokensPerMessage:   value.TokensPerMessage,
-		UnavailableSources: safeSourceRefs(projectRefKey, unavailable),
+		MessagesPerSession:   value.MessagesPerSession,
+		TokensPerMessage:     value.TokensPerMessage,
+		UnavailableSources:   safeSourceRefs(projectRefKey, unavailable),
+		TopModelsTruncated:   len(value.TopModels) > topN,
+		TopProjectsTruncated: len(value.TopProjects) > topN,
+		TopToolsTruncated:    len(value.TopTools) > topN,
 	}
-	for _, item := range limitSlice(value.TopTools, maxAggregateTopN) {
+	for _, item := range limitSlice(value.TopTools, topN) {
 		result.TopTools = append(result.TopTools, safeToolFrom(item, projectRefKey))
 	}
-	for _, item := range limitSlice(value.TopModels, maxAggregateTopN) {
+	for _, item := range limitSlice(value.TopModels, topN) {
 		result.TopModels = append(result.TopModels, safeModelFrom(item, projectRefKey))
 	}
 	for _, item := range value.Sources {
@@ -835,7 +1018,7 @@ func safeCrossOverviewFrom(value source.AllSourcesOverview, trendLimit int, unav
 			Trend: trend, TrendTruncated: truncated,
 		})
 	}
-	for i, item := range value.TopProjects {
+	for i, item := range limitSlice(value.TopProjects, topN) {
 		result.TopProjects = append(result.TopProjects, safeProjectFrom(item, i+1, projectRefKey))
 	}
 	for _, item := range value.Errors {
@@ -982,7 +1165,7 @@ type safeDimensionDay struct {
 	DimensionKey   string              `json:"dimension_key"`
 	DimensionName  string              `json:"dimension_name,omitempty"`
 	Sessions       int64               `json:"sessions"`
-	Messages       int64               `json:"messages"`
+	Requests       int64               `json:"requests"`
 	Cost           float64             `json:"cost"`
 	Tokens         stats.TokenStats    `json:"tokens"`
 	CostStatus     stats.CostStatus    `json:"cost_status,omitempty"`
@@ -990,7 +1173,7 @@ type safeDimensionDay struct {
 }
 
 func safeDimensionTrendFrom(value stats.DailyDimensionStats, dimension string, limit int, key []byte) safeDimensionTrend {
-	rawDays, truncated := lastItems(value.Days, limit)
+	rawDays, truncated := lastDimensionBuckets(value.Days, limit)
 	entries := make([]safeDimensionDay, 0, len(rawDays))
 	for _, day := range rawDays {
 		sourceID := day.SourceID
@@ -1010,7 +1193,7 @@ func safeDimensionTrendFrom(value stats.DailyDimensionStats, dimension string, l
 		}
 		entries = append(entries, safeDimensionDay{
 			Date: safeDate(day.Date), DimensionKey: dimensionKey, DimensionName: dimensionName,
-			Sessions: day.Sessions, Messages: day.Messages, Cost: day.Cost, Tokens: day.Tokens,
+			Sessions: day.Sessions, Requests: day.Messages, Cost: day.Cost, Tokens: day.Tokens,
 			CostStatus: safeCostStatus(day.CostStatus), CostProvenance: safeProvenance(day.CostProvenance, key),
 		})
 	}
@@ -1023,6 +1206,37 @@ func safeDimensionTrendFrom(value stats.DailyDimensionStats, dimension string, l
 		Entries: entries, Truncated: truncated,
 		CostStatus: safeCostStatus(value.CostStatus), CostProvenance: safeProvenance(value.CostProvenance, key),
 	}
+}
+
+// lastDimensionBuckets retains whole time buckets. Dimension rows are sorted
+// within a bucket by their own metric, so slicing rows directly could drop the
+// leading dimension from the oldest retained bucket and make a partial bucket
+// look complete.
+func lastDimensionBuckets(values []stats.DimensionDayStats, limit int) ([]stats.DimensionDayStats, bool) {
+	if limit <= 0 || len(values) == 0 {
+		return []stats.DimensionDayStats{}, len(values) > 0
+	}
+	retainedDates := make(map[string]struct{}, limit)
+	for index := len(values) - 1; index >= 0; index-- {
+		date := values[index].Date
+		if _, retained := retainedDates[date]; retained {
+			continue
+		}
+		if len(retainedDates) == limit {
+			break
+		}
+		retainedDates[date] = struct{}{}
+	}
+	result := make([]stats.DimensionDayStats, 0, len(values))
+	truncated := false
+	for _, value := range values {
+		if _, retained := retainedDates[value.Date]; retained {
+			result = append(result, value)
+		} else {
+			truncated = true
+		}
+	}
+	return result, truncated
 }
 
 type safeSessionList struct {
@@ -1041,8 +1255,6 @@ type safeSession struct {
 	SessionRef     string              `json:"session_ref"`
 	ProjectRef     string              `json:"project_ref,omitempty"`
 	ProjectName    string              `json:"project_name,omitempty"`
-	StartedAt      string              `json:"started_at,omitempty"`
-	LastActiveAt   string              `json:"last_active_at,omitempty"`
 	Messages       int64               `json:"messages"`
 	Cost           float64             `json:"cost"`
 	CostStatus     stats.CostStatus    `json:"cost_status,omitempty"`
@@ -1070,19 +1282,11 @@ func safeSessionsFrom(value stats.SessionList, limit int, key []byte) safeSessio
 			SessionRef:  opaqueValueRef(key, "session", sourceID+"\x00"+session.ID),
 			ProjectRef:  projectRef,
 			ProjectName: safeProjectName(session.ProjectName),
-			StartedAt:   safeSessionTime(session.TimeCreated), LastActiveAt: safeSessionTime(session.TimeUpdated),
-			Messages: session.MessageCount, Cost: session.Cost,
+			Messages:    session.MessageCount, Cost: session.Cost,
 			CostStatus: safeCostStatus(session.CostStatus), CostProvenance: safeProvenance(session.CostProvenance, key),
 		})
 	}
 	return result
-}
-
-func safeSessionTime(value time.Time) string {
-	if value.IsZero() {
-		return ""
-	}
-	return safeDate(value.UTC().Format(time.RFC3339))
 }
 
 type safeProjectList struct {

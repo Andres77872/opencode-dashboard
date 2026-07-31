@@ -47,6 +47,60 @@ func TestNewMiniMaxClientDefaultsAndValidatesConfiguration(t *testing.T) {
 	}
 }
 
+func TestRegistryDefinitionsSurviveMiniMaxWireEncoding(t *testing.T) {
+	definitions := NewToolRegistry(nil).Definitions()
+	payload, err := makeWireChatPayload(ChatRequest{
+		Messages: []json.RawMessage{json.RawMessage(`{"role":"user","content":"report"}`)},
+		Tools:    definitions,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire wireChatRequest
+	if err := json.Unmarshal(payload, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if len(wire.Tools) != len(definitions) {
+		t.Fatalf("wire tools = %d, want %d", len(wire.Tools), len(definitions))
+	}
+	for index, definition := range definitions {
+		got := wire.Tools[index].Function
+		if got.Name != definition.Name || got.Description != definition.Description {
+			t.Errorf("wire tool %d metadata = %#v, want %#v", index, got, definition)
+		}
+		if !bytes.Equal(got.Parameters, definition.Parameters) {
+			t.Errorf("wire tool %q parameters changed\ngot:  %s\nwant: %s", definition.Name, got.Parameters, definition.Parameters)
+		}
+		var schema map[string]any
+		if json.Unmarshal(got.Parameters, &schema) != nil || schema["type"] != "object" || schema["additionalProperties"] != false {
+			t.Errorf("wire tool %q lost closed object schema: %s", definition.Name, got.Parameters)
+		}
+		if definition.Name != "list_sources" {
+			modes, ok := schema["oneOf"].([]any)
+			if !ok || len(modes) != 3 {
+				t.Errorf("wire tool %q lost PRESET/CUSTOM/DEFAULT exclusivity: %s", definition.Name, got.Parameters)
+			}
+			properties, _ := schema["properties"].(map[string]any)
+			period, _ := properties["period"].(map[string]any)
+			if value, exists := period["default"]; exists {
+				t.Errorf("wire tool %q advertises misleading period default %#v", definition.Name, value)
+			}
+		}
+	}
+}
+
+func TestMiniMaxWireRejectsNonObjectToolSchema(t *testing.T) {
+	_, err := makeWireChatPayload(ChatRequest{
+		Messages: []json.RawMessage{json.RawMessage(`{"role":"user","content":"report"}`)},
+		Tools: []ToolDefinition{{
+			Name: "bad_schema", Parameters: json.RawMessage(`[]`),
+		}},
+	}, false)
+	if err == nil || !strings.Contains(err.Error(), "JSON Schema object") {
+		t.Fatalf("error = %v, want object-schema rejection", err)
+	}
+}
+
 func TestMiniMaxClientEnsureAvailableRequiresExactModelID(t *testing.T) {
 	t.Parallel()
 

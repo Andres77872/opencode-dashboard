@@ -238,6 +238,177 @@ func TestAssistantChatContractAndStatelessHistory(t *testing.T) {
 	}
 }
 
+func TestAssistantChatNormalizesLegacyRangeBeforeService(t *testing.T) {
+	fake := &fakeAssistantService{result: analyticsagent.ChatResult{
+		Message: analyticsagent.BrowserMessage{Role: "assistant", Content: "Report."},
+		Model:   analyticsagent.MiniMaxM3Model,
+	}}
+	server := assistantTestServer(fake, nil)
+	body, err := json.Marshal(analyticsagent.ChatInput{
+		ConsentVersion: analyticsagent.PrivacyConsentVersion,
+		Messages:       []analyticsagent.BrowserMessage{{Role: "user", Content: "What changed?"}},
+		Context:        &analyticsagent.BrowserContext{Route: "/daily", Period: "2026-01-01 to now"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler.ServeHTTP(recorder, newAssistantRequest(http.MethodPost, "/api/v1/assistant/chat", string(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if fake.calls != 1 || fake.input.Context == nil {
+		t.Fatalf("service input = %#v, calls=%d", fake.input, fake.calls)
+	}
+	if fake.input.Context.Period != "" || fake.input.Context.From != "2026-01-01" || fake.input.Context.To != "" {
+		t.Fatalf("legacy context was not normalized before service: %#v", fake.input.Context)
+	}
+}
+
+func TestAssistantChatRejectsConflictingTimeContextBeforeService(t *testing.T) {
+	fake := &fakeAssistantService{}
+	server := assistantTestServer(fake, nil)
+	body, err := json.Marshal(analyticsagent.ChatInput{
+		ConsentVersion: analyticsagent.PrivacyConsentVersion,
+		Messages:       []analyticsagent.BrowserMessage{{Role: "user", Content: "What changed?"}},
+		Context:        &analyticsagent.BrowserContext{Period: "7d", From: "2026-01-01"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler.ServeHTTP(recorder, newAssistantRequest(http.MethodPost, "/api/v1/assistant/chat", string(body)))
+	if recorder.Code != http.StatusBadRequest || fake.calls != 0 {
+		t.Fatalf("status=%d calls=%d body=%s", recorder.Code, fake.calls, recorder.Body.String())
+	}
+	var apiErr APIError
+	if err := json.Unmarshal(recorder.Body.Bytes(), &apiErr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(apiErr.Message, "assistant context is invalid") || !strings.Contains(apiErr.Message, "time mode conflict") || strings.Contains(apiErr.Message, "assistant messages") {
+		t.Fatalf("context validation message = %q", apiErr.Message)
+	}
+}
+
+func TestStoredTurnContextKeepsCustomRangeInExistingPeriodField(t *testing.T) {
+	tests := []struct {
+		name string
+		ctx  *analyticsagent.BrowserContext
+		want string
+	}{
+		{name: "preset", ctx: &analyticsagent.BrowserContext{Period: "30d"}, want: "30d"},
+		{name: "closed range", ctx: &analyticsagent.BrowserContext{From: "2026-01-01", To: "2026-01-31"}, want: "2026-01-01 to 2026-01-31"},
+		{name: "open range", ctx: &analyticsagent.BrowserContext{From: "2026-01-01"}, want: "2026-01-01 to now"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := storedTurnContext(test.ctx)
+			if got.Period != test.want {
+				t.Fatalf("stored period = %q, want %q", got.Period, test.want)
+			}
+		})
+	}
+}
+
+func TestAssistantCustomRangeContextPersistsWithoutSchemaReset(t *testing.T) {
+	tests := []struct {
+		name       string
+		context    analyticsagent.BrowserContext
+		wantFrom   string
+		wantTo     string
+		wantPeriod string
+	}{
+		{
+			name: "structured closed range", context: analyticsagent.BrowserContext{Route: "/daily", From: "2026-01-01", To: "2026-01-31"},
+			wantFrom: "2026-01-01", wantTo: "2026-01-31", wantPeriod: "2026-01-01 to 2026-01-31",
+		},
+		{
+			name: "structured open range", context: analyticsagent.BrowserContext{Route: "/daily", From: "2026-02-01"},
+			wantFrom: "2026-02-01", wantPeriod: "2026-02-01 to now",
+		},
+		{
+			name: "legacy range", context: analyticsagent.BrowserContext{Route: "/daily", Period: "2026-03-01 to 2026-03-31"},
+			wantFrom: "2026-03-01", wantTo: "2026-03-31", wantPeriod: "2026-03-01 to 2026-03-31",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "assistant-chat.sqlite")
+			store, err := chatstore.Open(context.Background(), path)
+			if err != nil {
+				t.Fatalf("open chat store: %v", err)
+			}
+			service := &fakeAssistantService{result: analyticsagent.ChatResult{
+				Message: analyticsagent.BrowserMessage{Role: "assistant", Content: "Range report.", Signature: "sig"},
+				Model:   analyticsagent.MiniMaxM3Model,
+			}}
+			server := NewServer(ServerOptions{
+				Registry:  source.NewRegistry(source.SourceOpenCode),
+				Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+				Assistant: service,
+				ChatLog:   store,
+			})
+			body, err := json.Marshal(analyticsagent.ChatInput{
+				ConsentVersion: analyticsagent.PrivacyConsentVersion,
+				Messages:       []analyticsagent.BrowserMessage{{Role: "user", Content: "Summarize this range."}},
+				Context:        &test.context,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := httptest.NewRecorder()
+			server.Handler.ServeHTTP(recorder, newAssistantRequest(http.MethodPost, "/api/v1/assistant/chat", string(body)))
+			if recorder.Code != http.StatusOK {
+				_ = store.Close()
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if service.calls != 1 || service.input.Context == nil {
+				_ = store.Close()
+				t.Fatalf("normalized service input = %#v, calls=%d", service.input, service.calls)
+			}
+			if got := service.input.Context; got.Period != "" || got.From != test.wantFrom || got.To != test.wantTo {
+				_ = store.Close()
+				t.Fatalf("normalized context = %#v", got)
+			}
+
+			var response assistantChatResponseBody
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				_ = store.Close()
+				t.Fatal(err)
+			}
+			if !chatstore.IsValidSessionID(response.SessionID) {
+				_ = store.Close()
+				t.Fatalf("persisted session id = %q", response.SessionID)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatalf("close chat store: %v", err)
+			}
+
+			reopened, err := chatstore.Open(context.Background(), path)
+			if err != nil {
+				t.Fatalf("reopen chat store: %v", err)
+			}
+			defer reopened.Close()
+			if reopened.Recreated() {
+				t.Fatal("reopening the unchanged chat schema reset assistant history")
+			}
+			detail, err := reopened.GetSession(context.Background(), response.SessionID)
+			if err != nil {
+				t.Fatalf("load persisted session after reopen: %v", err)
+			}
+			if len(detail.Messages) != 2 {
+				t.Fatalf("persisted messages = %d, want 2", len(detail.Messages))
+			}
+			for index, message := range detail.Messages {
+				if message.Context == nil || message.Context.Period != test.wantPeriod || message.Context.Route != "/daily" {
+					t.Fatalf("message %d persisted context = %#v", index, message.Context)
+				}
+			}
+		})
+	}
+}
+
 func TestAssistantChatStreamContractAndFlushesEveryFrame(t *testing.T) {
 	toolOK := false
 	result := analyticsagent.ChatResult{

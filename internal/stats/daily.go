@@ -10,8 +10,6 @@ import (
 	"opencode-dashboard/internal/store"
 )
 
-const allHistoricPeriodDays = -1
-
 // Daily returns per-day stats for the given period query.
 // When no granularity is passed, defaults: 1d + hour presets → hourly, 7d+ → daily.
 // Explicit granularity=day disables auto-hour for presets.
@@ -98,24 +96,13 @@ func lastBucketDay(pw PeriodWindow) time.Time {
 }
 
 func parsePeriod(period string) (int, error) {
-	switch period {
-	case "1d":
-		return 1, nil
-	case "7d":
-		return 7, nil
-	case "14d":
-		return 14, nil
-	case "30d":
-		return 30, nil
-	case "1y":
-		return 365, nil
-	case "all":
-		return allHistoricPeriodDays, nil
-	case "1h", "6h", "12h", "24h", "72h":
-		return 0, fmt.Errorf("%w: %q is an hour preset and should be handled by presetPeriodWindow directly", ErrInvalidPeriod, period)
-	default:
-		return 0, InvalidPeriodError(period)
+	if days, ok := calendarPresetDays(period); ok {
+		return days, nil
 	}
+	if _, ok := HourPresetHours(period); ok {
+		return 0, fmt.Errorf("%w: %q is an hour preset and should be handled by presetPeriodWindow directly", ErrInvalidPeriod, period)
+	}
+	return 0, InvalidPeriodError(period)
 }
 
 func queryEarliestActivityDate(ctx context.Context, db *store.Store) (time.Time, error) {

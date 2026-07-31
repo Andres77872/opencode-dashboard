@@ -79,7 +79,7 @@ func splitPeriod(pq stats.PeriodQuery, cutoff, now time.Time) (splitWindows, err
 		}
 		if period == "all" {
 			end = now
-		} else if hours, ok := parseHourPeriod(period); ok {
+		} else if hours, ok := stats.HourPresetHours(period); ok {
 			start = now.Add(-time.Duration(hours) * time.Hour)
 			end = now
 		} else {

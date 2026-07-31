@@ -419,7 +419,7 @@ func (s *snapshot) presetWindow(pq stats.PeriodQuery) (periodWindow, error) {
 	if period == "all" {
 		return periodWindow{all: true}, nil
 	}
-	if hours, ok := parseHourPreset(period); ok {
+	if hours, ok := stats.HourPresetHours(period); ok {
 		now := time.Now().UTC()
 		return periodWindow{start: now.Add(-time.Duration(hours) * time.Hour), end: now}, nil
 	}
@@ -473,23 +473,6 @@ func fillEmptyBuckets(groups map[string][]*messageRecord, window periodWindow, g
 		if _, ok := groups[key]; !ok {
 			groups[key] = nil
 		}
-	}
-}
-
-func parseHourPreset(period string) (int, bool) {
-	switch period {
-	case "1h":
-		return 1, true
-	case "6h":
-		return 6, true
-	case "12h":
-		return 12, true
-	case "24h":
-		return 24, true
-	case "72h":
-		return 72, true
-	default:
-		return 0, false
 	}
 }
 
