@@ -191,6 +191,7 @@ var assistantCapabilities = []string{
 	"per-model, per-tool, and per-project trends",
 	"delegated specialist investigations",
 	"source integrity audits",
+	"charts and diagrams in answers",
 }
 
 func NewService(opts ServiceOptions) *Service {

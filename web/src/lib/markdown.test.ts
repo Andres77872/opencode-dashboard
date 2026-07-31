@@ -97,12 +97,22 @@ test('parses fenced code blocks with a language', () => {
   const block = only('```json\n{"a": 1}\n```', 'code')
   assert.equal(block.lang, 'json')
   assert.equal(block.value, '{"a": 1}')
+  assert.equal(block.closed, true)
 })
 
 test('unterminated fence still yields a code block (streaming safety)', () => {
   const block = only('```python\nprint(1)', 'code')
   assert.equal(block.lang, 'python')
   assert.equal(block.value, 'print(1)')
+  // Artifact fences render a placeholder until this flips to true, so a
+  // half-received chart spec never renders as a parse failure.
+  assert.equal(block.closed, false)
+})
+
+test('an artifact fence keeps its type argument in the info string', () => {
+  const block = only('```chart bar\n{"data":[]}\n```', 'code')
+  assert.equal(block.lang, 'chart bar')
+  assert.equal(block.closed, true)
 })
 
 test('unterminated emphasis degrades to literal text', () => {

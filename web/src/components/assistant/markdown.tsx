@@ -9,7 +9,11 @@
  */
 import { Fragment, useMemo, type ReactNode } from 'react'
 import { parseMarkdown, type MdBlock, type MdInline } from '../../lib/markdown'
+import { isChartFence } from '../../lib/chart-spec'
+import { isDiagramFence } from '../../lib/mermaid'
+import { ChartArtifact } from './chart-artifact'
 import { CopyButton } from './copy-button'
+import { DiagramArtifact } from './diagram-artifact'
 
 function InlineNodes({ nodes }: { nodes: MdInline[] }): ReactNode {
   return (
@@ -42,6 +46,18 @@ function InlineNode({ node }: { node: MdInline }): ReactNode {
         </a>
       )
   }
+}
+
+/**
+ * Fenced blocks are the assistant's artifact channel: `chart`/`plot` and
+ * `mermaid`/`diagram` become rendered figures, everything else stays code.
+ * `closed` matters because a fence still streaming is an unfinished spec, not
+ * an invalid one — the artifact components show progress until it terminates.
+ */
+function FencedBlock({ lang, value, closed }: { lang: string | null; value: string; closed: boolean }) {
+  if (isChartFence(lang)) return <ChartArtifact source={value} info={lang} closed={closed} />
+  if (isDiagramFence(lang)) return <DiagramArtifact source={value} info={lang} closed={closed} />
+  return <CodeBlock lang={lang} value={value} />
 }
 
 function CodeBlock({ lang, value }: { lang: string | null; value: string }) {
@@ -93,7 +109,7 @@ function BlockNode({ block, trailing }: { block: MdBlock; trailing?: ReactNode }
     case 'paragraph':
       return <p className="md-p"><InlineNodes nodes={block.children} />{trailing}</p>
     case 'code':
-      return <CodeBlock lang={block.lang} value={block.value} />
+      return <FencedBlock lang={block.lang} value={block.value} closed={block.closed} />
     case 'hr':
       return <hr className="md-hr" />
     case 'blockquote':

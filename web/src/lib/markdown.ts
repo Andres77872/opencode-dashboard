@@ -32,7 +32,13 @@ export type MdTableAlign = 'left' | 'center' | 'right' | null
 export type MdBlock =
   | { type: 'heading'; level: number; children: MdInline[] }
   | { type: 'paragraph'; children: MdInline[] }
-  | { type: 'code'; lang: string | null; value: string }
+  /**
+   * `closed` is false while a streamed fence is still open. Artifact fences
+   * (charts, diagrams) need that distinction: an unfinished spec is a block
+   * still arriving, not a malformed one, so the renderer shows progress
+   * instead of a parse error that would flash on every delta.
+   */
+  | { type: 'code'; lang: string | null; value: string; closed: boolean }
   | { type: 'list'; ordered: boolean; start: number; items: MdBlock[][] }
   | { type: 'blockquote'; children: MdBlock[] }
   | { type: 'hr' }
@@ -259,16 +265,18 @@ function parseBlocks(lines: string[]): MdBlock[] {
       const closeRe = new RegExp(`^\\s{0,3}\\${marker}{${fenceLen},}\\s*$`)
       const dedent = new RegExp(`^\\s{0,${indent}}`)
       const body: string[] = []
+      let closed = false
       i++
       while (i < lines.length) {
         if (closeRe.test(lines[i])) {
+          closed = true
           i++
           break
         }
         body.push(lines[i].replace(dedent, ''))
         i++
       }
-      blocks.push({ type: 'code', lang, value: body.join('\n') })
+      blocks.push({ type: 'code', lang, value: body.join('\n'), closed })
       continue
     }
 

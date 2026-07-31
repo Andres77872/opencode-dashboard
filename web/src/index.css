@@ -854,6 +854,379 @@ body {
   white-space: pre;
 }
 
+/* ---- Artifacts: charts and diagrams inside a response ------------------
+   A figure frame shared by every artifact, then the marks themselves. Colors
+   come from the categorical tokens only — a model never supplies one — and
+   unknown values are always drawn as an absence rather than a zero. */
+.analytics-assistant-md .md-artifact {
+  margin: 10px 0;
+  overflow: hidden;
+  background: var(--ink-850);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.analytics-assistant-md .md-artifact-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 7px 7px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.analytics-assistant-md .md-artifact-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.analytics-assistant-md .md-artifact-kind {
+  color: var(--fg-faint);
+  font: 600 9px/1.2 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.analytics-assistant-md .md-artifact-title {
+  color: var(--fg-primary);
+  font: 600 12px/1.35 var(--font-ui);
+}
+
+.analytics-assistant-md .md-artifact-meta {
+  color: var(--fg-muted);
+  font: 400 10.5px/1.35 var(--font-ui);
+}
+
+.analytics-assistant-md .md-artifact-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.analytics-assistant-md .md-artifact-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--dur-fast), background var(--dur-fast);
+}
+
+.analytics-assistant-md .md-artifact-toggle:hover { color: var(--fg-primary); background: var(--ink-700); }
+.analytics-assistant-md .md-artifact-toggle[aria-pressed='true'] { color: var(--accent); background: var(--ink-800); }
+.analytics-assistant-md .md-artifact-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.analytics-assistant-md .md-artifact-body { padding: 10px; }
+.analytics-assistant-md .md-artifact-body .md-table-wrap { margin: 0; }
+
+.analytics-assistant-md .md-artifact-footnotes {
+  padding: 0 10px 9px;
+}
+
+.analytics-assistant-md .md-artifact-footnote {
+  margin: 0;
+  color: var(--fg-faint);
+  font: 400 10.5px/1.45 var(--font-ui);
+}
+
+.analytics-assistant-md .md-artifact-footnote + .md-artifact-footnote { margin-top: 3px; }
+
+/* Streaming placeholder: a spec is only meaningful once its fence closes. */
+.analytics-assistant-md .md-artifact-pending-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 14px 10px;
+}
+
+.analytics-assistant-md .md-artifact-pending-bar {
+  height: 8px;
+  background: var(--ink-750);
+  border-radius: var(--radius-xs);
+  animation: vael-pulse 1200ms ease-in-out infinite;
+}
+
+.analytics-assistant-md .md-artifact-pending-bar:nth-child(2) { width: 72%; animation-delay: 120ms; }
+.analytics-assistant-md .md-artifact-pending-bar:nth-child(3) { width: 45%; animation-delay: 240ms; }
+
+.analytics-assistant-md .md-artifact-invalid { border-color: var(--border-default); }
+
+.analytics-assistant-md .md-artifact-error {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-secondary);
+  font: 600 11.5px/1.35 var(--font-ui);
+}
+
+.analytics-assistant-md .md-artifact-source {
+  margin: 0;
+  padding: 9px 10px;
+  overflow-x: auto;
+  background: var(--ink-900);
+}
+
+.analytics-assistant-md .md-artifact-source code {
+  color: var(--fg-secondary);
+  font: 500 11.5px/1.5 var(--font-mono);
+  white-space: pre;
+}
+
+/* Horizontal bars: the readable ranking form in a narrow panel. */
+.analytics-assistant-md .md-chart-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.analytics-assistant-md .md-chart-row {
+  display: grid;
+  grid-template-columns: minmax(52px, 32%) 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.analytics-assistant-md .md-chart-row-label {
+  overflow: hidden;
+  color: var(--fg-secondary);
+  font: 400 11px/1.3 var(--font-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analytics-assistant-md .md-chart-track {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  height: 100%;
+}
+
+.analytics-assistant-md .md-chart-row .md-chart-track:has(.md-chart-fill.stacked) { flex-direction: row; }
+
+.analytics-assistant-md .md-chart-bar-line { display: flex; height: 9px; }
+
+.analytics-assistant-md .md-chart-fill {
+  height: 9px;
+  min-width: 2px;
+  border-radius: 2px;
+  transition: width var(--dur-base) var(--ease-out);
+}
+
+/* A 2px surface gap keeps adjacent stacked segments legible. */
+.analytics-assistant-md .md-chart-fill.stacked + .md-chart-fill.stacked { margin-left: 2px; }
+
+.analytics-assistant-md .md-chart-unknown-track {
+  height: 9px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 2px;
+}
+
+.analytics-assistant-md .md-chart-row-value {
+  color: var(--fg-primary);
+  font: 600 11px/1.3 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.analytics-assistant-md .md-chart-row-value.unknown,
+.analytics-assistant-md .md-chart-tooltip-value.unknown {
+  color: var(--fg-faint);
+  font-weight: 400;
+  font-style: italic;
+  font-synthesis: style;
+}
+
+.analytics-assistant-md .md-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 9px;
+}
+
+.analytics-assistant-md .md-chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-muted);
+  font: 400 10.5px/1.3 var(--font-ui);
+}
+
+.analytics-assistant-md .md-chart-swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.analytics-assistant-md .md-chart-scale {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.analytics-assistant-md .md-chart-scale span {
+  width: 14px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.analytics-assistant-md .md-chart-plot svg { display: block; }
+
+.analytics-assistant-md .md-chart-tooltip {
+  position: absolute;
+  top: 2px;
+  z-index: 5;
+  min-width: 132px;
+  padding: 7px 9px;
+  background: var(--ink-700);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+}
+
+.analytics-assistant-md .md-chart-tooltip-head {
+  margin-bottom: 5px;
+  color: var(--fg-muted);
+  font: 600 10.5px/1.2 var(--font-ui);
+}
+
+.analytics-assistant-md .md-chart-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.analytics-assistant-md .md-chart-tooltip-row.total {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.analytics-assistant-md .md-chart-tooltip-name {
+  flex: 1;
+  overflow: hidden;
+  color: var(--fg-secondary);
+  font: 400 11px/1.2 var(--font-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analytics-assistant-md .md-chart-tooltip-value {
+  color: var(--fg-primary);
+  font: 600 11px/1.2 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-assistant-md .md-chart-donut {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.analytics-assistant-md .md-chart-donut-legend {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 150px;
+}
+
+.analytics-assistant-md .md-chart-donut-row {
+  display: grid;
+  grid-template-columns: 8px 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: var(--radius-xs);
+}
+
+.analytics-assistant-md .md-chart-donut-row.active { background: var(--ink-800); }
+
+.analytics-assistant-md .md-chart-donut-label {
+  overflow: hidden;
+  color: var(--fg-secondary);
+  font: 400 11px/1.35 var(--font-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analytics-assistant-md .md-chart-donut-value {
+  color: var(--fg-primary);
+  font: 600 11px/1.35 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-assistant-md .md-chart-donut-share {
+  min-width: 38px;
+  color: var(--fg-faint);
+  font: 400 10.5px/1.35 var(--font-mono);
+  text-align: right;
+}
+
+.analytics-assistant-md .md-chart-heatmap {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.analytics-assistant-md .md-chart-heatmap-row {
+  display: grid;
+  grid-template-columns: minmax(44px, 26%) 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.analytics-assistant-md .md-chart-heatmap-label {
+  overflow: hidden;
+  color: var(--fg-secondary);
+  font: 400 10.5px/1.3 var(--font-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analytics-assistant-md .md-chart-heatmap-cells,
+.analytics-assistant-md .md-chart-heatmap-axis {
+  display: grid;
+  gap: 2px;
+}
+
+.analytics-assistant-md .md-chart-cell {
+  height: 16px;
+  background: var(--ink-850);
+  border-radius: 2px;
+}
+
+.analytics-assistant-md .md-chart-cell.unknown {
+  border: 1px dashed var(--border-strong);
+}
+
+.analytics-assistant-md .md-chart-heatmap-tick {
+  overflow: hidden;
+  color: var(--fg-faint);
+  font: 400 9px/1.2 var(--font-mono);
+  text-align: center;
+}
+
+.analytics-assistant-md .md-diagram-scroll {
+  overflow-x: auto;
+}
+
+.analytics-assistant-md .md-diagram-svg {
+  display: block;
+  min-width: 220px;
+}
+
 /* GFM tables — scrollable, hairline-ruled, sticky-free (panel is compact). */
 .analytics-assistant-md .md-table-wrap {
   margin: 9px 0;

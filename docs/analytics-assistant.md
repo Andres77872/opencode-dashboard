@@ -320,6 +320,93 @@ command and follows the official OAuth refresh/lock flow; it is not inferred
 from estimated transcript cost. A transient failure can leave a stale
 last-good quota visible, clearly marked stale.
 
+## Visual artifacts
+
+A ranking of eight models reads better as eight bars than as eight sentences, so
+the lead analyst may answer with figures. Two fenced block types are rendered as
+figures; every other fence stays a code block.
+
+### Charts
+
+A ` ```chart ` fence (` ```plot ` is an alias) holds one JSON object. A type may
+be given as a fence argument (` ```chart bar `) or in the object, where an
+explicit `type` wins:
+
+```chart
+{"type":"bar","title":"Tokens by model","unit":"tokens","source":"kimi-code",
+ "period":"7d","data":[{"label":"kimi-k2-turbo","value":1240000}]}
+```
+
+| Form | Job |
+|------|-----|
+| `bar` | Ranking. The default for models, tools, projects, and sessions, because horizontal bars keep long identifiers readable in a 420px panel |
+| `column`, `stacked-column` | Values, or their composition, across ordered buckets |
+| `line`, `area` | Change over time |
+| `donut` | Share of one total, at most eight slices |
+| `heatmap` | Rows against buckets |
+
+Units are `tokens`, `usd`, `count`, `percent`, `ms`, and `seconds`, and they
+drive every formatted value. Several measures share an axis through `labels`
+plus `series`; each series carries exactly one value per label, bounded at eight
+series and 200 points. `source`, `period`, and `note` render as the figure's
+provenance line and footnote.
+
+Two rules are structural rather than stylistic:
+
+- **`null` is unknown, never zero.** Missing evidence stays a gap in the marks,
+  reads as "unknown" in the tooltip and the table view, and adds a footnote. It
+  is the same refusal to invent zeros that governs usage-unavailable requests.
+- **A spec cannot choose colors.** One series is drawn in a single hue because
+  magnitude is a sequential job; several series take the categorical token order.
+  Any `color` key is ignored, so no model output can produce an inaccessible
+  chart.
+
+Every chart has a data-table view behind one toggle, a legend whenever two or
+more series share it, and a copy control that yields the original fence text.
+
+### Diagrams
+
+A ` ```mermaid ` fence (` ```diagram ` is an alias) covers a deliberate subset:
+`flowchart`/`graph` in TD, TB, BT, LR, and RL; `sequenceDiagram` with
+participants, `->>`/`-->>` messages, and notes; and `pie`, which is rendered
+through the donut so it gets the same tooltips and table view. Node ids are
+letters, digits, and underscores. `style`, `classDef`, `click`, and `subgraph`
+are ignored and reported as a warning under the figure; `%%{init}%%` directives
+are dropped entirely.
+
+### Why the dashboard draws them itself
+
+Neither a charting library nor `mermaid` is linked into the bundle. Mermaid
+renders by producing an HTML/SVG string that the host must inject with
+`dangerouslySetInnerHTML`, and its per-diagram `%%{init}%%` directive can
+re-enable `htmlLabels` and lower the security level from inside the diagram
+text — a poor fit for text a model wrote from untrusted tool results, and a
+contradiction of the panel's rule that assistant output only ever becomes real
+DOM nodes. It is also megabytes for a dashboard that self-hosts everything so it
+works offline.
+
+So parsing, validation, and layout are local pure modules
+(`web/src/lib/chart-spec.ts`, `web/src/lib/mermaid.ts`) that a React component
+projects onto `<rect>`, `<path>`, and `<text>`. Text can never become markup,
+and both modules are unit-tested under `node --test` without a DOM.
+
+Parsing is liberal and validation is strict. The shapes a model actually writes
+— row objects, tuples, point lists, `"1,234"`, a trailing comma — are accepted
+and normalized, and then anything that survives is a fully checked spec. A block
+that fails validation is never discarded: the panel shows the diagnostic, the
+correction, and the original source, because the numbers the model computed are
+the valuable part. A fence whose closing marker has not streamed yet shows a
+placeholder rather than a parse error flashing on every delta.
+
+### What the prompt requires
+
+The lead analyst is the only agent allowed to emit a figure; a specialist writes
+prose evidence, and the lead composes the report. Its policy requires that every
+charted number come from a tool result in that turn, caps an answer at two
+figures, forbids charting fewer than three comparable points, keeps a cost chart
+inside one source, and requires that truncation, unavailable sources, and
+unknown values also appear in prose. A figure never carries a disclosure alone.
+
 ## Saved conversations
 
 Completed turns are persisted to a dedicated SQLite database
@@ -332,8 +419,10 @@ dashboard view the question was asked from, and any deterministic notice the
 backend appended.
 
 Restoring a conversation therefore reproduces exactly what was shown live,
-including the specialist cards, the nested tool calls a specialist made, and the
-per-turn cost line. Persisting the assistant-history signing key alongside the
+including the specialist cards, the nested tool calls a specialist made, the
+per-turn cost line, and any charts or diagrams the answer contained — a figure
+is Markdown inside the signed answer, so it replays without being stored
+separately. Persisting the assistant-history signing key alongside the
 conversations keeps restored answers replayable as signed history after a
 restart.
 

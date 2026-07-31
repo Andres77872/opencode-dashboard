@@ -84,6 +84,15 @@ SVG (`charts.tsx`, `chart-utils.ts`), and icons are SVG paths in
 JetBrains Mono) rather than fetched from a CDN, which keeps the dashboard
 working fully offline.
 
+The assistant's artifacts follow the same rule. A ` ```chart ` fence is parsed
+by `lib/chart-spec.ts` and a ` ```mermaid ` fence by `lib/mermaid.ts` — both
+pure, both unit-tested, including the diagram's layout arithmetic — and the
+components in `components/assistant` render the result as real SVG. No charting
+or diagramming package is installed: `mermaid` would need
+`dangerouslySetInnerHTML` for text a model wrote, which the panel does not do.
+See [`docs/analytics-assistant.md`](../docs/analytics-assistant.md#visual-artifacts)
+for the spec the assistant is prompted to emit.
+
 Tailwind CSS v4 is imported in `index.css` for layout utilities alongside the
 tokens. The remaining runtime UI dependencies are `react-router-dom` and
 `react-day-picker`/`date-fns`, used by the custom-range period picker.

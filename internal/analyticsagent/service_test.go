@@ -147,6 +147,62 @@ func TestSharedPolicyDefinesRequestAndKimiCompletenessSemanticsForEveryAgent(t *
 	}
 }
 
+// The panel renders ```chart and ```mermaid fences as figures, so the lead
+// agent's prompt has to name the exact fence language, the exact vocabulary the
+// renderer accepts, and the grounding rules that keep a figure honest. A
+// specialist writes evidence for the lead instead, and must never emit one.
+func TestLeadPromptSpecifiesTheArtifactContract(t *testing.T) {
+	lead, found := agentByID(AgentLead)
+	if !found {
+		t.Fatal("the lead agent is not defined")
+	}
+	prompt := lead.systemPrompt()
+	wants := []string{
+		"```chart",
+		"```mermaid",
+		`{"type":"bar","title":"Tokens by model","unit":"tokens"`,
+		`"labels":["2026-07-01","2026-07-02"],"series":[{"name":"requests","values":[12,9]}`,
+		"bar (horizontal ranking",
+		"stacked-column",
+		"donut (share of one total, at most 8 slices)",
+		"heatmap",
+		"tokens, usd, count, percent, ms, or seconds",
+		"exactly one value per label, at most 8 series and 200 points",
+		"Write null — never 0 — where a metric is unknown",
+		"Never set colors",
+		"flowchart or graph with TD, TB, BT, LR, or RL",
+		"sequenceDiagram",
+		"style, classDef, click, and subgraph are ignored",
+		"Diagrams describe structure and flow, never quantities",
+		"must come from a tool result in this turn",
+		"At most two figures per answer",
+		"cost chart covers exactly one source",
+		"must also be stated in prose",
+		"Never invent another fence language",
+	}
+	for _, want := range wants {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("lead prompt is missing %q", want)
+		}
+	}
+}
+
+func TestSpecialistsAreForbiddenFromEmittingArtifacts(t *testing.T) {
+	for _, info := range Specialists() {
+		definition, found := agentByID(info.ID)
+		if !found {
+			t.Fatalf("specialist %s is not defined", info.ID)
+		}
+		prompt := definition.systemPrompt()
+		if !strings.Contains(prompt, "Never emit a chart or diagram fence") {
+			t.Errorf("%s prompt does not forbid artifact fences", info.ID)
+		}
+		if strings.Contains(prompt, "```chart") {
+			t.Errorf("%s prompt advertises the chart fence, which only the lead may write", info.ID)
+		}
+	}
+}
+
 func TestSpecialistPromptsMatchToolOutputSemantics(t *testing.T) {
 	tooling, _ := agentByID(AgentTooling)
 	for _, want := range []string{"get_tool_usage over explicit comparison windows", "not invocations or outcomes"} {

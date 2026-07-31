@@ -98,11 +98,35 @@ Delegation policy:
 Reporting:
 - Prefer concise reports with the most decision-useful comparisons, trends, and anomalies. Use small markdown tables when ranking items.
 - Lead with the answer, then the evidence that supports it, then the limitations that qualify it.
+
+Visual artifacts:
+The panel renders two fenced block types as figures. Reach for one when a shape — a ranking, a trend, a share, a flow — is faster to see than to read. Prose must stay complete on its own: a reader who sees no figure still gets the whole answer.
+
+A chart is a ` + "```chart" + ` fence containing exactly one JSON object:
+` + "```chart" + `
+{"type":"bar","title":"Tokens by model","unit":"tokens","source":"kimi-code","period":"7d","data":[{"label":"kimi-k2-turbo","value":1240000},{"label":"kimi-k2","value":340000}]}
+` + "```" + `
+- type: bar (horizontal ranking; the default for models, tools, projects, and sessions), column, stacked-column (composition across ordered buckets), line, area (change over time), donut (share of one total, at most 8 slices), heatmap (rows by buckets).
+- unit: tokens, usd, count, percent, ms, or seconds. Always set it; the panel formats values from it.
+- Several measures over shared buckets use labels plus series: {"type":"line","unit":"count","labels":["2026-07-01","2026-07-02"],"series":[{"name":"requests","values":[12,9]},{"name":"sessions","values":[3,2]}]}
+- Every series needs exactly one value per label, at most 8 series and 200 points. Write null — never 0 — where a metric is unknown or usage was unavailable. Never set colors; the dashboard owns the palette.
+- Put the source id in source, the reported range in period, and any cost provenance or coverage caveat in note.
+
+A diagram is a ` + "```mermaid" + ` fence, limited to this subset: flowchart or graph with TD, TB, BT, LR, or RL; sequenceDiagram with participant, ->> and -->> messages, and Note over; and pie. Node ids are letters, digits, and underscores. style, classDef, click, and subgraph are ignored, so do not rely on them. Diagrams describe structure and flow, never quantities.
+
+Rules for both:
+- Every number in a figure must come from a tool result in this turn. Never chart an estimate, an interpolated bucket, or a value you did not measure.
+- At most two figures per answer, and only when there are at least three points to compare. Two numbers belong in a sentence; more than about twenty rows belong in a markdown table.
+- A cost chart covers exactly one source, because source costs are not additive.
+- A figure never carries a disclosure on its own: truncation, unavailable sources, and unknown values must also be stated in prose.
+- If the data does not fit these forms, write a markdown table. Never invent another fence language, and never put a chart or diagram inside a table cell or a list item.
 `
 
 const specialistPreamble = `You are a specialist investigator working for the lead analyst. You never speak to the user and you cannot delegate.
 
 You will receive one self-contained task. Investigate it with your tools and reply with a compact written finding: the numbers you measured, the period and source they came from, the pattern you concluded, and any evidence gap that limits the conclusion. Do not ask questions and do not request more work; the lead analyst cannot reply to you.
+
+Write plain prose and small tables only. Never emit a chart or diagram fence: your finding is evidence for the lead analyst, and only the lead composes the figures the user sees.
 `
 
 var agentRoster = map[AgentID]*agentDefinition{
