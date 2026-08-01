@@ -131,6 +131,9 @@ func TestAppendTurnPersistsToolCallsSpecialistsAndAccounting(t *testing.T) {
 	}
 
 	answer := detail.Messages[1]
+	if answer.Provider != "minimax" || answer.Model != "MiniMax-M3" {
+		t.Fatalf("answer provider/model = %#v", answer)
+	}
 	if answer.Signature != "sig-1" || answer.Agent != "analyst" || answer.Rounds != 3 || answer.DurationMS != 4200 {
 		t.Fatalf("assistant message = %#v", answer)
 	}
@@ -165,6 +168,26 @@ func TestAppendTurnPersistsToolCallsSpecialistsAndAccounting(t *testing.T) {
 	}
 	if len(run.ToolsUsed) != 2 || run.Usage.TotalTokens != 820 || run.DurationMS != 900 {
 		t.Fatalf("specialist accounting = %+v", run)
+	}
+}
+
+func TestSessionReportsMixedProviderModelTurns(t *testing.T) {
+	store := openTestStore(t)
+	first := appendTurn(t, store, Turn{Provider: "minimax", Model: "MiniMax-M3", Agent: "analyst", UserContent: "First question", AssistantContent: "First answer"})
+	appendTurn(t, store, Turn{SessionID: first.SessionID, Provider: "kimi", Model: "kimi-k3", Agent: "analyst", UserContent: "Second question", AssistantContent: "Second answer"})
+	detail, err := store.GetSession(context.Background(), first.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !detail.Session.MixedProviderModels {
+		t.Fatalf("session=%#v", detail.Session)
+	}
+	if len(detail.Messages) != 4 || detail.Messages[1].Provider != "minimax" || detail.Messages[3].Provider != "kimi" {
+		t.Fatalf("messages=%#v", detail.Messages)
+	}
+	sessions, err := store.ListSessions(context.Background(), 10)
+	if err != nil || len(sessions) != 1 || !sessions[0].MixedProviderModels {
+		t.Fatalf("sessions=%#v err=%v", sessions, err)
 	}
 }
 

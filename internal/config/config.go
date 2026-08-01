@@ -15,6 +15,7 @@ const (
 	EnvKimiCodeHome    = "KIMI_CODE_HOME"
 	EnvQwenCodeHome    = "QWEN_CODE_HOME"
 	EnvMiniMaxAPIKey   = "OPENCODE_DASHBOARD_MINIMAX_API_KEY"
+	EnvKimiAPIKey      = "OPENCODE_DASHBOARD_KIMI_API_KEY"
 
 	AppName          = "opencode"
 	DashboardAppName = "opencode-dashboard"

@@ -31,6 +31,9 @@ import type {
   AssistantChatSessionDetail,
   AssistantChatSessionListResponse,
   AssistantStatusResponse,
+  AssistantProvider,
+  AssistantProvidersResponse,
+  AssistantSelection,
   AssistantStreamCompleteEvent,
   AssistantStreamEvent,
 } from '../types/assistant'
@@ -366,6 +369,57 @@ export function getQuotas(signal?: AbortSignal) {
 
 export function getAssistantStatus(signal?: AbortSignal) {
   return request<AssistantStatusResponse>('/api/v1/assistant/status', { signal })
+}
+
+export function getAssistantProviders(signal?: AbortSignal) {
+  return request<AssistantProvidersResponse>('/api/v1/assistant/providers', { signal })
+}
+
+export interface AssistantProviderMutation {
+  name?: string
+  base_url?: string
+  api_key?: string
+  clear_api_key?: boolean
+  insecure_transport_ack?: boolean
+}
+
+export function createAssistantProvider(input: Required<Pick<AssistantProviderMutation, 'name' | 'base_url'>> & AssistantProviderMutation, signal?: AbortSignal) {
+  return request<AssistantProvider>('/api/v1/assistant/providers', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal,
+  })
+}
+
+export function updateAssistantProvider(id: string, input: AssistantProviderMutation, signal?: AbortSignal) {
+  return request<AssistantProvider>(`/api/v1/assistant/providers/${encodeURIComponent(id)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal,
+  })
+}
+
+export async function deleteAssistantProvider(id: string, signal?: AbortSignal) {
+  const response = await fetch(resolveUrl(`/api/v1/assistant/providers/${encodeURIComponent(id)}`), {
+    method: 'DELETE', cache: 'no-store', signal,
+  })
+  if (!response.ok) throw new ApiClientError(await parseError(response), response.status)
+}
+
+export function refreshAssistantProviderModels(id: string, signal?: AbortSignal) {
+  return request<AssistantProvider>(`/api/v1/assistant/providers/${encodeURIComponent(id)}/models/refresh`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal,
+  })
+}
+
+export function putAssistantProviderModel(id: string, modelId: string, contextLimit: number, signal?: AbortSignal) {
+  return request<AssistantProvider>(`/api/v1/assistant/providers/${encodeURIComponent(id)}/models`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model_id: modelId, context_limit: contextLimit }), signal,
+  })
+}
+
+export function putAssistantSelection(providerId: string, modelId: string, signal?: AbortSignal) {
+  return request<AssistantSelection>('/api/v1/assistant/selection', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider_id: providerId, model_id: modelId }), signal,
+  })
 }
 
 export function getAssistantSessions(signal?: AbortSignal) {

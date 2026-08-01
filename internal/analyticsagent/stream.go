@@ -41,6 +41,7 @@ type StreamEvent struct {
 	Name       string          `json:"name,omitempty"`
 	OK         *bool           `json:"ok,omitempty"`
 	Model      string          `json:"model,omitempty"`
+	Provider   string          `json:"provider,omitempty"`
 	Arguments  json.RawMessage `json:"arguments,omitempty"`
 	Result     json.RawMessage `json:"result,omitempty"`
 	DurationMS int64           `json:"duration_ms,omitempty"`

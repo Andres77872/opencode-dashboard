@@ -9,8 +9,10 @@ import (
 )
 
 const (
-	EnvMiniMaxBaseURL    = "OPENCODE_DASHBOARD_MINIMAX_BASE_URL"
-	EnvMiniMaxRunTimeout = "OPENCODE_DASHBOARD_MINIMAX_TIMEOUT"
+	EnvMiniMaxBaseURL      = "OPENCODE_DASHBOARD_MINIMAX_BASE_URL"
+	EnvMiniMaxRunTimeout   = "OPENCODE_DASHBOARD_MINIMAX_TIMEOUT"
+	EnvAssistantRunTimeout = "OPENCODE_DASHBOARD_ASSISTANT_TIMEOUT"
+	EnvKimiBaseURL         = "OPENCODE_DASHBOARD_KIMI_BASE_URL"
 )
 
 // ResolveMiniMaxAPIKey prefers the dashboard-specific environment variable and
@@ -44,6 +46,28 @@ func ResolveMiniMaxAPIKey(authPath string) (string, error) {
 // requests from being redirected by untrusted input.
 func MiniMaxBaseURLOverride() string {
 	return strings.TrimSpace(os.Getenv(EnvMiniMaxBaseURL))
+}
+
+func KimiAPIConfiguration() (string, string) {
+	return strings.TrimSpace(os.Getenv(EnvKimiBaseURL)), strings.TrimSpace(os.Getenv(EnvKimiAPIKey))
+}
+
+// AssistantRunTimeoutOverride is provider-neutral. The MiniMax variable is
+// retained as a deprecated fallback for existing installations.
+func AssistantRunTimeoutOverride() (time.Duration, error) {
+	name := EnvAssistantRunTimeout
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		name, raw = EnvMiniMaxRunTimeout, strings.TrimSpace(os.Getenv(EnvMiniMaxRunTimeout))
+	}
+	if raw == "" {
+		return 0, nil
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil || timeout < 10*time.Second || timeout > 5*time.Minute {
+		return 0, fmt.Errorf("%s must be a duration from 10s through 5m", name)
+	}
+	return timeout, nil
 }
 
 // MiniMaxRunTimeoutOverride bounds one complete agent run, including model

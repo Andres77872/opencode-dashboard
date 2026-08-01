@@ -261,7 +261,13 @@ func cmdWeb(args []string) error {
 	if chatLog != nil {
 		defer chatLog.Close()
 	}
-	assistantService := newWebAnalyticsAgent(registry, cacheRuntime, logger, chatLog)
+	assistantProviders := newWebAssistantProviderRegistry(pricingAliases, kimiSelection.Path)
+	assistantService := newWebAnalyticsAgent(registry, cacheRuntime, logger, chatLog, assistantProviders)
+	go func() {
+		refreshCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		assistantProviders.RefreshAll(refreshCtx)
+	}()
 
 	addr := web.DefaultHost + ":" + strconv.Itoa(*port)
 	var chatLogService web.AssistantChatStore
@@ -269,15 +275,16 @@ func cmdWeb(args []string) error {
 		chatLogService = chatLog
 	}
 	server := web.NewServer(web.ServerOptions{
-		Addr:           addr,
-		Registry:       registry,
-		Logger:         logger,
-		Cache:          cacheRuntime,
-		Quotas:         quotaService,
-		Assistant:      assistantService,
-		ChatLog:        chatLogService,
-		PricingAliases: pricingAliases,
-		PricingRates:   catalogIndex,
+		Addr:               addr,
+		Registry:           registry,
+		Logger:             logger,
+		Cache:              cacheRuntime,
+		Quotas:             quotaService,
+		Assistant:          assistantService,
+		AssistantProviders: assistantProviders,
+		ChatLog:            chatLogService,
+		PricingAliases:     pricingAliases,
+		PricingRates:       catalogIndex,
 	})
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -300,7 +307,7 @@ func cmdWeb(args []string) error {
 	fmt.Printf("db source:  %s\n", selection.Source)
 	printCacheStartup(cacheRuntime, cacheSelection)
 	if pricingAliases != nil {
-		fmt.Printf("settings:   %s (pricing aliases)\n", pricingAliases.Path())
+		fmt.Printf("settings:   %s (pricing aliases, assistant providers)\n", pricingAliases.Path())
 	}
 	fmt.Printf("source:     %s\n", selectedSource)
 	if selectedSource == source.SourceClaudeCode || *claudeHome != "" || os.Getenv(config.EnvClaudeConfigDir) != "" {
@@ -383,11 +390,11 @@ func openAssistantChatStore(ctx context.Context, logger *slog.Logger) *chatstore
 
 // newWebAnalyticsAgent intentionally appears only in cmdWeb wiring. The TUI
 // remains fully local/offline and never constructs an outbound LLM client.
-func newWebAnalyticsAgent(registry *source.Registry, cacheIntegrity analyticsagent.CacheIntegrityProvider, logger *slog.Logger, chatLog *chatstore.Store) *analyticsagent.Service {
+func newWebAnalyticsAgent(registry *source.Registry, cacheIntegrity analyticsagent.CacheIntegrityProvider, logger *slog.Logger, chatLog *chatstore.Store, providers ...*analyticsagent.AssistantProviderRegistry) *analyticsagent.Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	runTimeout, timeoutErr := config.MiniMaxRunTimeoutOverride()
+	runTimeout, timeoutErr := config.AssistantRunTimeoutOverride()
 	if timeoutErr != nil {
 		logger.Warn("analytics assistant: invalid timeout override; using the default", "error", timeoutErr)
 		runTimeout = 0
@@ -404,7 +411,14 @@ func newWebAnalyticsAgent(registry *source.Registry, cacheIntegrity analyticsage
 		}
 	}
 	serviceWithoutClient := func() *analyticsagent.Service {
-		return analyticsagent.NewService(analyticsagent.ServiceOptions{Registry: registry, CacheIntegrity: cacheIntegrity, RunTimeout: runTimeout, HistoryKey: historyKey})
+		options := analyticsagent.ServiceOptions{Registry: registry, CacheIntegrity: cacheIntegrity, RunTimeout: runTimeout, HistoryKey: historyKey}
+		if len(providers) > 0 {
+			options.ProviderRegistry = providers[0]
+		}
+		return analyticsagent.NewService(options)
+	}
+	if len(providers) > 0 && providers[0] != nil {
+		return serviceWithoutClient()
 	}
 	key, err := config.ResolveMiniMaxAPIKey(config.DefaultOpenCodeAuthPath())
 	if err != nil {
@@ -425,6 +439,20 @@ func newWebAnalyticsAgent(registry *source.Registry, cacheIntegrity analyticsage
 		return serviceWithoutClient()
 	}
 	return analyticsagent.NewService(analyticsagent.ServiceOptions{Client: client, Registry: registry, CacheIntegrity: cacheIntegrity, RunTimeout: runTimeout, HistoryKey: historyKey})
+}
+
+func newWebAssistantProviderRegistry(settings *pricingalias.Store, kimiHome string) *analyticsagent.AssistantProviderRegistry {
+	miniMax := func(context.Context) (string, string, error) {
+		key, err := config.ResolveMiniMaxAPIKey(config.DefaultOpenCodeAuthPath())
+		return config.MiniMaxBaseURLOverride(), key, err
+	}
+	kimi := func(ctx context.Context) (string, string, error) {
+		if baseURL, key := config.KimiAPIConfiguration(); key != "" {
+			return baseURL, key, nil
+		}
+		return quota.ResolveKimiAssistantCredential(ctx, kimiHome)
+	}
+	return analyticsagent.NewAssistantProviderRegistry(settings, miniMax, kimi, nil)
 }
 
 func cmdTUI(args []string) error {

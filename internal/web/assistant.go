@@ -25,10 +25,10 @@ const maxAssistantSessionList = 100
 // assistantWriteWindow bounds how long the server keeps writing one assistant
 // response. The server-wide WriteTimeout is sized for ordinary API calls and is
 // shorter than a full agent run: analyticsagent caps a run at five minutes and
-// OPENCODE_DASHBOARD_MINIMAX_TIMEOUT documents that ceiling, so without a wider
-// window the transport silently truncates long runs — a buffered reply is lost
-// entirely and a stream stops mid-frame with no terminal frame. The extra
-// minute covers turn persistence and the terminal frame. The agent's own
+// OPENCODE_DASHBOARD_ASSISTANT_TIMEOUT documents that ceiling, so without a
+// wider window the transport silently truncates long runs — a buffered reply
+// is lost entirely and a stream stops mid-frame with no terminal frame. The
+// extra minute covers turn persistence and the terminal frame. The agent's own
 // context deadline, not this one, is what ends a run.
 const assistantWriteWindow = 6 * time.Minute
 
@@ -68,7 +68,7 @@ func (h *Handlers) AssistantStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	status := analyticsagent.BaseStatus()
 	if h.assistant == nil {
-		status.Reason = "MiniMax M3 is not configured"
+		status.Reason = "no assistant provider/model is selected"
 	} else {
 		ctx, cancel := context.WithTimeout(r.Context(), assistantStatusTimeout)
 		defer cancel()
@@ -97,7 +97,7 @@ func (h *Handlers) AssistantChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.assistant == nil {
-		writeAssistantError(w, http.StatusServiceUnavailable, "MiniMax M3 assistant is unavailable")
+		writeAssistantError(w, http.StatusServiceUnavailable, "analytics assistant is unavailable")
 		return
 	}
 
@@ -192,7 +192,7 @@ func storedProvider(result analyticsagent.ChatResult) string {
 	if provider := strings.TrimSpace(result.Provider); provider != "" {
 		return provider
 	}
-	return analyticsagent.ProviderMiniMax
+	return "unknown"
 }
 
 func storedTurnContext(value *analyticsagent.BrowserContext) chatstore.TurnContext {
@@ -338,7 +338,7 @@ func (h *Handlers) AssistantChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.assistant == nil {
-		writeAssistantError(w, http.StatusServiceUnavailable, "MiniMax M3 assistant is unavailable")
+		writeAssistantError(w, http.StatusServiceUnavailable, "analytics assistant is unavailable")
 		return
 	}
 	streaming, ok := h.assistant.(AssistantStreamingService)
@@ -373,7 +373,7 @@ func (h *Handlers) AssistantChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	receipt, persisted := h.persistAssistantTurn(r.Context(), input, result)
 
-	if err := stream.start(result.Model); err != nil {
+	if err := stream.start(result.Provider, result.Model); err != nil {
 		return
 	}
 	model := strings.TrimSpace(result.Model)
@@ -451,6 +451,7 @@ type assistantNDJSONStream struct {
 	controller *http.ResponseController
 	committed  bool
 	started    bool
+	provider   string
 }
 
 type assistantStreamProgressFrame struct {
@@ -465,6 +466,7 @@ type assistantStreamProgressFrame struct {
 	Name         string                 `json:"name,omitempty"`
 	OK           *bool                  `json:"ok,omitempty"`
 	Model        string                 `json:"model,omitempty"`
+	Provider     string                 `json:"provider,omitempty"`
 	Arguments    json.RawMessage        `json:"arguments,omitempty"`
 	Result       json.RawMessage        `json:"result,omitempty"`
 	DurationMS   int64                  `json:"duration_ms,omitempty"`
@@ -530,7 +532,7 @@ func (s *assistantNDJSONStream) write(frame any) error {
 	return s.controller.Flush()
 }
 
-func (s *assistantNDJSONStream) start(model string) error {
+func (s *assistantNDJSONStream) start(provider, model string) error {
 	if s.started {
 		return nil
 	}
@@ -538,19 +540,23 @@ func (s *assistantNDJSONStream) start(model string) error {
 	if model == "" {
 		model = analyticsagent.MiniMaxM3Model
 	}
+	if provider == "" {
+		provider = analyticsagent.ProviderMiniMax
+	}
+	s.provider = provider
 	s.started = true
-	return s.write(assistantStreamProgressFrame{Type: "start", Model: model})
+	return s.write(assistantStreamProgressFrame{Type: "start", Model: model, Provider: provider})
 }
 
 func (s *assistantNDJSONStream) forward(event analyticsagent.StreamEvent) error {
 	switch event.Type {
 	case analyticsagent.StreamEventStart:
-		return s.start(event.Model)
+		return s.start(event.Provider, event.Model)
 	case analyticsagent.StreamEventRoundStart:
 		if event.Round <= 0 {
 			return errors.New("invalid assistant round-start stream event")
 		}
-		if err := s.start(event.Model); err != nil {
+		if err := s.start(event.Provider, event.Model); err != nil {
 			return err
 		}
 		return s.write(assistantStreamProgressFrame{
@@ -560,12 +566,12 @@ func (s *assistantNDJSONStream) forward(event analyticsagent.StreamEvent) error 
 		if event.Delta == "" {
 			return nil
 		}
-		if err := s.start(event.Model); err != nil {
+		if err := s.start(event.Provider, event.Model); err != nil {
 			return err
 		}
 		return s.write(assistantStreamProgressFrame{Type: event.Type, Delta: event.Delta})
 	case analyticsagent.StreamEventContentReset:
-		if err := s.start(event.Model); err != nil {
+		if err := s.start(event.Provider, event.Model); err != nil {
 			return err
 		}
 		return s.write(assistantStreamProgressFrame{Type: event.Type})
@@ -573,7 +579,7 @@ func (s *assistantNDJSONStream) forward(event analyticsagent.StreamEvent) error 
 		if strings.TrimSpace(event.CallID) == "" || strings.TrimSpace(event.Name) == "" {
 			return errors.New("invalid assistant tool-start stream event")
 		}
-		if err := s.start(event.Model); err != nil {
+		if err := s.start(event.Provider, event.Model); err != nil {
 			return err
 		}
 		return s.write(assistantStreamProgressFrame{
@@ -584,7 +590,7 @@ func (s *assistantNDJSONStream) forward(event analyticsagent.StreamEvent) error 
 		if strings.TrimSpace(event.CallID) == "" || strings.TrimSpace(event.Name) == "" || event.OK == nil {
 			return errors.New("invalid assistant tool-finish stream event")
 		}
-		if err := s.start(event.Model); err != nil {
+		if err := s.start(event.Provider, event.Model); err != nil {
 			return err
 		}
 		return s.write(assistantStreamProgressFrame{
@@ -599,7 +605,7 @@ func (s *assistantNDJSONStream) forward(event analyticsagent.StreamEvent) error 
 		if event.Type == analyticsagent.StreamEventSubagentFinish && event.OK == nil {
 			return errors.New("invalid assistant subagent stream event")
 		}
-		if err := s.start(event.Model); err != nil {
+		if err := s.start(event.Provider, event.Model); err != nil {
 			return err
 		}
 		return s.write(assistantStreamProgressFrame{
@@ -637,18 +643,22 @@ func safeFrameJSON(value json.RawMessage) json.RawMessage {
 
 func assistantServiceError(err error) (int, string) {
 	switch {
+	case errors.Is(err, analyticsagent.ErrStaleSelection):
+		return http.StatusConflict, "assistant provider selection changed; refresh status and try again"
 	case errors.Is(err, analyticsagent.ErrInvalidChat):
 		return http.StatusBadRequest, "assistant messages are invalid"
+	case errors.Is(err, analyticsagent.ErrContextTooSmall):
+		return http.StatusUnprocessableEntity, "the selected model context window is too small for this assistant"
 	case errors.Is(err, analyticsagent.ErrRateLimited):
-		return http.StatusTooManyRequests, "MiniMax usage is temporarily limited; try again later"
+		return http.StatusTooManyRequests, "provider usage is temporarily limited; try again later"
 	case errors.Is(err, analyticsagent.ErrAuthentication), errors.Is(err, analyticsagent.ErrModelUnavailable), errors.Is(err, analyticsagent.ErrUnavailable):
-		return http.StatusServiceUnavailable, "MiniMax M3 assistant is unavailable"
+		return http.StatusServiceUnavailable, "the selected assistant provider/model is unavailable"
 	case errors.Is(err, analyticsagent.ErrBusy):
 		return http.StatusTooManyRequests, "assistant is busy; try again shortly"
 	case errors.Is(err, context.DeadlineExceeded):
 		return http.StatusGatewayTimeout, "assistant request timed out"
 	case errors.Is(err, analyticsagent.ErrProviderFailure), errors.Is(err, analyticsagent.ErrProvider), errors.Is(err, analyticsagent.ErrLoopLimit):
-		return http.StatusBadGateway, "MiniMax could not complete the analytics report"
+		return http.StatusBadGateway, "the selected provider could not complete the analytics report"
 	case errors.Is(err, context.Canceled):
 		return http.StatusRequestTimeout, "assistant request was canceled"
 	default:
@@ -683,6 +693,10 @@ func assistantFailureMetadata(err error) (errorClass, operation string, statusCo
 		errorClass = "provider"
 	case errors.Is(err, analyticsagent.ErrInvalidChat):
 		errorClass = "invalid_chat"
+	case errors.Is(err, analyticsagent.ErrStaleSelection):
+		errorClass = "stale_selection"
+	case errors.Is(err, analyticsagent.ErrContextTooSmall):
+		errorClass = "context_too_small"
 	case errors.Is(err, analyticsagent.ErrUnavailable):
 		errorClass = "unavailable"
 	case errors.Is(err, analyticsagent.ErrBusy):

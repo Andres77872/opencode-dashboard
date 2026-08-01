@@ -31,6 +31,7 @@ export interface AssistantPreferences {
   /** null means "use the stylesheet default"; a number pair overrides it. */
   size: AssistantSize | null
   privacyAcceptedVersion: string | null
+  privacyAcceptedConsentToken?: string | null
 }
 
 export interface AssistantStorage {
@@ -189,6 +190,9 @@ export function parseAssistantPreferences(raw: string | null): AssistantPreferen
     privacyAcceptedVersion: typeof value.privacyAcceptedVersion === 'string'
       ? value.privacyAcceptedVersion.slice(0, 64)
       : null,
+    ...(typeof value.privacyAcceptedConsentToken === 'string'
+      ? { privacyAcceptedConsentToken: value.privacyAcceptedConsentToken.slice(0, 128) }
+      : {}),
   }
 }
 

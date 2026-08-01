@@ -165,10 +165,10 @@ export function parseAssistantStreamEvent(line: string, lineNumber = 1): Assista
 
   switch (value.type) {
     case 'start':
-      if (!hasExactKeys(value, ['type', 'model']) || !isNonEmptyString(value.model)) {
+	  if (!hasOnlyKeys(value, ['type', 'model'], ['provider']) || !isNonEmptyString(value.model) || !isOptionalString(value.provider)) {
         throw invalidEvent(lineNumber, 'start requires a non-empty model')
       }
-      return { type: 'start', model: value.model }
+	  return { type: 'start', model: value.model, ...(value.provider !== undefined ? { provider: value.provider } : {}) }
 
     case 'content_delta':
       if (!hasExactKeys(value, ['type', 'delta']) || typeof value.delta !== 'string') {

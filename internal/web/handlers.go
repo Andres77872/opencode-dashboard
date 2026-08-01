@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"opencode-dashboard/internal/analyticsagent"
 	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/stats"
 	"opencode-dashboard/internal/store"
@@ -16,12 +17,13 @@ import (
 )
 
 type Handlers struct {
-	registry       *source.Registry
-	cache          CacheManager
-	quotas         QuotaService
-	assistant      AssistantService
-	chatlog        AssistantChatStore
-	pricingAliases PricingAliasStore
+	registry           *source.Registry
+	cache              CacheManager
+	quotas             QuotaService
+	assistant          AssistantService
+	assistantProviders *analyticsagent.AssistantProviderRegistry
+	chatlog            AssistantChatStore
+	pricingAliases     PricingAliasStore
 	// pricingRates is the cross-source catalog index. Handlers only invalidate
 	// it; the sources themselves read it while resolving alias targets.
 	pricingRates PricingRateInvalidator
@@ -45,14 +47,15 @@ func NewHandlers(opts ServerOptions) *Handlers {
 		opts.Registry = source.NewRegistry(source.SourceOpenCode)
 	}
 	return &Handlers{
-		registry:       opts.Registry,
-		cache:          opts.Cache,
-		quotas:         opts.Quotas,
-		assistant:      opts.Assistant,
-		chatlog:        opts.ChatLog,
-		pricingAliases: opts.PricingAliases,
-		pricingRates:   opts.PricingRates,
-		logger:         opts.Logger,
+		registry:           opts.Registry,
+		cache:              opts.Cache,
+		quotas:             opts.Quotas,
+		assistant:          opts.Assistant,
+		assistantProviders: opts.AssistantProviders,
+		chatlog:            opts.ChatLog,
+		pricingAliases:     opts.PricingAliases,
+		pricingRates:       opts.PricingRates,
+		logger:             opts.Logger,
 	}
 }
 

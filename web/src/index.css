@@ -316,6 +316,23 @@ body {
   white-space: nowrap;
 }
 
+.analytics-assistant-provider-select {
+  max-width: 210px;
+  padding: 0;
+  overflow: hidden;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.analytics-assistant-provider-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .analytics-assistant-header-actions {
   display: flex;
   align-items: center;

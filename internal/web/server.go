@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"time"
 
+	"opencode-dashboard/internal/analyticsagent"
 	"opencode-dashboard/internal/source"
 )
 
@@ -43,11 +44,12 @@ type ServerOptions struct {
 	Registry *source.Registry
 	Logger   *slog.Logger
 
-	Cache          CacheManager
-	Quotas         QuotaService
-	Assistant      AssistantService
-	ChatLog        AssistantChatStore
-	PricingAliases PricingAliasStore
+	Cache              CacheManager
+	Quotas             QuotaService
+	Assistant          AssistantService
+	AssistantProviders *analyticsagent.AssistantProviderRegistry
+	ChatLog            AssistantChatStore
+	PricingAliases     PricingAliasStore
 	// PricingRates is the cross-source catalog index; handlers only invalidate it.
 	PricingRates PricingRateInvalidator
 }
@@ -110,6 +112,13 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/quotas", s.handlers.Quotas)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/version", s.handlers.Version)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/assistant/status", s.handlers.AssistantStatus)
+	s.mux.HandleFunc("GET "+apiV1Prefix+"/assistant/providers", s.handlers.AssistantProviders)
+	s.mux.HandleFunc("POST "+apiV1Prefix+"/assistant/providers", s.handlers.AssistantProviderCreate)
+	s.mux.HandleFunc("PATCH "+apiV1Prefix+"/assistant/providers/{id}", s.handlers.AssistantProviderUpdate)
+	s.mux.HandleFunc("DELETE "+apiV1Prefix+"/assistant/providers/{id}", s.handlers.AssistantProviderDelete)
+	s.mux.HandleFunc("POST "+apiV1Prefix+"/assistant/providers/{id}/models/refresh", s.handlers.AssistantProviderModelsRefresh)
+	s.mux.HandleFunc("PUT "+apiV1Prefix+"/assistant/providers/{id}/models", s.handlers.AssistantProviderModelPut)
+	s.mux.HandleFunc("PUT "+apiV1Prefix+"/assistant/selection", s.handlers.AssistantSelectionPut)
 	s.mux.HandleFunc("POST "+apiV1Prefix+"/assistant/chat", s.handlers.AssistantChat)
 	s.mux.HandleFunc("POST "+apiV1Prefix+"/assistant/chat/stream", s.handlers.AssistantChatStream)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/assistant/sessions", s.handlers.AssistantSessions)
@@ -137,7 +146,11 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 		}
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		methods := "GET, POST, DELETE, OPTIONS"
+		if requested := r.Header.Get("Access-Control-Request-Method"); requested == http.MethodPut || requested == http.MethodPatch {
+			methods = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+		}
+		w.Header().Set("Access-Control-Allow-Methods", methods)
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		if r.Method == http.MethodOptions {

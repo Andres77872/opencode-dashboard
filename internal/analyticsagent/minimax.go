@@ -33,10 +33,10 @@ const (
 )
 
 var (
-	ErrModelUnavailable = errors.New("MiniMax M3 model unavailable")
-	ErrAuthentication   = errors.New("MiniMax authentication failed")
-	ErrRateLimited      = errors.New("MiniMax rate limit exceeded")
-	ErrProvider         = errors.New("MiniMax provider failure")
+	ErrModelUnavailable = errors.New("assistant model unavailable")
+	ErrAuthentication   = errors.New("assistant provider authentication failed")
+	ErrRateLimited      = errors.New("assistant provider rate limit exceeded")
+	ErrProvider         = errors.New("assistant provider failure")
 )
 
 // ModelUnavailableError means the authenticated MiniMax model catalog did not

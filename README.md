@@ -2,7 +2,7 @@
 
 > Local analytics for your AI coding-assistant usage — one binary, web or terminal, works offline by default.
 
-See your usage across **OpenCode**, **Claude Code**, **Codex**, **Kimi Code**, and **Qwen Code** — sessions, outbound requests, costs, tokens, models, tools, projects, and transcript messages — through a web dashboard or a terminal UI. Source files are never modified, and normal dashboard views remain local. The optional MiniMax web assistant is the explicit exception: when enabled and used, it sends the chat and requested aggregate metrics to MiniMax to produce reports and insights.
+See your usage across **OpenCode**, **Claude Code**, **Codex**, **Kimi Code**, and **Qwen Code** — sessions, outbound requests, costs, tokens, models, tools, projects, and transcript messages — through a web dashboard or a terminal UI. Source files are never modified, and normal dashboard views remain local. The optional web assistant is the explicit exception: when used, it sends the chat and requested aggregate metrics to the provider destination selected on the Config page.
 
 ## Overview
 
@@ -165,7 +165,7 @@ The equivalent API is `GET`/`POST`/`DELETE /api/v1/pricing/aliases`.
 ### Privacy
 
 - **Read-only source history** — no transcript, session file, source database, or source configuration is ever written to or mutated. The Kimi quota monitor may refresh Kimi's OAuth credential file using the same atomic flow and cross-process lock as Kimi Code itself; it does not alter session history.
-- **Local by default** — historical dashboard data is read from local paths and served on `127.0.0.1`. The quota monitor makes authenticated requests only for providers whose quota is exposed through an official live API (Kimi Code and MiniMax), and the optional analytics assistant sends the disclosed chat and aggregate metrics to MiniMax when used.
+- **Local by default** — historical dashboard data is read from local paths and served on `127.0.0.1`. The quota monitor makes authenticated requests only for providers whose quota is exposed through an official live API (Kimi Code and MiniMax), and the optional analytics assistant sends the disclosed chat and aggregate metrics only to the globally selected provider destination when used.
 - **Dashboard-owned local state** — everything the dashboard writes lives under `~/.local/share/opencode-dashboard/` and is removed by `opencode-dashboard uninstall` (listed below).
 - **Self-maintaining consolidation** — an empty cache is built by a background sync at startup (views serve live raw data meanwhile). Once ready, the cache covers only hours older than the finality cutoff; the window after it is read live from raw content on every read and merged, so cached views stay complete through now. A background sync also runs every 30 minutes, and a read starts one when the last successful sync is stale. The web top bar database action opens a sync panel with status, progress, last update, logs, incremental resync, and clear-and-rebuild.
 - **No cached transcripts** — raw conversation text, reasoning text, tool input, tool output, and patches are not stored in the dashboard cache.
@@ -177,7 +177,7 @@ The equivalent API is `GET`/`POST`/`DELETE /api/v1/pricing/aliases`.
 | File | Contents | Rebuildable |
 |------|----------|-------------|
 | `usage-cache.sqlite` | Aggregate usage metadata; override with `--cache-db` or `OPENCODE_DASHBOARD_CACHE_DB` | Yes — from the sources |
-| `dashboard-settings.sqlite` | User-authored settings, currently [pricing aliases](#pricing-aliases) | No — survives cache rebuilds |
+| `dashboard-settings.sqlite` | Pricing aliases plus assistant provider/model settings and custom-provider API keys (plaintext, local file mode `0600`) | No — survives cache rebuilds |
 | `assistant-chat.sqlite` | Saved analytics-assistant conversations (web assistant only) | No — and never migrated: a database from another schema version is rebuilt empty and the reset is logged |
 | `claude-rate-limits.json` | Latest Claude Pro/Max quota snapshot from the statusline command | Yes — on the next Claude Code response |
 
@@ -218,7 +218,7 @@ Codex and Claude quota only refresh while their CLI is running; the dashboard ma
 
 ## Analytics assistant (web only)
 
-The web dashboard can expose a floating, draggable report assistant backed by MiniMax M3. It appears only when a server-side MiniMax key is configured and MiniMax's authenticated model list contains the exact `MiniMax-M3` model. There is no fallback to an older model, and the TUI does not initialize the agent.
+The web dashboard exposes a floating, draggable report assistant with a global provider/model selection. Built-in Kimi and MiniMax appear after authenticated model discovery succeeds; MiniMax remains restricted to the exact `MiniMax-M3` model. The Config page can also add OpenAI Chat Completions-compatible endpoints, discover `/models`, or register an exact manual model ID and context limit when discovery is unavailable. There is no automatic provider failover, and the TUI does not initialize the agent.
 
 The agent loop and every analytics tool run in the Go backend. Assistant prose streams into the chat while it is generated, and privacy-safe cards show each allowlisted analytics tool as it starts and finishes. A lead analyst answers the question and can delegate a focused investigation to a bounded specialist — trend, cost, tooling, workload, or integrity — whose task, finding, tool calls, and token usage are shown nested under the delegation. The browser never receives the MiniMax credential or provider reasoning, and never calls MiniMax directly. Valid tool arguments are strict-normalized before source execution; rejected proposals are redacted. Tools are read-only and aggregate-only: raw transcripts, coding prompts/reasoning, patches, coding-tool payloads, configs, secrets, paths, raw diagnostics/errors, raw event/per-session timestamps, and raw request/session identifiers are outside the allowlist; aggregate UTC day/hour labels are retained for trends. The disclosed current route, source, structured range, and browser timezone can accompany the question as navigation context. Reports name what they rank — model, provider, and tool identifiers are published product names and travel as recorded, and projects travel as their leaf name (`/home/you/work/alpha` → `alpha`) with a stable reference; anything shaped like a path, URL, or other local state is replaced with a process-scoped pseudonym instead. Cross-source costs remain separated by provenance. The assistant uses `requests` for outbound-attempt questions, keeps `messages` for transcript semantics, and must disclose Kimi trace/usage gaps and truncated evidence instead of interpreting unavailable values as zero.
 
@@ -226,7 +226,7 @@ Answers can carry figures. The lead analyst may write a ` ```chart ` block — a
 
 Completed conversations are saved locally with everything that produced them — tool inputs and outputs, specialist findings, per-turn provider token usage, timing, and the view the question was asked from — so a saved conversation restores exactly what was shown live. Assistant history lives in its own SQLite database and is never migrated: a database from a different schema version is rebuilt empty and the reset is logged.
 
-Set `OPENCODE_DASHBOARD_MINIMAX_API_KEY`, restart `opencode-dashboard web`, and open the floating assistant. The first-use UI discloses that assistant messages, navigation context, and requested aggregates leave the machine. Tools accept only `1h`, `6h`, `12h`, `24h`, `72h`, `1d`, `7d`, `14d`, `30d`, `1y`, or `all`; a preset uses `period` only, while a custom range uses `from`/`to` with no `period`. A complete run, including delegated specialists, is limited to 90 seconds by default; `OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` accepts `10s` through `5m`. See [the agent architecture, tool contracts, loop limits, and privacy model](docs/analytics-assistant.md).
+Configure a provider in **Config → Assistant providers**, select a model, and open the floating assistant. Kimi prefers `OPENCODE_DASHBOARD_KIMI_API_KEY` (and optional `OPENCODE_DASHBOARD_KIMI_BASE_URL`) before reusing Kimi Code OAuth; MiniMax uses `OPENCODE_DASHBOARD_MINIMAX_API_KEY` before the existing OpenCode auth-store fallback. Custom keys are optional for unauthenticated local servers and are stored as plaintext in the hardened local settings DB; they are never returned by the API. HTTP requires an explicit warning acknowledgement and is limited to loopback/private-LAN IP endpoints. The first-use disclosure is bound to the provider destination. A model switch at the same endpoint keeps consent; a provider or endpoint change renews it. A complete run is limited to 90 seconds by default; `OPENCODE_DASHBOARD_ASSISTANT_TIMEOUT` accepts `10s` through `5m`, with `OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` retained as a deprecated fallback. See [the agent architecture, tool contracts, loop limits, and privacy model](docs/analytics-assistant.md).
 
 ## Prerequisites
 
@@ -408,7 +408,10 @@ Every path override below is outranked by its equivalent flag.
 | `QWEN_CODE_HOME` | `web`, `tui` | Qwen Code home (below `--qwen-home`) |
 | `OPENCODE_DASHBOARD_MINIMAX_API_KEY` | `web` | Enables the [analytics assistant](#analytics-assistant-web-only); falls back to opencode's auth store |
 | `OPENCODE_DASHBOARD_MINIMAX_BASE_URL` | `web` | MiniMax API base override (China region, integration tests); never accepted from the browser |
-| `OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` | `web` | Whole-run assistant budget, `10s`–`5m` (default `90s`) |
+| `OPENCODE_DASHBOARD_KIMI_API_KEY` | `web` | Kimi assistant API key; falls back to the existing Kimi Code OAuth login |
+| `OPENCODE_DASHBOARD_KIMI_BASE_URL` | `web` | Kimi assistant API base override |
+| `OPENCODE_DASHBOARD_ASSISTANT_TIMEOUT` | `web` | Provider-neutral whole-run assistant budget, `10s`–`5m` (default `90s`) |
+| `OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` | `web` | Deprecated timeout fallback used only when the generic variable is unset |
 
 Setting a source's home directory — by flag or by environment variable — also
 registers that source even when its data is missing, so it appears as
@@ -496,7 +499,12 @@ The web command also serves a JSON API under `/api/v1`. Most endpoints accept a 
 | `POST /api/v1/pricing/aliases` | Create or replace one alias | JSON body: `source_id`, `provider_id`, `model_id`, `target_model_id`, optional `target_source_id` |
 | `DELETE /api/v1/pricing/aliases` | Remove one alias | `source`, `provider`, `model` |
 | `GET /api/v1/quotas` | Provider quota (Codex / Claude Code / Kimi Code / MiniMax), including Kimi Extra Usage when available | — |
-| `GET /api/v1/assistant/status` | MiniMax M3 entitlement, assistant privacy metadata, and the specialist roster | — |
+| `GET /api/v1/assistant/status` | Active provider/model/context, revision, destination consent metadata, and specialist roster | — |
+| `GET`/`POST /api/v1/assistant/providers` | List providers or create a custom OpenAI-compatible provider | provider definition on create |
+| `PATCH`/`DELETE /api/v1/assistant/providers/{id}` | Update or remove a custom provider | safe provider fields only |
+| `POST /api/v1/assistant/providers/{id}/models/refresh` | Refresh authenticated model discovery without erasing a last-good catalog | — |
+| `PUT /api/v1/assistant/providers/{id}/models` | Add/update an exact manual model and context limit | model ID and context limit |
+| `PUT /api/v1/assistant/selection` | Change the global provider/model used by the next turn | provider and model IDs |
 | `POST /api/v1/assistant/chat` | Run the backend report-agent loop | bounded user/assistant history |
 | `POST /api/v1/assistant/chat/stream` | Stream assistant text plus privacy-safe round, tool, and specialist lifecycle events (NDJSON) | bounded user/assistant history |
 | `GET /api/v1/assistant/sessions` | List saved conversations with their totals | — |
@@ -581,7 +589,7 @@ opencode-dashboard/
 │   ├── cache/                       # Dashboard-owned SQLite aggregate cache
 │   ├── chatstore/                   # Saved analytics-assistant conversations
 │   ├── pricingalias/                # Durable user-authored pricing aliases
-│   ├── analyticsagent/              # MiniMax report agent, tools, specialists
+│   ├── analyticsagent/              # Provider-neutral report agent, transports, tools, specialists
 │   ├── quota/                       # Codex / Claude / Kimi / MiniMax quota collectors
 │   ├── store/                       # SQLite read-only store (OpenCode)
 │   ├── source/                      # Source registry + cross-source aggregate

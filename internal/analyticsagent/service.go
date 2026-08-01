@@ -41,7 +41,7 @@ const (
 
 // PrivacyConsentVersion is returned by status and must be echoed by chat
 // requests after the browser has shown and accepted that version's disclosure.
-const PrivacyConsentVersion = "analytics-assistant-v5"
+const PrivacyConsentVersion = "analytics-assistant-v6"
 
 var (
 	ErrUnavailable     = errors.New("analytics assistant unavailable")
@@ -49,6 +49,7 @@ var (
 	ErrProviderFailure = errors.New("analytics assistant provider failure")
 	ErrLoopLimit       = errors.New("analytics assistant loop limit reached")
 	ErrInvalidChat     = errors.New("invalid analytics assistant chat")
+	ErrContextTooSmall = errors.New("assistant model context window is too small")
 )
 
 // ContextValidationError identifies an invalid browser navigation context.
@@ -85,6 +86,7 @@ type StreamingClient interface {
 
 type ServiceOptions struct {
 	Client             Client
+	ProviderRegistry   ProviderResolver
 	Registry           *source.Registry
 	CacheIntegrity     CacheIntegrityProvider
 	RunTimeout         time.Duration
@@ -103,6 +105,7 @@ type ServiceOptions struct {
 
 type Service struct {
 	client             Client
+	providerRegistry   ProviderResolver
 	tools              *ToolRegistry
 	runTimeout         time.Duration
 	maxRounds          int
@@ -128,7 +131,12 @@ type Status struct {
 	Specialists []SpecialistInfo `json:"specialists"`
 	// SessionsPersisted is set by the web layer when a durable chat store is
 	// attached, so the browser can offer saved-conversation history.
-	SessionsPersisted bool `json:"sessions_persisted"`
+	SessionsPersisted bool   `json:"sessions_persisted"`
+	ContextLimit      int    `json:"context_limit,omitempty"`
+	SelectionRevision int64  `json:"selection_revision"`
+	Verified          bool   `json:"verified"`
+	DestinationLabel  string `json:"destination_label,omitempty"`
+	ConsentToken      string `json:"consent_token,omitempty"`
 }
 
 type BrowserMessage struct {
@@ -153,7 +161,9 @@ type ChatInput struct {
 	// SessionID optionally names the persisted chat session this turn belongs
 	// to. The service validates only its shape; storage semantics belong to
 	// the web layer.
-	SessionID string `json:"session_id,omitempty"`
+	SessionID         string `json:"session_id,omitempty"`
+	SelectionRevision int64  `json:"selection_revision"`
+	ConsentToken      string `json:"consent_token,omitempty"`
 }
 
 // ChatResult is the canonical outcome of one question: the signed answer plus
@@ -175,7 +185,7 @@ type ChatResult struct {
 	Notices []string `json:"notices,omitempty"`
 }
 
-const privacyNotice = "Questions, the assistant conversation included with them, and aggregate usage metrics used to answer them are sent to MiniMax. The current dashboard route, source, selected preset or custom date range, browser timezone, aggregate UTC day/hour bucket labels, aggregate source diagnostics, request-accounting evidence, sanitized cache health, model/provider/tool names, and project names without their directories may also be sent. Raw source diagnostics and errors, coding transcripts, coding prompts or reasoning, session titles, raw configuration, credentials, file paths, raw event or per-session activity timestamps, raw request/session identifiers, and coding-tool input/output are never exposed by analytics tools."
+const privacyNotice = "Questions, the assistant conversation included with them, and aggregate usage metrics used to answer them are sent to the selected provider destination. The current dashboard route, source, selected preset or custom date range, browser timezone, aggregate UTC day/hour bucket labels, aggregate source diagnostics, request-accounting evidence, sanitized cache health, model/provider/tool names, and project names without their directories may also be sent. Raw source diagnostics and errors, coding transcripts, coding prompts or reasoning, session titles, raw configuration, credentials, file paths, raw event or per-session activity timestamps, raw request/session identifiers, and coding-tool input/output are never exposed by analytics tools."
 
 const crossSourceCostNotice = "Cost scope: source costs are not additive. OpenCode reports recorded spend, Claude Code may mix reported and computed values, and Codex/Kimi Code/Qwen Code values are API-equivalent estimates rather than subscription, membership, coding-plan, or token-plan spend."
 
@@ -228,6 +238,7 @@ func NewService(opts ServiceOptions) *Service {
 	}
 	return &Service{
 		client:             opts.Client,
+		providerRegistry:   opts.ProviderRegistry,
 		tools:              NewToolRegistryWithCache(opts.Registry, opts.CacheIntegrity),
 		runTimeout:         timeout,
 		maxRounds:          maxRounds,
@@ -240,8 +251,25 @@ func NewService(opts ServiceOptions) *Service {
 
 func (s *Service) Status(ctx context.Context) Status {
 	status := BaseStatus()
-	if s == nil || s.client == nil || len(s.historyKey) == 0 {
-		status.Reason = "MiniMax M3 is not configured"
+	if s == nil || len(s.historyKey) == 0 {
+		status.Provider, status.Model = "", ""
+		status.Reason = "assistant signing state is unavailable"
+		return status
+	}
+	if s.providerRegistry != nil {
+		snapshot, err := s.providerRegistry.Status(ctx)
+		status.Provider, status.Model = snapshot.Provider, snapshot.Model
+		status.ContextLimit, status.SelectionRevision = snapshot.ContextLimit, snapshot.SelectionRevision
+		status.Verified, status.DestinationLabel, status.ConsentToken = snapshot.Verified, snapshot.DestinationLabel, snapshot.ConsentToken
+		if err != nil {
+			status.Reason = publicAvailabilityReason(err)
+			return status
+		}
+		status.Available = snapshot.Client != nil
+		return status
+	}
+	if s.client == nil {
+		status.Reason = "no assistant provider/model is selected"
 		return status
 	}
 	s.statusMu.Lock()
@@ -279,13 +307,17 @@ const ProviderMiniMax = "minimax"
 func publicAvailabilityReason(err error) string {
 	switch {
 	case errors.Is(err, ErrModelUnavailable):
-		return "MiniMax M3 is not available for this account"
+		return "the selected model is not available for this account"
 	case errors.Is(err, ErrAuthentication):
-		return "MiniMax authentication is unavailable or was rejected"
+		return "provider authentication is unavailable or was rejected"
 	case errors.Is(err, ErrRateLimited):
-		return "MiniMax availability is temporarily rate limited"
+		return "provider availability is temporarily rate limited"
+	case errors.Is(err, ErrNoSelection):
+		return "no assistant provider/model is selected"
+	case errors.Is(err, ErrModelNotSelectable):
+		return "the selected model needs a valid context limit"
 	default:
-		return "MiniMax M3 availability could not be verified"
+		return "the selected provider/model is unavailable"
 	}
 }
 
@@ -304,7 +336,7 @@ func (s *Service) ChatStream(ctx context.Context, input ChatInput, emit func(Str
 }
 
 func (s *Service) runChat(ctx context.Context, input ChatInput, emit func(StreamEvent) error, stream bool) (ChatResult, error) {
-	if s == nil || s.client == nil || len(s.historyKey) == 0 {
+	if s == nil || (s.client == nil && s.providerRegistry == nil) || len(s.historyKey) == 0 {
 		return ChatResult{}, ErrUnavailable
 	}
 	normalized, err := NormalizeChatInput(input)
@@ -314,6 +346,19 @@ func (s *Service) runChat(ctx context.Context, input ChatInput, emit func(Stream
 	input = normalized
 	if err := s.verifyBrowserHistory(input.Messages); err != nil {
 		return ChatResult{}, err
+	}
+	provider := ProviderSnapshot{Client: s.client, Provider: ProviderMiniMax, Model: MiniMaxM3Model, Verified: true}
+	if s.providerRegistry != nil {
+		provider, err = s.providerRegistry.Capture(ctx, input.SelectionRevision)
+		if err != nil {
+			return ChatResult{}, err
+		}
+		if input.ConsentToken == "" || input.ConsentToken != provider.ConsentToken {
+			return ChatResult{}, fmt.Errorf("%w: destination consent is missing or stale", ErrInvalidChat)
+		}
+	}
+	if provider.Client == nil {
+		return ChatResult{}, ErrUnavailable
 	}
 
 	select {
@@ -325,22 +370,24 @@ func (s *Service) runChat(ctx context.Context, input ChatInput, emit func(Stream
 
 	runCtx, cancel := context.WithTimeout(ctx, s.runTimeout)
 	defer cancel()
-	if err := s.client.EnsureAvailable(runCtx); err != nil {
+	if err := provider.Client.EnsureAvailable(runCtx); err != nil {
 		return ChatResult{}, mapProviderError(err)
 	}
 
 	turn := &turnRunner{
-		service: s,
-		stream:  stream,
-		sink:    &eventSink{emit: emit},
-		budget:  newRunBudget(s.maxToolCalls, s.maxToolOutputBytes),
+		service:  s,
+		client:   provider.Client,
+		provider: provider,
+		stream:   stream,
+		sink:     &eventSink{emit: emit},
+		budget:   newRunBudget(s.maxToolCalls, clampEvidenceBudget(s.maxToolOutputBytes, provider.ContextLimit)),
 	}
 	lead, err := s.newLeadRun(turn, input)
 	if err != nil {
 		return ChatResult{}, fmt.Errorf("%w: %v", ErrInvalidChat, err)
 	}
 	if stream {
-		if err := turn.sink.send(StreamEvent{Type: StreamEventStart, Agent: AgentLead, Model: MiniMaxM3Model}); err != nil {
+		if err := turn.sink.send(StreamEvent{Type: StreamEventStart, Agent: AgentLead, Model: provider.Model, Provider: provider.Provider}); err != nil {
 			return ChatResult{}, err
 		}
 	}
@@ -367,8 +414,8 @@ func (s *Service) runChat(ctx context.Context, input ChatInput, emit func(Stream
 	toolsUsed, toolCalls, subagents := turn.results()
 	return ChatResult{
 		Message:    BrowserMessage{Role: "assistant", Content: content, Signature: s.signAssistantMessage(content)},
-		Model:      MiniMaxM3Model,
-		Provider:   ProviderMiniMax,
+		Model:      provider.Model,
+		Provider:   provider.Provider,
 		Agent:      AgentLead,
 		Rounds:     outcome.rounds,
 		Usage:      turn.budget.totalUsage(),
@@ -444,6 +491,9 @@ func (s *Service) newSpecialistRun(turn *turnRunner, definition *agentDefinition
 func NormalizeChatInput(input ChatInput) (ChatInput, error) {
 	if input.ConsentVersion != PrivacyConsentVersion {
 		return ChatInput{}, fmt.Errorf("%w: privacy consent version is missing or stale", ErrInvalidChat)
+	}
+	if input.SelectionRevision < 0 || len(input.ConsentToken) > 128 || strings.ContainsAny(input.ConsentToken, "\r\n\x00") {
+		return ChatInput{}, fmt.Errorf("%w: provider selection metadata is invalid", ErrInvalidChat)
 	}
 	if input.SessionID != "" && !isSafeChatSessionID(input.SessionID) {
 		return ChatInput{}, fmt.Errorf("%w: session id is invalid", ErrInvalidChat)

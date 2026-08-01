@@ -1135,7 +1135,7 @@ func TestCurrentDateNotePublishesExactUTCPeriodContract(t *testing.T) {
 
 func TestPrivacyNoticeDisclosesNavigationAndAggregateBucketLabels(t *testing.T) {
 	status := BaseStatus()
-	if status.ConsentVersion != "analytics-assistant-v5" {
+	if status.ConsentVersion != "analytics-assistant-v6" {
 		t.Fatalf("consent version = %q", status.ConsentVersion)
 	}
 	for _, want := range []string{"dashboard route", "custom date range", "browser timezone", "aggregate UTC day/hour bucket labels", "per-session activity timestamps"} {

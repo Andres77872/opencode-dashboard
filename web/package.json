@@ -10,6 +10,8 @@
     "lint": "eslint .",
     "test:source-state": "node --test src/lib/source-selection.test.ts src/lib/use-source-state.test.ts src/lib/persisted-prefs.test.ts src/lib/message-display.test.ts src/lib/request-accounting.test.ts src/lib/processing-mode.test.ts src/lib/period-label.test.ts src/lib/overview-all.test.ts src/lib/format.test.ts src/lib/daily-models.test.ts src/lib/quotas.test.ts src/lib/assistant-position.test.ts src/lib/assistant-history.test.ts src/lib/assistant-stream.test.ts src/lib/assistant-activity.test.ts src/lib/assistant-context.test.ts src/lib/assistant-transcript.test.ts src/lib/markdown.test.ts src/lib/chart-spec.test.ts src/lib/mermaid.test.ts src/lib/syntax.test.ts src/lib/config-utils.test.ts src/lib/pricing-aliases.test.ts src/lib/pricing-target-catalog.test.ts src/lib/api-pricing-aliases.test.ts src/lib/api-bypass.test.ts",
     "test:assistant-stream": "node --test src/lib/assistant-stream.test.ts",
+    "test:components": "vitest run",
+    "test": "npm run test:source-state && npm run test:components",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -25,6 +27,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@testing-library/jest-dom": "^7.0.0",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^24.12.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -33,8 +37,10 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "jsdom": "^30.0.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.57.0",
-    "vite": "^8.0.1"
+    "vite": "^8.0.1",
+    "vitest": "^4.1.10"
   }
 }

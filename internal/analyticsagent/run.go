@@ -143,10 +143,12 @@ func (s *eventSink) failure() error {
 // cost-scope tracking that decides whether the answer needs the cross-source
 // notice.
 type turnRunner struct {
-	service *Service
-	stream  bool
-	sink    *eventSink
-	budget  *runBudget
+	service  *Service
+	client   Client
+	provider ProviderSnapshot
+	stream   bool
+	sink     *eventSink
+	budget   *runBudget
 
 	mu              sync.Mutex
 	callSeq         int
@@ -460,21 +462,26 @@ func (r *agentRun) callModel(ctx context.Context, withoutTools bool) (*ChatRespo
 // invokeProvider runs a single provider request and validates the shape the
 // loop depends on.
 func (r *agentRun) invokeProvider(ctx context.Context, tools []ToolDefinition, visible *roundStream) (*ChatResponse, error) {
+	messages, err := fitProviderContext(r.messages, tools, r.turn.provider.ContextLimit)
+	if err != nil {
+		return nil, err
+	}
+	r.messages = messages
 	request := ChatRequest{Messages: r.messages, Tools: tools}
 
 	var response *ChatResponse
-	var err error
+	err = nil
 	if r.turn.stream {
-		if streamingClient, ok := r.turn.service.client.(StreamingClient); ok {
+		if streamingClient, ok := r.turn.client.(StreamingClient); ok {
 			response, err = streamingClient.ChatStream(ctx, request, visible.push)
 		} else {
-			response, err = r.turn.service.client.Chat(ctx, request)
+			response, err = r.turn.client.Chat(ctx, request)
 			if err == nil && response != nil {
 				err = visible.push(response.Content)
 			}
 		}
 	} else {
-		response, err = r.turn.service.client.Chat(ctx, request)
+		response, err = r.turn.client.Chat(ctx, request)
 	}
 	if err != nil {
 		return nil, err
@@ -486,6 +493,73 @@ func (r *agentRun) invokeProvider(ctx context.Context, tools []ToolDefinition, v
 		return nil, fmt.Errorf("%w: provider assistant message is too large", ErrProviderFailure)
 	}
 	return response, nil
+}
+
+// fitProviderContext conservatively estimates serialized input at three bytes
+// per token, reserves output capacity, and drops only complete historical
+// browser turns. The system prompt, latest user question, and all evidence
+// produced during the current turn are never trimmed.
+func fitProviderContext(messages []json.RawMessage, tools []ToolDefinition, contextLimit int) ([]json.RawMessage, error) {
+	if contextLimit <= 0 {
+		return append([]json.RawMessage(nil), messages...), nil
+	} // legacy/test clients
+	reserve := reservedOutputFor(contextLimit)
+	available := contextLimit - reserve
+	if available <= 0 {
+		return nil, ErrContextTooSmall
+	}
+	result := append([]json.RawMessage(nil), messages...)
+	fits := func(values []json.RawMessage) bool {
+		payload, _ := json.Marshal(struct {
+			Messages []json.RawMessage `json:"messages"`
+			Tools    []ToolDefinition  `json:"tools,omitempty"`
+		}{values, tools})
+		return (len(payload)+2)/3 <= available
+	}
+	if fits(result) {
+		return result, nil
+	}
+	latestUser := -1
+	for i := len(result) - 1; i >= 1; i-- {
+		var role struct {
+			Role string `json:"role"`
+		}
+		if json.Unmarshal(result[i], &role) == nil && role.Role == "user" {
+			latestUser = i
+			break
+		}
+	}
+	// Browser history is alternating user/assistant before the latest question.
+	// Remove it in pairs so replay never begins with half a turn.
+	for latestUser > 2 && len(result) > 2 {
+		remove := 2
+		if 1+remove > latestUser {
+			break
+		}
+		result = append(result[:1], result[1+remove:]...)
+		latestUser -= remove
+		if fits(result) {
+			return result, nil
+		}
+	}
+	return nil, ErrContextTooSmall
+}
+
+func clampEvidenceBudget(configured, contextLimit int) int {
+	if contextLimit <= 0 {
+		return configured
+	}
+	// Tool JSON averages well above three bytes/token. Limit retained evidence
+	// to a quarter of the input window and keep a useful minimum for small but
+	// otherwise viable models.
+	limit := contextLimit * 3 / 4
+	if limit < 8<<10 {
+		limit = 8 << 10
+	}
+	if configured > limit {
+		return limit
+	}
+	return configured
 }
 
 func providerRetryDelay(attempt int) time.Duration {

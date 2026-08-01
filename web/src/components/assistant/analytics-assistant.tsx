@@ -11,7 +11,7 @@ import {
   type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Icon } from '../vael/icon'
 import { Markdown } from './markdown'
 import { useDashboardContext } from '../layout/dashboard-context'
@@ -20,8 +20,12 @@ import {
   getAssistantSession,
   getAssistantSessions,
   getAssistantStatus,
+  getAssistantProviders,
+  putAssistantSelection,
   streamAssistantChat,
+  ApiClientError,
 } from '../../lib/api'
+import { ASSISTANT_SELECTION_EVENT } from '../config/assistant-providers'
 import {
   clampAssistantPosition,
   clampAssistantSize,
@@ -59,6 +63,7 @@ import type {
   AssistantStatusResponse,
   AssistantStreamEvent,
   AssistantUsage,
+  AssistantProvidersResponse,
 } from '../../types/assistant'
 
 const PANEL_ID = 'analytics-assistant-panel'
@@ -90,6 +95,8 @@ interface DisplayMessage extends AssistantMessage {
   usage?: AssistantUsage
   rounds?: number
   durationMs?: number
+  provider?: string
+  model?: string
 }
 
 interface DragState {
@@ -137,7 +144,9 @@ function samePosition(left: AssistantPosition | null, right: AssistantPosition):
 }
 
 function providerLabel(value: string): string {
-  return value.trim().toLowerCase() === 'minimax' ? 'MiniMax' : value
+  if (value.trim().toLowerCase() === 'minimax') return 'MiniMax'
+  if (value.trim().toLowerCase() === 'kimi') return 'Kimi'
+  return value
 }
 
 function formatSessionTime(updatedMs: number): string {
@@ -158,6 +167,7 @@ function sessionMetaLine(session: AssistantChatSessionSummary): string {
   if (session.subagent_count) {
     parts.push(`${session.subagent_count} ${session.subagent_count === 1 ? 'specialist' : 'specialists'}`)
   }
+  if (session.mixed_provider_models) parts.push('mixed providers/models')
   const usage = usageSummary(session.usage)
   if (usage) parts.push(usage)
   return parts.join(' · ')
@@ -217,7 +227,7 @@ function PrivacyDisclosure({
         <h3>Before you start</h3>
         <p>
           Your assistant conversation and the aggregate usage metrics requested to answer it are sent
-          to MiniMax, including the model, provider, and tool names behind those numbers and project
+          to {status.destination_label || 'the selected provider destination'}, including the model, provider, and tool names behind those numbers and project
           names without their directories. The current dashboard route, source, selected preset or
           custom date range, browser timezone, and aggregate UTC day/hour bucket labels can also be
           sent. Session rankings can include opaque session references. Integrity audits can include
@@ -247,6 +257,7 @@ function MessageFooter({ message }: { message: DisplayMessage }) {
   const calls = countToolActivities(activities)
   const specialists = activities.filter((activity) => activity.kind === 'specialist').length
   const parts = [
+	message.provider && message.model ? `${providerLabel(message.provider)} · ${message.model}` : message.model ?? '',
     message.rounds ? `${message.rounds} ${message.rounds === 1 ? 'round' : 'rounds'}` : '',
     calls ? `${calls} ${calls === 1 ? 'call' : 'calls'}` : '',
     specialists ? `${specialists} ${specialists === 1 ? 'specialist' : 'specialists'}` : '',
@@ -399,9 +410,11 @@ function SessionHistory({
 
 export function AnalyticsAssistant() {
   const location = useLocation()
+  const navigate = useNavigate()
   const periodState = usePeriodState()
   const { selectedSourceId } = useDashboardContext()
   const [status, setStatus] = useState<AssistantStatusResponse | null>(null)
+  const [providerData, setProviderData] = useState<AssistantProvidersResponse | null>(null)
   const [preferences, setPreferences] = useState<AssistantPreferences>(() => readAssistantPreferences())
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [draft, setDraft] = useState('')
@@ -474,6 +487,23 @@ export function AnalyticsAssistant() {
     }
   }, [])
 
+  const refreshProviderState = useCallback(async () => {
+    const [nextStatus, nextProviders] = await Promise.all([getAssistantStatus(), getAssistantProviders()])
+    setStatus(nextStatus)
+    setProviderData(nextProviders)
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    getAssistantProviders(controller.signal).then(setProviderData).catch(() => undefined)
+    const refresh = () => { void refreshProviderState().catch(() => undefined) }
+    window.addEventListener(ASSISTANT_SELECTION_EVENT, refresh)
+    return () => {
+      controller.abort()
+      window.removeEventListener(ASSISTANT_SELECTION_EVENT, refresh)
+    }
+  }, [refreshProviderState])
+
   useEffect(() => {
     const timer = window.setTimeout(() => writeAssistantPreferences(preferences), 120)
     return () => window.clearTimeout(timer)
@@ -496,6 +526,7 @@ export function AnalyticsAssistant() {
     }
   }, [location.pathname, selectedSourceId, timeContext.context])
   const consentAccepted = preferences.privacyAcceptedVersion === status?.consent_version
+    && preferences.privacyAcceptedConsentToken === (status?.consent_token ?? null)
   const sessionsPersisted = status?.sessions_persisted === true
 
   const clampToPanel = useCallback((position: AssistantPosition): AssistantPosition => {
@@ -623,7 +654,7 @@ export function AnalyticsAssistant() {
   }, [preferences.open, preferences.minimized])
 
   const beginDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || (event.target as Element).closest('button')) return
+    if (event.button !== 0 || (event.target as Element).closest('button, select, input')) return
     const element = panelRef.current
     if (!element) return
     const rect = element.getBoundingClientRect()
@@ -839,6 +870,8 @@ export function AnalyticsAssistant() {
             usage: message.usage,
             rounds: message.rounds,
             durationMs: message.duration_ms,
+            provider: message.provider,
+            model: message.model,
           } : {}),
         }))
         setMessages(restored)
@@ -939,6 +972,7 @@ export function AnalyticsAssistant() {
 
         switch (event.type) {
           case 'start':
+            updateResponse((message) => ({ ...message, provider: event.provider, model: event.model }))
             setLiveMessage(`Connected to ${event.model}.`)
             break
           case 'round_start':
@@ -986,6 +1020,8 @@ export function AnalyticsAssistant() {
         messages: requestMessages,
         context,
         consent_version: status.consent_version,
+        consent_token: status.consent_token,
+        selection_revision: status.selection_revision,
         session_id: requestSessionID,
       }, onStreamEvent, controller.signal)
       if (controller.signal.aborted || requestID !== requestIDRef.current) return
@@ -1008,6 +1044,8 @@ export function AnalyticsAssistant() {
           usage: response.usage,
           rounds: response.rounds,
           durationMs: response.duration_ms,
+          provider: response.provider,
+          model: response.model,
         }
       }))
       if (response.session_id) setSessionId(response.session_id)
@@ -1037,6 +1075,9 @@ export function AnalyticsAssistant() {
       // The prompt is kept verbatim so a transient failure costs one click,
       // not a retyped question.
       setFailedPrompt(prompt)
+	  if (caught instanceof ApiClientError && caught.status === 409) {
+		void refreshProviderState().catch(() => undefined)
+	  }
       setError(caught instanceof Error ? caught.message : 'The analytics request failed.')
       setLiveMessage('')
     } finally {
@@ -1045,7 +1086,7 @@ export function AnalyticsAssistant() {
         setSending(false)
       }
     }
-  }, [consentAccepted, context, messages, sending, sessionId, status, timeContext.error])
+  }, [consentAccepted, context, messages, refreshProviderState, sending, sessionId, status, timeContext.error])
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -1056,7 +1097,30 @@ export function AnalyticsAssistant() {
     setPreferences((current) => ({ ...current, open: true, minimized: false }))
   }
 
-  if (!status?.available || typeof document === 'undefined') return null
+  const changeProviderModel = (value: string) => {
+    const [providerId = '', modelId = ''] = value.split('\u0000')
+    void putAssistantSelection(providerId, modelId)
+      .then(refreshProviderState)
+      .catch((caught) => setError(caught instanceof Error ? caught.message : 'Provider selection failed.'))
+  }
+
+  if (!status || typeof document === 'undefined') return null
+
+  if (!status.available) {
+    return createPortal(
+      <button
+        ref={launcherRef}
+        type="button"
+        className="analytics-assistant-launcher"
+        aria-label="Set up analytics assistant"
+        onClick={() => navigate('/config#assistant-providers')}
+      >
+        <AssistantGlyph size={21} />
+        <span>Set up assistant</span>
+      </button>,
+      document.body,
+    )
+  }
 
   const positionedStyle = preferences.position
     ? { left: preferences.position.x, top: preferences.position.y }
@@ -1161,7 +1225,21 @@ export function AnalyticsAssistant() {
             {sessionTitle ?? 'Analytics assistant'}
           </strong>
           <span>
-            {providerLabel(status.provider)} · {status.model}
+            <select
+              className="analytics-assistant-provider-select"
+              aria-label="Assistant provider and model"
+              value={`${status.provider}\u0000${status.model}`}
+              disabled={sending}
+              onChange={(event) => changeProviderModel(event.target.value)}
+            >
+              {(providerData?.providers ?? []).flatMap((provider) => provider.models
+                .filter((model) => model.selectable)
+                .map((model) => (
+                  <option key={`${provider.id}\u0000${model.id}`} value={`${provider.id}\u0000${model.id}`}>
+                    {provider.name} · {model.id}
+                  </option>
+                ))) }
+            </select>
             {sessionUsage && usageSummary(sessionUsage) ? ` · ${usageSummary(sessionUsage)}` : ''}
           </span>
         </div>
@@ -1200,7 +1278,11 @@ export function AnalyticsAssistant() {
       {!consentAccepted ? (
         <PrivacyDisclosure
           status={status}
-          onAccept={() => setPreferences((current) => ({ ...current, privacyAcceptedVersion: status.consent_version }))}
+          onAccept={() => setPreferences((current) => ({
+            ...current,
+            privacyAcceptedVersion: status.consent_version,
+            privacyAcceptedConsentToken: status.consent_token ?? null,
+          }))}
           onCancel={() => setPreferences((current) => ({ ...current, minimized: true }))}
           continueRef={privacyContinueRef}
         />

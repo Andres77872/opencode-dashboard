@@ -25,6 +25,54 @@ export interface AssistantStatusResponse {
   capabilities: string[]
   specialists?: AssistantSpecialist[]
   sessions_persisted: boolean
+  context_limit?: number
+  selection_revision: number
+  verified: boolean
+  destination_label?: string
+  consent_token?: string
+}
+
+export interface AssistantProviderModel {
+  id: string
+  context_limit: number
+  verified: boolean
+  selectable: boolean
+}
+
+export interface AssistantProviderCatalog {
+  status: 'never' | 'ready' | 'error' | 'stale' | string
+  last_attempt_ms?: number
+  last_success_ms?: number
+  error?: string
+}
+
+export interface AssistantProvider {
+  id: string
+  kind: 'kimi' | 'minimax' | 'custom' | string
+  name: string
+  base_url?: string
+  destination_label: string
+  built_in: boolean
+  available: boolean
+  reason?: string
+  api_key_configured: boolean
+  insecure_transport_ack?: boolean
+  models: AssistantProviderModel[]
+  catalog: AssistantProviderCatalog
+  created_ms?: number
+  updated_ms?: number
+}
+
+export interface AssistantSelection {
+  provider_id: string
+  model_id: string
+  revision: number
+  updated_ms: number
+}
+
+export interface AssistantProvidersResponse {
+  providers: AssistantProvider[]
+  selection: AssistantSelection
 }
 
 export interface AssistantRequestContext {
@@ -55,6 +103,8 @@ export interface AssistantChatRequest {
   messages: AssistantMessage[]
   context?: AssistantRequestContext
   consent_version: string
+  consent_token?: string
+  selection_revision?: number
   session_id?: string
 }
 
@@ -125,6 +175,7 @@ export interface AssistantChatResponse {
 export interface AssistantStreamStartEvent {
   type: 'start'
   model: string
+  provider?: string
 }
 
 /** Marks the beginning of one provider round for the named agent. */
@@ -245,6 +296,7 @@ export interface AssistantChatSessionSummary {
   subagent_count?: number
   duration_ms?: number
   usage?: AssistantUsage
+  mixed_provider_models?: boolean
 }
 
 export interface AssistantChatSessionListResponse {
@@ -286,6 +338,7 @@ export interface AssistantChatStoredMessage {
   role: AssistantRole
   content: string
   signature?: string
+  provider?: string
   model?: string
   agent?: string
   created_ms: number

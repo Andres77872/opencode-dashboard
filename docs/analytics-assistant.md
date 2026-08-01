@@ -1,4 +1,4 @@
-# MiniMax analytics assistant
+# Provider-selectable analytics assistant
 
 The analytics assistant is an optional, web-only report agent. It answers
 questions about normalized usage from every source registered with the
@@ -11,10 +11,13 @@ raw conversation transcripts.
 
 ## Availability and configuration
 
-The assistant uses MiniMax's OpenAI-compatible HTTP API directly. No MiniMax or
-OpenAI SDK is linked into the dashboard.
+The assistant uses OpenAI-compatible HTTP APIs directly. No provider SDK is
+linked into the dashboard. One provider/model selection is persisted globally;
+it applies to the next turn in every tab and existing conversation, while an
+in-flight turn keeps the client/model snapshot it started with. Providers never
+fail over automatically.
 
-Set a MiniMax API key before starting the web dashboard:
+Built-in MiniMax can be configured before starting the web dashboard:
 
 ```bash
 export OPENCODE_DASHBOARD_MINIMAX_API_KEY='...'
@@ -25,28 +28,43 @@ As with quota reporting, the MiniMax coding-plan credential in OpenCode's local
 auth store is used as a fallback when the environment variable is absent. The
 credential remains in the Go backend and is never returned to the browser.
 
-The international API base is `https://api.minimax.io/v1`. A server-side base
+Built-in Kimi first uses `OPENCODE_DASHBOARD_KIMI_API_KEY` and
+`OPENCODE_DASHBOARD_KIMI_BASE_URL`, then reuses the existing Kimi Code OAuth
+login and refresh flow. Built-ins are read-only in the UI and their credentials
+are never copied into dashboard settings.
+
+The MiniMax international API base is `https://api.minimax.io/v1`. A server-side base
 URL override, `OPENCODE_DASHBOARD_MINIMAX_BASE_URL`, is available for the
 official China region and integration tests; it is never accepted from a
 browser request.
 
-One complete agent run — including every delegated specialist — is bounded to
-90 seconds by default. Set `OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` to a Go duration
-from `10s` through `5m` when measured M3 latency requires a different local
-limit.
+The Config page can add user-managed OpenAI Chat Completions-compatible
+providers. Creation and URL/key changes trigger bounded `GET /models`
+discovery. Failed discovery retains the last successful catalog; without one,
+an exact manual model ID and required context limit may be registered as
+unverified. Custom keys are optional and stored as plaintext in
+`dashboard-settings.sqlite`; the dashboard data directory is `0700`, the DB is
+`0600`, keys are never serialized/logged, and key rotation/deletion attempts a
+WAL truncate checkpoint. HTTPS is required except for explicitly acknowledged
+loopback/private-LAN HTTP IP endpoints. URL credentials, queries, fragments,
+redirects, and cookie jars are rejected.
 
-The floating chat is rendered only after an authenticated `GET /v1/models`
-response contains the exact, case-sensitive model ID `MiniMax-M3`. A missing
-key, an account without M3 entitlement, or an availability-probe failure keeps
-the assistant disabled. The dashboard never silently substitutes an older
-model. Status probes are singleflight-cached for one minute when available and
-briefly when unavailable; every chat still rechecks entitlement before sending
-messages.
+One complete agent run — including every delegated specialist — is bounded to
+90 seconds by default. Set `OPENCODE_DASHBOARD_ASSISTANT_TIMEOUT` to a Go
+duration from `10s` through `5m`; the older
+`OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` is a deprecated fallback.
+
+Authenticated discovery is required before Kimi or MiniMax models are offered;
+MiniMax accepts only the exact, case-sensitive `MiniMax-M3` ID. The launcher is
+always rendered. Without a valid selection it says **Set up assistant** and
+links to Config. Readiness is revision-keyed and invalidated by configuration
+changes; chat requests echo `selection_revision`, so stale tabs are rejected
+before provider work and refresh status rather than silently changing models.
 
 ## Data that leaves the machine
 
 Using the assistant changes the dashboard's otherwise local-only privacy model.
-Each chat request can send the following to MiniMax:
+Each chat request can send the following to the selected provider destination:
 
 - the messages typed into the assistant and its prior replies in that browser
   conversation;
@@ -130,7 +148,7 @@ web chat
    |
    | POST /api/v1/assistant/chat/stream (flushed NDJSON)
    v
-lead agent loop ---- POST /v1/chat/completions, stream=true ----> MiniMax-M3
+lead agent loop ---- POST /v1/chat/completions -------------> selected model
    ^          |                                   |
    |          | delegate_to_specialist            | tool_calls
    |          v                                   v
@@ -145,8 +163,10 @@ For every model round the backend:
    schemas that agent may call. Allowlist-validated navigation hints are
    attached to the current user turn as explicitly untrusted data; they never
    enter the system message.
-2. If M3 returns tool calls, appends the complete assistant message—including
-   its private interleaved-reasoning fields—to the server-side request history.
+2. If the model returns tool calls, appends its replayable assistant message to
+   server-side request history. The MiniMax profile preserves its private
+   interleaved-reasoning fields; generic and Kimi profiles use the minimal
+   OpenAI Chat Completions shape.
 3. Strictly validates and normalizes every function name and JSON argument
    against the advertised schema, the agent's allowlist, and the shared budget
    before a source is queried. Executable calls are streamed/persisted with
@@ -190,9 +210,16 @@ repeated identical calls, tool-result bytes, concurrent chats, request size, and
 elapsed time. Browser cancellation propagates through the model call, the
 specialist runs, and the source queries.
 
+Before every provider call, the runner estimates the complete serialized input
+conservatively, reserves dynamically clamped output capacity, removes only
+complete oldest browser turns, and clamps the retained evidence budget to the
+selected model's configured context limit. System policy, tool schemas, the
+latest question, and current-turn evidence are never partially trimmed. A model
+that cannot fit those required inputs is rejected before network I/O.
+
 ## Usage accounting
 
-Every provider round is counted, and MiniMax's token counters are recorded when
+Every provider round is counted, and provider token counters are recorded when
 it reports them: input, output, cached input, reasoning, and total tokens. A
 turn's usage covers the lead agent and every specialist it started; a session's
 usage is the sum of its turns. Counters are local telemetry about this
@@ -435,12 +462,22 @@ assistant chat store is never modified.
 
 The web server exposes:
 
-- `GET /api/v1/assistant/status` — runtime M3/key availability, privacy notice,
-  consent version, capabilities, the delegable specialist roster, and whether
-  sessions are persisted.
+- `GET /api/v1/assistant/status` — active provider/model/context, selection
+  revision, verification state, safe destination label, destination-bound
+  consent token, capabilities, specialist roster, and persistence state.
+- `GET`/`POST /api/v1/assistant/providers` and
+  `PATCH`/`DELETE /api/v1/assistant/providers/{id}` — safe provider management;
+  responses expose `api_key_configured`, never the key.
+- `POST /api/v1/assistant/providers/{id}/models/refresh` — explicit bounded
+  discovery without erasing a last-good catalog.
+- `PUT /api/v1/assistant/providers/{id}/models` — exact manual model/context
+  metadata for a custom provider.
+- `PUT /api/v1/assistant/selection` — update the singleton global selection and
+  its revision.
 - `POST /api/v1/assistant/chat` — a bounded, stateless user/assistant history and
   optional UI context hints. It must echo the currently accepted consent
-  version, and prior assistant turns must carry valid backend signatures.
+  version/token and selection revision, and prior assistant turns must carry
+  valid backend signatures.
   Analytics tools remain authoritative.
 - `POST /api/v1/assistant/chat/stream` — the same signed agent loop as a flushed
   `application/x-ndjson` response. Events are `start`, `round_start`,

@@ -643,7 +643,7 @@ func TestAssistantChatStreamRetainsJSONErrorsBeforeCommit(t *testing.T) {
 			body:        validAssistantBody("Report."),
 			contentType: "application/json",
 			wantStatus:  http.StatusTooManyRequests,
-			wantMessage: "MiniMax usage is temporarily limited; try again later",
+			wantMessage: "provider usage is temporarily limited; try again later",
 		},
 	}
 	for _, tt := range tests {
@@ -691,7 +691,7 @@ func TestAssistantChatStreamSanitizesErrorsAfterCommit(t *testing.T) {
 	if err := json.Unmarshal(frames[2].Message, &publicMessage); err != nil {
 		t.Fatalf("decode error message: %v", err)
 	}
-	if publicMessage != "MiniMax could not complete the analytics report" || strings.Contains(recorder.Body.String(), secret) {
+	if publicMessage != "the selected provider could not complete the analytics report" || strings.Contains(recorder.Body.String(), secret) {
 		t.Fatalf("unsafe streamed error message=%q body=%s", publicMessage, recorder.Body.String())
 	}
 }
@@ -720,7 +720,7 @@ func TestAssistantChatStreamMapsUsageExhaustionAfterCommit(t *testing.T) {
 	if err := json.Unmarshal(frames[2].Message, &publicMessage); err != nil {
 		t.Fatalf("decode error message: %v", err)
 	}
-	if publicMessage != "MiniMax usage is temporarily limited; try again later" || strings.Contains(recorder.Body.String(), secret) {
+	if publicMessage != "provider usage is temporarily limited; try again later" || strings.Contains(recorder.Body.String(), secret) {
 		t.Fatalf("unsafe streamed usage error message=%q body=%s", publicMessage, recorder.Body.String())
 	}
 }

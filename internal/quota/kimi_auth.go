@@ -39,6 +39,35 @@ var (
 	errKimiConfirmedRevoked = errors.New("Kimi Code OAuth refresh token was rejected as invalid_grant")
 )
 
+// ResolveKimiAssistantCredential reuses Kimi Code's managed OAuth storage and
+// refresh protocol for the analytics assistant. The access token is returned
+// only to the server-side provider registry and must never be logged or stored
+// in dashboard-settings.sqlite.
+func ResolveKimiAssistantCredential(ctx context.Context, home string) (string, string, error) {
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return "", "", errKimiTokenMissing
+	}
+	auth, err := resolveKimiRuntimeAuth(home)
+	if err != nil {
+		return "", "", err
+	}
+	path, err := kimiCredentialPath(home, auth)
+	if err != nil {
+		return "", "", err
+	}
+	token, err := readKimiOAuthToken(path)
+	if err != nil {
+		return "", "", err
+	}
+	provider := &kimiProvider{home: home, now: time.Now}
+	accessToken, err := provider.ensureFreshAccessToken(ctx, auth, path, token, time.Now())
+	if err != nil {
+		return "", "", err
+	}
+	return auth.BaseURL, accessToken, nil
+}
+
 type kimiRuntimeAuth struct {
 	BaseURL   string
 	OAuthHost string

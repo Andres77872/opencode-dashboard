@@ -1,5 +1,5 @@
-// Package pricingalias owns durable user-managed mappings from detected model
-// identifiers to bundled pricing catalog model identifiers.
+// Package pricingalias owns the dashboard settings database, including durable
+// pricing aliases and analytics-assistant provider configuration.
 package pricingalias
 
 import (
@@ -172,7 +172,7 @@ func aliasTarget(alias Alias) source.PricingAliasTarget {
 type migration func(context.Context, *sql.Tx) error
 
 var (
-	migrations    = []migration{migrateV1, migrateV2}
+	migrations    = []migration{migrateV1, migrateV2, migrateV3}
 	schemaVersion = len(migrations)
 )
 
@@ -184,8 +184,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, ErrPathRequired
 	}
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create pricing alias store directory: %w", err)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("harden dashboard settings directory: %w", err)
 		}
 	}
 
@@ -196,6 +199,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := ensureSchema(ctx, db, path); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("harden dashboard settings database: %w", err)
 	}
 	snapshot, err := loadSnapshot(ctx, db)
 	if err != nil {
@@ -214,6 +221,7 @@ func openDB(ctx context.Context, path string) (*sql.DB, error) {
 		fmt.Sprintf("_pragma=busy_timeout(%d)", busyTimeout.Milliseconds()),
 		"_pragma=journal_mode(WAL)",
 		"_pragma=synchronous(NORMAL)",
+		"_pragma=foreign_keys(ON)",
 	}
 	db, err := sql.Open("sqlite", path+"?"+strings.Join(params, "&"))
 	if err != nil {
@@ -285,6 +293,9 @@ func ensureSchema(ctx context.Context, db *sql.DB, path string) error {
 	if err := validateAliasSchema(ctx, tx); err != nil {
 		return err
 	}
+	if err := validateAssistantSchema(ctx, tx); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit settings schema migration: %w", err)
 	}
@@ -353,6 +364,55 @@ func migrateV2(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
+// migrateV3 turns dashboard-settings.sqlite into the single durable owner for
+// assistant provider configuration while leaving the V1/V2 pricing aliases
+// untouched. Built-in provider credentials are deliberately not represented
+// here; only user-managed OpenAI-compatible destinations and the global
+// provider/model selection are persisted.
+func migrateV3(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS assistant_providers (
+			provider_id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			base_url TEXT NOT NULL,
+			api_key TEXT NOT NULL DEFAULT '',
+			insecure_transport_ack INTEGER NOT NULL DEFAULT 0 CHECK (insecure_transport_ack IN (0, 1)),
+			created_ms INTEGER NOT NULL,
+			updated_ms INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS assistant_models (
+			provider_id TEXT NOT NULL,
+			model_id TEXT NOT NULL,
+			context_limit INTEGER NOT NULL CHECK (context_limit >= 0),
+			verified INTEGER NOT NULL DEFAULT 0 CHECK (verified IN (0, 1)),
+			discovered INTEGER NOT NULL DEFAULT 0 CHECK (discovered IN (0, 1)),
+			updated_ms INTEGER NOT NULL,
+			PRIMARY KEY (provider_id, model_id),
+			FOREIGN KEY (provider_id) REFERENCES assistant_providers(provider_id) ON DELETE CASCADE
+		);
+		CREATE TABLE IF NOT EXISTS assistant_catalog_state (
+			provider_id TEXT PRIMARY KEY,
+			status TEXT NOT NULL DEFAULT 'never',
+			last_attempt_ms INTEGER NOT NULL DEFAULT 0,
+			last_success_ms INTEGER NOT NULL DEFAULT 0,
+			error TEXT NOT NULL DEFAULT '',
+			FOREIGN KEY (provider_id) REFERENCES assistant_providers(provider_id) ON DELETE CASCADE
+		);
+		CREATE TABLE IF NOT EXISTS assistant_selection (
+			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+			provider_id TEXT NOT NULL DEFAULT '',
+			model_id TEXT NOT NULL DEFAULT '',
+			revision INTEGER NOT NULL DEFAULT 0,
+			updated_ms INTEGER NOT NULL DEFAULT 0
+		);
+		INSERT INTO assistant_selection(singleton) VALUES(1)
+		ON CONFLICT(singleton) DO NOTHING;
+		CREATE INDEX IF NOT EXISTS idx_assistant_models_provider
+			ON assistant_models(provider_id, model_id);
+	`)
+	return err
+}
+
 func verifyMarker(ctx context.Context, tx *sql.Tx) error {
 	var count int
 	var owner sql.NullString
@@ -384,6 +444,24 @@ func validateAliasSchema(ctx context.Context, tx *sql.Tx) error {
 		return fmt.Errorf("validate pricing alias schema: %w", err)
 	}
 	return rows.Close()
+}
+
+func validateAssistantSchema(ctx context.Context, tx *sql.Tx) error {
+	for _, query := range []string{
+		`SELECT provider_id, name, base_url, api_key, insecure_transport_ack, created_ms, updated_ms FROM assistant_providers WHERE 0`,
+		`SELECT provider_id, model_id, context_limit, verified, discovered, updated_ms FROM assistant_models WHERE 0`,
+		`SELECT provider_id, status, last_attempt_ms, last_success_ms, error FROM assistant_catalog_state WHERE 0`,
+		`SELECT provider_id, model_id, revision, updated_ms FROM assistant_selection WHERE singleton = 1`,
+	} {
+		rows, err := tx.QueryContext(ctx, query)
+		if err != nil {
+			return fmt.Errorf("validate assistant settings schema: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("validate assistant settings schema: %w", err)
+		}
+	}
+	return nil
 }
 
 // Close closes the underlying SQLite database. Resolver snapshots remain safe

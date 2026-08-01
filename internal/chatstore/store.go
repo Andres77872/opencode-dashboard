@@ -194,19 +194,20 @@ type Usage struct {
 
 // Session is one persisted assistant conversation with its running totals.
 type Session struct {
-	ID             string `json:"id"`
-	Title          string `json:"title"`
-	Provider       string `json:"provider,omitempty"`
-	Model          string `json:"model,omitempty"`
-	ConsentVersion string `json:"consent_version,omitempty"`
-	CreatedMS      int64  `json:"created_ms"`
-	UpdatedMS      int64  `json:"updated_ms"`
-	MessageCount   int64  `json:"message_count"`
-	TurnCount      int64  `json:"turn_count"`
-	ToolCallCount  int64  `json:"tool_call_count"`
-	SubagentCount  int64  `json:"subagent_count"`
-	DurationMS     int64  `json:"duration_ms"`
-	Usage          Usage  `json:"usage"`
+	ID                  string `json:"id"`
+	Title               string `json:"title"`
+	Provider            string `json:"provider,omitempty"`
+	Model               string `json:"model,omitempty"`
+	ConsentVersion      string `json:"consent_version,omitempty"`
+	MixedProviderModels bool   `json:"mixed_provider_models"`
+	CreatedMS           int64  `json:"created_ms"`
+	UpdatedMS           int64  `json:"updated_ms"`
+	MessageCount        int64  `json:"message_count"`
+	TurnCount           int64  `json:"turn_count"`
+	ToolCallCount       int64  `json:"tool_call_count"`
+	SubagentCount       int64  `json:"subagent_count"`
+	DurationMS          int64  `json:"duration_ms"`
+	Usage               Usage  `json:"usage"`
 }
 
 // ToolCall is one analytics tool invocation made while producing an assistant
@@ -262,6 +263,7 @@ type Message struct {
 	Role       string        `json:"role"`
 	Content    string        `json:"content"`
 	Signature  string        `json:"signature,omitempty"`
+	Provider   string        `json:"provider,omitempty"`
 	Model      string        `json:"model,omitempty"`
 	Agent      string        `json:"agent,omitempty"`
 	CreatedMS  int64         `json:"created_ms"`
@@ -686,7 +688,8 @@ func (s *Store) ListSessions(ctx context.Context, limit int) ([]Session, error) 
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+sessionColumns+`,
-			(SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.session_id)
+			(SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.session_id),
+			(SELECT COUNT(DISTINCT t.provider || char(0) || t.model) > 1 FROM chat_turns t WHERE t.session_id = s.session_id)
 		FROM chat_sessions s
 		ORDER BY s.updated_ms DESC, s.session_id DESC
 		LIMIT ?
@@ -716,7 +719,7 @@ func scanSessionWithCount(scan func(...any) error, session *Session) error {
 		&session.SubagentCount, &session.DurationMS,
 		&session.Usage.Requests, &session.Usage.InputTokens, &session.Usage.OutputTokens,
 		&session.Usage.CachedInputTokens, &session.Usage.ReasoningTokens, &session.Usage.TotalTokens,
-		&session.MessageCount)
+		&session.MessageCount, &session.MixedProviderModels)
 	if err != nil {
 		return fmt.Errorf("scan chat session: %w", err)
 	}
@@ -747,6 +750,11 @@ func (s *Store) GetSession(ctx context.Context, id string) (*SessionDetail, erro
 		return nil, err
 	}
 	detail.Session.MessageCount = int64(len(detail.Messages))
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT provider || char(0) || model) > 1 FROM chat_turns WHERE session_id = ?
+	`, id).Scan(&detail.Session.MixedProviderModels); err != nil {
+		return nil, fmt.Errorf("load chat session provider mix: %w", err)
+	}
 	if err := s.loadToolCalls(ctx, id, detail, byID); err != nil {
 		return nil, err
 	}
@@ -755,7 +763,7 @@ func (s *Store) GetSession(ctx context.Context, id string) (*SessionDetail, erro
 
 func (s *Store) loadMessages(ctx context.Context, id string, detail *SessionDetail) (map[int64]int, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.message_id, m.role, m.content, m.signature, m.model, m.agent, m.created_ms,
+		SELECT m.message_id, m.role, m.content, m.signature, t.provider, m.model, m.agent, m.created_ms,
 			t.turn_index, t.rounds, t.duration_ms,
 			t.requests, t.input_tokens, t.output_tokens, t.cached_input_tokens, t.reasoning_tokens, t.total_tokens,
 			t.route, t.source, t.period, t.timezone, t.notices_json
@@ -775,7 +783,7 @@ func (s *Store) loadMessages(ctx context.Context, id string, detail *SessionDeta
 		var turnContext TurnContext
 		var notices string
 		if err := rows.Scan(&message.ID, &message.Role, &message.Content, &message.Signature,
-			&message.Model, &message.Agent, &message.CreatedMS,
+			&message.Provider, &message.Model, &message.Agent, &message.CreatedMS,
 			&message.TurnIndex, &message.Rounds, &message.DurationMS,
 			&usage.Requests, &usage.InputTokens, &usage.OutputTokens,
 			&usage.CachedInputTokens, &usage.ReasoningTokens, &usage.TotalTokens,
@@ -787,6 +795,7 @@ func (s *Store) loadMessages(ctx context.Context, id string, detail *SessionDeta
 			message.Usage = &usage
 			message.Notices = decodeStrings(notices)
 		} else {
+			message.Provider = ""
 			message.Rounds = 0
 			message.DurationMS = 0
 		}
