@@ -1,6 +1,6 @@
 {
-  "id": "qwen-modelstudio-pricing-2026-07-19",
-  "retrieved_at": "2026-07-19T00:00:00Z",
+  "id": "qwen-modelstudio-pricing-2026-08-02",
+  "retrieved_at": "2026-08-02T00:00:00Z",
   "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
   "currency": "USD",
   "models": {
@@ -36,13 +36,23 @@
       "output_per_million": 6.0,
       "availability_note": "0-32K context tier list price; longer contexts are billed higher; cache-hit rate estimated at 20% of input"
     },
+    "qwen3.8-max": {
+      "display_name": "Qwen3.8 Max",
+      "context_tokens": 262144,
+      "input_per_million": 2.0,
+      "cache_hit_input_per_million": 0.25,
+      "cache_write_per_million": 2.5,
+      "output_per_million": 6.0,
+      "availability_note": "International Model Studio list price; promotional discounts not applied"
+    },
     "qwen3.8-max-preview": {
       "display_name": "Qwen3.8 Max Preview",
       "context_tokens": 262144,
-      "input_per_million": 0,
-      "cache_hit_input_per_million": 0,
-      "output_per_million": 0,
-      "availability_note": "No public per-token list price as of 2026-07-19 (sold via Token Plan bundles only); cost is reported as missing"
+      "input_per_million": 2.0,
+      "cache_hit_input_per_million": 0.25,
+      "cache_write_per_million": 2.5,
+      "output_per_million": 6.0,
+      "availability_note": "International Model Studio list price; promotional discounts not applied; priced identically to qwen3.8-max"
     }
   },
   "aliases": {

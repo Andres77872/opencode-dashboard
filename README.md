@@ -102,19 +102,22 @@ Token counters overlap in the raw data (`cachedTokens ⊆ inputTokens` always; `
 
 ### Qwen model pricing catalog
 
-The bundled snapshot (`qwen-modelstudio-pricing-2026-07-19`) uses Alibaba Cloud Model Studio international list prices, in USD per million tokens, with promotional discounts not applied. Tiered-context models use their base tier; longer contexts are billed higher upstream, so those estimates are conservative lower bounds.
+The bundled snapshot (`qwen-modelstudio-pricing-2026-08-02`) uses Alibaba Cloud Model Studio international list prices, in USD per million tokens, with promotional discounts not applied. Tiered-context models use their base tier; longer contexts are billed higher upstream, so those estimates are conservative lower bounds.
 
-| Model | Cache hit | Input | Output | Base tier |
-|-------|-----------|-------|--------|-----------|
-| `qwen3.7-max` | $0.25 | $2.50 | $7.50 | 256K |
-| `qwen3.7-plus` | $0.04 | $0.40 | $1.60 | non-thinking 0–256K |
-| `qwen3-coder-plus` | $0.10 | $1.00 | $5.00 | 0–32K; cache hit estimated at 10% of input |
-| `qwen3-max` | $0.24 | $1.20 | $6.00 | 0–32K; cache hit estimated at 20% of input |
-| `qwen3.8-max-preview` | — | — | — | no public per-token price |
+| Model | Cache hit | Cache write | Input | Output | Base tier |
+|-------|-----------|-------------|-------|--------|-----------|
+| `qwen3.8-max` | $0.25 | $2.50 | $2.00 | $6.00 | 256K |
+| `qwen3.8-max-preview` | $0.25 | $2.50 | $2.00 | $6.00 | 256K; priced identically to `qwen3.8-max` |
+| `qwen3.7-max` | $0.25 | — | $2.50 | $7.50 | 256K |
+| `qwen3.7-plus` | $0.04 | — | $0.40 | $1.60 | non-thinking 0–256K |
+| `qwen3-coder-plus` | $0.10 | — | $1.00 | $5.00 | 0–32K; cache hit estimated at 10% of input |
+| `qwen3-max` | $0.24 | — | $1.20 | $6.00 | 0–32K; cache hit estimated at 20% of input |
 
 Two cache-hit rates are marked estimated because Model Studio does not publish a separate cache-hit price for those models; the input and output rates are published values.
 
-`qwen3.8-max-preview` has no public per-token list price (it is sold through Token Plan bundles), so its cost is reported as `missing` rather than guessed — as is any unknown or custom-endpoint model. Aliases map `coder-model` (qwen-oauth) to the current mainline coder model `qwen3.7-max`, `qwen-max` to `qwen3-max`, and `qwen-coder-plus` to `qwen3-coder-plus`.
+A `—` in the cache-write column means the listing publishes no separate cache-write price, so writes bill at that model's input rate. Qwen's usage log reports no cache-write counter, so the rate only takes effect for a proxied model mapped into this catalog by a [pricing alias](#pricing-aliases), or when another source borrows a Qwen rate the same way.
+
+A model outside this catalog — unknown or custom-endpoint — is reported as `missing` rather than guessed. Aliases map `coder-model` (qwen-oauth) to the current mainline coder model `qwen3.7-max`, `qwen-max` to `qwen3-max`, and `qwen-coder-plus` to `qwen3-coder-plus`.
 
 Sources: [Model Studio pricing](https://www.alibabacloud.com/help/en/model-studio/model-pricing), [qwen-code token usage service](https://github.com/QwenLM/qwen-code/blob/main/packages/core/src/services/tokenUsageService.ts).
 
@@ -127,7 +130,7 @@ Computed and estimated costs come from pinned, dated catalogs compiled into the 
 | Claude Code | `anthropic-bundled-2026-07-24` | 2026-07-24 | 21 |
 | Codex | `openai-codex-api-pricing-2026-07-27` | 2026-07-27 | 14 |
 | Kimi Code | `kimi-api-pricing-2026-07-16` | 2026-07-16 | 5 |
-| Qwen Code | `qwen-modelstudio-pricing-2026-07-19` | 2026-07-19 | 5 |
+| Qwen Code | `qwen-modelstudio-pricing-2026-08-02` | 2026-08-02 | 6 |
 
 OpenCode has no snapshot: it records real spend, which is read as reported. A model outside its source's snapshot stays `missing` rather than being priced by a guess — see [pricing aliases](#pricing-aliases) to map one by hand.
 

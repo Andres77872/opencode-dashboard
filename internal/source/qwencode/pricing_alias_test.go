@@ -1,6 +1,7 @@
 package qwencode
 
 import (
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -113,14 +114,13 @@ func TestQwenPricingAliasesResolutionAndCatalog(t *testing.T) {
 			{source.SourceQwenCode, "qwen", "coder-model"}:             "qwen3-coder-plus",
 			{source.SourceQwenCode, "qwen", "bundled-target-observed"}: "coder-model",
 			{source.SourceQwenCode, "qwen", "unknown-target-observed"}: "not-in-catalog",
-			{source.SourceQwenCode, "qwen", "qwen3.8-max-preview"}:     "qwen3.7-plus",
 		},
 		revisions: map[source.SourceID]string{source.SourceQwenCode: revision},
 	}
 	src := New(Options{QwenHome: t.TempDir(), PricingAliases: aliases})
 	ctx := testContext(t)
 	pricing := src.loadPricing(ctx)
-	wantSnapshotID := "qwen-modelstudio-pricing-2026-07-19+aliases-" + revision
+	wantSnapshotID := "qwen-modelstudio-pricing-2026-08-02+aliases-" + revision
 	if pricing.ID != wantSnapshotID {
 		t.Fatalf("effective pricing ID = %q, want %q", pricing.ID, wantSnapshotID)
 	}
@@ -164,18 +164,6 @@ func TestQwenPricingAliasesResolutionAndCatalog(t *testing.T) {
 	if got := src.ResolvePricing(ctx, "qwen", "unknown-target-observed"); got.Kind != source.PricingResolutionUnknown {
 		t.Fatalf("unknown alias target resolution = %#v", got)
 	}
-	preview := src.ResolvePricing(ctx, "qwen", "qwen3.8-max-preview")
-	if preview.Kind != source.PricingResolutionUserAlias || preview.TargetModelID != "qwen3.7-plus" {
-		t.Fatalf("unpriced exact model did not consult user alias: %#v", preview)
-	}
-	delete(aliases.aliases, fakeAliasKey{source.SourceQwenCode, "qwen", "qwen3.8-max-preview"})
-	preview = src.ResolvePricing(ctx, "qwen", "qwen3.8-max-preview")
-	if preview.Kind != source.PricingResolutionUnpriced || preview.TargetModelID != "qwen3.8-max-preview" || preview.Rate != nil {
-		t.Fatalf("unpriced exact model resolution = %#v", preview)
-	}
-
-	// Restore the alias for cost/provenance checks after proving the unpriced path.
-	aliases.aliases[fakeAliasKey{source.SourceQwenCode, "qwen", "qwen3.8-max-preview"}] = "qwen3.7-plus"
 	result := computeCost("custom-qwen", "qwen", stats.TokenStats{Input: 1_000_000, Output: 1_000_000}, pricing)
 	if result.Status != stats.CostEstimatedAPIEquivalent || result.Cost != 2.0 {
 		t.Fatalf("aliased computeCost = %#v, want qwen3.7-plus pricing", result)
@@ -191,21 +179,78 @@ func TestQwenPricingAliasesResolutionAndCatalog(t *testing.T) {
 	if len(catalog.Models) != len(pricing.Models) || len(catalog.Models) == 0 {
 		t.Fatalf("pricing catalog models = %#v", catalog.Models)
 	}
-	foundUnpriced := false
+	foundCacheWrite := false
 	for i, model := range catalog.Models {
 		if i > 0 && strings.Compare(catalog.Models[i-1].ModelID, model.ModelID) >= 0 {
 			t.Fatalf("catalog is not sorted at %q, %q", catalog.Models[i-1].ModelID, model.ModelID)
 		}
-		if model.ModelID == "qwen3.8-max-preview" {
-			foundUnpriced = true
+		if model.ModelID == "qwen3.8-max" {
+			foundCacheWrite = true
+			// The published cache-write price must survive the trip through
+			// rateSummary; other sources borrow it by cross-source alias.
+			if model.Rate.CacheWritePerMillion != 2.5 {
+				t.Fatalf("qwen3.8-max catalog rate = %#v, want cache write 2.5", model.Rate)
+			}
+		}
+	}
+	if !foundCacheWrite {
+		t.Fatal("qwen3.8-max is missing from the pricing catalog")
+	}
+}
+
+// The catalog must never invent a price for a listed-but-unpriced model. No
+// bundled Qwen row is unpriced today, so this rides on a fixture snapshot.
+func TestQwenUnpricedCatalogRowStaysMissingAndAliasable(t *testing.T) {
+	const revision = "qwen-unpriced-revision"
+	aliases := &fakePricingAliases{
+		aliases:   map[fakeAliasKey]string{},
+		revisions: map[source.SourceID]string{source.SourceQwenCode: revision},
+	}
+	src := New(Options{
+		QwenHome:            t.TempDir(),
+		PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json"),
+		PricingAliases:      aliases,
+	})
+	ctx := testContext(t)
+	pricing := src.loadPricing(ctx)
+
+	got := src.ResolvePricing(ctx, "qwen", "qwen-test-unpriced")
+	if got.Kind != source.PricingResolutionUnpriced || got.TargetModelID != "qwen-test-unpriced" || got.Rate != nil {
+		t.Fatalf("unpriced exact model resolution = %#v", got)
+	}
+	cost := computeCost("qwen-test-unpriced", "qwen", stats.TokenStats{Input: 1000, Output: 100}, pricing)
+	if cost.Cost != 0 || cost.Status != stats.CostMissing {
+		t.Fatalf("unpriced model cost = %#v, want missing rather than guessed", cost)
+	}
+
+	// It stays visible in the catalog with zero rates, so the UI can show that
+	// the model is known but has no price rather than hiding it.
+	catalog := src.PricingCatalog(ctx)
+	found := false
+	for _, model := range catalog.Models {
+		if model.ModelID == "qwen-test-unpriced" {
+			found = true
 			if model.Rate.InputPerMillion != 0 || model.Rate.OutputPerMillion != 0 {
 				t.Fatalf("unpriced catalog entry unexpectedly has rates: %#v", model)
 			}
 		}
 	}
-	if !foundUnpriced {
+	if !found {
 		t.Fatal("unpriced exact catalog entry was omitted")
 	}
+
+	// A user alias is still consulted for it, which is how a user prices a model
+	// the bundled snapshot cannot.
+	aliases.aliases[fakeAliasKey{source.SourceQwenCode, "qwen", "qwen-test-unpriced"}] = "qwen-test-priced"
+	repriced := src.ResolvePricing(ctx, "qwen", "qwen-test-unpriced")
+	if repriced.Kind != source.PricingResolutionUserAlias || repriced.TargetModelID != "qwen-test-priced" {
+		t.Fatalf("unpriced exact model did not consult user alias: %#v", repriced)
+	}
+}
+
+func fixturePath(t *testing.T, elems ...string) string {
+	t.Helper()
+	return filepath.Join(append([]string{"testdata"}, elems...)...)
 }
 
 func TestQwenPricingSnapshotCapturesAliasesAndRevision(t *testing.T) {

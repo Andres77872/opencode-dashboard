@@ -35,8 +35,21 @@ type pricingRate struct {
 	ContextTokens      int64   `json:"context_tokens"`
 	InputPerMillion    float64 `json:"input_per_million"`
 	CacheHitPerMillion float64 `json:"cache_hit_input_per_million"`
-	OutputPerMillion   float64 `json:"output_per_million"`
-	AvailabilityNote   string  `json:"availability_note,omitempty"`
+	// CacheWritePerMillion is zero for the models whose Model Studio listing
+	// publishes no separate cache-write price; those bill writes at the input
+	// rate. See cacheWritePerMillion.
+	CacheWritePerMillion float64 `json:"cache_write_per_million,omitempty"`
+	OutputPerMillion     float64 `json:"output_per_million"`
+	AvailabilityNote     string  `json:"availability_note,omitempty"`
+}
+
+// cacheWritePerMillion reports the rate cache-write tokens bill at, falling back
+// to the plain input rate for models with no published cache-write price.
+func (r pricingRate) cacheWritePerMillion() float64 {
+	if r.CacheWritePerMillion > 0 {
+		return r.CacheWritePerMillion
+	}
+	return r.InputPerMillion
 }
 
 type pricingMatch struct {
@@ -217,19 +230,22 @@ func (p pricingSnapshot) aliasPricing(providerID, model string) (pricingMatch, b
 }
 
 // foreignRate adapts another catalog's shared rate summary to this source's
-// rate shape. A published cache-write price has no place here because cache
-// writes already bill at the input rate, so only the shared trio carries over.
+// rate shape. Only the four shared dimensions carry over; a borrowed catalog's
+// tier- or duration-specific rates have no equivalent here. A zero cache-write
+// price stays zero so cacheWritePerMillion falls back to the input rate, which
+// is what the source catalog meant by omitting it.
 func foreignRate(summary source.PricingRateSummary) pricingRate {
 	return pricingRate{
-		InputPerMillion:    summary.InputPerMillion,
-		CacheHitPerMillion: summary.CachedInputPerMillion,
-		OutputPerMillion:   summary.OutputPerMillion,
+		InputPerMillion:      summary.InputPerMillion,
+		CacheHitPerMillion:   summary.CachedInputPerMillion,
+		CacheWritePerMillion: summary.CacheWritePerMillion,
+		OutputPerMillion:     summary.OutputPerMillion,
 	}
 }
 
 func crossSourceNote(match pricingMatch) string {
 	return "priced from the " + string(match.TargetSourceID) + " catalog model " + match.CanonicalModelID +
-		" by a user pricing alias; only input, cached input and output rates carry across catalogs"
+		" by a user pricing alias; only input, cached input, cache write and output rates carry across catalogs"
 }
 
 func usablePricingRate(rate pricingRate) bool {
@@ -242,11 +258,12 @@ func computeCost(model, providerID string, tokens stats.TokenStats, pricing pric
 	if !usablePricingRate(match.Rate) {
 		return missingCost(currency)
 	}
-	// Qwen has no separate cache-write tier: cache writes (always zero in
-	// recorded data) bill at the normal input rate, cache hits at the
-	// discounted cached-input rate, and reasoning at the output rate.
-	inputMiss := tokens.Input + tokens.Cache.Write
-	cost := (float64(inputMiss)*match.Rate.InputPerMillion +
+	// Cache hits bill at the discounted cached-input rate and reasoning at the
+	// output rate. Cache writes are always zero in recorded Qwen data — the
+	// usage log reports no cache-write counter — so their rate only matters for
+	// a proxied model aliased into this catalog.
+	cost := (float64(tokens.Input)*match.Rate.InputPerMillion +
+		float64(tokens.Cache.Write)*match.Rate.cacheWritePerMillion() +
 		float64(tokens.Cache.Read)*match.Rate.CacheHitPerMillion +
 		float64(tokens.Output+tokens.Reasoning)*match.Rate.OutputPerMillion) / 1_000_000
 	note := apiEquivalentNote
@@ -271,8 +288,11 @@ func rateSummary(rate pricingRate) source.PricingRateSummary {
 	return source.PricingRateSummary{
 		InputPerMillion:       rate.InputPerMillion,
 		CachedInputPerMillion: rate.CacheHitPerMillion,
-		OutputPerMillion:      rate.OutputPerMillion,
-		Note:                  rate.AvailabilityNote,
+		// Left zero when unpublished, which the shared type documents as
+		// "bills at the input rate" rather than "free".
+		CacheWritePerMillion: rate.CacheWritePerMillion,
+		OutputPerMillion:     rate.OutputPerMillion,
+		Note:                 rate.AvailabilityNote,
 	}
 }
 

@@ -31,10 +31,10 @@ func TestQwenCodeReconcilesTranscriptsTelemetryAndUsageLog(t *testing.T) {
 	writeUsageLog(t, home, "2026-07", []string{
 		`{"schemaVersion":1,"id":"ur-1","timestamp":"2026-07-16T10:00:05.100Z","localDate":"2026-07-16","localMonth":"2026-07","sessionId":"sess-1","model":"qwen3.7-plus","authType":"openai","source":"main","inputTokens":1000,"outputTokens":150,"cachedTokens":600,"thoughtsTokens":50,"totalTokens":1150,"apiDurationMs":1200}`,
 		`{"schemaVersion":1,"id":"ur-2","timestamp":"2026-07-16T10:00:08.100Z","localDate":"2026-07-16","localMonth":"2026-07","sessionId":"sess-1","model":"qwen3.7-plus","authType":"openai","source":"managed-auto-memory-extractor","inputTokens":200,"outputTokens":30,"cachedTokens":0,"thoughtsTokens":10,"totalTokens":230,"apiDurationMs":800}`,
-		`{"schemaVersion":1,"id":"ur-3","timestamp":"2026-07-17T09:00:00.000Z","localDate":"2026-07-17","localMonth":"2026-07","sessionId":"sess-2","model":"qwen3.8-max-preview","authType":"openai","source":"main","inputTokens":500,"outputTokens":50,"cachedTokens":100,"thoughtsTokens":0,"totalTokens":550,"apiDurationMs":900}`,
+		`{"schemaVersion":1,"id":"ur-3","timestamp":"2026-07-17T09:00:00.000Z","localDate":"2026-07-17","localMonth":"2026-07","sessionId":"sess-2","model":"qwen-custom-endpoint","authType":"openai","source":"main","inputTokens":500,"outputTokens":50,"cachedTokens":100,"thoughtsTokens":0,"totalTokens":550,"apiDurationMs":900}`,
 	})
 	writeUsageRecords(t, home, []string{
-		`{"version":1,"sessionId":"sess-2","timestamp":1784624460000,"startTime":1784624400000,"project":"/home/synthetic/other-project","durationMs":60000,"models":{"qwen3.8-max-preview":{"requests":1,"inputTokens":500,"outputTokens":50,"cachedTokens":100,"thoughtsTokens":0,"totalTokens":550,"totalLatencyMs":900}},"tools":{"totalCalls":0,"totalSuccess":0,"totalFail":0,"byName":{}},"files":{"linesAdded":0,"linesRemoved":0}}`,
+		`{"version":1,"sessionId":"sess-2","timestamp":1784624460000,"startTime":1784624400000,"project":"/home/synthetic/other-project","durationMs":60000,"models":{"qwen-custom-endpoint":{"requests":1,"inputTokens":500,"outputTokens":50,"cachedTokens":100,"thoughtsTokens":0,"totalTokens":550,"totalLatencyMs":900}},"tools":{"totalCalls":0,"totalSuccess":0,"totalFail":0,"byName":{}},"files":{"linesAdded":0,"linesRemoved":0}}`,
 	})
 
 	src := New(Options{QwenHome: home, PathSource: "test fixture"})
@@ -67,7 +67,7 @@ func TestQwenCodeReconcilesTranscriptsTelemetryAndUsageLog(t *testing.T) {
 		t.Errorf("overview cost = %.12f, want 0.000552", overview.Cost)
 	}
 	if overview.CostStatus != stats.CostMixed {
-		t.Errorf("overview cost status = %q, want mixed (priced qwen3.7-plus + unpriced qwen3.8-max-preview)", overview.CostStatus)
+		t.Errorf("overview cost status = %q, want mixed (priced qwen3.7-plus + off-catalog qwen-custom-endpoint)", overview.CostStatus)
 	}
 
 	models, err := src.Models(ctx, period)
@@ -75,15 +75,15 @@ func TestQwenCodeReconcilesTranscriptsTelemetryAndUsageLog(t *testing.T) {
 		t.Fatalf("Models(all): %v", err)
 	}
 	if len(models.Models) != 2 {
-		t.Fatalf("models = %#v, want qwen3.7-plus and qwen3.8-max-preview", models.Models)
+		t.Fatalf("models = %#v, want qwen3.7-plus and qwen-custom-endpoint", models.Models)
 	}
 	plus := findModel(t, models, "qwen3.7-plus")
 	if plus.ProviderID != "qwen" || plus.Messages != 2 {
 		t.Errorf("qwen3.7-plus entry = %#v, want provider qwen with 2 requests", plus)
 	}
-	preview := findModel(t, models, "qwen3.8-max-preview")
-	if preview.CostStatus != stats.CostMissing {
-		t.Errorf("qwen3.8-max-preview cost status = %q, want missing (no public list price)", preview.CostStatus)
+	custom := findModel(t, models, "qwen-custom-endpoint")
+	if custom.CostStatus != stats.CostMissing {
+		t.Errorf("qwen-custom-endpoint cost status = %q, want missing (outside the bundled catalog)", custom.CostStatus)
 	}
 
 	tools, err := src.Tools(ctx, period)
@@ -290,10 +290,12 @@ func TestQwenPricingCatalogPricesKnownModelsAndRefusesToGuess(t *testing.T) {
 	src := New(Options{QwenHome: t.TempDir()})
 	pricing := src.loadPricing(testContext(t))
 	expected := map[string]pricingRate{
-		"qwen3.7-max":      {InputPerMillion: 2.5, CacheHitPerMillion: 0.25, OutputPerMillion: 7.5},
-		"qwen3.7-plus":     {InputPerMillion: 0.4, CacheHitPerMillion: 0.04, OutputPerMillion: 1.6},
-		"qwen3-coder-plus": {InputPerMillion: 1.0, CacheHitPerMillion: 0.1, OutputPerMillion: 5.0},
-		"qwen3-max":        {InputPerMillion: 1.2, CacheHitPerMillion: 0.24, OutputPerMillion: 6.0},
+		"qwen3.7-max":         {InputPerMillion: 2.5, CacheHitPerMillion: 0.25, OutputPerMillion: 7.5},
+		"qwen3.7-plus":        {InputPerMillion: 0.4, CacheHitPerMillion: 0.04, OutputPerMillion: 1.6},
+		"qwen3-coder-plus":    {InputPerMillion: 1.0, CacheHitPerMillion: 0.1, OutputPerMillion: 5.0},
+		"qwen3-max":           {InputPerMillion: 1.2, CacheHitPerMillion: 0.24, OutputPerMillion: 6.0},
+		"qwen3.8-max":         {InputPerMillion: 2.0, CacheHitPerMillion: 0.25, CacheWritePerMillion: 2.5, OutputPerMillion: 6.0},
+		"qwen3.8-max-preview": {InputPerMillion: 2.0, CacheHitPerMillion: 0.25, CacheWritePerMillion: 2.5, OutputPerMillion: 6.0},
 	}
 	for model, want := range expected {
 		rate, ok := pricing.Models[model]
@@ -303,6 +305,7 @@ func TestQwenPricingCatalogPricesKnownModelsAndRefusesToGuess(t *testing.T) {
 		}
 		if rate.InputPerMillion != want.InputPerMillion ||
 			rate.CacheHitPerMillion != want.CacheHitPerMillion ||
+			rate.CacheWritePerMillion != want.CacheWritePerMillion ||
 			rate.OutputPerMillion != want.OutputPerMillion {
 			t.Errorf("pricing model %q = %#v, want %#v", model, rate, want)
 		}
@@ -310,15 +313,55 @@ func TestQwenPricingCatalogPricesKnownModelsAndRefusesToGuess(t *testing.T) {
 	if got := pricing.Aliases["coder-model"]; got != "qwen3.7-max" {
 		t.Errorf("coder-model alias = %q, want qwen3.7-max (current qwen-oauth mainline)", got)
 	}
-	// qwen3.8-max-preview is listed with zero rates on purpose: no public
-	// per-token price exists, so cost must be missing rather than guessed.
-	preview := computeCost("qwen3.8-max-preview", "qwen", stats.TokenStats{Input: 1000, Output: 100}, pricing)
-	if preview.Cost != 0 || preview.Status != stats.CostMissing {
-		t.Errorf("qwen3.8-max-preview cost = %#v, want missing", preview)
-	}
 	unknown := computeCost("custom-endpoint/private-model", "custom-endpoint", stats.TokenStats{Input: 1000, Output: 100}, pricing)
 	if unknown.Cost != 0 || unknown.Status != stats.CostMissing || unknown.Provenance == nil || unknown.Provenance.MissingCount != 1 {
 		t.Errorf("unknown model cost = %#v, want explicitly missing instead of guessed", unknown)
+	}
+}
+
+// The GA and preview 3.8 Max listings share one Model Studio price, so they must
+// stay in lockstep rather than drifting into two different estimates.
+func TestQwenMax38GAAndPreviewSharePricing(t *testing.T) {
+	src := New(Options{QwenHome: t.TempDir()})
+	ctx := testContext(t)
+	pricing := src.loadPricing(ctx)
+
+	ga, preview := pricing.Models["qwen3.8-max"], pricing.Models["qwen3.8-max-preview"]
+	if ga.InputPerMillion != preview.InputPerMillion ||
+		ga.CacheHitPerMillion != preview.CacheHitPerMillion ||
+		ga.CacheWritePerMillion != preview.CacheWritePerMillion ||
+		ga.OutputPerMillion != preview.OutputPerMillion {
+		t.Fatalf("qwen3.8-max %#v and qwen3.8-max-preview %#v have diverged", ga, preview)
+	}
+	for _, model := range []string{"qwen3.8-max", "qwen3.8-max-preview"} {
+		got := src.ResolvePricing(ctx, "qwen", model)
+		if got.Kind != source.PricingResolutionExact || got.TargetModelID != model || got.Rate == nil {
+			t.Fatalf("%s resolution = %#v, want an exact catalog match", model, got)
+		}
+		// 1M of each billable bucket: 2.0 in + 6.0 out + 0.25 cache read + 2.5 cache write.
+		cost := computeCost(model, "qwen", stats.TokenStats{
+			Input:  1_000_000,
+			Output: 1_000_000,
+			Cache:  stats.CacheStats{Read: 1_000_000, Write: 1_000_000},
+		}, pricing)
+		if cost.Status != stats.CostEstimatedAPIEquivalent || math.Abs(cost.Cost-10.75) > 1e-9 {
+			t.Fatalf("%s cost = %#v, want 10.75 estimated", model, cost)
+		}
+	}
+}
+
+// Only the 3.8 Max rows publish a cache-write price; every other model keeps
+// billing writes at its plain input rate.
+func TestQwenCacheWriteFallsBackToInputRate(t *testing.T) {
+	src := New(Options{QwenHome: t.TempDir()})
+	pricing := src.loadPricing(testContext(t))
+
+	tokens := stats.TokenStats{Cache: stats.CacheStats{Write: 1_000_000}}
+	if got := computeCost("qwen3.8-max", "qwen", tokens, pricing); math.Abs(got.Cost-2.5) > 1e-9 {
+		t.Errorf("qwen3.8-max cache-write cost = %.9f, want 2.5 (published rate)", got.Cost)
+	}
+	if got := computeCost("qwen3-max", "qwen", tokens, pricing); math.Abs(got.Cost-1.2) > 1e-9 {
+		t.Errorf("qwen3-max cache-write cost = %.9f, want 1.2 (input-rate fallback)", got.Cost)
 	}
 }
 

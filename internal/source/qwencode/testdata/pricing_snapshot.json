@@ -1,0 +1,27 @@
+{
+  "id": "qwen-test-pricing-2026-08-02",
+  "retrieved_at": "2026-08-02T00:00:00Z",
+  "source": "https://example.invalid/qwen-test-pricing",
+  "currency": "USD",
+  "models": {
+    "qwen-test-priced": {
+      "display_name": "Qwen Test Priced",
+      "context_tokens": 262144,
+      "input_per_million": 0.4,
+      "cache_hit_input_per_million": 0.04,
+      "output_per_million": 1.6,
+      "availability_note": "test fixture rate"
+    },
+    "qwen-test-unpriced": {
+      "display_name": "Qwen Test Unpriced",
+      "context_tokens": 262144,
+      "input_per_million": 0,
+      "cache_hit_input_per_million": 0,
+      "output_per_million": 0,
+      "availability_note": "test fixture standing in for a catalog row with no public per-token list price"
+    }
+  },
+  "aliases": {
+    "qwen-test-bundled": "qwen-test-priced"
+  }
+}
