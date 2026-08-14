@@ -63,4 +63,17 @@ describe('AssistantProviders', () => {
     fireEvent.click(acknowledgement)
     expect(acknowledgement.checked).toBe(true)
   })
+
+  it('treats legacy null model catalogs as empty arrays', async () => {
+    const data = responseBody()
+    // Older binaries encoded an empty built-in slice as null even though the
+    // public TypeScript contract has always described an array.
+    ;(data.providers[0] as unknown as { models: null }).models = null
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+
+    render(<AssistantProviders />)
+
+    await screen.findByLabelText('Active assistant provider and model')
+    expect(screen.getByText('0 models discovered')).toBeTruthy()
+  })
 })

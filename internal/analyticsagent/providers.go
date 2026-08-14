@@ -124,7 +124,7 @@ func (r *AssistantProviderRegistry) List(ctx context.Context) (ProvidersResponse
 		info := ProviderInfo{ID: id, Kind: id, Name: builtin.name, BaseURL: baseURL,
 			DestinationLabel: destinationLabel(baseURL), BuiltIn: true, Available: builtin.available,
 			Reason: builtin.reason, APIKeyConfigured: builtin.apiKeyConfigured,
-			Models: append([]ProviderModel(nil), builtin.models...), Catalog: builtin.catalog}
+			Models: cloneProviderModels(builtin.models), Catalog: builtin.catalog}
 		providers = append(providers, info)
 	}
 	r.mu.RUnlock()
@@ -153,6 +153,13 @@ func hasSelectableModel(models []ProviderModel) bool {
 		}
 	}
 	return false
+}
+
+// cloneProviderModels preserves the API contract that models is always a JSON
+// array. append to a nil slice produces nil for an empty catalog, which the
+// encoder serializes as null and makes array consumers needlessly fragile.
+func cloneProviderModels(models []ProviderModel) []ProviderModel {
+	return append(make([]ProviderModel, 0, len(models)), models...)
 }
 
 func (r *AssistantProviderRegistry) Refresh(ctx context.Context, providerID string) (ProviderInfo, error) {
@@ -322,7 +329,7 @@ func (r *AssistantProviderRegistry) builtinInfoLocked(b *builtInProvider, baseUR
 	}
 	return ProviderInfo{ID: b.id, Kind: b.id, Name: b.name, BaseURL: baseURL, DestinationLabel: destinationLabel(baseURL),
 		BuiltIn: true, Available: b.available, Reason: b.reason, APIKeyConfigured: b.apiKeyConfigured,
-		Models: append([]ProviderModel(nil), b.models...), Catalog: b.catalog}
+		Models: cloneProviderModels(b.models), Catalog: b.catalog}
 }
 
 func (r *AssistantProviderRegistry) providerInfo(ctx context.Context, id string) (ProviderInfo, error) {

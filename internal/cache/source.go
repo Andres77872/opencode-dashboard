@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -173,6 +174,12 @@ func (s *CachedSource) split(ctx context.Context, pq stats.PeriodQuery) (splitWi
 // proceeds with the consolidated cache data only — it never fails the
 // request. The state self-heals: the next successful gapMessages clears it.
 func (s *CachedSource) degradeGap(err error) gapData {
+	// A browser abort is not a source failure. Recording it would leave a
+	// misleading "recent data incomplete" warning behind after navigation or
+	// React StrictMode cancels an obsolete request.
+	if errors.Is(err, context.Canceled) {
+		return gapData{}
+	}
 	s.store.logger.Warn("cache gap read failed; serving consolidated data only", "source", s.sourceID(), "error", err)
 	s.store.recordGapState(s.sourceID(), fmt.Errorf("recent-window live read failed: %w", err))
 	return gapData{}

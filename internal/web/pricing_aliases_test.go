@@ -733,6 +733,22 @@ func TestPricingAliasStoreAvailabilityAndErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("canceled list ends without an error response", func(t *testing.T) {
+		store := newFakePricingAliasStore()
+		store.listErr = context.Canceled
+		server := pricingAliasTestServer(t, src, store, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/pricing/aliases?source=codex", nil).WithContext(ctx)
+		rec := httptest.NewRecorder()
+
+		server.Handler.ServeHTTP(rec, req)
+
+		if rec.Body.Len() != 0 {
+			t.Fatalf("canceled request body = %q, want no error response", rec.Body.String())
+		}
+	})
+
 	t.Run("store validation error remains bad request", func(t *testing.T) {
 		store := newFakePricingAliasStore()
 		store.upsertErr = &pricingalias.ValidationError{Field: "model_id", Cause: pricingalias.ErrIdentifierRequired}

@@ -154,6 +154,33 @@ func TestGapReadFailureDegradesToCacheOnly(t *testing.T) {
 	}
 }
 
+// A canceled request is expected during page navigation and React StrictMode
+// cleanup. It may fall back to cache-only data for that abandoned request, but
+// must not poison the shared gap status shown to later requests.
+func TestCanceledGapReadDoesNotRecordFailure(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	src := &syncFakeSource{messages: []stats.MessageEntry{testMessage("finalized", now.Add(-10*time.Hour), 0.01)}}
+	store := newTestStore(t)
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{}); err != nil {
+		t.Fatalf("initial sync failed: %v", err)
+	}
+	cached := WrapSource(store, src)
+	t.Cleanup(func() { _ = cached.Close() })
+
+	src.messagesErr = context.Canceled
+	overview, err := cached.Overview(ctx, stats.PeriodQuery{Period: "all"})
+	if err != nil {
+		t.Fatalf("Overview() must absorb a canceled gap read: %v", err)
+	}
+	if overview.Messages != 1 {
+		t.Fatalf("degraded message count = %d, want 1 (cache only)", overview.Messages)
+	}
+	if state, ok := store.GapState(syncFakeSourceID); ok {
+		t.Fatalf("canceled gap read recorded shared failure state: %#v", state)
+	}
+}
+
 // TestGapReadRetriesOnce: a one-off live failure is absorbed by the in-place
 // retry — the response stays complete and no warning state is recorded.
 func TestGapReadRetriesOnce(t *testing.T) {

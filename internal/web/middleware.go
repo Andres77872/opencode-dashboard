@@ -1,12 +1,18 @@
 package web
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"time"
 )
+
+// statusClientClosedRequest is the de facto status used by reverse proxies
+// when a client disconnects before a response is written.
+const statusClientClosedRequest = 499
 
 type responseWriter struct {
 	http.ResponseWriter
@@ -45,11 +51,15 @@ func LoggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 			wrapped := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(wrapped, r)
 
+			status := wrapped.status
+			if !wrapped.wroteHeader && errors.Is(r.Context().Err(), context.Canceled) {
+				status = statusClientClosedRequest
+			}
 			logger.Info("request",
 				"method", r.Method,
 				"path", r.URL.Path,
 				"query", r.URL.RawQuery,
-				"status", wrapped.status,
+				"status", status,
 				"duration", time.Since(start).Milliseconds(),
 				"remote", r.RemoteAddr,
 			)

@@ -371,8 +371,17 @@ export function getAssistantStatus(signal?: AbortSignal) {
   return request<AssistantStatusResponse>('/api/v1/assistant/status', { signal })
 }
 
-export function getAssistantProviders(signal?: AbortSignal) {
-  return request<AssistantProvidersResponse>('/api/v1/assistant/providers', { signal })
+export async function getAssistantProviders(signal?: AbortSignal) {
+  const response = await request<AssistantProvidersResponse>('/api/v1/assistant/providers', { signal })
+  return {
+    ...response,
+    providers: (response.providers ?? []).map((provider) => ({
+      ...provider,
+      // Older dashboard binaries serialized an empty built-in catalog as
+      // null. Keep the UI compatible with those responses during upgrades.
+      models: Array.isArray(provider.models) ? provider.models : [],
+    })),
+  }
 }
 
 export interface AssistantProviderMutation {

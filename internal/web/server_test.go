@@ -1,10 +1,29 @@
 package web
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+func TestLoggingMiddlewareReportsCanceledRequestsAsClientClosed(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	handler := LoggingMiddleware(logger)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodGet, "/canceled", nil).WithContext(ctx)
+
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if !strings.Contains(logs.String(), "status=499") {
+		t.Fatalf("canceled request log = %q, want status=499", logs.String())
+	}
+}
 
 func TestCORSMiddleware(t *testing.T) {
 	tests := []struct {

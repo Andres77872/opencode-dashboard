@@ -153,6 +153,12 @@ func (h *Handlers) PricingAliases(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := h.buildPricingAliasesResponse(r.Context(), selected)
 	if err != nil {
+		// The client has gone away, so there is no response to serve and no
+		// server fault to report. This is common when a page reload supersedes an
+		// in-flight settings request.
+		if errors.Is(err, context.Canceled) && errors.Is(r.Context().Err(), context.Canceled) {
+			return
+		}
 		h.logger.Error("failed to list pricing aliases", "source", selected.Info(r.Context()).ID, "error", err)
 		InternalError("failed to list pricing aliases").Write(w)
 		return
