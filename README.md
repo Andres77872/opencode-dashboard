@@ -54,6 +54,27 @@ All Codex costs stay in USD and use the official [OpenAI API per-token pricing c
 
 This distinction matters because OpenAI's [Priority processing guide](https://developers.openai.com/api/docs/guides/priority-processing) says the response `service_tier` identifies the tier actually used and that a Priority request can be downgraded to Standard. Codex's local rollouts do not retain that response field. OpenAI's [Flex processing guide](https://developers.openai.com/api/docs/guides/flex-processing) documents Flex as the lower-cost, slower processing tier; its token rates follow the Flex column in the official pricing catalog.
 
+### Codex Astra pricing
+
+The September 5, 2026 catalog includes `gpt-6-astra` in model cost estimates and pricing-alias targets. Published API prices are USD per million tokens:
+
+| Context / processing tier | Input | Cached input | Cache writes | Output, including reasoning |
+| --- | ---: | ---: | ---: | ---: |
+| Up to 272K input / Standard | $10 | $1 | $12.50 | $50 |
+| Up to 272K input / Fast | $20 | $2 | $25 | $100 |
+| Up to 272K input / Flex | $5 | $0.50 | $6.25 | $25 |
+| Above 272K input / Standard | $20 | $2 | $25 | $75 |
+| Above 272K input / Fast | $40 | $4 | $50 | $150 |
+| Above 272K input / Flex | $10 | $1 | $12.50 | $37.50 |
+
+The threshold uses each request's raw input, including cached tokens. Above 272K, the higher rates apply to the whole request. Astra and GPT-5.6 support long-context Fast pricing; models without published long-context Fast rates remain unpriced above the existing ceiling. The snapshot retains the `priority` key for Fast rates. OpenAI renamed Priority processing to Fast mode and accepts both wire values.
+
+The same refresh updates Sol (and the existing `gpt-5.6` catalog alias) to $4 input, $0.40 cached input, $5 cache writes, and $20 output at Standard short-context rates. OpenAI lists this promotion through at least November 21, 2026. Catalog rates apply to historical projections too; changing the snapshot ID triggers the existing historical cache repricing path after upgrading the binary.
+
+These projections use API prices. ChatGPT/Codex subscription credit multipliers do not apply. The current rollout parser exposes no cache-write token counter, so local estimates include only the input, cache-read, output, and reasoning usage it can recover; catalog cache-write rates are available when pricing explicit write-token buckets or borrowing the catalog through aliases. Regional uplifts and tool fees are not included. Astra Fast mode is unavailable with EU data residency; rollout estimates do not establish regional eligibility.
+
+Sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), [GPT-6 Astra model details](https://developers.openai.com/api/docs/models/gpt-6-astra), and [Fast mode](https://developers.openai.com/api/docs/guides/fast-mode). Historical test fixtures retain their pinned July prices; current-catalog tests load the actual embedded snapshot.
+
 ### Kimi Code wire accounting
 
 Kimi Code sessions are read from `sessions/<workspace>/<session>/state.json`. Both layouts are supported: v1 state documents with string or epoch timestamps and fields such as `workDir`, and the [v2 session metadata schema](https://github.com/MoonshotAI/kimi-code/blob/main/packages/agent-core-v2/src/session/sessionMetadata/sessionMetadata.ts) with `version`, `cwd`, title, fork, parent/swarm, labels, and agent metadata. When a state document lacks a usable directory, the adapter falls back through `cwd`, `workDir`, `custom.cwd`, and the workspace entry in `session_index.jsonl`.
@@ -128,7 +149,7 @@ Computed and estimated costs come from pinned, dated catalogs compiled into the 
 | Source | Snapshot ID | Retrieved | Models |
 |--------|-------------|-----------|--------|
 | Claude Code | `anthropic-bundled-2026-07-24` | 2026-07-24 | 21 |
-| Codex | `openai-codex-api-pricing-2026-07-27` | 2026-07-27 | 14 |
+| Codex | `openai-codex-api-pricing-2026-09-05` | 2026-09-05 | 15 |
 | Kimi Code | `kimi-api-pricing-2026-07-16` | 2026-07-16 | 5 |
 | Qwen Code | `qwen-modelstudio-pricing-2026-08-02` | 2026-08-02 | 6 |
 

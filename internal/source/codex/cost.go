@@ -48,6 +48,9 @@ type pricingRate struct {
 	CacheWriteNote              string           `json:"cache_write_note"`
 	Priority                    *tierPricingRate `json:"priority,omitempty"`
 	Flex                        *tierPricingRate `json:"flex,omitempty"`
+	// Older snapshots retain the conservative 272K Fast ceiling. Only models
+	// with published long-context Fast rates opt into the context multipliers.
+	PriorityLongContextSupported bool `json:"priority_long_context_supported,omitempty"`
 }
 
 type tierPricingRate struct {
@@ -170,7 +173,7 @@ func computeCost(model, providerID string, tokens stats.TokenStats, maxInputSnap
 	if !ok {
 		return missingTierCost(currency, processingMode, "official per-token rates are unavailable for this model")
 	}
-	if !match.foreign() && processingMode == stats.ProcessingModeFast && maxInputSnapshot > priorityMaxInputTokens {
+	if !match.foreign() && processingMode == stats.ProcessingModeFast && !match.Rate.PriorityLongContextSupported && maxInputSnapshot > priorityMaxInputTokens {
 		return missingTierCost(currency, processingMode, "official Priority pricing is unavailable above the model's 272K input-token threshold")
 	}
 	// TokenStats buckets are disjoint: Input excludes cache reads/writes, and

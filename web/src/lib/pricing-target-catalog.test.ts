@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   buildPricingTargetGroups,
@@ -42,6 +43,31 @@ const CATALOGS: PricingAliasCatalog[] = [
     ['kimi-k3', 1, 5, true, 'Kimi K3'],
   ]),
 ]
+
+test('the shipped Astra catalog is searchable and selectable with all four rate columns', () => {
+  const snapshot = JSON.parse(readFileSync(new URL('../../../internal/source/codex/pricing_snapshot.json', import.meta.url), 'utf8'))
+  const astra = snapshot.models['gpt-6-astra']
+  const groups = buildPricingTargetGroups([{
+    source_id: 'codex',
+    currency: snapshot.currency,
+    models: [{
+      model_id: 'gpt-6-astra',
+      targetable: true,
+      rate: {
+        input_per_million: astra.input_per_million,
+        cached_input_per_million: astra.cached_input_per_million,
+        cache_write_per_million: astra.cache_write_input_per_million,
+        output_per_million: astra.output_per_million,
+      },
+    }],
+  }], 'claude_code')
+  const matches = filterPricingTargetGroups(groups, 'Astra')
+  const target = findPricingTarget(matches, { source_id: 'codex', model_id: 'gpt-6-astra' })
+  assert.ok(target)
+  assert.deepEqual(formatPricingTargetRates(target.rate, target.currency), {
+    input: '$10.00', cached: '$1.00', cacheWrite: '$12.50', output: '$50.00',
+  })
+})
 
 test('lists the aliasing source first, then other catalogs by label', () => {
   const groups = buildPricingTargetGroups(CATALOGS, 'claude_code')

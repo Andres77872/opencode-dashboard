@@ -24,6 +24,7 @@ func (s staticAliases) PricingAliasRevision(source.SourceID) string { return "re
 func TestCrossSourceAliasUsesUpdatedCatalogRates(t *testing.T) {
 	ctx := context.Background()
 	aliases := staticAliases{targets: map[string]source.PricingAliasTarget{
+		"proxy-astra": {SourceID: source.SourceCodex, ModelID: "gpt-6-astra"},
 		"proxy-terra": {SourceID: source.SourceCodex, ModelID: "gpt-5.6-terra"},
 		"proxy-luna":  {SourceID: source.SourceCodex, ModelID: "gpt-5.6-luna"},
 		"proxy-sol":   {SourceID: source.SourceCodex, ModelID: "gpt-5.6-sol"},
@@ -41,7 +42,8 @@ func TestCrossSourceAliasUsesUpdatedCatalogRates(t *testing.T) {
 	index.Bind(registry)
 
 	want := map[string]struct{ in, cached, write, out float64 }{
-		"proxy-sol":   {5.0, 0.5, 6.25, 30.0},
+		"proxy-astra": {10.0, 1.0, 12.5, 50.0},
+		"proxy-sol":   {4.0, 0.4, 5.0, 20.0},
 		"proxy-terra": {2.0, 0.2, 2.5, 12.0},
 		"proxy-luna":  {0.2, 0.02, 0.25, 1.2},
 	}

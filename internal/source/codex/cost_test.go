@@ -134,7 +134,7 @@ func TestCodexUnknownProcessingTierUsesStandardPricing(t *testing.T) {
 }
 
 func TestBundledCodexPricingCoversCurrentModels(t *testing.T) {
-	pricing := New(Options{PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json")}).loadPricing(testContext(t))
+	pricing := New(Options{}).loadPricing(testContext(t))
 	tokens := stats.TokenStats{
 		Input:     1_000_000,
 		Output:    1_000_000,
@@ -145,10 +145,11 @@ func TestBundledCodexPricingCoversCurrentModels(t *testing.T) {
 		model    string
 		wantCost float64
 	}{
-		{model: "gpt-5.6", wantCost: 71.75},
-		{model: "gpt-5.6-sol", wantCost: 71.75},
-		{model: "gpt-5.6-terra", wantCost: 35.875},
-		{model: "gpt-5.6-luna", wantCost: 14.35},
+		{model: "gpt-6-astra", wantCost: 123.5},
+		{model: "gpt-5.6", wantCost: 49.4},
+		{model: "gpt-5.6-sol", wantCost: 49.4},
+		{model: "gpt-5.6-terra", wantCost: 28.7},
+		{model: "gpt-5.6-luna", wantCost: 2.87},
 		{model: "gpt-5.5", wantCost: 65.5},
 		{model: "gpt-5.4", wantCost: 32.75},
 		{model: "gpt-5.4-mini", wantCost: 9.825},
@@ -169,7 +170,7 @@ func TestBundledCodexPricingCoversCurrentModels(t *testing.T) {
 }
 
 func TestBundledCodexPricingCoversPriorityAndFlexTiers(t *testing.T) {
-	pricing := New(Options{PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json")}).loadPricing(testContext(t))
+	pricing := New(Options{}).loadPricing(testContext(t))
 	tokens := stats.TokenStats{
 		Input:     1_000_000,
 		Output:    1_000_000,
@@ -182,10 +183,11 @@ func TestBundledCodexPricingCoversPriorityAndFlexTiers(t *testing.T) {
 		flexCost      float64
 		flexSupported bool
 	}{
-		{model: "gpt-5.6", priorityCost: 143.5, flexCost: 35.875, flexSupported: true},
-		{model: "gpt-5.6-sol", priorityCost: 143.5, flexCost: 35.875, flexSupported: true},
-		{model: "gpt-5.6-terra", priorityCost: 71.75, flexCost: 17.9375, flexSupported: true},
-		{model: "gpt-5.6-luna", priorityCost: 28.7, flexCost: 7.175, flexSupported: true},
+		{model: "gpt-6-astra", priorityCost: 247, flexCost: 61.75, flexSupported: true},
+		{model: "gpt-5.6", priorityCost: 98.8, flexCost: 24.7, flexSupported: true},
+		{model: "gpt-5.6-sol", priorityCost: 98.8, flexCost: 24.7, flexSupported: true},
+		{model: "gpt-5.6-terra", priorityCost: 57.4, flexCost: 14.35, flexSupported: true},
+		{model: "gpt-5.6-luna", priorityCost: 5.74, flexCost: 1.435, flexSupported: true},
 		{model: "gpt-5.5", priorityCost: 163.75, flexCost: 32.75, flexSupported: true},
 		{model: "gpt-5.4", priorityCost: 65.5, flexCost: 16.375, flexSupported: true},
 		{model: "gpt-5.4-mini", priorityCost: 19.65, flexCost: 4.9125, flexSupported: true},
@@ -228,7 +230,7 @@ func TestCodexPriorityLongContextIsMissingWithoutOfficialRates(t *testing.T) {
 }
 
 func TestGPT56AliasUsesSolPricing(t *testing.T) {
-	pricing := New(Options{PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json")}).loadPricing(testContext(t))
+	pricing := New(Options{}).loadPricing(testContext(t))
 	tokens := stats.TokenStats{Input: 500_000, Output: 100_000, Cache: stats.CacheStats{Read: 250_000, Write: 50_000}}
 	alias := computeCost("gpt-5.6", "openai", tokens, 250_000, pricing)
 	sol := computeCost("gpt-5.6-sol", "openai", tokens, 250_000, pricing)
@@ -238,12 +240,13 @@ func TestGPT56AliasUsesSolPricing(t *testing.T) {
 }
 
 func TestCodexLongContextRulesByModel(t *testing.T) {
-	pricing := New(Options{PricingSnapshotPath: fixturePath(t, "pricing_snapshot.json")}).loadPricing(testContext(t))
+	pricing := New(Options{}).loadPricing(testContext(t))
 	tokens := stats.TokenStats{Input: 100_000, Output: 10_000, Cache: stats.CacheStats{Read: 20_000, Write: 5_000}}
 	tests := []struct {
 		model          string
 		wantMultiplier bool
 	}{
+		{model: "gpt-6-astra", wantMultiplier: true},
 		{model: "gpt-5.6", wantMultiplier: true},
 		{model: "gpt-5.6-sol", wantMultiplier: true},
 		{model: "gpt-5.6-terra", wantMultiplier: true},
