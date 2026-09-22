@@ -146,6 +146,8 @@ func TestBundledCodexPricingCoversCurrentModels(t *testing.T) {
 		wantCost float64
 	}{
 		{model: "gpt-6-astra", wantCost: 123.5},
+		{model: "gpt-6-sol", wantCost: 24.7},
+		{model: "gpt-6-luna", wantCost: 1.235},
 		{model: "gpt-5.6", wantCost: 49.4},
 		{model: "gpt-5.6-sol", wantCost: 49.4},
 		{model: "gpt-5.6-terra", wantCost: 28.7},
@@ -154,6 +156,7 @@ func TestBundledCodexPricingCoversCurrentModels(t *testing.T) {
 		{model: "gpt-5.4", wantCost: 32.75},
 		{model: "gpt-5.4-mini", wantCost: 9.825},
 		{model: "gpt-5.3-codex", wantCost: 29.925},
+		{model: "gpt-5.2", wantCost: 29.925},
 	}
 
 	for _, tt := range tests {
@@ -184,6 +187,8 @@ func TestBundledCodexPricingCoversPriorityAndFlexTiers(t *testing.T) {
 		flexSupported bool
 	}{
 		{model: "gpt-6-astra", priorityCost: 247, flexCost: 61.75, flexSupported: true},
+		{model: "gpt-6-sol", priorityCost: 49.4, flexCost: 12.35, flexSupported: true},
+		{model: "gpt-6-luna", priorityCost: 2.47, flexCost: 0.6175, flexSupported: true},
 		{model: "gpt-5.6", priorityCost: 98.8, flexCost: 24.7, flexSupported: true},
 		{model: "gpt-5.6-sol", priorityCost: 98.8, flexCost: 24.7, flexSupported: true},
 		{model: "gpt-5.6-terra", priorityCost: 57.4, flexCost: 14.35, flexSupported: true},
@@ -191,6 +196,7 @@ func TestBundledCodexPricingCoversPriorityAndFlexTiers(t *testing.T) {
 		{model: "gpt-5.5", priorityCost: 163.75, flexCost: 32.75, flexSupported: true},
 		{model: "gpt-5.4", priorityCost: 65.5, flexCost: 16.375, flexSupported: true},
 		{model: "gpt-5.4-mini", priorityCost: 19.65, flexCost: 4.9125, flexSupported: true},
+		{model: "gpt-5.2", priorityCost: 59.85, flexCost: 14.9625, flexSupported: true},
 		{model: "gpt-5.3-codex", priorityCost: 59.85},
 		{model: "gpt-5.2-codex", priorityCost: 59.85},
 		{model: "gpt-5.1-codex", priorityCost: 42.75},
@@ -247,6 +253,8 @@ func TestCodexLongContextRulesByModel(t *testing.T) {
 		wantMultiplier bool
 	}{
 		{model: "gpt-6-astra", wantMultiplier: true},
+		{model: "gpt-6-sol", wantMultiplier: true},
+		{model: "gpt-6-luna", wantMultiplier: true},
 		{model: "gpt-5.6", wantMultiplier: true},
 		{model: "gpt-5.6-sol", wantMultiplier: true},
 		{model: "gpt-5.6-terra", wantMultiplier: true},
@@ -255,6 +263,7 @@ func TestCodexLongContextRulesByModel(t *testing.T) {
 		{model: "gpt-5.4", wantMultiplier: true},
 		{model: "gpt-5.4-mini", wantMultiplier: false},
 		{model: "gpt-5.3-codex", wantMultiplier: false},
+		{model: "gpt-5.2", wantMultiplier: false},
 	}
 
 	for _, tt := range tests {

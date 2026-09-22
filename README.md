@@ -75,6 +75,35 @@ These projections use API prices. ChatGPT/Codex subscription credit multipliers 
 
 Sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), [GPT-6 Astra model details](https://developers.openai.com/api/docs/models/gpt-6-astra), and [Fast mode](https://developers.openai.com/api/docs/guides/fast-mode). Historical test fixtures retain their pinned July prices; current-catalog tests load the actual embedded snapshot.
 
+### Codex GPT-6 Sol and Luna pricing
+
+The September 22, 2026 catalog adds `gpt-6-sol` and `gpt-6-luna`, which Codex now lists alongside Astra as its recommended models. OpenAI describes these as permanent prices, not a promotion. Standard short-context API prices are USD per million tokens:
+
+| Model | Input | Cached input | Cache writes | Output, including reasoning |
+| --- | ---: | ---: | ---: | ---: |
+| `gpt-6-sol` | $2 | $0.20 | $2.50 | $10 |
+| `gpt-6-luna` | $0.10 | $0.01 | $0.125 | $0.50 |
+
+Both follow Astra's tier and context rules: Fast is 2x Standard, Flex is 0.5x Standard, and above 272K raw input the whole request bills at 2x input/cache rates and 1.5x output. Both publish long-context Fast rates, so Fast requests above 272K stay priced. The GPT-5.6 Sol, Terra, and Luna rows are unchanged and remain for existing rollouts.
+
+The same refresh adds `gpt-5.2` at $1.75 input, $0.175 cached input, and $14 output (Fast $3.50/$0.35/$28, Flex $0.875/$0.0875/$7). Codex still lists it as a deprecated model for API-key use. `codex-auto-review` and `gpt-5.3-codex-spark` appear in Codex rollouts but have no published API price, so they stay `missing`. Map them with a [pricing alias](#pricing-aliases) if you want an estimate.
+
+Sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), [GPT-6 Sol model details](https://developers.openai.com/api/docs/models/gpt-6-sol), [GPT-6 Luna model details](https://developers.openai.com/api/docs/models/gpt-6-luna), and [Codex models](https://learn.chatgpt.com/docs/models).
+
+### Claude model pricing catalog
+
+The `anthropic-bundled-2026-09-22` catalog adds Claude Fable 5.1, Claude Opus 5.5, and the limited-availability Claude Mythos 5 and 5.1. Prices are USD per million tokens:
+
+| Model | Input | 5m cache writes | 1h cache writes | Cache reads | Output |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `claude-fable-5-1` / `claude-mythos-5-1` | $10 | $12.50 | $20 | $0.25 | $50 |
+| `claude-fable-5` / `claude-mythos-5` | $10 | $12.50 | $20 | $1 | $50 |
+| `claude-opus-5-5` | $4 | $5 | $8 | $0.20 | $20 |
+
+Fable 5.1 and Mythos 5.1 bill cache reads at 0.025x input, and Opus 5.5 at 0.05x; every other Claude model uses 0.1x. Before this refresh, `claude-fable-5-1` and `claude-opus-5-5` matched their predecessors' rows through boundary-aware prefix fallback. They were marked approximate and priced at Fable 5 and Opus 5 rates. They now resolve exactly. Claude Sonnet 5's $2/$10 launch price is now its standard price; the increase Anthropic had scheduled for September 1, 2026 was cancelled.
+
+Estimates use global-routing first-party rates. The 1.1x US-only `inference_geo` multiplier, Opus fast mode ($8/$40 on Opus 5.5), and Batch discounts are not applied. Source: [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing).
+
 ### Kimi Code wire accounting
 
 Kimi Code sessions are read from `sessions/<workspace>/<session>/state.json`. Both layouts are supported: v1 state documents with string or epoch timestamps and fields such as `workDir`, and the [v2 session metadata schema](https://github.com/MoonshotAI/kimi-code/blob/main/packages/agent-core-v2/src/session/sessionMetadata/sessionMetadata.ts) with `version`, `cwd`, title, fork, parent/swarm, labels, and agent metadata. When a state document lacks a usable directory, the adapter falls back through `cwd`, `workDir`, `custom.cwd`, and the workspace entry in `session_index.jsonl`.
@@ -148,8 +177,8 @@ Computed and estimated costs come from pinned, dated catalogs compiled into the 
 
 | Source | Snapshot ID | Retrieved | Models |
 |--------|-------------|-----------|--------|
-| Claude Code | `anthropic-bundled-2026-07-24` | 2026-07-24 | 21 |
-| Codex | `openai-codex-api-pricing-2026-09-05` | 2026-09-05 | 15 |
+| Claude Code | `anthropic-bundled-2026-09-22` | 2026-09-22 | 25 |
+| Codex | `openai-codex-api-pricing-2026-09-22` | 2026-09-22 | 18 |
 | Kimi Code | `kimi-api-pricing-2026-07-16` | 2026-07-16 | 5 |
 | Qwen Code | `qwen-modelstudio-pricing-2026-08-02` | 2026-08-02 | 6 |
 

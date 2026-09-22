@@ -44,30 +44,34 @@ const CATALOGS: PricingAliasCatalog[] = [
   ]),
 ]
 
-test('the shipped Astra catalog is searchable and selectable with all four rate columns', () => {
-  const snapshot = JSON.parse(readFileSync(new URL('../../../internal/source/codex/pricing_snapshot.json', import.meta.url), 'utf8'))
-  const astra = snapshot.models['gpt-6-astra']
-  const groups = buildPricingTargetGroups([{
-    source_id: 'codex',
-    currency: snapshot.currency,
-    models: [{
-      model_id: 'gpt-6-astra',
-      targetable: true,
-      rate: {
-        input_per_million: astra.input_per_million,
-        cached_input_per_million: astra.cached_input_per_million,
-        cache_write_per_million: astra.cache_write_input_per_million,
-        output_per_million: astra.output_per_million,
-      },
-    }],
-  }], 'claude_code')
-  const matches = filterPricingTargetGroups(groups, 'Astra')
-  const target = findPricingTarget(matches, { source_id: 'codex', model_id: 'gpt-6-astra' })
-  assert.ok(target)
-  assert.deepEqual(formatPricingTargetRates(target.rate, target.currency), {
-    input: '$10.00', cached: '$1.00', cacheWrite: '$12.50', output: '$50.00',
+for (const [modelId, query, want] of [
+  ['gpt-6-astra', 'Astra', { input: '$10.00', cached: '$1.00', cacheWrite: '$12.50', output: '$50.00' }],
+  ['gpt-6-sol', '6-sol', { input: '$2.00', cached: '$0.20', cacheWrite: '$2.50', output: '$10.00' }],
+  ['gpt-6-luna', '6-luna', { input: '$0.10', cached: '$0.01', cacheWrite: '$0.125', output: '$0.50' }],
+] as const) {
+  test(`the shipped ${modelId} catalog is searchable and selectable with all four rate columns`, () => {
+    const snapshot = JSON.parse(readFileSync(new URL('../../../internal/source/codex/pricing_snapshot.json', import.meta.url), 'utf8'))
+    const rate = snapshot.models[modelId]
+    const groups = buildPricingTargetGroups([{
+      source_id: 'codex',
+      currency: snapshot.currency,
+      models: [{
+        model_id: modelId,
+        targetable: true,
+        rate: {
+          input_per_million: rate.input_per_million,
+          cached_input_per_million: rate.cached_input_per_million,
+          cache_write_per_million: rate.cache_write_input_per_million,
+          output_per_million: rate.output_per_million,
+        },
+      }],
+    }], 'claude_code')
+    const matches = filterPricingTargetGroups(groups, query)
+    const target = findPricingTarget(matches, { source_id: 'codex', model_id: modelId })
+    assert.ok(target)
+    assert.deepEqual(formatPricingTargetRates(target.rate, target.currency), want)
   })
-})
+}
 
 test('lists the aliasing source first, then other catalogs by label', () => {
   const groups = buildPricingTargetGroups(CATALOGS, 'claude_code')

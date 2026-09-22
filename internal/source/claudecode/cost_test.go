@@ -145,6 +145,61 @@ func TestBundledPricingSnapshotCoversCurrentClaudeRates(t *testing.T) {
 		wantApproximate bool
 	}{
 		{
+			name: "current fable 5.1 exact rate uses its lower cache read price",
+			key:  "claude-fable-5-1",
+			want: pricingRate{
+				InputPerMillion:         10.0,
+				OutputPerMillion:        50.0,
+				CacheReadPerMillion:     0.25,
+				CacheCreatePerMillion:   12.5,
+				CacheCreate1hPerMillion: 20.0,
+			},
+		},
+		{
+			name: "current mythos 5.1 exact rate matches fable 5.1",
+			key:  "claude-mythos-5-1",
+			want: pricingRate{
+				InputPerMillion:         10.0,
+				OutputPerMillion:        50.0,
+				CacheReadPerMillion:     0.25,
+				CacheCreatePerMillion:   12.5,
+				CacheCreate1hPerMillion: 20.0,
+			},
+		},
+		{
+			name: "current mythos 5 exact rate matches fable 5",
+			key:  "claude-mythos-5",
+			want: pricingRate{
+				InputPerMillion:         10.0,
+				OutputPerMillion:        50.0,
+				CacheReadPerMillion:     1.0,
+				CacheCreatePerMillion:   12.5,
+				CacheCreate1hPerMillion: 20.0,
+			},
+		},
+		{
+			name: "current opus 5.5 exact rate uses current price",
+			key:  "claude-opus-5-5",
+			want: pricingRate{
+				InputPerMillion:         4.0,
+				OutputPerMillion:        20.0,
+				CacheReadPerMillion:     0.2,
+				CacheCreatePerMillion:   5.0,
+				CacheCreate1hPerMillion: 8.0,
+			},
+		},
+		{
+			name: "current sonnet 5 launch rate is the standard price",
+			key:  "claude-sonnet-5",
+			want: pricingRate{
+				InputPerMillion:         2.0,
+				OutputPerMillion:        10.0,
+				CacheReadPerMillion:     0.2,
+				CacheCreatePerMillion:   2.5,
+				CacheCreate1hPerMillion: 4.0,
+			},
+		},
+		{
 			name: "current fable 5 exact rate uses current price",
 			key:  "claude-fable-5",
 			want: pricingRate{
@@ -301,6 +356,8 @@ func TestBundledPricingRealClaudeModelsComputeNonMissingCosts(t *testing.T) {
 		model    string
 		wantCost float64
 	}{
+		{name: "fable 5.1 uses current input output price", model: "claude-fable-5-1", wantCost: 60.0},
+		{name: "opus 5.5 uses current input output price", model: "claude-opus-5-5", wantCost: 24.0},
 		{name: "opus 5 uses current input output price", model: "claude-opus-5", wantCost: 30.0},
 		{name: "opus 4.8 uses current input output price", model: "claude-opus-4-8", wantCost: 30.0},
 		{name: "sonnet 5 computes non-missing", model: "claude-sonnet-5", wantCost: 12.0},
@@ -331,6 +388,43 @@ func TestBundledPricingRealClaudeModelsComputeNonMissingCosts(t *testing.T) {
 			}
 			if result.Provenance.MissingCount != 0 {
 				t.Errorf("computeCost(%q) missing count = %d, want 0", tt.model, result.Provenance.MissingCount)
+			}
+		})
+	}
+}
+
+// Point releases share a boundary-aware prefix with their predecessor, so
+// without their own rows they would silently fall back to the older family
+// rates (Fable 5.1 cache reads at Fable 5's 4x price, Opus 5.5 at Opus 5's).
+func TestBundledPricingPointReleasesDoNotFallBackToPredecessor(t *testing.T) {
+	pricing := loadBundledPricingForTest(t)
+	usage := tokenUsage{Input: 1_000_000, Output: 1_000_000, CacheRead: 1_000_000, CacheCreate: 2_000_000, CacheCreate5m: 1_000_000, CacheCreate1h: 1_000_000}
+
+	tests := []struct {
+		model         string
+		wantCanonical string
+		wantStatus    stats.CostStatus
+		wantCost      float64
+	}{
+		{model: "claude-fable-5-1", wantCanonical: "claude-fable-5-1", wantStatus: stats.CostComputed, wantCost: 92.75},
+		{model: "claude-mythos-5-1", wantCanonical: "claude-mythos-5-1", wantStatus: stats.CostComputed, wantCost: 92.75},
+		{model: "claude-fable-5", wantCanonical: "claude-fable-5", wantStatus: stats.CostComputed, wantCost: 93.5},
+		{model: "claude-opus-5-5", wantCanonical: "claude-opus-5-5", wantStatus: stats.CostComputed, wantCost: 37.2},
+		{model: "claude-opus-5-5-20260922", wantCanonical: "claude-opus-5-5", wantStatus: stats.CostApproximate, wantCost: 37.2},
+		{model: "claude-opus-5", wantCanonical: "claude-opus-5", wantStatus: stats.CostComputed, wantCost: 46.75},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := pricing.resolve("anthropic", tt.model).CanonicalModelID; got != tt.wantCanonical {
+				t.Errorf("resolve(%q) canonical = %q, want %q", tt.model, got, tt.wantCanonical)
+			}
+			result := computeCost(tt.model, "anthropic", usage, true, nil, pricing)
+			if result.Status != tt.wantStatus {
+				t.Errorf("computeCost(%q) status = %q, want %q", tt.model, result.Status, tt.wantStatus)
+			}
+			if !approxEqual(result.Cost, tt.wantCost) {
+				t.Errorf("computeCost(%q) = %.9f, want %.9f", tt.model, result.Cost, tt.wantCost)
 			}
 		})
 	}

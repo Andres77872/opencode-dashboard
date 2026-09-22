@@ -24,10 +24,12 @@ func (s staticAliases) PricingAliasRevision(source.SourceID) string { return "re
 func TestCrossSourceAliasUsesUpdatedCatalogRates(t *testing.T) {
 	ctx := context.Background()
 	aliases := staticAliases{targets: map[string]source.PricingAliasTarget{
-		"proxy-astra": {SourceID: source.SourceCodex, ModelID: "gpt-6-astra"},
-		"proxy-terra": {SourceID: source.SourceCodex, ModelID: "gpt-5.6-terra"},
-		"proxy-luna":  {SourceID: source.SourceCodex, ModelID: "gpt-5.6-luna"},
-		"proxy-sol":   {SourceID: source.SourceCodex, ModelID: "gpt-5.6-sol"},
+		"proxy-astra":  {SourceID: source.SourceCodex, ModelID: "gpt-6-astra"},
+		"proxy-6-sol":  {SourceID: source.SourceCodex, ModelID: "gpt-6-sol"},
+		"proxy-6-luna": {SourceID: source.SourceCodex, ModelID: "gpt-6-luna"},
+		"proxy-terra":  {SourceID: source.SourceCodex, ModelID: "gpt-5.6-terra"},
+		"proxy-luna":   {SourceID: source.SourceCodex, ModelID: "gpt-5.6-luna"},
+		"proxy-sol":    {SourceID: source.SourceCodex, ModelID: "gpt-5.6-sol"},
 	}}
 	index := source.NewCatalogIndex()
 	claude := New(Options{ClaudeHome: t.TempDir(), PricingAliases: aliases, PricingRates: index})
@@ -42,10 +44,12 @@ func TestCrossSourceAliasUsesUpdatedCatalogRates(t *testing.T) {
 	index.Bind(registry)
 
 	want := map[string]struct{ in, cached, write, out float64 }{
-		"proxy-astra": {10.0, 1.0, 12.5, 50.0},
-		"proxy-sol":   {4.0, 0.4, 5.0, 20.0},
-		"proxy-terra": {2.0, 0.2, 2.5, 12.0},
-		"proxy-luna":  {0.2, 0.02, 0.25, 1.2},
+		"proxy-astra":  {10.0, 1.0, 12.5, 50.0},
+		"proxy-6-sol":  {2.0, 0.2, 2.5, 10.0},
+		"proxy-6-luna": {0.1, 0.01, 0.125, 0.5},
+		"proxy-sol":    {4.0, 0.4, 5.0, 20.0},
+		"proxy-terra":  {2.0, 0.2, 2.5, 12.0},
+		"proxy-luna":   {0.2, 0.02, 0.25, 1.2},
 	}
 	for model, w := range want {
 		res := claude.ResolvePricing(ctx, "anthropic", model)
