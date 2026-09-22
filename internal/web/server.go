@@ -135,12 +135,13 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Only local origins (the Vite dev server, the embedded SPA) may read this
-		// API. It is unauthenticated and serves project paths, session titles and
+		// Cross-origin reads are granted only to loopback origins for development.
+		// The embedded SPA uses same-origin requests, including over the LAN,
+		// and needs no CORS grant. The API serves project paths, session titles and
 		// config, so a wildcard would let any site the user happens to visit read
 		// their local usage data — and POST /cache/sync is a CORS-simple request.
-		// A non-local origin gets no Access-Control-Allow-Origin header at all,
-		// which makes the browser withhold the response from the caller.
+		// A non-local cross-origin caller gets no Access-Control-Allow-Origin
+		// header, which makes the browser withhold the response from that caller.
 		origin := r.Header.Get("Origin")
 		if origin != "" && isLocalOrigin(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)

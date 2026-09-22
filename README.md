@@ -356,6 +356,7 @@ Commands:
 ```bash
 opencode-dashboard web                          # Default port 7450, OpenCode source
 opencode-dashboard web --port 9090              # Custom port
+opencode-dashboard web --host 0.0.0.0 --no-open  # Access from other LAN devices
 opencode-dashboard web --source codex           # Start on a different source
 opencode-dashboard web --db /path/to/db         # Explicit OpenCode DB path
 opencode-dashboard web --channel beta           # Channel-specific OpenCode DB
@@ -368,6 +369,16 @@ opencode-dashboard web --rebuild-cache          # Remove dashboard cache before 
 opencode-dashboard web --no-cache               # Start without dashboard cache
 opencode-dashboard web --no-open                # Don't auto-open the browser
 ```
+
+To access the dashboard from another device on the same network, run
+`opencode-dashboard web --host 0.0.0.0 --no-open` and open one of the printed
+`network:` URLs, for example `http://192.168.1.20:7450`. Use the server's LAN
+address on the other device. `--host 192.168.1.20` binds only that interface;
+`--host ::` enables an IPv6 wildcard listener. The default remains `127.0.0.1`.
+If needed, allow the selected TCP port through your firewall for your local
+network. The dashboard has no authentication: anyone who can reach it can read
+dashboard data and use its settings and assistant, so use LAN mode on a trusted
+network.
 
 ### TUI dashboard
 
@@ -403,7 +414,8 @@ Key bindings:
 
 | Flag | Commands | Description |
 |------|----------|-------------|
-| `--port <n>` | `web` | Localhost port to bind (default `7450`) |
+| `--host <addr>` | `web` | Bind address (default `127.0.0.1`; `0.0.0.0` for LAN access) |
+| `--port <n>` | `web` | Port to bind (default `7450`) |
 | `--db <path>` | `web`, `tui` | Explicit OpenCode SQLite database path |
 | `--channel <c>` | `web`, `tui` | Resolve a channel-specific OpenCode DB (`stable`/`latest`/`beta`/custom) |
 | `--source <id>` | `web`, `tui` | Initial source: `opencode`, `claude_code`, `codex`, `kimi_code`, or `qwen_code` (default `opencode`) |

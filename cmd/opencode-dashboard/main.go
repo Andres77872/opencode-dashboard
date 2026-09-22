@@ -13,11 +13,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -101,6 +99,7 @@ Global help:
 
 Examples:
   opencode-dashboard web
+  opencode-dashboard web --host 0.0.0.0 --no-open
   opencode-dashboard web --port 9090 --channel latest
   opencode-dashboard web --db ~/.local/share/opencode/opencode-beta.db --no-open
   opencode-dashboard web --source opencode
@@ -112,7 +111,8 @@ Examples:
   opencode-dashboard update --version v0.1.20
 
 Web flags:
-  --port <n>     Bind localhost port (default: 7450)
+  --host <addr>  Bind address (default: 127.0.0.1; use 0.0.0.0 for LAN access)
+  --port <n>     Bind port (default: 7450)
   --db <path>    Use an explicit OpenCode SQLite database path
   --cache-db <path>  Use an explicit dashboard cache SQLite database path
   --rebuild-cache    Remove the dashboard usage cache before starting
@@ -157,7 +157,8 @@ func cmdWeb(args []string) error {
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
-	port := fs.Int("port", web.DefaultPort, "localhost port to bind")
+	host := fs.String("host", web.DefaultHost, "address to bind (0.0.0.0 for LAN access)")
+	port := fs.Int("port", web.DefaultPort, "port to bind")
 	dbPath := fs.String("db", "", "explicit OpenCode SQLite database path")
 	cacheDBPath := fs.String("cache-db", "", "explicit dashboard cache SQLite database path")
 	rebuildCache := fs.Bool("rebuild-cache", false, "remove the dashboard usage cache before serving")
@@ -170,8 +171,9 @@ func cmdWeb(args []string) error {
 	kimiHome := fs.String("kimi-home", "", "explicit Kimi Code home directory")
 	qwenHome := fs.String("qwen-home", "", "explicit Qwen Code home directory")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard web [--port <n>] [--db <path>] [--cache-db <path>] [--rebuild-cache] [--no-cache] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>] [--kimi-home <dir>] [--qwen-home <dir>] [--no-open]\n\n")
-		fmt.Fprintf(fs.Output(), "Starts the local web dashboard and serves the API on http://%s:<port>.\n", web.DefaultHost)
+		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard web [--host <addr>] [--port <n>] [--db <path>] [--cache-db <path>] [--rebuild-cache] [--no-cache] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>] [--kimi-home <dir>] [--qwen-home <dir>] [--no-open]\n\n")
+		fmt.Fprintf(fs.Output(), "Starts the web dashboard and API (default: http://%s:%d).\nUse --host 0.0.0.0 to allow access from your local network.\n\n", web.DefaultHost, web.DefaultPort)
+		fs.PrintDefaults()
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -184,8 +186,9 @@ func cmdWeb(args []string) error {
 		fs.Usage()
 		return fmt.Errorf("web does not accept positional arguments")
 	}
-	if *port < 1 || *port > 65535 {
-		return fmt.Errorf("--port must be between 1 and 65535")
+	addr, err := webListenAddress(*host, *port)
+	if err != nil {
+		return err
 	}
 	if err := validateCacheFlags(*noCache, *rebuildCache); err != nil {
 		return err
@@ -269,7 +272,6 @@ func cmdWeb(args []string) error {
 		assistantProviders.RefreshAll(refreshCtx)
 	}()
 
-	addr := web.DefaultHost + ":" + strconv.Itoa(*port)
 	var chatLogService web.AssistantChatStore
 	if chatLog != nil {
 		chatLogService = chatLog
@@ -299,10 +301,20 @@ func cmdWeb(args []string) error {
 		}
 	}()
 
-	serverURL := (&url.URL{Scheme: "http", Host: addr}).String()
+	serverURL := webBrowserURL(*host, *port)
 	fmt.Printf("opencode-dashboard %s\n", version.BuildInfo())
+	fmt.Printf("listening:  %s\n", listener.Addr())
 	fmt.Printf("web server: %s\n", serverURL)
 	fmt.Printf("api base:   %s/api/v1\n", serverURL)
+	if ip := net.ParseIP(*host); ip != nil && ip.IsUnspecified() {
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			logger.Warn("could not discover network URLs", "error", err)
+		}
+		for _, networkURL := range webNetworkURLs(*host, *port, addrs) {
+			fmt.Printf("network:    %s\n", networkURL)
+		}
+	}
 	fmt.Printf("database:   %s\n", selection.Path)
 	fmt.Printf("db source:  %s\n", selection.Source)
 	printCacheStartup(cacheRuntime, cacheSelection)

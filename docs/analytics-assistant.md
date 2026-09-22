@@ -494,9 +494,11 @@ The web server exposes:
   specialist runs.
 
 All assistant responses use `Cache-Control: no-store`. Assistant requests
-accept the exact dashboard origin, plus the checked-in Vite development origin
+accept the exact dashboard origin (including LAN addresses when `web --host`
+is used), plus the checked-in loopback Vite development origin
 on port 7451; unrelated loopback origins and cross-site Fetch Metadata are
 rejected.
 Chat accepts JSON only and never accepts a provider URL, API key, tool
 definition, agent definition, or executable operation from the client. The
-server continues to bind to loopback by default.
+server continues to bind to loopback by default. LAN mode has no authentication;
+devices that can reach the server can also use the assistant and its settings.

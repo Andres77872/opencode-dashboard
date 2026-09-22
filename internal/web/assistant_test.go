@@ -737,7 +737,7 @@ func TestAssistantChatRejectsNonlocalOriginBeforeService(t *testing.T) {
 	}
 }
 
-func TestAssistantChatAllowsNoOriginAndLocalOrigin(t *testing.T) {
+func TestAssistantChatAllowsNoOriginAndDashboardOrigin(t *testing.T) {
 	tests := []struct {
 		origin string
 		host   string
@@ -746,6 +746,9 @@ func TestAssistantChatAllowsNoOriginAndLocalOrigin(t *testing.T) {
 		{origin: "http://127.0.0.1:7450", host: "127.0.0.1:7450"},
 		{origin: "http://localhost:7451", host: "127.0.0.1:7450"},
 		{origin: "http://[::1]:7450", host: "[::1]:7450"},
+		{origin: "http://192.168.1.20:7450", host: "192.168.1.20:7450"},
+		{origin: "http://dashboard.lan:9090", host: "dashboard.lan:9090"},
+		{origin: "http://[fd00::20]:7450", host: "[fd00::20]:7450"},
 	}
 	for _, test := range tests {
 		t.Run(test.origin, func(t *testing.T) {
@@ -760,6 +763,32 @@ func TestAssistantChatAllowsNoOriginAndLocalOrigin(t *testing.T) {
 			server.Handler.ServeHTTP(recorder, req)
 			if recorder.Code != http.StatusOK || fake.calls != 1 {
 				t.Fatalf("origin=%q status=%d calls=%d body=%s", test.origin, recorder.Code, fake.calls, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestAssistantRejectsCrossOriginLANRequests(t *testing.T) {
+	for _, origin := range []string{
+		"http://192.168.1.21:7450",
+		"http://192.168.1.20:7451",
+		"https://192.168.1.20:7450",
+		"http://user@192.168.1.20:7450",
+		"http://192.168.1.20:7450/other",
+		"http://192.168.1.20:7450?query=yes",
+		"http://192.168.1.20:7450#fragment",
+		"null",
+	} {
+		t.Run(origin, func(t *testing.T) {
+			fake := &fakeAssistantService{}
+			server := assistantTestServer(fake, nil)
+			req := newAssistantRequest(http.MethodPost, "/api/v1/assistant/chat", validAssistantBody("Report."))
+			req.Host = "192.168.1.20:7450"
+			req.Header.Set("Origin", origin)
+			recorder := httptest.NewRecorder()
+			server.Handler.ServeHTTP(recorder, req)
+			if recorder.Code != http.StatusForbidden || fake.calls != 0 {
+				t.Fatalf("status=%d calls=%d body=%s", recorder.Code, fake.calls, recorder.Body.String())
 			}
 		})
 	}

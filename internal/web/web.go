@@ -2,7 +2,7 @@
 // web dashboard interface.
 //
 // Server features:
-// - Local-only binding (127.0.0.1)
+// - Loopback binding by default (127.0.0.1), with configurable LAN binding
 // - REST API at /api/v1/*
 // - Embedded static assets via go:embed
 // - Browser auto-open utility

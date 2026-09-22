@@ -15,6 +15,7 @@ import { SourcePane } from '../components/config/source-pane'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { usePeriodResource } from '../lib/use-period-resource'
 import { getConfig } from '../lib/api'
+import { copyText } from '../lib/clipboard'
 import { useMediaQuery } from '../lib/use-media-query'
 import {
   ALL_SECTIONS,
@@ -87,12 +88,11 @@ function SourceConfigExplorer() {
   }, [])
 
   const handleCopy = async (copyId: string, value: string) => {
-    try {
-      await navigator.clipboard.writeText(value)
+    if (await copyText(value)) {
       setCopiedId(copyId)
       if (copyResetRef.current !== null) window.clearTimeout(copyResetRef.current)
       copyResetRef.current = window.setTimeout(() => setCopiedId(null), COPY_RESET_MS)
-    } catch {
+    } else {
       setCopiedId(null)
     }
   }

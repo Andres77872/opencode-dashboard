@@ -773,7 +773,7 @@ func rejectNonlocalAssistantOrigin(w http.ResponseWriter, r *http.Request) bool 
 
 func isAllowedAssistantOrigin(origin string, r *http.Request) bool {
 	parsed, err := url.Parse(origin)
-	if err != nil || !isLocalOrigin(origin) || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
 		return false
 	}
 	scheme := "http"
@@ -784,6 +784,7 @@ func isAllowedAssistantOrigin(origin string, r *http.Request) bool {
 		return false
 	}
 	if strings.EqualFold(parsed.Host, r.Host) {
+		// Embedded assets use this same origin for both loopback and LAN access.
 		return true
 	}
 
