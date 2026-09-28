@@ -396,6 +396,8 @@ func TestBundledPricingRealClaudeModelsComputeNonMissingCosts(t *testing.T) {
 // Point releases share a boundary-aware prefix with their predecessor, so
 // without their own rows they would silently fall back to the older family
 // rates (Fable 5.1 cache reads at Fable 5's 4x price, Opus 5.5 at Opus 5's).
+// Sonnet 5.5 shares Sonnet 5's rates but must still resolve to its own model
+// with computed rather than approximate cost provenance.
 func TestBundledPricingPointReleasesDoNotFallBackToPredecessor(t *testing.T) {
 	pricing := loadBundledPricingForTest(t)
 	usage := tokenUsage{Input: 1_000_000, Output: 1_000_000, CacheRead: 1_000_000, CacheCreate: 2_000_000, CacheCreate5m: 1_000_000, CacheCreate1h: 1_000_000}
@@ -412,6 +414,9 @@ func TestBundledPricingPointReleasesDoNotFallBackToPredecessor(t *testing.T) {
 		{model: "claude-opus-5-5", wantCanonical: "claude-opus-5-5", wantStatus: stats.CostComputed, wantCost: 37.2},
 		{model: "claude-opus-5-5-20260922", wantCanonical: "claude-opus-5-5", wantStatus: stats.CostApproximate, wantCost: 37.2},
 		{model: "claude-opus-5", wantCanonical: "claude-opus-5", wantStatus: stats.CostComputed, wantCost: 46.75},
+		{model: "claude-sonnet-5-5", wantCanonical: "claude-sonnet-5-5", wantStatus: stats.CostComputed, wantCost: 18.7},
+		{model: "claude-sonnet-5-5-custom", wantCanonical: "claude-sonnet-5-5", wantStatus: stats.CostApproximate, wantCost: 18.7},
+		{model: "claude-sonnet-5", wantCanonical: "claude-sonnet-5", wantStatus: stats.CostComputed, wantCost: 18.7},
 	}
 
 	for _, tt := range tests {

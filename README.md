@@ -92,17 +92,18 @@ Sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), [
 
 ### Claude model pricing catalog
 
-The `anthropic-bundled-2026-09-22` catalog adds Claude Fable 5.1, Claude Opus 5.5, and the limited-availability Claude Mythos 5 and 5.1. Prices are USD per million tokens:
+The `anthropic-bundled-2026-09-28` catalog adds Claude Sonnet 5.5, released September 28, 2026 as `claude-sonnet-5-5`. It retains Claude Fable 5.1, Claude Opus 5.5, and the limited-availability Claude Mythos 5 and 5.1 from the previous refresh. Prices are USD per million tokens:
 
 | Model | Input | 5m cache writes | 1h cache writes | Cache reads | Output |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `claude-fable-5-1` / `claude-mythos-5-1` | $10 | $12.50 | $20 | $0.25 | $50 |
 | `claude-fable-5` / `claude-mythos-5` | $10 | $12.50 | $20 | $1 | $50 |
 | `claude-opus-5-5` | $4 | $5 | $8 | $0.20 | $20 |
+| `claude-sonnet-5-5` | $2 | $2.50 | $4 | $0.20 | $10 |
 
-Fable 5.1 and Mythos 5.1 bill cache reads at 0.025x input, and Opus 5.5 at 0.05x; every other Claude model uses 0.1x. Before this refresh, `claude-fable-5-1` and `claude-opus-5-5` matched their predecessors' rows through boundary-aware prefix fallback. They were marked approximate and priced at Fable 5 and Opus 5 rates. They now resolve exactly. Claude Sonnet 5's $2/$10 launch price is now its standard price; the increase Anthropic had scheduled for September 1, 2026 was cancelled.
+Fable 5.1 and Mythos 5.1 bill cache reads at 0.025x input, and Opus 5.5 at 0.05x; every other Claude model uses 0.1x. Sonnet 5.5 has the same per-token prices as Sonnet 5 and now resolves exactly instead of falling back to Sonnet 5 with approximate provenance. Its 1M context window uses standard rates. Claude Sonnet 5's $2/$10 launch price is now its standard price; the increase Anthropic had scheduled for September 1, 2026 was cancelled.
 
-Estimates use global-routing first-party rates. The 1.1x US-only `inference_geo` multiplier, Opus fast mode ($8/$40 on Opus 5.5), and Batch discounts are not applied. Source: [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing).
+Estimates use global-routing first-party rates. The 1.1x US-only `inference_geo` multiplier, Opus fast mode ($8/$40 on Opus 5.5), and Batch discounts are not applied. Sources: [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing) and [Claude Sonnet 5.5 model details](https://platform.claude.com/docs/en/models/sonnet-5-5/overview).
 
 ### Kimi Code wire accounting
 
@@ -177,7 +178,7 @@ Computed and estimated costs come from pinned, dated catalogs compiled into the 
 
 | Source | Snapshot ID | Retrieved | Models |
 |--------|-------------|-----------|--------|
-| Claude Code | `anthropic-bundled-2026-09-22` | 2026-09-22 | 25 |
+| Claude Code | `anthropic-bundled-2026-09-28` | 2026-09-28 | 26 |
 | Codex | `openai-codex-api-pricing-2026-09-22` | 2026-09-22 | 18 |
 | Kimi Code | `kimi-api-pricing-2026-07-16` | 2026-07-16 | 5 |
 | Qwen Code | `qwen-modelstudio-pricing-2026-08-02` | 2026-08-02 | 6 |
