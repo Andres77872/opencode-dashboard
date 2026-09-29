@@ -11,7 +11,7 @@ func TestBundledAstraCatalogAndResolution(t *testing.T) {
 	src := New(Options{})
 	ctx := testContext(t)
 	catalog := src.PricingCatalog(ctx)
-	if catalog.SnapshotID != "openai-codex-api-pricing-2026-09-22" || catalog.Currency != "USD" {
+	if catalog.SnapshotID != "openai-codex-api-pricing-2026-09-29" || catalog.Currency != "USD" {
 		t.Fatalf("catalog metadata = %#v", catalog)
 	}
 	found := false
@@ -45,7 +45,7 @@ func TestBundledFastLongContextRates(t *testing.T) {
 	// cache writes. Long-context multipliers apply to the entire request.
 	tokens := stats.TokenStats{Input: 1_000_000, Output: 1_000_000, Reasoning: 1_000_000, Cache: stats.CacheStats{Read: 1_000_000, Write: 1_000_000}}
 	for model, standardLong := range map[string]float64{
-		"gpt-6-astra": 197, "gpt-6-sol": 39.4, "gpt-6-luna": 1.97,
+		"gpt-6-astra": 197, "gpt-6.1-sol": 39.2, "gpt-6-sol": 39.4, "gpt-6-luna": 1.97,
 		"gpt-5.6": 78.8, "gpt-5.6-sol": 78.8,
 		"gpt-5.6-terra": 45.4, "gpt-5.6-luna": 4.54,
 	} {
@@ -115,7 +115,7 @@ func TestAstraRolloutUsesPerRequestContextAndProcessingTier(t *testing.T) {
 		if entry.ModelID != "gpt-6-astra" || entry.ProcessingMode != tc.mode || entry.CostStatus != stats.CostEstimatedAPIEquivalent || !approxEqual(entry.Cost, tc.cost) {
 			t.Errorf("request %s = %#v, want Astra/%s cost %v", tc.id, entry, tc.mode, tc.cost)
 		}
-		if entry.CostProvenance == nil || entry.CostProvenance.PricingSnapshotID != "openai-codex-api-pricing-2026-09-22" {
+		if entry.CostProvenance == nil || entry.CostProvenance.PricingSnapshotID != "openai-codex-api-pricing-2026-09-29" {
 			t.Errorf("request %s provenance = %#v", tc.id, entry.CostProvenance)
 		}
 	}

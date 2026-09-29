@@ -46,6 +46,7 @@ const CATALOGS: PricingAliasCatalog[] = [
 
 for (const [modelId, query, want] of [
   ['gpt-6-astra', 'Astra', { input: '$10.00', cached: '$1.00', cacheWrite: '$12.50', output: '$50.00' }],
+  ['gpt-6.1-sol', '6.1-sol', { input: '$2.00', cached: '$0.10', cacheWrite: '$2.50', output: '$10.00' }],
   ['gpt-6-sol', '6-sol', { input: '$2.00', cached: '$0.20', cacheWrite: '$2.50', output: '$10.00' }],
   ['gpt-6-luna', '6-luna', { input: '$0.10', cached: '$0.01', cacheWrite: '$0.125', output: '$0.50' }],
 ] as const) {

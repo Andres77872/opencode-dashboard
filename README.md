@@ -90,6 +90,20 @@ The same refresh adds `gpt-5.2` at $1.75 input, $0.175 cached input, and $14 out
 
 Sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), [GPT-6 Sol model details](https://developers.openai.com/api/docs/models/gpt-6-sol), [GPT-6 Luna model details](https://developers.openai.com/api/docs/models/gpt-6-luna), and [Codex models](https://learn.chatgpt.com/docs/models).
 
+### Codex GPT-6.1 Sol pricing
+
+The September 29, 2026 catalog adds `gpt-6.1-sol`, which replaces GPT-6 Sol among Codex's recommended models. Before this refresh it resolved as `missing`, because named releases never borrow a sibling's rates. Standard short-context API prices are USD per million tokens:
+
+| Model | Input | Cached input | Cache writes | Output, including reasoning |
+| --- | ---: | ---: | ---: | ---: |
+| `gpt-6.1-sol` | $2 | $0.10 | $2.50 | $10 |
+
+Only cached input changes from GPT-6 Sol: it bills at 5% of input instead of 10%. Tier and context rules match GPT-6 Sol. Fast is 2x Standard and Flex is 0.5x Standard. Above 272K raw input, the whole request bills at 2x input/cache rates and 1.5x output. OpenAI publishes long-context Fast rates, so Fast requests above 272K stay priced. The `gpt-6-sol` row is unchanged and remains available in Codex as an alternative model.
+
+OpenAI has announced a GPT-6.1 Sol Ultrafast mode but has not published its price. The catalog does not model Ultrafast for any model.
+
+Sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), [GPT-6.1 Sol model details](https://developers.openai.com/api/docs/models/gpt-6.1-sol), and [Codex models](https://learn.chatgpt.com/docs/models).
+
 ### Claude model pricing catalog
 
 The `anthropic-bundled-2026-09-28` catalog adds Claude Sonnet 5.5, released September 28, 2026 as `claude-sonnet-5-5`. It retains Claude Fable 5.1, Claude Opus 5.5, and the limited-availability Claude Mythos 5 and 5.1 from the previous refresh. Prices are USD per million tokens:
@@ -179,7 +193,7 @@ Computed and estimated costs come from pinned, dated catalogs compiled into the 
 | Source | Snapshot ID | Retrieved | Models |
 |--------|-------------|-----------|--------|
 | Claude Code | `anthropic-bundled-2026-09-28` | 2026-09-28 | 26 |
-| Codex | `openai-codex-api-pricing-2026-09-22` | 2026-09-22 | 18 |
+| Codex | `openai-codex-api-pricing-2026-09-29` | 2026-09-29 | 19 |
 | Kimi Code | `kimi-api-pricing-2026-07-16` | 2026-07-16 | 5 |
 | Qwen Code | `qwen-modelstudio-pricing-2026-08-02` | 2026-08-02 | 6 |
 

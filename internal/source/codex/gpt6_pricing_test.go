@@ -11,8 +11,9 @@ func TestBundledGPT6SolAndLunaCatalogAndResolution(t *testing.T) {
 	src := New(Options{})
 	ctx := testContext(t)
 	want := map[string]source.PricingRateSummary{
-		"gpt-6-sol":  {InputPerMillion: 2, CachedInputPerMillion: 0.2, CacheWritePerMillion: 2.5, OutputPerMillion: 10},
-		"gpt-6-luna": {InputPerMillion: 0.1, CachedInputPerMillion: 0.01, CacheWritePerMillion: 0.125, OutputPerMillion: 0.5},
+		"gpt-6.1-sol": {InputPerMillion: 2, CachedInputPerMillion: 0.1, CacheWritePerMillion: 2.5, OutputPerMillion: 10},
+		"gpt-6-sol":   {InputPerMillion: 2, CachedInputPerMillion: 0.2, CacheWritePerMillion: 2.5, OutputPerMillion: 10},
+		"gpt-6-luna":  {InputPerMillion: 0.1, CachedInputPerMillion: 0.01, CacheWritePerMillion: 0.125, OutputPerMillion: 0.5},
 	}
 	for _, model := range src.PricingCatalog(ctx).Models {
 		rate, ok := want[model.ModelID]
@@ -30,12 +31,15 @@ func TestBundledGPT6SolAndLunaCatalogAndResolution(t *testing.T) {
 		t.Errorf("%s missing from the shipped catalog", model)
 	}
 	for model, kind := range map[string]source.PricingResolutionKind{
-		"gpt-6-sol":             source.PricingResolutionExact,
-		"gpt-6-luna":            source.PricingResolutionExact,
-		"gpt-6-sol-2026-09-22":  source.PricingResolutionFallback,
-		"gpt-6-luna-2026-09-22": source.PricingResolutionFallback,
-		"gpt-6-sol-pro":         source.PricingResolutionUnknown,
-		"gpt-6":                 source.PricingResolutionUnknown,
+		"gpt-6.1-sol":            source.PricingResolutionExact,
+		"gpt-6-sol":              source.PricingResolutionExact,
+		"gpt-6-luna":             source.PricingResolutionExact,
+		"gpt-6.1-sol-2026-09-29": source.PricingResolutionFallback,
+		"gpt-6-sol-2026-09-22":   source.PricingResolutionFallback,
+		"gpt-6-luna-2026-09-22":  source.PricingResolutionFallback,
+		"gpt-6-sol-pro":          source.PricingResolutionUnknown,
+		"gpt-6":                  source.PricingResolutionUnknown,
+		"gpt-6.1":                source.PricingResolutionUnknown,
 	} {
 		got := src.ResolvePricing(ctx, "openai", model)
 		if got.Kind != kind {
@@ -51,6 +55,8 @@ func TestGPT6SolAndLunaContextThreshold(t *testing.T) {
 		input int64
 		want  float64
 	}{
+		{"gpt-6.1-sol", 272_000, 0.3292},
+		{"gpt-6.1-sol", 272_001, 0.608404},
 		{"gpt-6-sol", 272_000, 0.3459},
 		{"gpt-6-sol", 272_001, 0.641804},
 		{"gpt-6-luna", 272_000, 0.017295},
