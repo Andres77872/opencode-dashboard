@@ -1,6 +1,13 @@
 package stats
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -530,4 +537,516 @@ func TestRedactSensitive(t *testing.T) {
 			t.Errorf("token = %v, want nil", result["token"])
 		}
 	})
+}
+
+func TestStripJSONC(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "plain json unchanged",
+			input: `{"a": [1, 2], "b": {"c": null}}`,
+			want:  `{"a": [1, 2], "b": {"c": null}}`,
+		},
+		{
+			name:  "line comments blanked",
+			input: "{\n  // leading\n  \"a\": 1 // trailing\n}",
+			want:  "{\n            \n  \"a\": 1            \n}",
+		},
+		{
+			name:  "line comment ends at CRLF",
+			input: "{\"a\": 1, // note\r\n\"b\": 2}",
+			want:  "{\"a\": 1,        \r\n\"b\": 2}",
+		},
+		{
+			name:  "block comment keeps line breaks",
+			input: "{/* one\ntwo */\"a\": 1}",
+			want:  "{      \n      \"a\": 1}",
+		},
+		{
+			name:  "comment markers inside strings kept",
+			input: `{"url": "https://example.com//x", "glob": "src/**/*.ts", "note": "/* keep */ // too"}`,
+			want:  `{"url": "https://example.com//x", "glob": "src/**/*.ts", "note": "/* keep */ // too"}`,
+		},
+		{
+			name:  "escaped quote does not end string",
+			input: `{"a": "say \"hi\" // still a string"}`,
+			want:  `{"a": "say \"hi\" // still a string"}`,
+		},
+		{
+			name:  "escaped backslash ends string",
+			input: `{"p": "C:\\", /* c */ "q": 1}`,
+			want:  `{"p": "C:\\",         "q": 1}`,
+		},
+		{
+			name:  "trailing comma in object",
+			input: `{"a": 1,}`,
+			want:  `{"a": 1 }`,
+		},
+		{
+			name:  "trailing comma in array",
+			input: `[1, 2, ]`,
+			want:  `[1, 2  ]`,
+		},
+		{
+			name:  "trailing comma before comment and closer",
+			input: "{\"a\": [\"x\",], // c\n}",
+			want:  "{\"a\": [\"x\" ]      \n}",
+		},
+		{
+			name:  "trailing comma after nested object",
+			input: `{"a": {"b": true,},}`,
+			want:  `{"a": {"b": true } }`,
+		},
+		{
+			name:  "commas and closers inside strings kept",
+			input: `{"a": ",}", "b": ",]"}`,
+			want:  `{"a": ",}", "b": ",]"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := stripJSONC([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("stripJSONC() error = %v", err)
+			}
+			if string(got) != tt.want {
+				t.Errorf("stripJSONC() =\n%q\nwant\n%q", got, tt.want)
+			}
+			if len(got) != len(tt.input) {
+				t.Errorf("len = %d, want %d (offsets must be preserved)", len(got), len(tt.input))
+			}
+			if !json.Valid(got) {
+				t.Errorf("stripJSONC() output is not valid JSON: %q", got)
+			}
+		})
+	}
+}
+
+func TestStripJSONCRejectsMalformedInput(t *testing.T) {
+	// Commas that do not follow a value are not trailing commas; OpenCode's
+	// jsonc-parser rejects them, so the decoder must too.
+	for _, input := range []string{`{,}`, `[,]`, `[1,,]`, `{"a": 1,,}`} {
+		t.Run(input, func(t *testing.T) {
+			if _, err := parseJSONCObject([]byte(input)); err == nil {
+				t.Errorf("parseJSONCObject(%q) succeeded, want error", input)
+			}
+		})
+	}
+
+	t.Run("unterminated block comment", func(t *testing.T) {
+		_, err := stripJSONC([]byte(`{"a": 1} /* open`))
+		if !errors.Is(err, errUnterminatedBlockComment) {
+			t.Errorf("stripJSONC() error = %v, want %v", err, errUnterminatedBlockComment)
+		}
+	})
+}
+
+func TestMergeConfigDeep(t *testing.T) {
+	dst := map[string]any{
+		"model":        "a",
+		"theme":        "dark",
+		"instructions": []any{"a.md", "b.md"},
+		"provider": map[string]any{
+			"openai": map[string]any{"options": map[string]any{"timeout": 1, "baseURL": "x"}},
+		},
+		"share": map[string]any{"mode": "manual"},
+	}
+	src := map[string]any{
+		"model":        "b",
+		"instructions": []any{"c.md"},
+		"provider": map[string]any{
+			"openai":    map[string]any{"options": map[string]any{"timeout": 2}},
+			"anthropic": map[string]any{"name": "Anthropic"},
+		},
+		"share": "disabled",
+	}
+	want := map[string]any{
+		"model":        "b",
+		"theme":        "dark",
+		"instructions": []any{"c.md"},
+		"provider": map[string]any{
+			"openai":    map[string]any{"options": map[string]any{"timeout": 2, "baseURL": "x"}},
+			"anthropic": map[string]any{"name": "Anthropic"},
+		},
+		"share": "disabled",
+	}
+
+	got := mergeConfigDeep(dst, src)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("mergeConfigDeep() =\n%#v\nwant\n%#v", got, want)
+	}
+	if dst["model"] != "a" {
+		t.Errorf("mergeConfigDeep mutated dst: model = %v", dst["model"])
+	}
+}
+
+// writeGlobalConfig points XDG_CONFIG_HOME at a temp dir holding the given
+// opencode config files and returns the opencode config directory.
+func writeGlobalConfig(t *testing.T, files map[string]string) string {
+	t.Helper()
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	dir := filepath.Join(xdg, "opencode")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func loadConfigForTest(t *testing.T) ConfigView {
+	t.Helper()
+	view, err := Config(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Config() error = %v", err)
+	}
+	return view
+}
+
+// assertRawMatchesContent checks Raw is pretty JSON encoding exactly Content.
+func assertRawMatchesContent(t *testing.T, view ConfigView) {
+	t.Helper()
+	want, err := json.MarshalIndent(view.Content, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Raw != string(want) {
+		t.Errorf("Raw =\n%s\nwant\n%s", view.Raw, want)
+	}
+}
+
+func TestConfigMissing(t *testing.T) {
+	dir := writeGlobalConfig(t, nil)
+	if err := os.Mkdir(filepath.Join(dir, "opencode.jsonc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	view := loadConfigForTest(t)
+	if view.Exists {
+		t.Errorf("Exists = true, want false")
+	}
+	if want := filepath.Join(dir, "opencode.json"); view.Path != want {
+		t.Errorf("Path = %q, want %q", view.Path, want)
+	}
+	if view.Content != nil || view.Raw != "" || view.ParseError != "" {
+		t.Errorf("unexpected content for missing config: %+v", view)
+	}
+}
+
+func TestConfigJSONOnly(t *testing.T) {
+	dir := writeGlobalConfig(t, map[string]string{
+		"opencode.json": `{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "anthropic/claude-sonnet",
+  "provider": {"openai": {"options": {"apiKey": "sk-json-only-secret"}}}
+}`,
+	})
+
+	view := loadConfigForTest(t)
+	if !view.Exists {
+		t.Fatalf("Exists = false, want true (parse error %q)", view.ParseError)
+	}
+	if want := filepath.Join(dir, "opencode.json"); view.Path != want {
+		t.Errorf("Path = %q, want %q", view.Path, want)
+	}
+	if view.Format != ConfigFormatJSON {
+		t.Errorf("Format = %q, want %q", view.Format, ConfigFormatJSON)
+	}
+	if view.MergedPaths != nil {
+		t.Errorf("MergedPaths = %v, want nil for a single file", view.MergedPaths)
+	}
+	if view.ParseError != "" {
+		t.Errorf("ParseError = %q, want empty", view.ParseError)
+	}
+	if view.Content["model"] != "anthropic/claude-sonnet" {
+		t.Errorf("model = %v", view.Content["model"])
+	}
+	if strings.Contains(view.Raw, "sk-json-only-secret") || !strings.Contains(view.Raw, "[REDACTED]") {
+		t.Errorf("Raw not redacted: %s", view.Raw)
+	}
+	assertRawMatchesContent(t, view)
+}
+
+func TestConfigJSONCOnly(t *testing.T) {
+	dir := writeGlobalConfig(t, map[string]string{
+		"opencode.jsonc": `// Global OpenCode config
+{
+  "$schema": "https://opencode.ai/config.json",
+  /* default model */
+  "model": "anthropic/claude-sonnet",
+  "provider": {
+    "openai": {
+      "options": {
+        "apiKey": "sk-jsonc-secret", // inline key
+        "baseURL": "https://api.example.com/v1",
+      },
+    },
+  },
+  "mcp": {
+    "local": {"type": "local", "command": ["node", "server.js"], "environment": {"TOKEN": "env-secret"}},
+  },
+  "limit": 200000,
+}
+`,
+	})
+
+	view := loadConfigForTest(t)
+	if !view.Exists {
+		t.Fatalf("Exists = false, want true")
+	}
+	if view.ParseError != "" {
+		t.Fatalf("ParseError = %q, want empty", view.ParseError)
+	}
+	if want := filepath.Join(dir, "opencode.jsonc"); view.Path != want {
+		t.Errorf("Path = %q, want %q", view.Path, want)
+	}
+	if view.Format != ConfigFormatJSON {
+		t.Errorf("Format = %q, want %q (Raw is re-encoded JSON)", view.Format, ConfigFormatJSON)
+	}
+	if view.MergedPaths != nil {
+		t.Errorf("MergedPaths = %v, want nil for a single file", view.MergedPaths)
+	}
+
+	options := view.Content["provider"].(map[string]any)["openai"].(map[string]any)["options"].(map[string]any)
+	if options["apiKey"] != "[REDACTED]" {
+		t.Errorf("apiKey = %v, want [REDACTED]", options["apiKey"])
+	}
+	if options["baseURL"] != "https://api.example.com/v1" {
+		t.Errorf("baseURL = %v", options["baseURL"])
+	}
+	env := view.Content["mcp"].(map[string]any)["local"].(map[string]any)["environment"].(map[string]any)
+	if env["TOKEN"] != "[REDACTED]" {
+		t.Errorf("environment.TOKEN = %v, want [REDACTED]", env["TOKEN"])
+	}
+	if view.Content["limit"] != json.Number("200000") {
+		t.Errorf("limit = %#v, want json.Number(200000)", view.Content["limit"])
+	}
+
+	for _, leaked := range []string{"sk-jsonc-secret", "env-secret", "inline key", "default model"} {
+		if strings.Contains(view.Raw, leaked) {
+			t.Errorf("Raw contains %q:\n%s", leaked, view.Raw)
+		}
+	}
+	if !json.Valid([]byte(view.Raw)) {
+		t.Errorf("Raw is not valid JSON:\n%s", view.Raw)
+	}
+	assertRawMatchesContent(t, view)
+}
+
+func TestConfigJSONCCommentMarkersInStrings(t *testing.T) {
+	writeGlobalConfig(t, map[string]string{
+		"opencode.jsonc": `{
+  "instructions": ["docs/**/*.md", "https://example.com/rules.md"], // urls
+  "agent": {"review": {"prompt": "Flag /* block */ and // line markers"}},
+  "watcher": {"ignore": ["**/node_modules//**"]},
+  "theme": "say \"hi\" // not a comment",
+}`,
+	})
+
+	view := loadConfigForTest(t)
+	if view.ParseError != "" {
+		t.Fatalf("ParseError = %q, want empty", view.ParseError)
+	}
+	wantInstructions := []any{"docs/**/*.md", "https://example.com/rules.md"}
+	if got := view.Content["instructions"]; !reflect.DeepEqual(got, wantInstructions) {
+		t.Errorf("instructions = %#v, want %#v", got, wantInstructions)
+	}
+	prompt := view.Content["agent"].(map[string]any)["review"].(map[string]any)["prompt"]
+	if prompt != "Flag /* block */ and // line markers" {
+		t.Errorf("prompt = %q", prompt)
+	}
+	ignore := view.Content["watcher"].(map[string]any)["ignore"]
+	if !reflect.DeepEqual(ignore, []any{"**/node_modules//**"}) {
+		t.Errorf("watcher.ignore = %#v", ignore)
+	}
+	if view.Content["theme"] != `say "hi" // not a comment` {
+		t.Errorf("theme = %q", view.Content["theme"])
+	}
+}
+
+func TestConfigJSONCTrailingCommas(t *testing.T) {
+	writeGlobalConfig(t, map[string]string{
+		"opencode.jsonc": `{
+  "disabled_providers": ["a", "b",],
+  "keybinds": {"leader": "ctrl+x",},
+  "formatter": {"prettier": {"extensions": [".ts", ".tsx", /* more */],},},
+}`,
+	})
+
+	view := loadConfigForTest(t)
+	if view.ParseError != "" {
+		t.Fatalf("ParseError = %q, want empty", view.ParseError)
+	}
+	if got := view.Content["disabled_providers"]; !reflect.DeepEqual(got, []any{"a", "b"}) {
+		t.Errorf("disabled_providers = %#v", got)
+	}
+	if got := view.Content["keybinds"]; !reflect.DeepEqual(got, map[string]any{"leader": "ctrl+x"}) {
+		t.Errorf("keybinds = %#v", got)
+	}
+	extensions := view.Content["formatter"].(map[string]any)["prettier"].(map[string]any)["extensions"]
+	if !reflect.DeepEqual(extensions, []any{".ts", ".tsx"}) {
+		t.Errorf("formatter.prettier.extensions = %#v", extensions)
+	}
+}
+
+func TestConfigBothPresentMergesWithJSONCPrecedence(t *testing.T) {
+	dir := writeGlobalConfig(t, map[string]string{
+		"opencode.json": `{
+  "model": "openai/gpt-5",
+  "theme": "tokyonight",
+  "instructions": ["a.md", "b.md"],
+  "provider": {"openai": {"options": {"apiKey": "sk-from-json", "timeout": 1000}}}
+}`,
+		"opencode.jsonc": `{
+  // jsonc wins on conflicts
+  "model": "anthropic/claude-sonnet",
+  "instructions": ["c.md"],
+  "provider": {
+    "openai": {"options": {"timeout": 5000}},
+    "anthropic": {"options": {"apiKey": "sk-from-jsonc"}},
+  },
+}`,
+	})
+
+	view := loadConfigForTest(t)
+	if view.ParseError != "" {
+		t.Fatalf("ParseError = %q, want empty", view.ParseError)
+	}
+	jsonPath := filepath.Join(dir, "opencode.json")
+	jsoncPath := filepath.Join(dir, "opencode.jsonc")
+	if view.Path != jsoncPath {
+		t.Errorf("Path = %q, want %q", view.Path, jsoncPath)
+	}
+	if want := []string{jsonPath, jsoncPath}; !reflect.DeepEqual(view.MergedPaths, want) {
+		t.Errorf("MergedPaths = %v, want %v", view.MergedPaths, want)
+	}
+
+	if view.Content["model"] != "anthropic/claude-sonnet" {
+		t.Errorf("model = %v, want the opencode.jsonc value", view.Content["model"])
+	}
+	if view.Content["theme"] != "tokyonight" {
+		t.Errorf("theme = %v, want the opencode.json value", view.Content["theme"])
+	}
+	if got := view.Content["instructions"]; !reflect.DeepEqual(got, []any{"c.md"}) {
+		t.Errorf("instructions = %#v, want arrays replaced by opencode.jsonc", got)
+	}
+	provider := view.Content["provider"].(map[string]any)
+	openai := provider["openai"].(map[string]any)["options"].(map[string]any)
+	if openai["timeout"] != json.Number("5000") {
+		t.Errorf("openai.timeout = %#v, want 5000 from opencode.jsonc", openai["timeout"])
+	}
+	if openai["apiKey"] != "[REDACTED]" {
+		t.Errorf("openai.apiKey = %v, want [REDACTED] kept from opencode.json", openai["apiKey"])
+	}
+	anthropic := provider["anthropic"].(map[string]any)["options"].(map[string]any)
+	if anthropic["apiKey"] != "[REDACTED]" {
+		t.Errorf("anthropic.apiKey = %v, want [REDACTED]", anthropic["apiKey"])
+	}
+	for _, leaked := range []string{"sk-from-json", "sk-from-jsonc"} {
+		if strings.Contains(view.Raw, leaked) {
+			t.Errorf("Raw contains %q", leaked)
+		}
+	}
+	assertRawMatchesContent(t, view)
+}
+
+func TestConfigBothPresentReportsWhichFileFailed(t *testing.T) {
+	dir := writeGlobalConfig(t, map[string]string{
+		"opencode.json":  `{"model": "openai/gpt-5"}`,
+		"opencode.jsonc": `{"provider": {"apiKey": "sk-broken-jsonc-secret"} "model": "x"}`,
+	})
+
+	view := loadConfigForTest(t)
+	if !view.Exists {
+		t.Fatalf("Exists = false, want true")
+	}
+	if view.Path != filepath.Join(dir, "opencode.jsonc") {
+		t.Errorf("Path = %q", view.Path)
+	}
+	if !strings.HasPrefix(view.ParseError, "opencode.jsonc: ") {
+		t.Errorf("ParseError = %q, want it to name opencode.jsonc", view.ParseError)
+	}
+	if strings.Contains(view.ParseError, "sk-broken-jsonc-secret") {
+		t.Errorf("ParseError leaks file contents: %q", view.ParseError)
+	}
+	if view.Content != nil || view.Raw != "" {
+		t.Errorf("Content/Raw should be empty on parse error, got %v / %q", view.Content, view.Raw)
+	}
+}
+
+func TestConfigParseErrorDoesNotLeakContents(t *testing.T) {
+	tests := []struct {
+		name    string
+		file    string
+		content string
+	}{
+		{
+			name:    "missing comma",
+			file:    "opencode.jsonc",
+			content: `{"provider": {"openai": {"options": {"apiKey": "sk-live-SECRET-0123456789"}}} "model": "x"}`,
+		},
+		{
+			name:    "unterminated block comment",
+			file:    "opencode.jsonc",
+			content: "{\"apiKey\": \"sk-live-SECRET-0123456789\"} /* password: hunter2-SECRET",
+		},
+		{
+			name:    "truncated after comment",
+			file:    "opencode.jsonc",
+			content: "{\n  // token sk-live-SECRET-0123456789\n  \"token\": \"sk-live-SECRET-0123456789\",\n",
+		},
+		{
+			name:    "syntax error in opencode.json",
+			file:    "opencode.json",
+			content: "{\"token\": \"sk-live-SECRET-0123456789\" bad}",
+		},
+		{
+			name:    "top-level array",
+			file:    "opencode.jsonc",
+			content: `["sk-live-SECRET-0123456789"]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writeGlobalConfig(t, map[string]string{tt.file: tt.content})
+
+			view := loadConfigForTest(t)
+			if !view.Exists {
+				t.Fatalf("Exists = false, want true")
+			}
+			if view.ParseError == "" {
+				t.Fatalf("ParseError is empty, want a parse failure")
+			}
+			for _, leaked := range []string{"SECRET", "sk-live", "hunter2", "password"} {
+				if strings.Contains(view.ParseError, leaked) {
+					t.Errorf("ParseError leaks %q: %q", leaked, view.ParseError)
+				}
+			}
+			if view.Content != nil || view.Raw != "" {
+				t.Errorf("Content/Raw should be empty on parse error, got %v / %q", view.Content, view.Raw)
+			}
+		})
+	}
+}
+
+func TestSanitizeConfigParseError(t *testing.T) {
+	err := errors.New("bad value \"sk-live-SECRET-0123456789\"\nnext line")
+	got := sanitizeConfigParseError(err)
+	if strings.Contains(got, "SECRET") || strings.Contains(got, "\n") {
+		t.Errorf("sanitizeConfigParseError() = %q", got)
+	}
+
+	long := errors.New(strings.Repeat("x", 400))
+	if got := sanitizeConfigParseError(long); len(got) > 300+len("…") {
+		t.Errorf("sanitizeConfigParseError() len = %d, want capped", len(got))
+	}
 }
