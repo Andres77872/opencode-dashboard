@@ -63,6 +63,10 @@ func Projects(ctx context.Context, s *store.Store, pq PeriodQuery) (ProjectStats
 		ORDER BY total_cost DESC
 	`
 
+	if isV2(s) {
+		query = projectsV2Query
+	}
+
 	rows, err := db.QueryContext(ctx, query, startMs, endMs)
 	if err != nil {
 		return ProjectStats{}, err
@@ -164,6 +168,7 @@ func ProjectByID(ctx context.Context, s *store.Store, id string, pq PeriodQuery,
 	}
 
 	db := s.DB()
+	v2 := isV2(s)
 
 	// Verify project exists and get metadata
 	var projectID, worktree string
@@ -198,6 +203,9 @@ func ProjectByID(ctx context.Context, s *store.Store, id string, pq PeriodQuery,
 			AND m.time_created >= ? AND m.time_created < ?
 		WHERE s.project_id = ?
 	`
+	if v2 {
+		aggQuery = projectAggregateV2Query
+	}
 	var sessions, messages int64
 	var cost float64
 	var input, output, reasoning, cacheRead, cacheWrite int64
@@ -229,9 +237,11 @@ func ProjectByID(ctx context.Context, s *store.Store, id string, pq PeriodQuery,
 
 	// Total session count for pagination
 	var totalSessions int64
-	err = db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM session WHERE project_id = ?", projectID,
-	).Scan(&totalSessions)
+	countQuery := "SELECT COUNT(*) FROM session WHERE project_id = ?"
+	if v2 {
+		countQuery = projectSessionCountV2Query
+	}
+	err = db.QueryRowContext(ctx, countQuery, projectID).Scan(&totalSessions)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			totalSessions = 0
@@ -258,6 +268,10 @@ func ProjectByID(ctx context.Context, s *store.Store, id string, pq PeriodQuery,
 		ORDER BY s.time_created DESC
 		LIMIT ? OFFSET ?
 	`
+
+	if v2 {
+		recentQuery = projectRecentSessionsV2Query
+	}
 
 	recentRows, err := db.QueryContext(ctx, recentQuery, projectID, limit, offset)
 	if err != nil {

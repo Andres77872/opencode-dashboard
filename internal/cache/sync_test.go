@@ -652,6 +652,7 @@ type syncFakeSource struct {
 	available         *bool
 	scannedFiles      int64
 	pricingSnapshotID string
+	dataLayout        string
 	messagesErr       error
 	failMessagesTimes int           // fail the next N Messages calls, then succeed
 	messagesGate      chan struct{} // when set, Messages blocks until closed
@@ -707,6 +708,7 @@ func (s *syncFakeSource) Info(context.Context) source.SourceInfo {
 			ScannedFiles: s.scannedFiles,
 		},
 		CostPolicy: source.CostPolicy{PricingSnapshotID: s.pricingSnapshotID},
+		DataLayout: s.dataLayout,
 	}
 }
 

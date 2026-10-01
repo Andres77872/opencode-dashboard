@@ -49,6 +49,8 @@ export interface SourceInfo {
   read_only: boolean
   local_only: boolean
   capabilities: string[]
+  /** Storage layout read when a source supports several (OpenCode 2: "opencode-v2"); absent for the original layout. */
+  data_layout?: string
   warnings?: string[]
   diagnostics?: SourceDiagnostics
   cost_policy?: CostPolicy
@@ -327,6 +329,8 @@ export interface ConfigStats {
   /** Set when the file exists but structured parsing failed. */
   parse_error?: string
   redacted?: boolean
+  /** Files merged into content, lowest precedence first; path is the last. Absent for a single file. */
+  merged_paths?: string[]
 }
 
 export interface SessionEntry extends SourceTagged {

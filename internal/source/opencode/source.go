@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"fmt"
 
 	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/stats"
@@ -34,8 +35,17 @@ func New(st *store.Store, opts ...Option) *Source {
 	return s
 }
 
+// layoutV2 is SourceInfo.DataLayout for OpenCode 2 databases. OpenCode 1.x
+// keeps the empty layout so caches built before 2.x support stay valid, and
+// switching to 2.x rebuilds the cache from the 2.x tables.
+const layoutV2 = "opencode-v2"
+
 func (s *Source) Info(context.Context) source.SourceInfo {
-	available := s != nil && s.store != nil && s.store.IsValidSchema()
+	var schema store.SchemaInfo
+	if s != nil && s.store != nil {
+		schema = s.store.Schema()
+	}
+	available := schema.IsValid
 	path := ""
 	pathSource := ""
 	if s != nil {
@@ -61,6 +71,20 @@ func (s *Source) Info(context.Context) source.SourceInfo {
 	}
 	if !available {
 		info.Diagnostics = source.SourceDiagnostics{Status: "unavailable", Reason: "OpenCode database is not available or schema is invalid"}
+		return info
+	}
+	if schema.Version == store.SchemaV2 {
+		info.DataLayout = layoutV2
+	}
+	if schema.ImportIncomplete() {
+		shown := "Showing the 1.x history until the import finishes; sessions created in OpenCode 2 appear afterwards."
+		if schema.Version == store.SchemaV2 {
+			shown = "Older sessions appear once the import finishes."
+		}
+		info.Warnings = append(info.Warnings, fmt.Sprintf(
+			"OpenCode 2 is still importing this database's OpenCode 1.x history (%d of %d sessions imported). %s Opening OpenCode 2 resumes the import.",
+			schema.ImportedSessions, schema.LegacySessions, shown,
+		))
 	}
 	return info
 }

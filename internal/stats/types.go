@@ -627,6 +627,9 @@ type ConfigView struct {
 	Raw        string         `json:"raw,omitempty"`
 	ParseError string         `json:"parse_error,omitempty"`
 	Redacted   bool           `json:"redacted,omitempty"`
+	// MergedPaths lists, lowest precedence first, the files merged into
+	// Content when it combines more than one; Path is the last of them.
+	MergedPaths []string `json:"merged_paths,omitempty"`
 }
 
 type DateRange struct {

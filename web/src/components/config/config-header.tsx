@@ -1,6 +1,7 @@
 /* Config header: path + format/source/redaction badges + copy actions on the
-   first row; a compact meta strip (status · values · redacted — replaces the
-   old StatCard row), filter input and Tree|Source toggle on the second. */
+   first row; a compact meta strip (status · values · redacted · merged files —
+   replaces the old StatCard row), filter input and Tree|Source toggle on the
+   second. */
 import { Badge, Icon, SearchInput, SegmentedControl } from '../vael'
 import { Card } from '../vael'
 import { CopyButton } from './copy-button'
@@ -47,6 +48,7 @@ export function ConfigHeader({
 }: ConfigHeaderProps) {
   const statusColor =
     status === 'present' ? 'var(--success)' : status === 'missing' ? 'var(--fg-muted)' : 'var(--warning)'
+  const mergedPaths = data.merged_paths ?? []
 
   return (
     <Card pad={14}>
@@ -109,6 +111,12 @@ export function ConfigHeader({
                 <span style={{ color: 'var(--fg-faint)' }}>raw synthesized</span>
               </>
             )}
+            {mergedPaths.length > 1 && (
+              <>
+                <Dot />
+                <span title={mergedPaths.join('\n')}>merged {mergedPaths.map(fileName).join(' + ')}</span>
+              </>
+            )}
           </span>
 
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -142,6 +150,10 @@ export function ConfigHeader({
       </div>
     </Card>
   )
+}
+
+function fileName(path: string) {
+  return path.split(/[\\/]/).pop() || path
 }
 
 function Dot() {

@@ -76,7 +76,13 @@ func Models(ctx context.Context, s *store.Store, pq PeriodQuery) (ModelStats, er
 	// it to this window, so a 30-day model view still parsed years of (often
 	// very large) part JSON. Joining parts through filtered_messages lets
 	// SQLite use its message-id index and extracts each message field once.
-	rows, err := s.DB().QueryContext(ctx, modelsQuery, startMs, endMs)
+	query := modelsQuery
+	if isV2(s) {
+		// OpenCode 2 stores one row per step with that step's own usage, so
+		// the 1.x step-finish reconstruction is unnecessary.
+		query = modelsV2Query
+	}
+	rows, err := s.DB().QueryContext(ctx, query, startMs, endMs)
 	if err != nil {
 		return ModelStats{}, err
 	}

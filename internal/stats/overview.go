@@ -6,6 +6,22 @@ import (
 	"opencode-dashboard/internal/store"
 )
 
+const overviewQuery = `
+	SELECT
+		COUNT(DISTINCT session_id),
+		COUNT(*),
+		COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.cost'), 0) ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.input'), 0) ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.output'), 0) ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.reasoning'), 0) ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.cache.read'), 0) ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.cache.write'), 0) ELSE 0 END), 0),
+		COUNT(DISTINCT DATE(time_created / 1000, 'unixepoch'))
+	FROM message
+	WHERE time_created >= ? AND time_created < ?
+`
+
 // OverviewString is a backward-compatible wrapper that accepts a string period.
 // It constructs a PeriodQuery and delegates to Overview.
 func OverviewString(ctx context.Context, store *store.Store, period string) (OverviewStats, error) {
@@ -31,21 +47,11 @@ func Overview(ctx context.Context, store *store.Store, pq PeriodQuery) (Overview
 	// created before the range still counts when it has a message in the range.
 	// The old path also scanned message once for COUNT(*) and again for usage,
 	// doubling I/O on the largest table during a cold overview load.
-	err = db.QueryRowContext(ctx, `
-		SELECT
-			COUNT(DISTINCT session_id),
-			COUNT(*),
-			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.cost'), 0) ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.input'), 0) ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.output'), 0) ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.reasoning'), 0) ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.cache.read'), 0) ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.cache.write'), 0) ELSE 0 END), 0),
-			COUNT(DISTINCT DATE(time_created / 1000, 'unixepoch'))
-		FROM message
-		WHERE time_created >= ? AND time_created < ?
-	`, startMs, endMs).Scan(
+	query := overviewQuery
+	if isV2(store) {
+		query = overviewV2Query
+	}
+	err = db.QueryRowContext(ctx, query, startMs, endMs).Scan(
 		&result.Sessions,
 		&result.Messages,
 		&result.Requests,

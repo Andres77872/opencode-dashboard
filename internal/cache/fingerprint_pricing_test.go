@@ -173,6 +173,61 @@ func TestTranscriptChangeWithStablePricingRemainsIncremental(t *testing.T) {
 	assertCachedMessageCost(t, store, syncFakeSourceID, "new", 0.20)
 }
 
+// A source switching storage layouts (OpenCode 1.x -> 2.x) must re-collect
+// its whole history: rows consolidated from the old layout are older than the
+// incremental cutoff and would otherwise never be read again.
+func TestDataLayoutChangeRebuildsHistory(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 7, 17, 18, 0, 0, 0, time.UTC)
+	cutoff := base.Add(-6 * time.Hour)
+	src := &syncFakeSource{
+		messages: []stats.MessageEntry{testMessage("historical", base.Add(-12*time.Hour), 0.10)},
+	}
+	store := newTestStore(t)
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{Mode: SyncModeIncremental, Cutoff: cutoff}); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+
+	src.dataLayout = "opencode-v2"
+	src.messages[0].Cost = 0.42
+	need, err := store.NeedsSync(ctx, src)
+	if err != nil {
+		t.Fatalf("NeedsSync: %v", err)
+	}
+	if !need.Needed || !need.PricingChange || need.Reason != layoutChangeReason {
+		t.Fatalf("NeedsSync = %#v, want a layout-triggered rebuild", need)
+	}
+	report, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{Mode: SyncModeIncremental, Cutoff: cutoff, ReadTriggered: true})
+	if err != nil {
+		t.Fatalf("layout sync: %v", err)
+	}
+	if report.Mode != SyncModeRebuild || report.Messages != 1 {
+		t.Fatalf("layout report = %#v, want a rebuild re-collecting history", report)
+	}
+	assertCachedMessageCost(t, store, syncFakeSourceID, "historical", 0.42)
+
+	need, err = store.NeedsSync(ctx, src)
+	if err != nil || need.PricingChange {
+		t.Fatalf("NeedsSync after the rebuild = %#v, %v; want the new layout recorded", need, err)
+	}
+}
+
+// The original (empty) layout must not change existing fingerprints, so
+// caches built before layouts existed are not rebuilt by the upgrade.
+func TestEmptyDataLayoutKeepsFingerprintIdentity(t *testing.T) {
+	info := source.SourceInfo{ID: "synthetic", Kind: "fixture", CostPolicy: source.CostPolicy{PricingSnapshotID: "pricing-v1"}}
+	if got := rebuildIdentity(info); got != "pricing-v1" {
+		t.Fatalf("rebuildIdentity without a layout = %q, want the pricing snapshot", got)
+	}
+	info.DataLayout = "opencode-v2"
+	if rebuildIdentity(info) == "pricing-v1" {
+		t.Fatal("rebuildIdentity ignores the data layout")
+	}
+	if got := rebuildReason(info); !strings.Contains(got, "layout") || !strings.Contains(got, "pricing") {
+		t.Errorf("rebuildReason with both identities = %q", got)
+	}
+}
+
 func assertCachedMessageCost(t *testing.T, store *Store, sourceID, messageID string, want float64) {
 	t.Helper()
 	var got float64
