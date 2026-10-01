@@ -1827,26 +1827,11 @@ func openValidatedStore(ctx context.Context, dbPath string) (*store.Store, error
 
 	schema := st.Schema()
 	_ = st.Close()
-	return nil, fmt.Errorf("%w: missing required tables: %s", store.ErrInvalidSchema, missingTables(schema))
+	return nil, fmt.Errorf("%w: missing required tables: %s (supported layouts: OpenCode 1.x session/message/part, OpenCode 2.x session_v2/session_message)", store.ErrInvalidSchema, missingTables(schema))
 }
 
 func missingTables(schema store.SchemaInfo) string {
-	missing := make([]string, 0, 5)
-	if !schema.HasSession {
-		missing = append(missing, "session")
-	}
-	if !schema.HasMessage {
-		missing = append(missing, "message")
-	}
-	if !schema.HasProject {
-		missing = append(missing, "project")
-	}
-	if !schema.HasWorkspace {
-		missing = append(missing, "workspace")
-	}
-	if !schema.HasPart {
-		missing = append(missing, "part")
-	}
+	missing := schema.MissingTables()
 	if len(missing) == 0 {
 		return "unknown"
 	}

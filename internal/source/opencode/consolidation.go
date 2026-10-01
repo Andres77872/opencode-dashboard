@@ -37,11 +37,21 @@ func (s *Source) ConsolidationData(ctx context.Context, pq stats.PeriodQuery) (s
 	}
 	defer tx.Rollback()
 
-	data, messageIndexes, err := consolidationMessages(ctx, tx, window.StartMs, window.EndMs)
+	v2 := s.store.Version() == store.SchemaV2
+	query := consolidationMessagesV1Query
+	if v2 {
+		query = consolidationMessagesV2Query
+	}
+	data, messageIndexes, err := consolidationMessages(ctx, tx, query, v2, window.StartMs, window.EndMs)
 	if err != nil {
 		return source.ConsolidationData{}, err
 	}
-	if err := consolidationParts(ctx, tx, window.StartMs, window.EndMs, data.Messages, messageIndexes); err != nil {
+	if v2 {
+		err = consolidationToolsV2(ctx, tx, window.StartMs, window.EndMs, data.Messages, messageIndexes)
+	} else {
+		err = consolidationParts(ctx, tx, window.StartMs, window.EndMs, data.Messages, messageIndexes)
+	}
+	if err != nil {
 		return source.ConsolidationData{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -53,31 +63,61 @@ func (s *Source) ConsolidationData(ctx context.Context, pq stats.PeriodQuery) (s
 	return data, nil
 }
 
-func consolidationMessages(ctx context.Context, tx *sql.Tx, startMs, endMs int64) (source.ConsolidationData, map[string]int, error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT
-			m.id,
-			m.session_id,
-			m.time_created,
-			json_extract(m.data, '$.role'),
-			COALESCE(json_extract(m.data, '$.cost'), 0),
-			COALESCE(json_extract(m.data, '$.tokens.input'), 0),
-			COALESCE(json_extract(m.data, '$.tokens.output'), 0),
-			COALESCE(json_extract(m.data, '$.tokens.reasoning'), 0),
-			COALESCE(json_extract(m.data, '$.tokens.cache.read'), 0),
-			COALESCE(json_extract(m.data, '$.tokens.cache.write'), 0),
-			json_extract(m.data, '$.modelID'),
-			json_extract(m.data, '$.providerID'),
-			COALESCE(s.project_id, ''),
-			COALESCE(p.name, ''),
-			COALESCE(p.worktree, ''),
-			COALESCE(s.time_created, m.time_created),
-			COALESCE(s.time_updated, m.time_created)
-		FROM message m
-		LEFT JOIN session s ON s.id = m.session_id
-		LEFT JOIN project p ON p.id = s.project_id
-		WHERE m.time_created >= ? AND m.time_created < ?
-	`, startMs, endMs)
+const consolidationMessagesV1Query = `
+	SELECT
+		m.id,
+		m.session_id,
+		m.time_created,
+		json_extract(m.data, '$.role'),
+		COALESCE(json_extract(m.data, '$.cost'), 0),
+		COALESCE(json_extract(m.data, '$.tokens.input'), 0),
+		COALESCE(json_extract(m.data, '$.tokens.output'), 0),
+		COALESCE(json_extract(m.data, '$.tokens.reasoning'), 0),
+		COALESCE(json_extract(m.data, '$.tokens.cache.read'), 0),
+		COALESCE(json_extract(m.data, '$.tokens.cache.write'), 0),
+		json_extract(m.data, '$.modelID'),
+		json_extract(m.data, '$.providerID'),
+		COALESCE(s.project_id, ''),
+		COALESCE(p.name, ''),
+		COALESCE(p.worktree, ''),
+		COALESCE(s.time_created, m.time_created),
+		COALESCE(s.time_updated, m.time_created)
+	FROM message m
+	LEFT JOIN session s ON s.id = m.session_id
+	LEFT JOIN project p ON p.id = s.project_id
+	WHERE m.time_created >= ? AND m.time_created < ?
+`
+
+// consolidationMessagesV2Query reads the same columns from an OpenCode 2
+// database plus each request's usage evidence.
+var consolidationMessagesV2Query = `
+	SELECT
+		m.id,
+		m.session_id,
+		m.time_created,
+		m.role,
+		COALESCE(json_extract(m.data, '$.cost'), 0),
+		COALESCE(json_extract(m.data, '$.tokens.input'), 0),
+		COALESCE(json_extract(m.data, '$.tokens.output'), 0),
+		COALESCE(json_extract(m.data, '$.tokens.reasoning'), 0),
+		COALESCE(json_extract(m.data, '$.tokens.cache.read'), 0),
+		COALESCE(json_extract(m.data, '$.tokens.cache.write'), 0),
+		json_extract(m.data, '$.model.id'),
+		json_extract(m.data, '$.model.providerID'),
+		COALESCE(s.project_id, ''),
+		COALESCE(p.name, ''),
+		COALESCE(p.worktree, ''),
+		COALESCE(s.time_created, m.time_created),
+		COALESCE(s.time_updated, m.time_created),
+		m.usage_state
+	FROM ` + stats.V2MessagesSQL + ` m
+	LEFT JOIN session_v2 s ON s.id = m.session_id
+	LEFT JOIN project p ON p.id = s.project_id
+	WHERE m.time_created >= ? AND m.time_created < ?
+`
+
+func consolidationMessages(ctx context.Context, tx *sql.Tx, query string, v2 bool, startMs, endMs int64) (source.ConsolidationData, map[string]int, error) {
+	rows, err := tx.QueryContext(ctx, query, startMs, endMs)
 	if err != nil {
 		return source.ConsolidationData{}, nil, err
 	}
@@ -111,13 +151,18 @@ func consolidationMessages(ctx context.Context, tx *sql.Tx, startMs, endMs int64
 			worktree         string
 			sessionCreatedMS int64
 			sessionUpdatedMS int64
+			usageState       sql.NullString
 		)
-		if err := rows.Scan(
+		dest := []any{
 			&messageID, &sessionID, &messageCreatedMS, &role, &cost,
 			&input, &output, &reasoning, &cacheRead, &cacheWrite,
 			&modelID, &providerID, &projectID, &projectName, &worktree,
 			&sessionCreatedMS, &sessionUpdatedMS,
-		); err != nil {
+		}
+		if v2 {
+			dest = append(dest, &usageState)
+		}
+		if err := rows.Scan(dest...); err != nil {
 			return source.ConsolidationData{}, nil, err
 		}
 
@@ -142,6 +187,9 @@ func consolidationMessages(ctx context.Context, tx *sql.Tx, startMs, endMs int64
 			entry.ProviderID = providerID.String
 			entry.CostStatus = stats.CostReported
 			entry.CostProvenance = reportedCost()
+			if v2 {
+				stats.ApplyV2UsageState(&entry, usageState.String)
+			}
 		}
 		messageIndexes[messageID] = len(data.Messages)
 		data.Messages = append(data.Messages, source.ConsolidationMessage{Entry: entry})
@@ -251,6 +299,36 @@ func consolidationParts(ctx context.Context, tx *sql.Tx, startMs, endMs int64, m
 		messages[index].ModelTokens = &value
 	}
 	return nil
+}
+
+// consolidationToolsV2 attaches the tool calls embedded in OpenCode 2
+// assistant steps. Step usage is already additive per row, so unlike 1.x no
+// model-token override is collected.
+func consolidationToolsV2(ctx context.Context, tx *sql.Tx, startMs, endMs int64, messages []source.ConsolidationMessage, messageIndexes map[string]int) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT t.message_id, COALESCE(t.tool, ''), COALESCE(t.status, '')
+		FROM `+stats.V2ToolCallsSQL+` t
+		WHERE t.time_created >= ? AND t.time_created < ?
+	`, startMs, endMs)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var messageID, name, status string
+		if err := rows.Scan(&messageID, &name, &status); err != nil {
+			return err
+		}
+		index, ok := messageIndexes[messageID]
+		if !ok || name == "" {
+			continue
+		}
+		messages[index].Tools = append(messages[index].Tools, source.ConsolidationTool{Name: name, Status: status})
+	}
+	return rows.Err()
 }
 
 func consolidationProjectName(projectID, name, worktree string) string {

@@ -42,6 +42,12 @@ func Tools(ctx context.Context, st *store.Store, pq PeriodQuery) (ToolStats, err
 	startMs := pw.StartMs
 	endMs := pw.EndMs
 
+	if isV2(st) {
+		// The legacy streaming path parses 1.x part rows; OpenCode 2 embeds
+		// tool calls in assistant steps, which only the SQL path reads.
+		return toolsSQL(ctx, st, startMs, endMs)
+	}
+
 	if useLegacyToolsPath() {
 		return toolsLegacy(ctx, st, startMs, endMs)
 	}
@@ -49,25 +55,30 @@ func Tools(ctx context.Context, st *store.Store, pq PeriodQuery) (ToolStats, err
 	return toolsSQL(ctx, st, startMs, endMs)
 }
 
+const toolsV1Query = `
+	SELECT
+		JSON_EXTRACT(p.data, '$.tool') AS tool_name,
+		COUNT(*) AS invocations,
+		SUM(CASE WHEN JSON_EXTRACT(p.data, '$.state.status') = 'completed' THEN 1 ELSE 0 END) AS successes,
+		SUM(CASE WHEN JSON_EXTRACT(p.data, '$.state.status') = 'error' THEN 1 ELSE 0 END) AS failures,
+		COUNT(DISTINCT p.session_id) AS sessions
+	FROM part p
+	WHERE p.time_created >= ? AND p.time_created < ?
+		AND JSON_EXTRACT(p.data, '$.type') = 'tool'
+		AND JSON_EXTRACT(p.data, '$.tool') IS NOT NULL
+		AND JSON_EXTRACT(p.data, '$.tool') != ''
+	GROUP BY tool_name
+	ORDER BY invocations DESC, tool_name ASC
+`
+
 // toolsSQL uses JSON_EXTRACT + GROUP BY in SQL to aggregate tool stats.
 func toolsSQL(ctx context.Context, st *store.Store, startMs, endMs int64) (ToolStats, error) {
 	db := st.DB()
 
-	query := `
-		SELECT
-			JSON_EXTRACT(p.data, '$.tool') AS tool_name,
-			COUNT(*) AS invocations,
-			SUM(CASE WHEN JSON_EXTRACT(p.data, '$.state.status') = 'completed' THEN 1 ELSE 0 END) AS successes,
-			SUM(CASE WHEN JSON_EXTRACT(p.data, '$.state.status') = 'error' THEN 1 ELSE 0 END) AS failures,
-			COUNT(DISTINCT p.session_id) AS sessions
-		FROM part p
-		WHERE p.time_created >= ? AND p.time_created < ?
-			AND JSON_EXTRACT(p.data, '$.type') = 'tool'
-			AND JSON_EXTRACT(p.data, '$.tool') IS NOT NULL
-			AND JSON_EXTRACT(p.data, '$.tool') != ''
-		GROUP BY tool_name
-		ORDER BY invocations DESC, tool_name ASC
-	`
+	query := toolsV1Query
+	if isV2(st) {
+		query = toolsV2Query
+	}
 
 	rows, err := db.QueryContext(ctx, query, startMs, endMs)
 	if err != nil {

@@ -53,14 +53,42 @@ func sourceFingerprint(ctx context.Context, info source.SourceInfo) (string, err
 	default:
 		fmt.Fprintf(h, "diagnostics=%d:%d\n", info.Diagnostics.ScannedFiles, info.Diagnostics.MalformedLines)
 	}
-	return tagFingerprint(hex.EncodeToString(h.Sum(nil)), info.CostPolicy.PricingSnapshotID), nil
+	return tagFingerprint(hex.EncodeToString(h.Sum(nil)), rebuildIdentity(info)), nil
 }
 
 func fallbackFingerprint(info source.SourceInfo) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "v=%d\nid=%s\nkind=%s\npath=%s\npricing_snapshot=%s\navailable=%v\nfiles=%d\nmalformed=%d\nunsupported=%d\n",
 		dataVersion, info.ID, info.Kind, info.Path, info.CostPolicy.PricingSnapshotID, info.Available, info.Diagnostics.ScannedFiles, info.Diagnostics.MalformedLines, info.Diagnostics.UnsupportedEvents)
-	return tagFingerprint(hex.EncodeToString(h.Sum(nil)), info.CostPolicy.PricingSnapshotID)
+	return tagFingerprint(hex.EncodeToString(h.Sum(nil)), rebuildIdentity(info))
+}
+
+// rebuildIdentity is the part of a source's identity whose change invalidates
+// every consolidated row, encoded in the fingerprint's pricing tag: the
+// pricing catalog (historical costs must be recomputed) and the data layout
+// (rows consolidated from another layout cannot be assumed complete, e.g. an
+// OpenCode 1.x cache after OpenCode 2 took over the database). An empty layout
+// contributes nothing, so fingerprints written before layouts existed still
+// match.
+func rebuildIdentity(info source.SourceInfo) string {
+	if info.DataLayout == "" {
+		return info.CostPolicy.PricingSnapshotID
+	}
+	return info.CostPolicy.PricingSnapshotID + "\x00layout=" + info.DataLayout
+}
+
+// rebuildReason explains a rebuild-identity change. The fingerprint keeps only
+// a digest, so a source without a pricing catalog can only have changed
+// layout, and one without a layout only its catalog.
+func rebuildReason(info source.SourceInfo) string {
+	switch {
+	case info.CostPolicy.PricingSnapshotID == "":
+		return layoutChangeReason
+	case info.DataLayout == "":
+		return pricingSnapshotChangeReason
+	default:
+		return "pricing catalog or source data layout changed; full historical rebuild required"
+	}
 }
 
 // tagFingerprint keeps the content digest opaque while making the pricing

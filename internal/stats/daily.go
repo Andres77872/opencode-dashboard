@@ -116,6 +116,10 @@ func queryEarliestActivityDate(ctx context.Context, db *store.Store) (time.Time,
 		WHERE created_at IS NOT NULL
 	`
 
+	if isV2(db) {
+		query = earliestActivityV2Query
+	}
+
 	var earliest sql.NullInt64
 	if err := db.DB().QueryRowContext(ctx, query).Scan(&earliest); err != nil {
 		return time.Time{}, err
@@ -144,6 +148,10 @@ func querySessionCountsByDay(ctx context.Context, db *store.Store, startMs, endM
 		WHERE time_created >= ? AND time_created < ?
 		GROUP BY day
 	`
+
+	if isV2(db) {
+		query = sessionCountsByBucketV2Query(TrendBucketSQL("time_created", GranularityDay))
+	}
 
 	rows, err := db.DB().QueryContext(ctx, query, startMs, endMs)
 	if err != nil {
@@ -217,6 +225,10 @@ func queryMessageStatsByDay(ctx context.Context, db *store.Store, startMs, endMs
 		WHERE m.time_created >= ? AND m.time_created < ?
 		GROUP BY day
 	`
+
+	if isV2(db) {
+		query = messageStatsByBucketV2Query(TrendBucketSQL("m.time_created", GranularityDay))
+	}
 
 	rows, err := db.DB().QueryContext(ctx, query, startMs, endMs)
 	if err != nil {
@@ -357,6 +369,10 @@ func querySessionCountsByHour(ctx context.Context, db *store.Store, startTime, e
 		GROUP BY hour
 	`
 
+	if isV2(db) {
+		query = sessionCountsByBucketV2Query(TrendBucketSQL("time_created", GranularityHour))
+	}
+
 	startMs := startTime.UnixMilli()
 	endMs := endTime.UnixMilli()
 
@@ -431,6 +447,10 @@ func queryMessageStatsByHour(ctx context.Context, db *store.Store, startTime, en
 		WHERE m.time_created >= ? AND m.time_created < ?
 		GROUP BY hour
 	`
+
+	if isV2(db) {
+		query = messageStatsByBucketV2Query(TrendBucketSQL("m.time_created", GranularityHour))
+	}
 
 	startMs := startTime.UnixMilli()
 	endMs := endTime.UnixMilli()
@@ -579,6 +599,10 @@ func DailyDimension(ctx context.Context, db *store.Store, dimension string, pq P
 			GROUP BY day, dim
 			ORDER BY day ASC, total_cost DESC
 		`, bucket)
+	}
+
+	if isV2(db) {
+		query = dailyDimensionV2Query(dimension, path, bucket)
 	}
 
 	rows, err := db.DB().QueryContext(ctx, query, pw.StartMs, pw.EndMs)
