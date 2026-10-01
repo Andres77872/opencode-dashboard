@@ -71,6 +71,7 @@ const (
 	SyncModeRebuild     SyncMode = "rebuild"
 
 	pricingSnapshotChangeReason = "pricing catalog changed; full historical repricing required"
+	layoutChangeReason          = "source data layout changed; full historical rebuild required"
 )
 
 type SyncOptions struct {
@@ -250,7 +251,9 @@ type SourceStatus struct {
 }
 
 type SyncNeed struct {
-	Needed        bool
+	Needed bool
+	// PricingChange reports that the source's rebuild identity changed (its
+	// pricing catalog or data layout), so only a full rebuild is correct.
 	PricingChange bool
 	Reason        string
 	Status        SourceStatus
@@ -375,8 +378,8 @@ func (s *Store) NeedsSync(ctx context.Context, src source.Source) (SyncNeed, err
 	if !ok {
 		return SyncNeed{Needed: true, Reason: "cache has no consolidated data for this source"}, nil
 	}
-	if pricingIdentityChanged(current.Fingerprint, fp, info.CostPolicy.PricingSnapshotID) {
-		return SyncNeed{Needed: true, PricingChange: true, Reason: pricingSnapshotChangeReason, Status: current}, nil
+	if pricingIdentityChanged(current.Fingerprint, fp, rebuildIdentity(info)) {
+		return SyncNeed{Needed: true, PricingChange: true, Reason: rebuildReason(info), Status: current}, nil
 	}
 	if current.Status != "ready" {
 		reason := "cache is not ready"
@@ -450,11 +453,13 @@ func (s *Store) SyncSourceWithOptions(ctx context.Context, src source.Source, op
 		return report, s.markUnavailable(ctx, info, fp, current, ok)
 	}
 
-	pricingChanged := ok && pricingIdentityChanged(current.Fingerprint, fp, info.CostPolicy.PricingSnapshotID)
+	pricingChanged := ok && pricingIdentityChanged(current.Fingerprint, fp, rebuildIdentity(info))
 	if pricingChanged && opts.Mode == SyncModeIncremental {
 		// Incremental consolidation only re-collects rows at/after the previous
 		// cutoff. Catalog changes alter the cost of every historical token, so
-		// retaining that window would leave older rows priced with stale rates.
+		// retaining that window would leave older rows priced with stale rates;
+		// a layout change means older rows came from data the source no longer
+		// reads (or read while it was incomplete).
 		opts.Mode = SyncModeRebuild
 		report.Mode = SyncModeRebuild
 	}

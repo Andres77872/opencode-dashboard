@@ -23,6 +23,7 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 	}
 
 	db := s.DB()
+	v2 := isV2(s)
 
 	// Ensure valid pagination parameters
 	if query.Page < 1 {
@@ -62,6 +63,9 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 		WHERE (? = '' OR LOWER(COALESCE(s.title, '')) LIKE LOWER(?) OR LOWER(COALESCE(p.name, p.worktree, '')) LIKE LOWER(?))
 	`
 	countArgs := []interface{}{filter, filterLike, filterLike}
+	if v2 {
+		countQuery = sessionsCountV2Query
+	}
 
 	if query.ProjectID != "" {
 		countQuery += ` AND p.id = ?`
@@ -69,11 +73,15 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 	}
 
 	if hasPeriod {
-		countQuery += ` AND EXISTS (
+		if v2 {
+			countQuery += sessionActiveV2Clause
+		} else {
+			countQuery += ` AND EXISTS (
 			SELECT 1 FROM message m
 			WHERE m.session_id = s.id
 				AND m.time_created >= ? AND m.time_created < ?
 		)`
+		}
 		countArgs = append(countArgs, startMs, endMs)
 	}
 
@@ -113,6 +121,9 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 		WHERE (? = '' OR LOWER(COALESCE(s.title, '')) LIKE LOWER(?) OR LOWER(COALESCE(p.name, p.worktree, '')) LIKE LOWER(?))
 	`
 	listArgs := []interface{}{startMs, endMs, filter, filterLike, filterLike}
+	if v2 {
+		listQuery = sessionsListV2Query
+	}
 
 	if query.ProjectID != "" {
 		listQuery += ` AND p.id = ?`
@@ -120,11 +131,15 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 	}
 
 	if hasPeriod {
-		listQuery += ` AND EXISTS (
+		if v2 {
+			listQuery += sessionActiveV2Clause
+		} else {
+			listQuery += ` AND EXISTS (
 			SELECT 1 FROM message m2
 			WHERE m2.session_id = s.id
 				AND m2.time_created >= ? AND m2.time_created < ?
 		)`
+		}
 		listArgs = append(listArgs, startMs, endMs)
 	}
 
@@ -229,6 +244,7 @@ func SessionByID(ctx context.Context, s *store.Store, id string) (*SessionDetail
 	}
 
 	db := s.DB()
+	v2 := isV2(s)
 
 	// Query session metadata
 	sessionQuery := `
@@ -245,6 +261,10 @@ func SessionByID(ctx context.Context, s *store.Store, id string) (*SessionDetail
 		LEFT JOIN project p ON p.id = s.project_id
 		WHERE s.id = ?
 	`
+
+	if v2 {
+		sessionQuery = sessionMetaV2Query
+	}
 
 	var (
 		sessionID     string
@@ -297,6 +317,10 @@ func SessionByID(ctx context.Context, s *store.Store, id string) (*SessionDetail
 		ORDER BY m.time_created ASC
 	`
 
+	if v2 {
+		messageQuery = sessionMessagesV2Query
+	}
+
 	rows, err := db.QueryContext(ctx, messageQuery, id)
 	if err != nil {
 		return nil, err
@@ -321,9 +345,10 @@ func SessionByID(ctx context.Context, s *store.Store, id string) (*SessionDetail
 			modelID          sql.NullString
 			providerID       sql.NullString
 			agent            sql.NullString
+			usageState       sql.NullString
 		)
 
-		if err := rows.Scan(
+		dest := []any{
 			&msgID,
 			&role,
 			&msgTimeCreatedMs,
@@ -336,7 +361,11 @@ func SessionByID(ctx context.Context, s *store.Store, id string) (*SessionDetail
 			&modelID,
 			&providerID,
 			&agent,
-		); err != nil {
+		}
+		if v2 {
+			dest = append(dest, &usageState)
+		}
+		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}
 
@@ -375,6 +404,9 @@ func SessionByID(ctx context.Context, s *store.Store, id string) (*SessionDetail
 			}
 			if agent.Valid {
 				msg.Agent = agent.String
+			}
+			if v2 {
+				applyV2SessionUsageState(&msg, usageState.String)
 			}
 		}
 

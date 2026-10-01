@@ -68,21 +68,27 @@ type ConsolidationTool struct {
 }
 
 type SourceInfo struct {
-	ID           SourceID          `json:"id"`
-	Label        string            `json:"label"`
-	Kind         string            `json:"kind"`
-	Available    bool              `json:"available"`
-	Default      bool              `json:"default"`
-	Selected     bool              `json:"selected,omitempty"`
-	Path         string            `json:"path,omitempty"`
-	PathSource   string            `json:"path_source,omitempty"`
-	ReadOnly     bool              `json:"read_only"`
-	LocalOnly    bool              `json:"local_only"`
-	Capabilities []string          `json:"capabilities"`
-	Warnings     []string          `json:"warnings,omitempty"`
-	Diagnostics  SourceDiagnostics `json:"diagnostics,omitempty"`
-	CostPolicy   CostPolicy        `json:"cost_policy,omitempty"`
-	Privacy      PrivacyInfo       `json:"privacy,omitempty"`
+	ID           SourceID `json:"id"`
+	Label        string   `json:"label"`
+	Kind         string   `json:"kind"`
+	Available    bool     `json:"available"`
+	Default      bool     `json:"default"`
+	Selected     bool     `json:"selected,omitempty"`
+	Path         string   `json:"path,omitempty"`
+	PathSource   string   `json:"path_source,omitempty"`
+	ReadOnly     bool     `json:"read_only"`
+	LocalOnly    bool     `json:"local_only"`
+	Capabilities []string `json:"capabilities"`
+	// DataLayout names the on-disk layout the source currently reads when a
+	// source supports more than one (OpenCode: "opencode-v2"). Empty means the
+	// source's original layout. The cache rebuilds a source from scratch when
+	// its layout changes, since consolidated history from one layout cannot be
+	// assumed complete or consistent under another.
+	DataLayout  string            `json:"data_layout,omitempty"`
+	Warnings    []string          `json:"warnings,omitempty"`
+	Diagnostics SourceDiagnostics `json:"diagnostics,omitempty"`
+	CostPolicy  CostPolicy        `json:"cost_policy,omitempty"`
+	Privacy     PrivacyInfo       `json:"privacy,omitempty"`
 }
 
 type SourceDiagnostics struct {

@@ -35,6 +35,30 @@ Each source is detected automatically and exposed with its own capabilities, dia
 | Kimi Code | `jsonl` | `--kimi-home` → `KIMI_CODE_HOME` → `~/.kimi-code` | `estimated_api_equivalent` — estimated from official Kimi API prices, **not** actual membership or coding-plan spend |
 | Qwen Code | `jsonl` | `--qwen-home` → `QWEN_CODE_HOME` → `~/.qwen` | `estimated_api_equivalent` — estimated from Alibaba Cloud Model Studio list prices, **not** actual coding-plan or Token Plan spend; unpriced models stay `missing` |
 
+### OpenCode 1.x and 2.x databases
+
+Both OpenCode storage layouts are supported, and the dashboard picks one automatically. It checks again every 15 seconds, so an upgrade made while the dashboard is running is picked up without a restart.
+
+- **OpenCode 1.x** stores its history in the `session`, `message`, and `part` tables.
+- **OpenCode 2.x** replaces them with `session_v2` and `session_message`. Each `session_message` row is one transcript item, and assistant text, reasoning, and tool calls are embedded in that row. A database counts as 2.x when it has `session_v2`. OpenCode 1.18 already creates an empty `session_message` table, so that table alone does not count.
+
+2.x rows map onto the dashboard like this:
+
+- `user` rows are messages.
+- Each `assistant` row is one model step, so it counts as one request with its own usage.
+- Settled `compaction` rows also count as requests, so compaction spend is included.
+- Bookkeeping rows are skipped: synthetic, system, skill, idle, agent/model/location switches, and `shell` rows (commands the user ran).
+- A forked session copies its parent's history into itself. Those copies are excluded, as in OpenCode's own usage statistics, so history is not counted twice.
+- A step that failed or was aborted before usage was recorded shows as *usage unavailable* rather than as zero.
+- Tool names follow what OpenCode recorded. Imported 1.x history keeps names like `bash` and `task`; 2.x renamed them to `shell` and `subagent`.
+
+When OpenCode 2 upgrades a 1.x database in place, it keeps the 1.x tables as a frozen snapshot and copies their history into the 2.x tables. That copy runs in the background the first time an OpenCode 2 server starts.
+
+- Until the copy finishes, the dashboard keeps reading the complete 1.x tables and warns that the import is still running.
+- Once it finishes, the dashboard reads only the 2.x tables. Using both would double-count the copied history.
+- Each switch between layouts rebuilds the OpenCode cache once from the new layout.
+- OpenCode 2's import drops the cost of 1.x compaction summaries. After that rebuild, historical OpenCode totals therefore match OpenCode 2's own figures. They can be slightly lower than a cache built from the 1.x tables.
+
 ### Cross-source costs
 
 The Overview deliberately does **not** present a single combined cost number. OpenCode reports real dollars, Codex, Kimi Code, and Qwen Code report estimated API-equivalent values, and Claude Code is mixed — summing them would be misleading. Costs are always shown per source with each source's own provenance, while additive metrics (sessions, requests, messages, tokens, days) are combined. A **request** is an outbound assistant/API attempt and excludes user prompts; **messages** remain the transcript/history count. Cross-source "top" signals (models, projects, tools) are ranked by a cost-neutral metric (tokens / invocations) so real and estimated dollars are never compared.

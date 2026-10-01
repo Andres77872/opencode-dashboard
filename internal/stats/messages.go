@@ -47,6 +47,7 @@ func MessagesByPeriod(ctx context.Context, s *store.Store, pq PeriodQuery, page,
 	offset := (page - 1) * limit
 
 	db := s.DB()
+	v2 := isV2(s)
 
 	// Get total count
 	var total int64
@@ -55,6 +56,9 @@ func MessagesByPeriod(ctx context.Context, s *store.Store, pq PeriodQuery, page,
 		FROM message m
 		WHERE m.time_created >= ? AND m.time_created < ?
 	`
+	if v2 {
+		countQuery = messagesCountV2Query
+	}
 	err = db.QueryRowContext(ctx, countQuery, startMs, endMs).Scan(&total)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -87,6 +91,10 @@ func MessagesByPeriod(ctx context.Context, s *store.Store, pq PeriodQuery, page,
 		LIMIT ? OFFSET ?
 	`
 
+	if v2 {
+		listQuery = messagesListV2Query(sort)
+	}
+
 	rows, err := db.QueryContext(ctx, listQuery, startMs, endMs, limit, offset)
 	if err != nil {
 		return MessageList{}, err
@@ -109,9 +117,10 @@ func MessagesByPeriod(ctx context.Context, s *store.Store, pq PeriodQuery, page,
 			cacheWrite    int64
 			modelID       sql.NullString
 			providerID    sql.NullString
+			usageState    sql.NullString
 		)
 
-		if err := rows.Scan(
+		dest := []any{
 			&id,
 			&sessionID,
 			&title,
@@ -125,7 +134,11 @@ func MessagesByPeriod(ctx context.Context, s *store.Store, pq PeriodQuery, page,
 			&cacheWrite,
 			&modelID,
 			&providerID,
-		); err != nil {
+		}
+		if v2 {
+			dest = append(dest, &usageState)
+		}
+		if err := rows.Scan(dest...); err != nil {
 			return MessageList{}, err
 		}
 
@@ -154,6 +167,9 @@ func MessagesByPeriod(ctx context.Context, s *store.Store, pq PeriodQuery, page,
 			}
 			if providerID.Valid {
 				entry.ProviderID = providerID.String
+			}
+			if v2 {
+				ApplyV2UsageState(&entry, usageState.String)
 			}
 		}
 
@@ -189,6 +205,7 @@ func MessageByID(ctx context.Context, s *store.Store, id string) (*MessageDetail
 	}
 
 	db := s.DB()
+	v2 := isV2(s)
 
 	// Query message metadata
 	messageQuery := `
@@ -211,6 +228,10 @@ func MessageByID(ctx context.Context, s *store.Store, id string) (*MessageDetail
 		WHERE m.id = ?
 	`
 
+	if v2 {
+		messageQuery = messageByIDV2Query
+	}
+
 	var (
 		msgID         string
 		sessionID     string
@@ -225,9 +246,10 @@ func MessageByID(ctx context.Context, s *store.Store, id string) (*MessageDetail
 		cacheWrite    int64
 		modelID       sql.NullString
 		providerID    sql.NullString
+		usageState    sql.NullString
 	)
 
-	err := db.QueryRowContext(ctx, messageQuery, id).Scan(
+	dest := []any{
 		&msgID,
 		&sessionID,
 		&title,
@@ -241,7 +263,11 @@ func MessageByID(ctx context.Context, s *store.Store, id string) (*MessageDetail
 		&cacheWrite,
 		&modelID,
 		&providerID,
-	)
+	}
+	if v2 {
+		dest = append(dest, &usageState)
+	}
+	err := db.QueryRowContext(ctx, messageQuery, id).Scan(dest...)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -274,6 +300,17 @@ func MessageByID(ctx context.Context, s *store.Store, id string) (*MessageDetail
 		if providerID.Valid {
 			entry.ProviderID = providerID.String
 		}
+		if v2 {
+			ApplyV2UsageState(&entry, usageState.String)
+		}
+	}
+
+	if v2 {
+		content, err := messageContentV2(ctx, db, id)
+		if err != nil {
+			return nil, err
+		}
+		return &MessageDetail{MessageEntry: entry, Content: content}, nil
 	}
 
 	// Query part table for text/reasoning content

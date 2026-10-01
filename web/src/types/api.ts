@@ -49,6 +49,8 @@ export interface SourceInfo {
   read_only: boolean
   local_only: boolean
   capabilities: string[]
+  /** Storage layout read when a source supports several (OpenCode 2: "opencode-v2"); absent for the original layout. */
+  data_layout?: string
   warnings?: string[]
   diagnostics?: SourceDiagnostics
   cost_policy?: CostPolicy

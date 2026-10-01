@@ -9,6 +9,10 @@ function compactPath(path: string) {
   return `…${path.slice(-93)}`
 }
 
+function dataLayoutLabel(layout: string) {
+  return layout === 'opencode-v2' ? 'OpenCode 2 schema' : layout
+}
+
 type Tone = 'info' | 'warning' | 'danger'
 
 const TONE: Record<Tone, { fg: string; soft: string; icon: IconName }> = {
@@ -59,6 +63,7 @@ export function SourceNotice() {
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
           <Badge tone={selectedSourceInfo?.available ? 'accent' : 'warning'}>{sourceLabel}</Badge>
           <Badge>{selectedSourceInfo?.kind ?? 'source'}</Badge>
+          {selectedSourceInfo?.data_layout && <Badge>{dataLayoutLabel(selectedSourceInfo.data_layout)}</Badge>}
           {selectedSourceInfo?.read_only && <Badge tone="success">read-only</Badge>}
           {selectedSourceInfo?.local_only && <Badge tone="success">local-only</Badge>}
           {selectedSourceInfo?.cost_policy?.status && <Badge>cost {selectedSourceInfo.cost_policy.status}</Badge>}
