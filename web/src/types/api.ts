@@ -327,6 +327,8 @@ export interface ConfigStats {
   /** Set when the file exists but structured parsing failed. */
   parse_error?: string
   redacted?: boolean
+  /** Files merged into content, lowest precedence first; path is the last. Absent for a single file. */
+  merged_paths?: string[]
 }
 
 export interface SessionEntry extends SourceTagged {
