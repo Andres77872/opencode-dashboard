@@ -1,6 +1,6 @@
 {
-  "id": "anthropic-bundled-2026-09-28",
-  "retrieved_at": "2026-09-28T00:00:00Z",
+  "id": "anthropic-bundled-2026-10-07",
+  "retrieved_at": "2026-10-07T00:00:00Z",
   "source": "bundled static Anthropic pricing snapshot; no network updates",
   "currency": "USD",
   "models": {
@@ -104,7 +104,7 @@
     "claude-sonnet-5-5": {
       "input_per_million": 2.0,
       "output_per_million": 10.0,
-      "cache_read_input_per_million": 0.2,
+      "cache_read_input_per_million": 0.1,
       "cache_creation_input_per_million": 2.5,
       "cache_creation_input_1h_per_million": 4.0
     },
@@ -135,6 +135,22 @@
       "cache_read_input_per_million": 0.3,
       "cache_creation_input_per_million": 3.75,
       "cache_creation_input_1h_per_million": 6.0
+    },
+    "claude-haiku-5-5": {
+      "input_per_million": 0.1,
+      "output_per_million": 0.5,
+      "cache_read_input_per_million": 0.01,
+      "cache_creation_input_per_million": 0.125,
+      "cache_creation_input_1h_per_million": 0.2,
+      "long_context_threshold_prompt_tokens": 100000,
+      "long_context": {
+        "input_per_million": 0.5,
+        "output_per_million": 2.5,
+        "cache_read_input_per_million": 0.05,
+        "cache_creation_input_per_million": 0.625,
+        "cache_creation_input_1h_per_million": 1.0
+      },
+      "note": "prompts over 100,000 tokens, counting cache reads and writes, bill every token at the long-context rates"
     },
     "claude-haiku-4-5-20251001": {
       "input_per_million": 1.0,

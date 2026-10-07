@@ -189,6 +189,28 @@ func TestBundledPricingSnapshotCoversCurrentClaudeRates(t *testing.T) {
 			},
 		},
 		{
+			name: "current sonnet 5.5 exact rate uses its lower cache read price",
+			key:  "claude-sonnet-5-5",
+			want: pricingRate{
+				InputPerMillion:         2.0,
+				OutputPerMillion:        10.0,
+				CacheReadPerMillion:     0.1,
+				CacheCreatePerMillion:   2.5,
+				CacheCreate1hPerMillion: 4.0,
+			},
+		},
+		{
+			name: "current haiku 5.5 exact rate is the short-prompt price",
+			key:  "claude-haiku-5-5",
+			want: pricingRate{
+				InputPerMillion:         0.1,
+				OutputPerMillion:        0.5,
+				CacheReadPerMillion:     0.01,
+				CacheCreatePerMillion:   0.125,
+				CacheCreate1hPerMillion: 0.2,
+			},
+		},
+		{
 			name: "current sonnet 5 launch rate is the standard price",
 			key:  "claude-sonnet-5",
 			want: pricingRate{
@@ -396,8 +418,8 @@ func TestBundledPricingRealClaudeModelsComputeNonMissingCosts(t *testing.T) {
 // Point releases share a boundary-aware prefix with their predecessor, so
 // without their own rows they would silently fall back to the older family
 // rates (Fable 5.1 cache reads at Fable 5's 4x price, Opus 5.5 at Opus 5's).
-// Sonnet 5.5 shares Sonnet 5's rates but must still resolve to its own model
-// with computed rather than approximate cost provenance.
+// Sonnet 5.5 matches Sonnet 5 except for cache reads, which bill at half
+// Sonnet 5's price.
 func TestBundledPricingPointReleasesDoNotFallBackToPredecessor(t *testing.T) {
 	pricing := loadBundledPricingForTest(t)
 	usage := tokenUsage{Input: 1_000_000, Output: 1_000_000, CacheRead: 1_000_000, CacheCreate: 2_000_000, CacheCreate5m: 1_000_000, CacheCreate1h: 1_000_000}
@@ -414,8 +436,8 @@ func TestBundledPricingPointReleasesDoNotFallBackToPredecessor(t *testing.T) {
 		{model: "claude-opus-5-5", wantCanonical: "claude-opus-5-5", wantStatus: stats.CostComputed, wantCost: 37.2},
 		{model: "claude-opus-5-5-20260922", wantCanonical: "claude-opus-5-5", wantStatus: stats.CostApproximate, wantCost: 37.2},
 		{model: "claude-opus-5", wantCanonical: "claude-opus-5", wantStatus: stats.CostComputed, wantCost: 46.75},
-		{model: "claude-sonnet-5-5", wantCanonical: "claude-sonnet-5-5", wantStatus: stats.CostComputed, wantCost: 18.7},
-		{model: "claude-sonnet-5-5-custom", wantCanonical: "claude-sonnet-5-5", wantStatus: stats.CostApproximate, wantCost: 18.7},
+		{model: "claude-sonnet-5-5", wantCanonical: "claude-sonnet-5-5", wantStatus: stats.CostComputed, wantCost: 18.6},
+		{model: "claude-sonnet-5-5-custom", wantCanonical: "claude-sonnet-5-5", wantStatus: stats.CostApproximate, wantCost: 18.6},
 		{model: "claude-sonnet-5", wantCanonical: "claude-sonnet-5", wantStatus: stats.CostComputed, wantCost: 18.7},
 	}
 
@@ -425,6 +447,58 @@ func TestBundledPricingPointReleasesDoNotFallBackToPredecessor(t *testing.T) {
 				t.Errorf("resolve(%q) canonical = %q, want %q", tt.model, got, tt.wantCanonical)
 			}
 			result := computeCost(tt.model, "anthropic", usage, true, nil, pricing)
+			if result.Status != tt.wantStatus {
+				t.Errorf("computeCost(%q) status = %q, want %q", tt.model, result.Status, tt.wantStatus)
+			}
+			if !approxEqual(result.Cost, tt.wantCost) {
+				t.Errorf("computeCost(%q) = %.9f, want %.9f", tt.model, result.Cost, tt.wantCost)
+			}
+		})
+	}
+}
+
+// Haiku 5.5 is priced by prompt length: a request whose prompt (fresh input
+// plus cache reads and writes) exceeds 100,000 tokens bills every token,
+// output included, at 5x the short-prompt rates.
+func TestBundledPricingHaiku55BillsLongPromptsAtLongContextRates(t *testing.T) {
+	pricing := loadBundledPricingForTest(t)
+	rate := pricing.Models["claude-haiku-5-5"]
+	if rate.LongContextThresholdTokens != 100_000 {
+		t.Fatalf("claude-haiku-5-5 long-context threshold = %d, want 100000", rate.LongContextThresholdTokens)
+	}
+	if rate.LongContext == nil {
+		t.Fatalf("claude-haiku-5-5 has no long-context rate")
+	}
+	assertPricingRate(t, "claude-haiku-5-5 long context", *rate.LongContext, pricingRate{
+		InputPerMillion:         0.5,
+		OutputPerMillion:        2.5,
+		CacheReadPerMillion:     0.05,
+		CacheCreatePerMillion:   0.625,
+		CacheCreate1hPerMillion: 1.0,
+	})
+
+	atThreshold := tokenUsage{Input: 40_000, Output: 20_000, CacheRead: 50_000, CacheCreate: 10_000, CacheCreate5m: 6_000, CacheCreate1h: 4_000}
+	overThreshold := atThreshold
+	overThreshold.Input++
+
+	tests := []struct {
+		name       string
+		model      string
+		usage      tokenUsage
+		wantStatus stats.CostStatus
+		wantCost   float64
+	}{
+		{name: "prompt at the threshold uses short-prompt rates", model: "claude-haiku-5-5", usage: atThreshold, wantStatus: stats.CostComputed, wantCost: 0.01605},
+		{name: "prompt one token over uses long-context rates", model: "claude-haiku-5-5", usage: overThreshold, wantStatus: stats.CostComputed, wantCost: 0.0802505},
+		{name: "cache reads count toward the prompt", model: "claude-haiku-5-5", usage: tokenUsage{Input: 1_000, Output: 1_000, CacheRead: 150_000}, wantStatus: stats.CostComputed, wantCost: 0.0105},
+		{name: "unsplit cache writes count toward the prompt", model: "claude-haiku-5-5", usage: tokenUsage{Input: 50_000, CacheCreate: 60_000}, wantStatus: stats.CostComputed, wantCost: 0.0625},
+		{name: "output does not count toward the prompt", model: "claude-haiku-5-5", usage: tokenUsage{Input: 90_000, Output: 50_000}, wantStatus: stats.CostComputed, wantCost: 0.034},
+		{name: "prefix fallback keeps the threshold", model: "claude-haiku-5-5-20261007", usage: overThreshold, wantStatus: stats.CostApproximate, wantCost: 0.0802505},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := computeCost(tt.model, "anthropic", tt.usage, true, nil, pricing)
 			if result.Status != tt.wantStatus {
 				t.Errorf("computeCost(%q) status = %q, want %q", tt.model, result.Status, tt.wantStatus)
 			}

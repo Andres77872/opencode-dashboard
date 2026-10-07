@@ -33,6 +33,12 @@ type pricingRate struct {
 	CacheCreate1hPerMillion float64 `json:"cache_creation_input_1h_per_million"`
 	Approximate             bool    `json:"approximate"`
 	Note                    string  `json:"note"`
+	// LongContext prices a request whose prompt (fresh input plus cache reads
+	// and writes) exceeds LongContextThresholdTokens. Anthropic bills such a
+	// request entirely at the long-context row, output included. Models
+	// without a threshold bill the same rates at every prompt length.
+	LongContextThresholdTokens int64        `json:"long_context_threshold_prompt_tokens,omitempty"`
+	LongContext                *pricingRate `json:"long_context,omitempty"`
 }
 
 type pricingMatch struct {
@@ -137,16 +143,17 @@ func computeCost(model, providerID string, usage tokenUsage, hasUsage bool, repo
 		return missingCost(currency)
 	}
 	cacheCreate5m, cacheCreate1h := usage.cacheCreateForPricing()
+	rate := match.Rate.forPrompt(usage.Input + usage.CacheRead + cacheCreate5m + cacheCreate1h)
 	// TokenStats buckets are disjoint here as they are in every other adapter:
 	// Output excludes Reasoning, and reasoning bills at the output rate. Claude
 	// Code folds thinking into output_tokens and emits no reasoning_tokens, so
 	// this only matters for a proxied model that reports them separately.
 	outputBillable := usage.Output + usage.Reasoning
-	cost := (float64(usage.Input)*match.Rate.InputPerMillion +
-		float64(outputBillable)*match.Rate.OutputPerMillion +
-		float64(usage.CacheRead)*match.Rate.CacheReadPerMillion +
-		float64(cacheCreate5m)*match.Rate.CacheCreatePerMillion +
-		float64(cacheCreate1h)*match.Rate.cacheCreate1hPerMillion()) / 1_000_000
+	cost := (float64(usage.Input)*rate.InputPerMillion +
+		float64(outputBillable)*rate.OutputPerMillion +
+		float64(usage.CacheRead)*rate.CacheReadPerMillion +
+		float64(cacheCreate5m)*rate.CacheCreatePerMillion +
+		float64(cacheCreate1h)*rate.cacheCreate1hPerMillion()) / 1_000_000
 	status := stats.CostComputed
 	note := "cost computed from transcript token usage and bundled pricing snapshot"
 	if match.Kind == source.PricingResolutionFallback || match.Rate.Approximate {
@@ -182,6 +189,16 @@ func (u tokenUsage) cacheCreateForPricing() (int64, int64) {
 		return u.CacheCreate, 0
 	}
 	return u.CacheCreate5m, u.CacheCreate1h
+}
+
+// forPrompt selects the rate row that applies to a request of the given prompt
+// size. Status and notes still come from the matched row; only the per-token
+// amounts change.
+func (r pricingRate) forPrompt(promptTokens int64) pricingRate {
+	if r.LongContext == nil || r.LongContextThresholdTokens <= 0 || promptTokens <= r.LongContextThresholdTokens {
+		return r
+	}
+	return *r.LongContext
 }
 
 func (r pricingRate) cacheCreate1hPerMillion() float64 {
