@@ -67,6 +67,9 @@ func QueryError(err error, fallback string) APIError {
 }
 
 func SourceError(err error) APIError {
+	if errors.Is(err, source.ErrDisabledSource) {
+		return APIError{Error: http.StatusText(http.StatusConflict), Message: err.Error(), Code: http.StatusConflict}
+	}
 	if errors.Is(err, source.ErrInvalidSource) || errors.Is(err, source.ErrUnsupportedSource) {
 		return BadRequest(err.Error())
 	}

@@ -12,7 +12,8 @@ export function getDefaultSourceId(sourceList: SourceListResponse | null): Sourc
 
 export function getStartupFallbackSourceId(sourceList: SourceListResponse | null): SourceID {
   const startupSourceId = sourceList?.startup_source_id ?? null
-  return isSourceID(startupSourceId) ? startupSourceId : getDefaultSourceId(sourceList)
+  if (isSourceID(startupSourceId) && isRegisteredSource(startupSourceId, sourceList)) return startupSourceId
+  return sourceList?.sources.find(source => source.enabled !== false && source.available)?.id ?? getDefaultSourceId(sourceList)
 }
 
 export function shouldOmitSourceParam(sourceId: SourceID, sourceList: SourceListResponse | null): boolean {
@@ -30,7 +31,7 @@ function isRegisteredSource(sourceId: SourceID, sourceList: SourceListResponse |
   if (!sourceList) {
     return true
   }
-  return sourceList.sources.some((source) => source.id === sourceId)
+  return sourceList.sources.some((source) => source.id === sourceId && source.enabled !== false)
 }
 
 export function resolveRequestedSourceId(

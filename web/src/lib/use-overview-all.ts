@@ -12,14 +12,17 @@ export interface UseOverviewAllResult {
 /**
  * Source-independent fetch + cache + refresh hook for the all-sources Overview.
  *
- * Unlike usePeriodResource, this hook is keyed by PERIOD ONLY and ignores the
- * selected source / source availability — the Overview always spans every source.
+ * This hook is keyed by source revision and period and spans the enabled,
+ * available sources independently of the selected source.
  * It still participates in the global refresh (refreshNonce) and "last sync"
  * (setLastUpdatedAt) machinery so the header controls keep working.
  */
 export function useOverviewAll(period: string): UseOverviewAllResult {
-  const { refreshNonce, setLastUpdatedAt, setRefreshing } = useDashboardContext()
+  const { sources, sourceMetadata, sourceMetadataLoading, refreshNonce, setLastUpdatedAt, setRefreshing } = useDashboardContext()
 
+  const revision = sourceMetadata?.sources_revision ?? 0
+  const hasSources = sources.some(source => source.enabled !== false && source.available)
+  const [dataRevision, setDataRevision] = useState(revision)
   const [data, setData] = useState<AllSourcesOverview | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -38,12 +41,15 @@ export function useOverviewAll(period: string): UseOverviewAllResult {
   }, [])
 
   useEffect(() => {
-    const cacheKey = period
+    if (sourceMetadataLoading) return
+    if (sourceMetadata && !hasSources) { setData(null); setLoading(false); setRefreshing(false); setError('No sources are enabled and available. Enable a source in Config.'); return }
+    const cacheKey = `${revision}:${period}`
     const isRefreshTriggered = lastRefreshNonceRef.current !== refreshNonce
 
     // Cache short-circuit (skip on user-initiated refresh).
     if (!isRefreshTriggered && cacheRef.current.has(cacheKey)) {
       setData(cacheRef.current.get(cacheKey) ?? null)
+      setDataRevision(revision)
       setLoading(false)
       setError(null)
       lastCacheKeyRef.current = cacheKey
@@ -74,6 +80,7 @@ export function useOverviewAll(period: string): UseOverviewAllResult {
 
         cacheRef.current.set(cacheKey, next)
         lastRefreshNonceRef.current = refreshNonce
+        setDataRevision(revision)
         setData(next)
         setLastUpdatedAt(new Date())
       } catch (caught) {
@@ -92,7 +99,7 @@ export function useOverviewAll(period: string): UseOverviewAllResult {
     return () => {
       controller.abort()
     }
-  }, [period, refreshNonce, setLastUpdatedAt, setRefreshing])
+  }, [period, refreshNonce, setLastUpdatedAt, setRefreshing, revision, sourceMetadataLoading, hasSources, sourceMetadata])
 
-  return { data, loading, error }
+  return { data: dataRevision === revision ? data : null, loading, error }
 }

@@ -51,7 +51,8 @@ function StatusDot({ available }: { available: boolean }) {
 }
 
 export function SourcePicker() {
-  const { selectedSourceId, selectedSourceInfo, setSelectedSourceId, sourceMetadataLoading, sources } = useDashboardContext()
+  const { selectedSourceId, selectedSourceInfo, setSelectedSourceId, sourceMetadataLoading, sources: allSources } = useDashboardContext()
+  const sources = useMemo(() => allSources.filter(source => source.enabled !== false), [allSources])
   const aggregate = useLocation().pathname.startsWith('/overview')
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -71,7 +72,7 @@ export function SourcePicker() {
   }, [open])
 
   const options = useMemo(() => {
-    if (selectedSourceInfo && !sources.some((s) => s.id === selectedSourceInfo.id)) {
+    if (selectedSourceInfo && selectedSourceInfo.enabled !== false && !sources.some((s) => s.id === selectedSourceInfo.id)) {
       return [...sources, selectedSourceInfo]
     }
     return sources
@@ -88,7 +89,7 @@ export function SourcePicker() {
   }
 
   const triggerIcon: IconName = aggregate ? 'layers' : kindIcon(selectedSourceInfo?.kind)
-  const triggerLabel = loadingEmpty ? 'Loading sources…' : aggregate ? 'All sources' : selectedSourceInfo?.label ?? selectedSourceId
+  const triggerLabel = sources.length === 0 && !sourceMetadataLoading ? 'No active sources' : loadingEmpty ? 'Loading sources…' : aggregate ? 'All sources' : selectedSourceInfo?.label ?? selectedSourceId
   const triggerUnavailable = !aggregate && selectedSourceInfo?.available === false
 
   return (
@@ -202,8 +203,8 @@ export function SourcePicker() {
             {aggregate
               ? 'The Overview aggregates every source. Costs are shown per source and never combined.'
               : singleSource
-                ? 'Only one data source is configured. Start with --claude-home, --codex-home, --kimi-home, or --qwen-home to add another coding assistant.'
-                : 'Applies to every view except the Overview, which always aggregates all sources.'}
+                ? 'Manage enabled data sources on the Config page.'
+                : 'Applies to every view except the Overview, which aggregates enabled sources.'}
           </p>
         </div>
       )}

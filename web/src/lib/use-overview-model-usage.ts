@@ -25,7 +25,10 @@ export interface UseOverviewModelUsageResult {
  * instant. A global refresh deliberately skips that cache.
  */
 export function useOverviewModelUsage(period: string, enabled: boolean): UseOverviewModelUsageResult {
-  const { refreshNonce } = useDashboardContext()
+  const { refreshNonce, sourceMetadata, sourceMetadataLoading, sources } = useDashboardContext()
+  const revision = sourceMetadata?.sources_revision ?? 0
+  const hasSources = sources.some(source => source.enabled !== false && source.available)
+  const [dataRevision, setDataRevision] = useState(revision)
   const [data, setData] = useState<OverviewModelUsage | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -36,15 +39,17 @@ export function useOverviewModelUsage(period: string, enabled: boolean): UseOver
   const lastRefreshNonceRef = useRef(refreshNonce)
 
   useEffect(() => {
-    if (!enabled) {
+    if (!enabled || sourceMetadataLoading || !hasSources) {
       return
     }
 
     const refreshTriggered = lastRefreshNonceRef.current !== refreshNonce
-    const cached = cacheRef.current.get(period)
+    const cacheKey = `${revision}:${period}`
+    const cached = cacheRef.current.get(cacheKey)
 
     if (!refreshTriggered && cached) {
       setData(cached)
+      setDataRevision(revision)
       setDataRefreshNonce(refreshNonce)
       setError(null)
       setLoading(false)
@@ -76,7 +81,8 @@ export function useOverviewModelUsage(period: string, enabled: boolean): UseOver
           errors: response.errors ?? [],
           partialErrors: response.partial_errors ?? [],
         }
-        cacheRef.current.set(period, next)
+        cacheRef.current.set(cacheKey, next)
+        setDataRevision(revision)
         lastRefreshNonceRef.current = refreshNonce
         setDataRefreshNonce(refreshNonce)
         setData(next)
@@ -91,14 +97,14 @@ export function useOverviewModelUsage(period: string, enabled: boolean): UseOver
 
     void load()
     return () => controller.abort()
-  }, [enabled, period, refreshNonce])
+  }, [enabled, period, refreshNonce, revision, hasSources, sourceMetadataLoading])
 
   // A dashboard refresh also invalidates model data while Source is selected.
   // Keep the old entry in the period cache only as an implementation detail:
   // it must not keep the Top Models card visibly stale, and the next Model
   // selection will bypass it and fetch against the new refresh nonce.
   return {
-    data: dataRefreshNonce === refreshNonce ? data : null,
+    data: dataRefreshNonce === refreshNonce && dataRevision === revision ? data : null,
     loading: enabled && loading,
     error: errorRefreshNonce === refreshNonce ? error : null,
   }

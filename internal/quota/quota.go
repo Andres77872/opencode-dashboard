@@ -9,6 +9,7 @@ package quota
 import (
 	"context"
 	"net/http"
+	"opencode-dashboard/internal/source"
 	"sync"
 	"time"
 )
@@ -80,8 +81,9 @@ type Options struct {
 	CodexHome          string
 	ClaudeSnapshotPath string
 	KimiHome           string
-	MiniMaxAuthPath    string           // opencode auth.json fallback for the API key
-	HTTPClient         *http.Client     // nil => default client with providerTimeout
+	MiniMaxAuthPath    string       // opencode auth.json fallback for the API key
+	HTTPClient         *http.Client // nil => default client with providerTimeout
+	SourceEnabled      func(source.SourceID) bool
 	Now                func() time.Time // nil => time.Now; test seam
 }
 
@@ -95,9 +97,10 @@ type quotaTimeoutProvider interface {
 
 // Service aggregates quota from all providers.
 type Service struct {
-	providers []provider
-	now       func() time.Time
-	timeout   time.Duration
+	providers     []provider
+	now           func() time.Time
+	timeout       time.Duration
+	sourceEnabled func(source.SourceID) bool
 }
 
 func NewService(opts Options) *Service {
@@ -110,8 +113,9 @@ func NewService(opts Options) *Service {
 		client = &http.Client{Timeout: providerTimeout}
 	}
 	return &Service{
-		now:     now,
-		timeout: providerTimeout,
+		now:           now,
+		timeout:       providerTimeout,
+		sourceEnabled: opts.SourceEnabled,
 		providers: []provider{
 			&codexProvider{home: opts.CodexHome, now: now},
 			&claudeProvider{snapshotPath: opts.ClaudeSnapshotPath, now: now},
@@ -124,9 +128,17 @@ func NewService(opts Options) *Service {
 // Quotas queries all providers concurrently. Providers never fail the whole
 // response: errors surface as StatusUnavailable entries.
 func (s *Service) Quotas(ctx context.Context) Response {
-	results := make([]ProviderQuota, len(s.providers))
-	var wg sync.WaitGroup
+	providers := make([]provider, 0, len(s.providers))
+	ids := []source.SourceID{source.SourceCodex, source.SourceClaudeCode, source.SourceKimiCode}
 	for i, p := range s.providers {
+		if i < len(ids) && s.sourceEnabled != nil && !s.sourceEnabled(ids[i]) {
+			continue
+		}
+		providers = append(providers, p)
+	}
+	results := make([]ProviderQuota, len(providers))
+	var wg sync.WaitGroup
+	for i, p := range providers {
 		wg.Add(1)
 		go func(i int, p provider) {
 			defer wg.Done()

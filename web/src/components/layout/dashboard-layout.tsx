@@ -9,6 +9,7 @@ import { SidebarProvider } from './sidebar-provider'
 import { ViewErrorBoundary } from './error-boundary'
 import { SourceNotice } from '../source/source-notice'
 import { ViewFallback } from './view-fallback'
+import { useDashboardContext } from './dashboard-context'
 
 // The assistant brings a markdown renderer, a syntax highlighter and its
 // streaming client, none of which the dashboard itself needs. It is a docked
@@ -20,6 +21,10 @@ const AnalyticsAssistant = lazy(() =>
 
 export function DashboardLayout() {
   const { pathname } = useLocation()
+  const { sources, sourceMetadata, sourceStateError } = useDashboardContext()
+  const revision = sourceMetadata?.sources_revision ?? 0
+  const hasSources = sources.some(source => source.enabled !== false && source.available)
+  const analyticsBlocked = pathname !== '/config' && (!hasSources || sourceStateError?.kind === 'disabled')
   return (
     <SidebarProvider>
       <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--ink-900)' }}>
@@ -33,8 +38,8 @@ export function DashboardLayout() {
               <ViewErrorBoundary key={pathname}>
                 {/* Keyed by route so switching views shows the fallback rather
                     than holding the previous view's content on screen. */}
-                <Suspense key={pathname} fallback={<ViewFallback />}>
-                  <Outlet />
+                <Suspense key={`${pathname}:${revision}`} fallback={<ViewFallback />}>
+                  {!analyticsBlocked && <Outlet />}
                 </Suspense>
               </ViewErrorBoundary>
             </div>

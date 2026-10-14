@@ -9,7 +9,15 @@ var (
 	ErrInvalidSource     = errors.New("invalid source")
 	ErrUnavailableSource = errors.New("source unavailable")
 	ErrUnsupportedSource = errors.New("unsupported source")
+	ErrDisabledSource    = errors.New("source disabled")
 )
+
+type DisabledSourceError struct{ ID SourceID }
+
+func (e DisabledSourceError) Error() string {
+	return fmt.Sprintf("source %s is disabled; enable it in Config", e.ID)
+}
+func (e DisabledSourceError) Unwrap() error { return ErrDisabledSource }
 
 type InvalidSourceError struct {
 	ID string

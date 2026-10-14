@@ -14,6 +14,7 @@ export interface VendorMeta {
 }
 
 export const VENDORS: Record<SourceID, VendorMeta> = {
+ antigravity: {id:'antigravity', name:'Antigravity', short:'Antigravity', mono:'Ag',color:'var(--vendor-antigravity)'},
   opencode: { id: 'opencode', name: 'OpenCode', short: 'OpenCode', mono: 'oc', color: 'var(--vendor-opencode)' },
   claude_code: { id: 'claude_code', name: 'Claude Code', short: 'Claude', mono: 'C', color: 'var(--vendor-claude)' },
   codex: { id: 'codex', name: 'Codex', short: 'Codex', mono: 'Cx', color: 'var(--vendor-codex)' },

@@ -118,11 +118,13 @@ Web flags:
   --rebuild-cache    Remove the dashboard usage cache before starting
   --no-cache     Run without the dashboard cache
   --channel <c>  Resolve a channel-specific OpenCode DB (stable/latest/beta/custom)
-  --source <id>  Initial data source (opencode, claude_code, codex, kimi_code, or qwen_code; default: opencode)
+  --source <id>  Initial data source (opencode, claude_code, codex, kimi_code, qwen_code, or antigravity; default: opencode)
   --claude-home <dir>  Claude Code config directory for claude_code registration
   --codex-home <dir>   Codex config directory for codex registration
   --kimi-home <dir>    Kimi Code home directory for kimi_code registration
   --qwen-home <dir>    Qwen Code home directory for qwen_code registration
+  --antigravity-home <dir>  Antigravity data directory
+  --antigravity-home <dir> Antigravity data directory
   --no-open      Do not launch the browser automatically
 
 TUI flags:
@@ -131,11 +133,12 @@ TUI flags:
   --rebuild-cache    Remove the dashboard usage cache before starting
   --no-cache     Run without the dashboard cache
   --channel <c>  Resolve a channel-specific OpenCode DB
-  --source <id>  Initial data source (opencode, claude_code, codex, kimi_code, or qwen_code)
+  --source <id>  Initial data source (opencode, claude_code, codex, kimi_code, qwen_code, or antigravity)
   --claude-home <dir>  Claude Code config directory
   --codex-home <dir>   Codex config directory
   --kimi-home <dir>    Kimi Code home directory
   --qwen-home <dir>    Qwen Code home directory
+  --antigravity-home <dir>  Antigravity data directory
 
 Uninstall flags:
   --dry-run      Show the removal plan only
@@ -165,13 +168,14 @@ func cmdWeb(args []string) error {
 	noCache := fs.Bool("no-cache", false, "run without the dashboard usage cache")
 	noOpen := fs.Bool("no-open", false, "do not open a browser")
 	channel := fs.String("channel", "", "channel-specific OpenCode database to use")
-	sourceFlag := fs.String("source", string(source.SourceOpenCode), "initial data source: opencode, claude_code, codex, kimi_code, or qwen_code")
+	sourceFlag := fs.String("source", string(source.SourceOpenCode), "initial data source: opencode, claude_code, codex, kimi_code, qwen_code, or antigravity")
 	claudeHome := fs.String("claude-home", "", "explicit Claude Code config directory")
 	codexHome := fs.String("codex-home", "", "explicit Codex config directory")
 	kimiHome := fs.String("kimi-home", "", "explicit Kimi Code home directory")
 	qwenHome := fs.String("qwen-home", "", "explicit Qwen Code home directory")
+	antigravityHome := fs.String("antigravity-home", "", "Antigravity data directory (default ~/.gemini/antigravity)")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard web [--host <addr>] [--port <n>] [--db <path>] [--cache-db <path>] [--rebuild-cache] [--no-cache] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>] [--kimi-home <dir>] [--qwen-home <dir>] [--no-open]\n\n")
+		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard web [--host <addr>] [--port <n>] [--db <path>] [--cache-db <path>] [--rebuild-cache] [--no-cache] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>] [--kimi-home <dir>] [--qwen-home <dir>] [--antigravity-home <dir>] [--no-open]\n\n")
 		fmt.Fprintf(fs.Output(), "Starts the web dashboard and API (default: http://%s:%d).\nUse --host 0.0.0.0 to allow access from your local network.\n\n", web.DefaultHost, web.DefaultPort)
 		fs.PrintDefaults()
 	}
@@ -201,6 +205,7 @@ func cmdWeb(args []string) error {
 	codexSelection := config.ResolveCodexHome(*codexHome)
 	kimiSelection := config.ResolveKimiHome(*kimiHome)
 	qwenSelection := config.ResolveQwenHome(*qwenHome)
+	antigravitySelection := config.ResolveAntigravityHome(*antigravityHome)
 
 	selection, err := resolveDBSelection(*dbPath, *channel)
 	if err != nil {
@@ -209,12 +214,31 @@ func cmdWeb(args []string) error {
 
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	st, openErr := openValidatedStore(ctx, selection.Path)
-	if openErr != nil && selectedSource == source.SourceOpenCode {
-		return openErr
+	pricingAliases, err := openPricingAliasStore(ctx)
+	if err != nil {
+		return err
 	}
-	if openErr != nil {
-		st = nil
+	defer pricingAliases.Close()
+	settings, _, err := pricingAliases.SourceSettings(ctx)
+	if err != nil {
+		return err
+	}
+	explicitSource := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "source" {
+			explicitSource = true
+		}
+	})
+	if enabled, exists := settings[selectedSource]; exists && !enabled && explicitSource {
+		return source.DisabledSourceError{ID: selectedSource}
+	}
+	var st *store.Store
+	if enabled, exists := settings[source.SourceOpenCode]; !exists || enabled {
+		var openErr error
+		st, openErr = openValidatedStore(ctx, selection.Path)
+		if openErr != nil && explicitSource && selectedSource == source.SourceOpenCode {
+			return openErr
+		}
 	}
 	cacheSelection := config.ResolveCacheDB(*cacheDBPath)
 	cacheRuntime, err := openCacheRuntime(ctx, cacheSelection, *rebuildCache, *noCache)
@@ -225,15 +249,6 @@ func cmdWeb(args []string) error {
 		return err
 	}
 	cacheRuntime.SetLogger(logger)
-	pricingAliases, err := openPricingAliasStore(ctx)
-	if err != nil {
-		_ = cacheRuntime.Close()
-		if st != nil {
-			_ = st.Close()
-		}
-		return err
-	}
-	defer pricingAliases.Close()
 	catalogIndex := source.NewCatalogIndex()
 	registry, err := buildWebRegistry(
 		cacheRuntime, st, selection, selectedSource,
@@ -241,6 +256,8 @@ func cmdWeb(args []string) error {
 		extraRegistrySelection{
 			kimi:           &homeRegistrySelection{selection: kimiSelection, explicitHome: *kimiHome},
 			qwen:           &homeRegistrySelection{selection: qwenSelection, explicitHome: *qwenHome},
+			antigravity:    &homeRegistrySelection{selection: antigravitySelection, explicitHome: *antigravityHome},
+			preferences:    pricingAliases,
 			pricingAliases: pricingAliases,
 			pricingRates:   catalogIndex,
 		},
@@ -253,12 +270,22 @@ func cmdWeb(args []string) error {
 	}
 	defer cacheRuntime.Close()
 	defer registry.Close()
+	if !explicitSource {
+		for _, info := range registry.List(ctx) {
+			if info.Enabled && info.Available {
+				registry.SetStartupID(info.ID)
+				selectedSource = info.ID
+				break
+			}
+		}
+	}
 
 	quotaService := quota.NewService(quota.Options{
 		CodexHome:          codexSelection.Path,
 		ClaudeSnapshotPath: config.DefaultClaudeRateLimitsPath(),
 		KimiHome:           kimiSelection.Path,
 		MiniMaxAuthPath:    config.DefaultOpenCodeAuthPath(),
+		SourceEnabled:      registry.Enabled,
 	})
 	chatLog := openAssistantChatStore(ctx, logger)
 	if chatLog != nil {
@@ -287,6 +314,7 @@ func cmdWeb(args []string) error {
 		ChatLog:            chatLogService,
 		PricingAliases:     pricingAliases,
 		PricingRates:       catalogIndex,
+		SourceSettings:     pricingAliases,
 	})
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -476,13 +504,14 @@ func cmdTUI(args []string) error {
 	rebuildCache := fs.Bool("rebuild-cache", false, "remove the dashboard usage cache before running")
 	noCache := fs.Bool("no-cache", false, "run without the dashboard usage cache")
 	channel := fs.String("channel", "", "channel-specific OpenCode database to use")
-	sourceFlag := fs.String("source", string(source.SourceOpenCode), "initial data source: opencode, claude_code, codex, kimi_code, or qwen_code")
+	sourceFlag := fs.String("source", string(source.SourceOpenCode), "initial data source: opencode, claude_code, codex, kimi_code, qwen_code, or antigravity")
 	claudeHome := fs.String("claude-home", "", "explicit Claude Code config directory")
 	codexHome := fs.String("codex-home", "", "explicit Codex config directory")
 	kimiHome := fs.String("kimi-home", "", "explicit Kimi Code home directory")
 	qwenHome := fs.String("qwen-home", "", "explicit Qwen Code home directory")
+	antigravityHome := fs.String("antigravity-home", "", "Antigravity data directory (default ~/.gemini/antigravity)")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard tui [--db <path>] [--cache-db <path>] [--rebuild-cache] [--no-cache] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>] [--kimi-home <dir>] [--qwen-home <dir>]\n\n")
+		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard tui [--db <path>] [--cache-db <path>] [--rebuild-cache] [--no-cache] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>] [--kimi-home <dir>] [--qwen-home <dir>] [--antigravity-home <dir>]\n\n")
 		fmt.Fprintln(fs.Output(), "Starts the local terminal dashboard. Switch source (S) and time range (T) live.")
 	}
 
@@ -508,6 +537,7 @@ func cmdTUI(args []string) error {
 	codexSelection := config.ResolveCodexHome(*codexHome)
 	kimiSelection := config.ResolveKimiHome(*kimiHome)
 	qwenSelection := config.ResolveQwenHome(*qwenHome)
+	antigravitySelection := config.ResolveAntigravityHome(*antigravityHome)
 
 	selection, err := resolveDBSelection(*dbPath, *channel)
 	if err != nil {
@@ -515,12 +545,31 @@ func cmdTUI(args []string) error {
 	}
 
 	ctx := context.Background()
-	st, openErr := openValidatedStore(ctx, selection.Path)
-	if openErr != nil && selectedSource == source.SourceOpenCode {
-		return openErr
+	pricingAliases, err := openPricingAliasStore(ctx)
+	if err != nil {
+		return err
 	}
-	if openErr != nil {
-		st = nil
+	defer pricingAliases.Close()
+	settings, _, err := pricingAliases.SourceSettings(ctx)
+	if err != nil {
+		return err
+	}
+	explicitSource := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "source" {
+			explicitSource = true
+		}
+	})
+	if enabled, exists := settings[selectedSource]; exists && !enabled && explicitSource {
+		return source.DisabledSourceError{ID: selectedSource}
+	}
+	var st *store.Store
+	if enabled, exists := settings[source.SourceOpenCode]; !exists || enabled {
+		var openErr error
+		st, openErr = openValidatedStore(ctx, selection.Path)
+		if openErr != nil && explicitSource && selectedSource == source.SourceOpenCode {
+			return openErr
+		}
 	}
 
 	cacheSelection := config.ResolveCacheDB(*cacheDBPath)
@@ -531,15 +580,6 @@ func cmdTUI(args []string) error {
 		}
 		return err
 	}
-	pricingAliases, err := openPricingAliasStore(ctx)
-	if err != nil {
-		_ = cacheRuntime.Close()
-		if st != nil {
-			_ = st.Close()
-		}
-		return err
-	}
-	defer pricingAliases.Close()
 	catalogIndex := source.NewCatalogIndex()
 	registry, err := buildWebRegistry(
 		cacheRuntime, st, selection, selectedSource,
@@ -547,6 +587,8 @@ func cmdTUI(args []string) error {
 		extraRegistrySelection{
 			kimi:           &homeRegistrySelection{selection: kimiSelection, explicitHome: *kimiHome},
 			qwen:           &homeRegistrySelection{selection: qwenSelection, explicitHome: *qwenHome},
+			antigravity:    &homeRegistrySelection{selection: antigravitySelection, explicitHome: *antigravityHome},
+			preferences:    pricingAliases,
 			pricingAliases: pricingAliases,
 			pricingRates:   catalogIndex,
 		},
@@ -559,6 +601,15 @@ func cmdTUI(args []string) error {
 	}
 	defer cacheRuntime.Close()
 	defer registry.Close()
+	if !explicitSource {
+		for _, info := range registry.List(ctx) {
+			if info.Enabled && info.Available {
+				registry.SetStartupID(info.ID)
+				selectedSource = info.ID
+				break
+			}
+		}
+	}
 
 	return tui.Run(registry, tui.Options{Version: version.BuildInfo()})
 }
@@ -780,6 +831,8 @@ type cacheRuntime struct {
 	pendingInitial []source.SourceID
 	pendingPricing map[source.SourceID]struct{}
 	job            cacheJobState
+	wrappers       map[source.SourceID]*usagecache.CachedSource
+	sourceCancel   context.CancelFunc
 	disabled       bool
 	logger         *slog.Logger
 
@@ -851,12 +904,12 @@ func parseSourceSelection(value string) (source.SourceID, error) {
 		return source.SourceOpenCode, nil
 	}
 	switch source.SourceID(selected) {
-	case source.SourceOpenCode, source.SourceClaudeCode, source.SourceCodex, source.SourceKimiCode, source.SourceQwenCode:
+	case source.SourceOpenCode, source.SourceClaudeCode, source.SourceCodex, source.SourceKimiCode, source.SourceQwenCode, source.SourceAntigravity:
 		return source.SourceID(selected), nil
 	case source.SourceID("both"):
 		return "", fmt.Errorf("--source=both is unsupported in v1; select one source at a time")
 	default:
-		return "", fmt.Errorf("invalid --source %q (supported: opencode, claude_code, codex, kimi_code, qwen_code)", selected)
+		return "", fmt.Errorf("invalid --source %q (supported: opencode, claude_code, codex, kimi_code, qwen_code, antigravity)", selected)
 	}
 }
 
@@ -949,6 +1002,8 @@ type homeRegistrySelection struct {
 type extraRegistrySelection struct {
 	kimi           *homeRegistrySelection
 	qwen           *homeRegistrySelection
+	antigravity    *homeRegistrySelection
+	preferences    source.Preferences
 	pricingAliases source.PricingAliasResolver
 	// pricingRates lets one source price a model from another source's bundled
 	// catalog. It is bound to the registry once every source is registered,
@@ -962,6 +1017,9 @@ func buildWebRegistry(cache *cacheRuntime, st *store.Store, selection dbSelectio
 	var extra extraRegistrySelection
 	if len(extraOptions) > 0 {
 		extra = extraOptions[0]
+	}
+	if extra.preferences != nil {
+		return buildConfiguredRegistry(cache, st, selection, startup, claudeSelection, codexSelection, extra)
 	}
 	// A typed nil would satisfy the interface and hide the "no index" case from
 	// the sources, so an absent index stays a nil interface.
@@ -1110,6 +1168,11 @@ func (c *cacheRuntime) autoSyncLoop(done chan struct{}) {
 // manual/startup job wins and the tick is skipped. The tick reuses the normal
 // job state, so it is visible in the cache status API like any other sync.
 func (c *cacheRuntime) runAutoSyncTick() {
+	if c != nil && c.registry != nil {
+		if err := c.registry.RefreshPreferences(c.lifecycleCtx()); err != nil {
+			return
+		}
+	}
 	if c == nil || c.disabled || c.store == nil {
 		return
 	}
@@ -1174,7 +1237,7 @@ func registerCachedSource(ctx context.Context, registry *source.Registry, cache 
 	// A ready cache is served even when the source fingerprint changed: reads
 	// gap-fill the window since the finality cutoff from raw data on demand.
 	cache.markCached(sourceIDOf(src))
-	return registry.Register(usagecache.WrapSource(cache.store, src))
+	return registry.Register(cache.wrapSource(src, sourceIDOf(src)))
 }
 
 func (c *cacheRuntime) queueInitialSync(id source.SourceID) {
@@ -1183,6 +1246,14 @@ func (c *cacheRuntime) queueInitialSync(id source.SourceID) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.sourceEnabled(id) {
+		return
+	}
+	for _, queued := range c.pendingInitial {
+		if queued == id {
+			return
+		}
+	}
 	c.pendingInitial = append(c.pendingInitial, id)
 }
 
@@ -1190,7 +1261,7 @@ func (c *cacheRuntime) queueInitialSync(id source.SourceID) {
 // usable cache at startup, so the dashboard becomes cache-backed without a
 // manual resync.
 func (c *cacheRuntime) startPendingInitialSync() {
-	if c == nil || c.disabled || c.store == nil {
+	if c == nil || c.disabled || c.store == nil || c.lifecycleCtx().Err() != nil {
 		return
 	}
 	cutoff := usagecache.DefaultSafeCutoff(time.Now().UTC())
@@ -1204,7 +1275,7 @@ func (c *cacheRuntime) startPendingInitialSync() {
 	}
 	targets := make([]source.Source, 0, len(c.pendingInitial))
 	for _, id := range c.pendingInitial {
-		if src := c.live[id]; src != nil {
+		if src := c.live[id]; src != nil && c.sourceEnabled(id) {
 			targets = append(targets, src)
 		}
 	}
@@ -1374,7 +1445,7 @@ func (c *cacheRuntime) RecentWarnings(context.Context) []web.SourceWarning {
 	ids := append([]source.SourceID(nil), c.order...)
 	c.mu.Unlock()
 	for _, id := range ids {
-		if gap, ok := c.store.GapState(string(id)); ok && gap.ErrMsg != "" {
+		if gap, ok := c.store.GapState(string(id)); c.sourceEnabled(id) && ok && gap.ErrMsg != "" {
 			warnings = append(warnings, web.SourceWarning{
 				SourceID: string(id),
 				Message:  "recent activity is temporarily incomplete: " + gap.ErrMsg,
@@ -1388,7 +1459,7 @@ func (c *cacheRuntime) RecentWarnings(context.Context) []web.SourceWarning {
 // store compares the source's effective pricing identity and promotes this to a
 // full historical recollection when an alias revision changed.
 func (c *cacheRuntime) NotifyPricingChange(_ context.Context, sourceID source.SourceID) web.PricingChangeStatus {
-	if c == nil || c.disabled || c.store == nil {
+	if c == nil || c.disabled || c.store == nil || !c.sourceEnabled(sourceID) {
 		return web.PricingChangeStatusDisabled
 	}
 	c.mu.Lock()
@@ -1433,7 +1504,7 @@ func (c *cacheRuntime) startPendingPricingSync() {
 			continue
 		}
 		delete(c.pendingPricing, sourceID)
-		if src := c.live[sourceID]; src != nil {
+		if src := c.live[sourceID]; src != nil && c.sourceEnabled(sourceID) {
 			targets = append(targets, src)
 			ids = append(ids, string(sourceID))
 		}
@@ -1451,12 +1522,20 @@ func (c *cacheRuntime) startPendingPricingSync() {
 }
 
 func (c *cacheRuntime) Sync(ctx context.Context, selected string, modeValue string) (web.CacheStatusResponse, error) {
+	if c != nil && c.registry != nil {
+		if err := c.registry.RefreshPreferences(ctx); err != nil {
+			return web.CacheStatusResponse{}, err
+		}
+	}
 	if c == nil || c.disabled || c.store == nil {
 		return web.CacheStatusResponse{Enabled: false}, web.ErrCacheDisabled
 	}
 	mode, err := parseCacheSyncMode(modeValue)
 	if err != nil {
 		return web.CacheStatusResponse{}, err
+	}
+	if id := source.SourceID(strings.TrimSpace(selected)); id != "" && id != "all" && !c.sourceEnabled(id) {
+		return web.CacheStatusResponse{}, source.DisabledSourceError{ID: id}
 	}
 	// Rebuild is a whole-database operation: it always clears and rebuilds
 	// every source, regardless of any source filter the caller sent.
@@ -1530,10 +1609,32 @@ func (c *cacheRuntime) runSyncJob(ctx context.Context, targets []source.Source, 
 		}
 	}
 	for _, src := range targets {
-		info := src.Info(ctx)
+		id := c.sourceIdentity(src)
+		if !c.sourceEnabled(id) {
+			continue
+		}
+		sourceCtx, cancel := context.WithCancel(ctx)
+		c.mu.Lock()
+		c.job.CurrentSourceID = id
+		c.sourceCancel = cancel
+		c.mu.Unlock()
+		if !c.sourceEnabled(id) {
+			cancel()
+		}
+		info := src.Info(sourceCtx)
+		if sourceCtx.Err() != nil {
+			cancel()
+			c.mu.Lock()
+			c.sourceCancel = nil
+			c.job.Completed++
+			c.mu.Unlock()
+			continue
+		}
 		if !info.Available {
+			cancel()
 			c.log().Warn("cache job: skipping unavailable source", "source", info.ID, "reason", info.Diagnostics.Reason)
 			c.mu.Lock()
+			c.sourceCancel = nil
 			c.job.Completed++
 			c.job.UpdatedAtMS = nowMilli()
 			c.appendLogLocked("warn", info.ID, fmt.Sprintf("Skipped %s: unavailable (%s)", info.Label, info.Diagnostics.Reason))
@@ -1543,11 +1644,24 @@ func (c *cacheRuntime) runSyncJob(ctx context.Context, targets []source.Source, 
 		}
 		c.setCurrentSource(info.ID, syncStartMessage(info.Label, mode))
 		c.log().Info("cache job: syncing source", "source", info.ID, "mode", mode)
-		report, err := c.store.SyncSourceWithOptions(ctx, src, usagecache.SyncOptions{
+		if !c.sourceEnabled(info.ID) {
+			cancel()
+		}
+		report, err := c.store.SyncSourceWithOptions(sourceCtx, src, usagecache.SyncOptions{
 			Mode:     mode,
 			Cutoff:   cutoff,
 			Progress: c.updateJobProgress,
 		})
+		cancel()
+		c.mu.Lock()
+		c.sourceCancel = nil
+		c.mu.Unlock()
+		if !c.sourceEnabled(info.ID) {
+			c.mu.Lock()
+			c.job.Completed++
+			c.mu.Unlock()
+			continue
+		}
 		if err != nil {
 			c.log().Error("cache job: source sync failed", "source", info.ID, "error", err)
 			c.mu.Lock()
@@ -1564,7 +1678,7 @@ func (c *cacheRuntime) runSyncJob(ctx context.Context, targets []source.Source, 
 		// and store, and re-wrapping would orphan the old wrapper's fill
 		// context and reset its staleness backoff for no benefit.
 		if c.registry != nil && !c.isCached(info.ID) {
-			if err := c.registry.Register(usagecache.WrapSource(c.store, src)); err != nil {
+			if err := c.registry.Register(c.wrapSource(src, info.ID)); err != nil {
 				c.log().Error("cache job: registering cached source failed", "source", info.ID, "error", err)
 				c.mu.Lock()
 				c.job.Completed++
@@ -1591,6 +1705,7 @@ func (c *cacheRuntime) runSyncJob(ctx context.Context, targets []source.Source, 
 	}
 	c.finishJob(err)
 	c.startPendingPricingSync()
+	c.startPendingInitialSync()
 }
 
 // updateJobProgress records page-level progress for the source currently being
@@ -1652,7 +1767,7 @@ func (c *cacheRuntime) sourceSnapshot() []source.Source {
 	defer c.mu.Unlock()
 	out := make([]source.Source, 0, len(c.order))
 	for _, id := range c.order {
-		if src := c.live[id]; src != nil {
+		if src := c.live[id]; src != nil && c.sourceEnabled(id) {
 			out = append(out, src)
 		}
 	}
@@ -1673,13 +1788,16 @@ func (c *cacheRuntime) syncTargetsLocked(selected string) ([]source.Source, erro
 	if id == "" || id == "all" {
 		targets := make([]source.Source, 0, len(c.order))
 		for _, sourceID := range c.order {
-			if src := c.live[sourceID]; src != nil {
+			if src := c.live[sourceID]; src != nil && c.sourceEnabled(sourceID) {
 				targets = append(targets, src)
 			}
 		}
 		return targets, nil
 	}
 	sourceID := source.SourceID(id)
+	if !c.sourceEnabled(sourceID) {
+		return nil, source.DisabledSourceError{ID: sourceID}
+	}
 	src := c.live[sourceID]
 	if src == nil {
 		return nil, fmt.Errorf("%w %q", source.ErrInvalidSource, id)

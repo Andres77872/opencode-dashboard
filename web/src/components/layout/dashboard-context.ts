@@ -9,6 +9,7 @@ export interface DashboardContextValue {
   requestRefresh: () => void
   setRefreshing: (value: boolean) => void
   setLastUpdatedAt: (value: Date | null) => void
+  updateSourceMetadata?: (metadata: SourceListResponse) => void
   sourceMetadata: SourceListResponse | null
   sourceMetadataLoading: boolean
   sourceMetadataError: string | null

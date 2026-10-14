@@ -5,7 +5,7 @@ import { resolveRequestedSourceId, shouldOmitSourceParam } from './source-select
 import { getStoredSourceId, setStoredSourceId } from './persisted-prefs.ts'
 
 export interface SourceStateError {
-  kind: 'invalid' | 'unsupported' | 'unavailable' | 'metadata'
+  kind: 'disabled' | 'invalid' | 'unsupported' | 'unavailable' | 'metadata'
   message: string
 }
 
@@ -161,6 +161,10 @@ function getSourceStateError(rawSourceParam: string | null, requestedSourceId: S
       kind: 'metadata',
       message: `Source metadata for “${requestedSourceId}” is unavailable.`,
     }
+  }
+
+  if (sourceInfo.enabled === false) {
+    return {kind:'disabled',message:`${sourceInfo.label} is disabled. Enable it in Config to view its data.`}
   }
 
   if (!sourceInfo.available) {

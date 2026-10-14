@@ -9,12 +9,31 @@ import (
 type SourceID string
 
 const (
-	SourceOpenCode   SourceID = "opencode"
-	SourceClaudeCode SourceID = "claude_code"
-	SourceCodex      SourceID = "codex"
-	SourceKimiCode   SourceID = "kimi_code"
-	SourceQwenCode   SourceID = "qwen_code"
+	SourceOpenCode    SourceID = "opencode"
+	SourceClaudeCode  SourceID = "claude_code"
+	SourceCodex       SourceID = "codex"
+	SourceKimiCode    SourceID = "kimi_code"
+	SourceQwenCode    SourceID = "qwen_code"
+	SourceAntigravity SourceID = "antigravity"
 )
+
+// KnownIDs is the stable presentation order, including sources without data.
+func KnownIDs() []SourceID {
+	return []SourceID{SourceOpenCode, SourceClaudeCode, SourceCodex, SourceKimiCode, SourceQwenCode, SourceAntigravity}
+}
+
+func IsKnown(id SourceID) bool {
+	for _, known := range KnownIDs() {
+		if known == id {
+			return true
+		}
+	}
+	return false
+}
+
+type Preferences interface {
+	SourceSettings(context.Context) (map[SourceID]bool, int64, error)
+}
 
 type Source interface {
 	Info(context.Context) SourceInfo
@@ -72,6 +91,7 @@ type SourceInfo struct {
 	Label        string   `json:"label"`
 	Kind         string   `json:"kind"`
 	Available    bool     `json:"available"`
+	Enabled      bool     `json:"enabled"`
 	Default      bool     `json:"default"`
 	Selected     bool     `json:"selected,omitempty"`
 	Path         string   `json:"path,omitempty"`
@@ -116,6 +136,7 @@ type PrivacyInfo struct {
 }
 
 type SourceListResponse struct {
+	SourcesRevision int64        `json:"sources_revision"`
 	DefaultSourceID SourceID     `json:"default_source_id"`
 	StartupSourceID SourceID     `json:"startup_source_id,omitempty"`
 	Sources         []SourceInfo `json:"sources"`

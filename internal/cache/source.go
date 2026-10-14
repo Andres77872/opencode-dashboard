@@ -54,8 +54,9 @@ type CachedSource struct {
 	live  source.Source
 	info  source.SourceInfo
 
-	fillCtx    context.Context
-	fillCancel context.CancelFunc
+	fillCtx      context.Context
+	fillCancel   context.CancelFunc
+	enabledCheck func() bool
 
 	freshMu       sync.Mutex
 	fillDone      chan struct{} // non-nil while a fill is in flight
@@ -104,6 +105,9 @@ func (s *CachedSource) ensureFresh(ctx context.Context) {
 	}
 	s.freshMu.Lock()
 	defer s.freshMu.Unlock()
+	if s.enabledCheck != nil && !s.enabledCheck() {
+		return
+	}
 	if s.fillDone != nil {
 		return // consolidation already in flight
 	}
@@ -118,11 +122,11 @@ func (s *CachedSource) ensureFresh(ctx context.Context) {
 	}
 	done := make(chan struct{})
 	s.fillDone = done
-	go s.runFill(done)
+	go s.runFill(s.fillCtx, done)
 }
 
-func (s *CachedSource) runFill(done chan struct{}) {
-	ctx, cancel := context.WithTimeout(s.fillCtx, fillTimeout)
+func (s *CachedSource) runFill(parent context.Context, done chan struct{}) {
+	ctx, cancel := context.WithTimeout(parent, fillTimeout)
 	defer cancel()
 	_, _ = s.store.SyncSourceWithOptions(ctx, s.live, SyncOptions{
 		Mode:          SyncModeIncremental,
@@ -619,10 +623,10 @@ func (s *CachedSource) Close() error {
 	}
 	// Cancel and reap any in-flight background fill before closing the store,
 	// so the fill goroutine never races a closing database.
+	s.freshMu.Lock()
 	if s.fillCancel != nil {
 		s.fillCancel()
 	}
-	s.freshMu.Lock()
 	done := s.fillDone
 	s.freshMu.Unlock()
 	if done != nil {
@@ -634,4 +638,22 @@ func (s *CachedSource) Close() error {
 		}
 	}
 	return nil
+}
+
+// SetEnabledCheck gates detached refreshes as well as registry-owned jobs.
+func (s *CachedSource) SetEnabledCheck(check func() bool) {
+	s.freshMu.Lock()
+	s.enabledCheck = check
+	s.freshMu.Unlock()
+}
+func (s *CachedSource) SetParticipation(enabled bool) {
+	s.freshMu.Lock()
+	defer s.freshMu.Unlock()
+	if s.fillCancel != nil {
+		s.fillCancel()
+	}
+	if enabled {
+		s.fillCtx, s.fillCancel = context.WithCancel(context.Background())
+		s.nextFillCheck = time.Time{}
+	}
 }

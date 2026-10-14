@@ -91,6 +91,10 @@ type CacheLogEntry struct {
 }
 
 func (h *Handlers) CacheStatus(w http.ResponseWriter, r *http.Request) {
+	if err := h.registry.RefreshPreferences(r.Context()); err != nil {
+		InternalError("failed to load source preferences").Write(w)
+		return
+	}
 	if h.cache == nil {
 		writeJSONNoStore(w, http.StatusOK, CacheStatusResponse{Enabled: false})
 		return
@@ -112,6 +116,10 @@ func (h *Handlers) CacheSync(w http.ResponseWriter, r *http.Request) {
 	mode := strings.TrimSpace(r.URL.Query().Get("mode"))
 	result, err := h.cache.Sync(r.Context(), sourceID, mode)
 	if err != nil {
+		if errors.Is(err, source.ErrDisabledSource) {
+			SourceError(err).Write(w)
+			return
+		}
 		if errors.Is(err, ErrCacheDisabled) || errors.Is(err, ErrInvalidSyncMode) || errors.Is(err, source.ErrInvalidSource) {
 			BadRequest(err.Error()).Write(w)
 			return

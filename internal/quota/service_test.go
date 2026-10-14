@@ -2,6 +2,7 @@ package quota
 
 import (
 	"context"
+	"opencode-dashboard/internal/source"
 	"path/filepath"
 	"testing"
 	"time"
@@ -121,5 +122,25 @@ func TestNewServiceBuildsAllProviders(t *testing.T) {
 	got := svc.Quotas(context.Background())
 	if len(got.Providers) != 4 {
 		t.Fatalf("providers = %d, want 4", len(got.Providers))
+	}
+}
+
+type sourceSwitchQuota struct{ calls int }
+
+func (p *sourceSwitchQuota) quota(context.Context) ProviderQuota {
+	p.calls++
+	return ProviderQuota{Provider: ProviderMiniMax}
+}
+func TestDisabledLinkedQuotaProvidersAreNotInvoked(t *testing.T) {
+	providers := []*sourceSwitchQuota{{}, {}, {}, {}}
+	svc := &Service{now: time.Now, timeout: time.Second, sourceEnabled: func(source.SourceID) bool { return false }, providers: []provider{providers[0], providers[1], providers[2], providers[3]}}
+	result := svc.Quotas(context.Background())
+	for i := 0; i < 3; i++ {
+		if providers[i].calls != 0 {
+			t.Fatal("disabled quota provider invoked")
+		}
+	}
+	if providers[3].calls != 1 || len(result.Providers) != 1 {
+		t.Fatal("independent MiniMax quota was disabled")
 	}
 }

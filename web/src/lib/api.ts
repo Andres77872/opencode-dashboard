@@ -485,3 +485,9 @@ export async function streamAssistantChat(
 
   return readAssistantStream(response.body, onEvent)
 }
+
+export function setSourceEnabled(id: SourceID, enabled: boolean, signal?: AbortSignal) {
+  return request<SourceListResponse>(`/api/v1/sources/${encodeURIComponent(id)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }), signal,
+  })
+}

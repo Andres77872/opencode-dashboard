@@ -75,7 +75,7 @@ export function refreshQuotas() {
 }
 
 export function useQuotas(): QuotasState {
-  const { refreshNonce } = useDashboardContext()
+  const { refreshNonce, sources } = useDashboardContext()
   const snapshot = useSyncExternalStore(subscribe, getSnapshot)
 
   // The global refresh button also refreshes quotas; the nonce guard keeps
@@ -87,5 +87,7 @@ export function useQuotas(): QuotasState {
     }
   }, [refreshNonce])
 
-  return snapshot
+  if (!snapshot.data) return snapshot
+  const linked = new Set(['codex', 'claude_code', 'kimi_code'])
+  return { ...snapshot, data: { ...snapshot.data, providers: snapshot.data.providers.filter(provider => !linked.has(provider.provider) || !sources.some(source => source.id === provider.provider && source.enabled === false)) } }
 }

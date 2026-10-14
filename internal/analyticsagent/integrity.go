@@ -117,7 +117,7 @@ func (r *ToolRegistry) sourceIntegrity(ctx context.Context, args integrityArgs) 
 	infos := r.registry.List(ctx)
 	safeInfos := make([]source.SourceInfo, 0, len(infos))
 	for _, info := range infos {
-		if isSafeSourceID(string(info.ID)) {
+		if info.Enabled && isSafeSourceID(string(info.ID)) {
 			safeInfos = append(safeInfos, info)
 		}
 	}

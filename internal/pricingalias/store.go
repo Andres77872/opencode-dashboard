@@ -172,7 +172,7 @@ func aliasTarget(alias Alias) source.PricingAliasTarget {
 type migration func(context.Context, *sql.Tx) error
 
 var (
-	migrations    = []migration{migrateV1, migrateV2, migrateV3}
+	migrations    = []migration{migrateV1, migrateV2, migrateV3, migrateV4}
 	schemaVersion = len(migrations)
 )
 
@@ -294,6 +294,9 @@ func ensureSchema(ctx context.Context, db *sql.DB, path string) error {
 		return err
 	}
 	if err := validateAssistantSchema(ctx, tx); err != nil {
+		return err
+	}
+	if err := validateSourceSettingsSchema(ctx, tx); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

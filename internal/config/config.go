@@ -14,17 +14,19 @@ const (
 	EnvCodexHome       = "OPENCODE_DASHBOARD_CODEX_HOME"
 	EnvKimiCodeHome    = "KIMI_CODE_HOME"
 	EnvQwenCodeHome    = "QWEN_CODE_HOME"
+	EnvAntigravityHome = "OPENCODE_DASHBOARD_ANTIGRAVITY_HOME"
 	EnvMiniMaxAPIKey   = "OPENCODE_DASHBOARD_MINIMAX_API_KEY"
 	EnvKimiAPIKey      = "OPENCODE_DASHBOARD_KIMI_API_KEY"
 
 	AppName          = "opencode"
 	DashboardAppName = "opencode-dashboard"
 
-	SourceOpenCode   = "opencode"
-	SourceClaudeCode = "claude_code"
-	SourceCodex      = "codex"
-	SourceKimiCode   = "kimi_code"
-	SourceQwenCode   = "qwen_code"
+	SourceOpenCode    = "opencode"
+	SourceClaudeCode  = "claude_code"
+	SourceCodex       = "codex"
+	SourceKimiCode    = "kimi_code"
+	SourceQwenCode    = "qwen_code"
+	SourceAntigravity = "antigravity"
 
 	DefaultDBName       = "opencode.db"
 	LatestChannelDBName = "opencode-latest.db"
@@ -33,13 +35,30 @@ const (
 )
 
 type Config struct {
-	dbPath     string
-	channel    string
-	source     string
-	claudeHome string
-	codexHome  string
-	kimiHome   string
-	qwenHome   string
+	dbPath          string
+	channel         string
+	source          string
+	claudeHome      string
+	codexHome       string
+	kimiHome        string
+	qwenHome        string
+	antigravityHome string
+}
+
+func WithAntigravityHome(path string) Option { return func(c *Config) { c.antigravityHome = path } }
+func (c *Config) AntigravityHome() string    { return ResolveAntigravityHome(c.antigravityHome).Path }
+func (c *Config) AntigravityHomeSource() string {
+	return ResolveAntigravityHome(c.antigravityHome).Source
+}
+func ResolveAntigravityHome(path string) PathSelection {
+	if path != "" {
+		return PathSelection{Path: path, Source: "--antigravity-home"}
+	}
+	if path := os.Getenv(EnvAntigravityHome); path != "" {
+		return PathSelection{Path: path, Source: EnvAntigravityHome}
+	}
+	home, _ := os.UserHomeDir()
+	return PathSelection{Path: filepath.Join(home, ".gemini", "antigravity"), Source: "$HOME/.gemini/antigravity"}
 }
 
 type PathSelection struct {

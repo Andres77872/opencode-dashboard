@@ -50,6 +50,20 @@ func sourceFingerprint(ctx context.Context, info source.SourceInfo) (string, err
 		if err := hashQwenFiles(ctx, h, info.Path); err != nil {
 			return "", err
 		}
+	case source.SourceAntigravity:
+		for _, name := range []string{"conversation_summaries.db", "conversation_summaries.db-wal"} {
+			if err := hashFileIfExists(h, info.Path, filepath.Join(info.Path, name)); err != nil {
+				return "", err
+			}
+		}
+		if err := hashWalk(ctx, h, filepath.Join(info.Path, "conversations"), func(path string, d os.DirEntry) (bool, error) {
+			if d.IsDir() {
+				return false, nil
+			}
+			return strings.HasSuffix(d.Name(), ".db") || strings.HasSuffix(d.Name(), ".db-wal"), nil
+		}); err != nil {
+			return "", err
+		}
 	default:
 		fmt.Fprintf(h, "diagnostics=%d:%d\n", info.Diagnostics.ScannedFiles, info.Diagnostics.MalformedLines)
 	}

@@ -1,0 +1,9 @@
+{
+  "id": "gemini-standard-api-pricing-2026-10-14",
+  "source": "https://ai.google.dev/gemini-api/docs/pricing",
+  "currency": "USD",
+  "models": {
+    "gemini-4-argon": {"display_name":"Gemini 4 Argon","input_per_million":2,"cached_input_per_million":0.10,"output_per_million":10,"changes":[{"effective":"2026-12-01","input_per_million":4,"cached_input_per_million":0.20,"output_per_million":20}]},
+    "gemini-3.8-flash": {"display_name":"Gemini 3.8 Flash","input_per_million":0.75,"cached_input_per_million":0.075,"output_per_million":3.75,"changes":[{"effective":"2027-01-01","input_per_million":1.50,"cached_input_per_million":0.15,"output_per_million":7.50}]}
+  }
+}

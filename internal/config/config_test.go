@@ -1,9 +1,28 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestAntigravityHomePrecedence(t *testing.T) {
+	t.Setenv(EnvAntigravityHome, "/synthetic/environment")
+	if got := ResolveAntigravityHome("/synthetic/flag"); got.Path != "/synthetic/flag" || got.Source != "--antigravity-home" {
+		t.Fatalf("flag precedence: %+v", got)
+	}
+	if got := ResolveAntigravityHome(""); got.Path != "/synthetic/environment" || got.Source != EnvAntigravityHome {
+		t.Fatalf("environment discovery: %+v", got)
+	}
+	t.Setenv(EnvAntigravityHome, "")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveAntigravityHome(""); got.Path != filepath.Join(home, ".gemini", "antigravity") {
+		t.Fatalf("default discovery: %+v", got)
+	}
+}
 
 func TestSourceDefaultsToOpenCode(t *testing.T) {
 	cfg := New()

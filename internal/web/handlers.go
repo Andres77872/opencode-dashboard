@@ -26,8 +26,9 @@ type Handlers struct {
 	pricingAliases     PricingAliasStore
 	// pricingRates is the cross-source catalog index. Handlers only invalidate
 	// it; the sources themselves read it while resolving alias targets.
-	pricingRates PricingRateInvalidator
-	logger       *slog.Logger
+	pricingRates   PricingRateInvalidator
+	logger         *slog.Logger
+	sourceSettings SourceSettingsStore
 }
 
 // PricingRateInvalidator drops the cached cross-source catalog index after a
@@ -56,14 +57,21 @@ func NewHandlers(opts ServerOptions) *Handlers {
 		pricingAliases:     opts.PricingAliases,
 		pricingRates:       opts.PricingRates,
 		logger:             opts.Logger,
+		sourceSettings:     opts.SourceSettings,
 	}
 }
 
 func (h *Handlers) Sources(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, source.SourceListResponse{
+	if err := h.registry.RefreshPreferences(r.Context()); err != nil {
+		InternalError("failed to load source preferences").Write(w)
+		return
+	}
+	infos, revision := h.registry.ListWithRevision(r.Context())
+	writeJSONNoStore(w, http.StatusOK, source.SourceListResponse{
+		SourcesRevision: revision,
 		DefaultSourceID: h.registry.DefaultID(),
 		StartupSourceID: h.registry.StartupID(),
-		Sources:         h.registry.List(r.Context()),
+		Sources:         infos,
 	})
 }
 

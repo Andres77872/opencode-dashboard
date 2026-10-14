@@ -2,7 +2,7 @@
 
 > Local analytics for your AI coding-assistant usage — one binary, web or terminal, works offline by default.
 
-See your usage across **OpenCode**, **Claude Code**, **Codex**, **Kimi Code**, and **Qwen Code** — sessions, outbound requests, costs, tokens, models, tools, projects, and transcript messages — through a web dashboard or a terminal UI. Source files are never modified, and normal dashboard views remain local. The optional web assistant is the explicit exception: when used, it sends the chat and requested aggregate metrics to the provider destination selected on the Config page.
+See your usage across **OpenCode**, **Claude Code**, **Codex**, **Kimi Code**, **Qwen Code**, and **Antigravity** — sessions, outbound requests, costs, tokens, models, tools, projects, and transcript messages — through a web dashboard or a terminal UI. Source files are never modified, and normal dashboard views remain local. The optional web assistant is the explicit exception: when used, it sends the chat and requested aggregate metrics to the provider destination selected on the Config page.
 
 ## Overview
 
@@ -11,7 +11,7 @@ See your usage across **OpenCode**, **Claude Code**, **Codex**, **Kimi Code**, a
 - **Web dashboard** — browser SPA served at `http://127.0.0.1:7450`
 - **TUI dashboard** — terminal interface built with Bubble Tea
 
-It supports five data sources, all read **read-only** and **local-only**:
+It supports six data sources, all read **read-only** and **local-only**:
 
 | Source | ID | Storage | Default location |
 |--------|----|---------|------------------|
@@ -20,8 +20,9 @@ It supports five data sources, all read **read-only** and **local-only**:
 | Codex | `codex` | JSONL transcripts | `~/.codex` |
 | Kimi Code | `kimi_code` | Session state + agent wire JSONL | `~/.kimi-code` |
 | Qwen Code | `qwen_code` | Chat transcripts + token-usage JSONL | `~/.qwen` |
+| Antigravity | `antigravity` | SQLite metadata + JSONL transcripts | `~/.gemini/antigravity` |
 
-Most views are scoped to one selected source. The **Overview** is the exception: it merges every available source into combined totals plus a per-source breakdown. You can switch the active source and time range live in both interfaces. No OpenCode (or other) server needs to be running, and at least one source's local data is all that's required. The dashboard creates `~/.local/share/opencode-dashboard/usage-cache.sqlite` by default; an empty cache is consolidated by a background sync at startup while views are served live from raw data. Once a source is cached, hours older than the finality cutoff (six hours behind now, truncated to the hour) are served from the cache, and the window after the cutoff is always read live from raw content and merged into the result — so recent activity is never missing, whether or not the source changed. Consolidation catches up on its own: a background sync runs every 30 minutes, and a read also starts one when the last successful sync is older than seven hours. The web UI additionally offers an explicit incremental resync and a clear-and-rebuild action.
+Most views are scoped to one selected source. The **Overview** is the exception: it merges every enabled, available source into combined totals plus a per-source breakdown. You can switch the active source and time range live in both interfaces. No OpenCode (or other) server needs to be running, and at least one source's local data is all that's required. The dashboard creates `~/.local/share/opencode-dashboard/usage-cache.sqlite` by default; an empty cache is consolidated by a background sync at startup while views are served live from raw data. Once a source is cached, hours older than the finality cutoff (six hours behind now, truncated to the hour) are served from the cache, and the window after the cutoff is always read live from raw content and merged into the result — so recent activity is never missing, whether or not the source changed. Consolidation catches up on its own: a background sync runs every 30 minutes, and a read also starts one when the last successful sync is older than seven hours. The web UI additionally offers an explicit incremental resync and a clear-and-rebuild action.
 
 ## Data sources
 
@@ -34,6 +35,23 @@ Each source is detected automatically and exposed with its own capabilities, dia
 | Codex | `jsonl` | `--codex-home` → `OPENCODE_DASHBOARD_CODEX_HOME` → `~/.codex` | `estimated_api_equivalent` — estimated USD from official API per-token rates, **not** actual billed spend |
 | Kimi Code | `jsonl` | `--kimi-home` → `KIMI_CODE_HOME` → `~/.kimi-code` | `estimated_api_equivalent` — estimated from official Kimi API prices, **not** actual membership or coding-plan spend |
 | Qwen Code | `jsonl` | `--qwen-home` → `QWEN_CODE_HOME` → `~/.qwen` | `estimated_api_equivalent` — estimated from Alibaba Cloud Model Studio list prices, **not** actual coding-plan or Token Plan spend; unpriced models stay `missing` |
+| Antigravity | `sqlite` | `--antigravity-home` → `OPENCODE_DASHBOARD_ANTIGRAVITY_HOME` → `~/.gemini/antigravity` | `estimated_api_equivalent` — dated Gemini standard token prices; unknown internal models stay `missing` |
+
+### Source activation
+
+The web **Config → Data sources** card controls which sources participate. All six known sources are listed, including unavailable ones. An absent preference means enabled; saved switches apply to the web dashboard and to TUI startup/refresh and survive usage-cache rebuilds in `dashboard-settings.sqlite`.
+
+Disabling removes a source from selection, combined totals, assistant analytics tools, and sync scheduling. Its associated Codex, Claude Code, or Kimi Code quota collector also stops. Cached history remains on disk, while MiniMax quota and assistant provider connections remain independent. Re-enabling rechecks availability and schedules incremental catch-up. All sources may be off; Config remains accessible. An explicit disabled `--source` fails with a clear error; implicit startup selects an enabled, available source.
+
+`GET /api/v1/sources` includes `enabled` on every entry and a persistent `sources_revision`. `PUT /api/v1/sources/<id>` accepts `{"enabled":false}` or `{"enabled":true}` and returns the updated source list. Explicit queries against disabled sources return HTTP 409. Source-dependent API responses are not stored in the browser HTTP cache.
+
+### Antigravity accounting
+
+Antigravity reads `conversation_summaries.db` and `conversations/*.db` under its home. Private temporary SQLite snapshots include the WAL and are removed after reading, so no SQLite auxiliary files are written beside the original databases. Aggregate accounting reads bounded protobuf metadata; transcript text, reasoning, and tool payloads load only for detail views and never enter the usage cache. Full transcripts take precedence over regular transcripts; chunked logs are concatenated before parsing.
+
+Child agents fold into their parent session with labeled messages. Originating trajectory/step identities suppress copied usage from replayed history. Recorded generations are counted once; persisted history does not expose every retry or failed outbound attempt, so request coverage is labeled incomplete. Uncached input, cache reads/writes, response output, and thinking output are kept separate.
+
+Gemini 4 Argon and Gemini 3.8 Flash use dated, standard API-equivalent USD rates from the bundled [official pricing](https://ai.google.dev/gemini-api/docs/pricing) snapshot. These are estimates, not subscription spend or AI-credit usage; tool fees and cache storage are excluded. Unknown internal names such as `gemini-3.8-flash-tiered` remain unpriced unless explicitly mapped with a pricing alias. Gemini CLI ingestion and live Antigravity quota collection are not included.
 
 ### OpenCode 1.x and 2.x databases
 
@@ -61,7 +79,7 @@ When OpenCode 2 upgrades a 1.x database in place, it keeps the 1.x tables as a f
 
 ### Cross-source costs
 
-The Overview deliberately does **not** present a single combined cost number. OpenCode reports real dollars, Codex, Kimi Code, and Qwen Code report estimated API-equivalent values, and Claude Code is mixed — summing them would be misleading. Costs are always shown per source with each source's own provenance, while additive metrics (sessions, requests, messages, tokens, days) are combined. A **request** is an outbound assistant/API attempt and excludes user prompts; **messages** remain the transcript/history count. Cross-source "top" signals (models, projects, tools) are ranked by a cost-neutral metric (tokens / invocations) so real and estimated dollars are never compared.
+The Overview deliberately does **not** present a single combined cost number. OpenCode reports real dollars, Codex, Kimi Code, Qwen Code, and Antigravity report estimated API-equivalent values, and Claude Code is mixed — summing them would be misleading. Costs are always shown per source with each source's own provenance, while additive metrics (sessions, requests, messages, tokens, days) are combined. A **request** is an outbound assistant/API attempt and excludes user prompts; **messages** remain the transcript/history count. Cross-source "top" signals (models, projects, tools) are ranked by a cost-neutral metric (tokens / invocations) so real and estimated dollars are never compared.
 
 ### Codex requested processing mode
 
@@ -224,6 +242,7 @@ Computed and estimated costs come from pinned, dated catalogs compiled into the 
 | Codex | `openai-codex-api-pricing-2026-09-29` | 2026-09-29 | 19 |
 | Kimi Code | `kimi-api-pricing-2026-07-16` | 2026-07-16 | 5 |
 | Qwen Code | `qwen-modelstudio-pricing-2026-08-02` | 2026-08-02 | 6 |
+| Antigravity | `gemini-standard-api-pricing-2026-10-14` | 2026-10-14 | 2 |
 
 OpenCode has no snapshot: it records real spend, which is read as reported. A model outside its source's snapshot stays `missing` rather than being priced by a guess — see [pricing aliases](#pricing-aliases) to map one by hand.
 
@@ -265,7 +284,7 @@ The equivalent API is `GET`/`POST`/`DELETE /api/v1/pricing/aliases`.
 - **Dashboard-owned local state** — everything the dashboard writes lives under `~/.local/share/opencode-dashboard/` and is removed by `opencode-dashboard uninstall` (listed below).
 - **Self-maintaining consolidation** — an empty cache is built by a background sync at startup (views serve live raw data meanwhile). Once ready, the cache covers only hours older than the finality cutoff; the window after it is read live from raw content on every read and merged, so cached views stay complete through now. A background sync also runs every 30 minutes, and a read starts one when the last successful sync is stale. The web top bar database action opens a sync panel with status, progress, last update, logs, incremental resync, and clear-and-rebuild.
 - **No cached transcripts** — raw conversation text, reasoning text, tool input, tool output, and patches are not stored in the dashboard cache.
-- **Plaintext transcripts** — Claude Code, Codex, Kimi Code, and Qwen Code JSONL data is local plaintext and may contain prompts, reasoning, tool output, file paths, patches, and secrets.
+- **Plaintext transcripts** — Claude Code, Codex, Kimi Code, Qwen Code, and Antigravity JSONL data is local plaintext and may contain prompts, reasoning, tool output, file paths, patches, and secrets.
 - **Redaction** — config previews (`/api/v1/config`) redact obvious secrets before display.
 
 #### Dashboard-owned files
@@ -328,7 +347,7 @@ Configure a provider in **Config → Assistant providers**, select a model, and 
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| At least one source | — | OpenCode DB, Claude Code (`~/.claude`), Codex (`~/.codex`), Kimi Code (`~/.kimi-code`), or Qwen Code (`~/.qwen`) data on disk |
+| At least one source | — | OpenCode DB, Claude Code (`~/.claude`), Codex (`~/.codex`), Kimi Code (`~/.kimi-code`), Qwen Code (`~/.qwen`), or Antigravity (`~/.gemini/antigravity`) data on disk (the web app also starts with none) |
 | Go | 1.26+ | Only required to build from source |
 | Node.js | 22.12+ | Only required to build from source (frontend); CI pins 22.12.0 |
 
@@ -435,6 +454,7 @@ opencode-dashboard web --channel beta           # Channel-specific OpenCode DB
 opencode-dashboard web --claude-home ~/.claude  # Explicit Claude Code home
 opencode-dashboard web --codex-home ~/.codex    # Explicit Codex home
 opencode-dashboard web --kimi-home ~/.kimi-code # Explicit Kimi Code home
+opencode-dashboard web --antigravity-home ~/.gemini/antigravity # Explicit Antigravity home
 opencode-dashboard web --qwen-home ~/.qwen      # Explicit Qwen Code home
 opencode-dashboard web --cache-db /tmp/usage.db # Explicit dashboard cache
 opencode-dashboard web --rebuild-cache          # Remove dashboard cache before start
@@ -490,11 +510,12 @@ Key bindings:
 | `--port <n>` | `web` | Port to bind (default `7450`) |
 | `--db <path>` | `web`, `tui` | Explicit OpenCode SQLite database path |
 | `--channel <c>` | `web`, `tui` | Resolve a channel-specific OpenCode DB (`stable`/`latest`/`beta`/custom) |
-| `--source <id>` | `web`, `tui` | Initial source: `opencode`, `claude_code`, `codex`, `kimi_code`, or `qwen_code` (default `opencode`) |
+| `--source <id>` | `web`, `tui` | Initial source: `opencode`, `claude_code`, `codex`, `kimi_code`, `qwen_code`, or `antigravity` (default `opencode`) |
 | `--claude-home <dir>` | `web`, `tui` | Claude Code config directory |
 | `--codex-home <dir>` | `web`, `tui` | Codex config directory |
 | `--kimi-home <dir>` | `web`, `tui` | Kimi Code home directory |
 | `--qwen-home <dir>` | `web`, `tui` | Qwen Code home directory |
+| `--antigravity-home <dir>` | `web`, `tui` | Antigravity data directory |
 | `--cache-db <path>` | `web`, `tui` | Dashboard-owned SQLite cache path |
 | `--rebuild-cache` | `web`, `tui` | Delete the dashboard cache before start |
 | `--no-cache` | `web`, `tui` | Run against live sources without using the dashboard cache |
@@ -514,6 +535,7 @@ Every path override below is outranked by its equivalent flag.
 | `OPENCODE_DASHBOARD_CODEX_HOME` | `web`, `tui` | Codex home (below `--codex-home`) |
 | `KIMI_CODE_HOME` | `web`, `tui` | Kimi Code home (below `--kimi-home`); also used by Kimi Code itself |
 | `QWEN_CODE_HOME` | `web`, `tui` | Qwen Code home (below `--qwen-home`) |
+| `OPENCODE_DASHBOARD_ANTIGRAVITY_HOME` | `web`, `tui` | Antigravity home (below `--antigravity-home`) |
 | `OPENCODE_DASHBOARD_MINIMAX_API_KEY` | `web` | Enables the [analytics assistant](#analytics-assistant-web-only); falls back to opencode's auth store |
 | `OPENCODE_DASHBOARD_MINIMAX_BASE_URL` | `web` | MiniMax API base override (China region, integration tests); never accepted from the browser |
 | `OPENCODE_DASHBOARD_KIMI_API_KEY` | `web` | Kimi assistant API key; falls back to the existing Kimi Code OAuth login |
@@ -562,12 +584,12 @@ opencode-dashboard uninstall --force      # Remove without confirmation
 | Target | Path | Condition |
 |--------|------|-----------|
 | Binary | `~/.local/bin/opencode-dashboard` | If not currently running |
-| Data dir | `~/.local/share/opencode-dashboard` | If exists — the usage cache, pricing aliases, saved assistant conversations, and the Claude quota snapshot |
+| Data dir | `~/.local/share/opencode-dashboard` | If exists — the usage cache, pricing aliases, saved source switches, saved assistant conversations, and the Claude quota snapshot |
 | Config dir | `~/.config/opencode-dashboard` | If exists |
 | State dir | `~/.local/state/opencode-dashboard` | If exists |
 
 Removing the data directory discards user-authored state that is **not**
-rebuildable — pricing aliases and saved assistant conversations. Use
+rebuildable — pricing aliases, saved source switches, and saved assistant conversations. Use
 `--dry-run` first if you want to keep them.
 
 **Never removed:**
@@ -576,7 +598,7 @@ rebuildable — pricing aliases and saved assistant conversations. Use
 |------|--------|
 | `~/.local/share/opencode/`, `~/.config/opencode/` | OpenCode-owned data and config |
 | `opencode*.db` | Channel databases |
-| `~/.claude`, `~/.codex`, `~/.kimi-code`, `~/.qwen` | Claude Code / Codex / Kimi Code / Qwen Code source data |
+| `~/.claude`, `~/.codex`, `~/.kimi-code`, `~/.qwen`, `~/.gemini/antigravity` | Provider-owned source data |
 
 `uninstall` never edits `~/.claude/settings.json`, so a statusline entry
 installed by `claude-statusline --install` stays behind. Remove that
@@ -584,10 +606,11 @@ installed by `claude-statusline --install` stays behind. Remove that
 
 ## API endpoints
 
-The web command also serves a JSON API under `/api/v1`. Most endpoints accept a `?source=<id>` parameter (`opencode`, `claude_code`, `codex`, `kimi_code`, or `qwen_code`; omitted values use the API compatibility default, `opencode`) and a time-range parameter — either `?period=<preset>` or an explicit `?from=YYYY-MM-DD&to=YYYY-MM-DD` (defaults to `7d`). The web client sends its startup-selected source explicitly.
+The web command also serves a JSON API under `/api/v1`. Most endpoints accept a `?source=<id>` parameter (`opencode`, `claude_code`, `codex`, `kimi_code`, `qwen_code`, or `antigravity`; omitted values use the API compatibility default, `opencode`) and a time-range parameter — either `?period=<preset>` or an explicit `?from=YYYY-MM-DD&to=YYYY-MM-DD` (defaults to `7d`). The web client sends its startup-selected source explicitly.
 
 | Endpoint | Description | Notable params |
 |----------|-------------|----------------|
+| `PUT /api/v1/sources/{id}` | Save source participation and return refreshed metadata | JSON body: `enabled` (boolean) |
 | `GET /api/v1/sources` | Registered sources, availability, and capabilities | — |
 | `GET /api/v1/overview` | Aggregate sessions, requests, transcript messages, tokens, cost, and optional Kimi request coverage for one source | `source`, period |
 | `GET /api/v1/overview/all` | Cross-source merged additive totals (including requests); a lean all-model usage payload when `dimension=model` | period, `trend=true`, `top=<n>`, `dimension=source\|model` |
@@ -705,6 +728,7 @@ opencode-dashboard/
 │   │   ├── claudecode/              # Claude Code (JSONL) source
 │   │   ├── codex/                   # Codex (JSONL) source
 │   │   ├── kimicode/                # Kimi Code (state + wire JSONL) source
+│   │   ├── antigravity/             # Antigravity SQLite/protobuf accounting + lazy transcripts
 │   │   └── qwencode/                # Qwen Code (transcripts + token-usage JSONL) source
 │   ├── stats/                       # Period, aggregation, and view domain types
 │   ├── web/                         # HTTP server, API handlers, embedded SPA

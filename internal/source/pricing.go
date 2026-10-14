@@ -198,6 +198,43 @@ type BasePricingCatalogSource interface {
 	BasePricingCatalog(context.Context) PricingCatalog
 }
 
+type RegisteredPricingCatalog struct {
+	Label   string
+	Catalog PricingCatalog
+}
+
+// PricingCatalogs exposes reference rates without discovering or querying
+// disabled data stores. Built-in base catalogs remain available independently
+// of whether the associated transcript source is enabled or present.
+func (r *Registry) PricingCatalogs(ctx context.Context) []RegisteredPricingCatalog {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	entries := make([]registryEntry, 0, len(r.order))
+	for _, id := range r.order {
+		entry := r.entries[id]
+		entry.info.Enabled = !r.disabled[id]
+		entries = append(entries, entry)
+	}
+	r.mu.RUnlock()
+	result := make([]RegisteredPricingCatalog, 0, len(entries))
+	for _, entry := range entries {
+		var catalog PricingCatalog
+		if base, ok := entry.source.(BasePricingCatalogSource); ok {
+			catalog = base.BasePricingCatalog(ctx)
+		} else if entry.info.Enabled && entry.info.Available {
+			if pricing, ok := entry.source.(PricingCatalogSource); ok {
+				catalog = pricing.PricingCatalog(ctx)
+			}
+		}
+		if len(catalog.Models) != 0 {
+			result = append(result, RegisteredPricingCatalog{Label: entry.info.Label, Catalog: catalog})
+		}
+	}
+	return result
+}
+
 // PricingInvalidator is implemented by sources whose process-local snapshot
 // can be discarded after a pricing alias changes.
 type PricingInvalidator interface {

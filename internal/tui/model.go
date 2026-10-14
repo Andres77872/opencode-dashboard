@@ -384,6 +384,24 @@ func (m *model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if matches(key, m.keys.Refresh...) {
+		revision := m.registry.Revision()
+		_ = m.registry.RefreshPreferences(context.Background())
+		if revision != m.registry.Revision() {
+			m.data = dashboardData{}
+			m.loaded = false
+			m.sessionDetail = sessionOverlayState{}
+			m.projectDetail = projectDetailOverlayState{}
+			m.messageDetail = messageDetailOverlayState{}
+		}
+		if !m.registry.Enabled(m.selectedSource) {
+			for _, info := range m.registry.List(context.Background()) {
+				if info.Enabled && info.Available {
+					m.selectedSource = info.ID
+					break
+				}
+			}
+		}
+		m.resolveSource()
 		m.sessionDetail.err = nil
 		m.dayMessages.err = nil
 		m.messageDetail.err = nil
@@ -870,7 +888,7 @@ func (m *model) renderHelp(bodyHeight int) string {
 		"  1-7       jump to tab",
 		"  h / ←     previous tab",
 		"  l / →     next tab",
-		"  S         switch data source (opencode/claude_code/codex/kimi_code/qwen_code)",
+		"  S         switch data source (opencode/claude_code/codex/kimi_code/qwen_code/antigravity)",
 		"  T         time-range picker (presets + custom from/to)",
 		"  r         refresh data",
 		"  ? / Esc   toggle help",

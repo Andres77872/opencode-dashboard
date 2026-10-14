@@ -31,6 +31,7 @@ import {
   formatInteger,
   formatPercentage,
   formatTokenCount,
+  getCostStatus,
   safeDivide,
 } from '../lib/format'
 import { getNextSortState, type SortState } from '../lib/table-sort'
@@ -195,7 +196,7 @@ export function ModelsView() {
     const costLeader = rows.reduce<ModelRow | null>((best, r) => (!best || r.cost > best.cost ? r : best), null)
     const usageLeader = rows.reduce<ModelRow | null>((best, r) => (!best || r.messages > best.messages ? r : best), null)
     const efficiencyLeader = rows
-      .filter((r) => r.messages > 0)
+      .filter((r) => r.messages > 0 && getCostStatus(r.cost_status, r.cost_provenance) !== 'missing' && (r.cost_provenance?.missing_count ?? 0) === 0)
       .reduce<ModelRow | null>((best, r) => (!best || r.avgCostPerMessage < best.avgCostPerMessage ? r : best), null)
 
     const advancedRow = sorted.find((r) => r.avg_tokens_per_message || r.avg_tokens_per_session) ?? null

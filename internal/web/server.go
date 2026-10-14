@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"opencode-dashboard/internal/analyticsagent"
@@ -51,7 +52,8 @@ type ServerOptions struct {
 	ChatLog            AssistantChatStore
 	PricingAliases     PricingAliasStore
 	// PricingRates is the cross-source catalog index; handlers only invalidate it.
-	PricingRates PricingRateInvalidator
+	PricingRates   PricingRateInvalidator
+	SourceSettings SourceSettingsStore
 }
 
 func NewServer(opts ServerOptions) *http.Server {
@@ -76,6 +78,14 @@ func NewServer(opts ServerOptions) *http.Server {
 	srv.RegisterStaticRoutes()
 
 	handler := Chain(srv.mux,
+		func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, apiV1Prefix+"/") {
+					w.Header().Set("Cache-Control", "no-store")
+				}
+				next.ServeHTTP(w, r)
+			})
+		},
 		corsMiddleware,
 		LoggingMiddleware(opts.Logger),
 		RecoveryMiddleware(opts.Logger),
@@ -92,6 +102,7 @@ func NewServer(opts ServerOptions) *http.Server {
 
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/sources", s.handlers.Sources)
+	s.mux.HandleFunc("PUT "+apiV1Prefix+"/sources/{id}", s.handlers.SourceUpdate)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/overview", s.handlers.Overview)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/overview/all", s.handlers.OverviewAll)
 	s.mux.HandleFunc("GET "+apiV1Prefix+"/daily", s.handlers.Daily)

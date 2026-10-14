@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/stats"
@@ -13,6 +14,30 @@ type Source struct {
 	store      *store.Store
 	path       string
 	pathSource string
+	mu         sync.Mutex
+	lazy       bool
+}
+
+// NewLazy leaves disabled/missing databases unopened until the source is used.
+func NewLazy(path, pathSource string) *Source {
+	return &Source{path: path, pathSource: pathSource, lazy: true}
+}
+func (s *Source) ensureStore(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store != nil || !s.lazy {
+		return nil
+	}
+	st, err := store.Connect(ctx, s.path)
+	if err != nil {
+		return err
+	}
+	if !st.IsValidSchema() {
+		st.Close()
+		return store.ErrInvalidSchema
+	}
+	s.store = st
+	return nil
 }
 
 type Option func(*Source)
@@ -40,7 +65,10 @@ func New(st *store.Store, opts ...Option) *Source {
 // switching to 2.x rebuilds the cache from the 2.x tables.
 const layoutV2 = "opencode-v2"
 
-func (s *Source) Info(context.Context) source.SourceInfo {
+func (s *Source) Info(ctx context.Context) source.SourceInfo {
+	if s != nil {
+		_ = s.ensureStore(ctx)
+	}
 	var schema store.SchemaInfo
 	if s != nil && s.store != nil {
 		schema = s.store.Schema()
@@ -90,6 +118,9 @@ func (s *Source) Info(context.Context) source.SourceInfo {
 }
 
 func (s *Source) Overview(ctx context.Context, pq stats.PeriodQuery) (stats.OverviewStats, error) {
+	if err := s.ensureStore(ctx); err != nil {
+		return stats.OverviewStats{}, err
+	}
 	result, err := stats.Overview(ctx, s.store, pq)
 	if err != nil {
 		return result, err
@@ -99,6 +130,9 @@ func (s *Source) Overview(ctx context.Context, pq stats.PeriodQuery) (stats.Over
 }
 
 func (s *Source) Daily(ctx context.Context, pq stats.PeriodQuery, granularity ...stats.Granularity) (stats.DailyStats, error) {
+	if err := s.ensureStore(ctx); err != nil {
+		return stats.DailyStats{}, err
+	}
 	result, err := stats.Daily(ctx, s.store, pq, granularity...)
 	if err != nil {
 		return result, err
@@ -108,6 +142,9 @@ func (s *Source) Daily(ctx context.Context, pq stats.PeriodQuery, granularity ..
 }
 
 func (s *Source) DailyDimension(ctx context.Context, dimension string, pq stats.PeriodQuery, granularity ...stats.Granularity) (stats.DailyDimensionStats, error) {
+	if err := s.ensureStore(ctx); err != nil {
+		return stats.DailyDimensionStats{}, err
+	}
 	result, err := stats.DailyDimension(ctx, s.store, dimension, pq, granularity...)
 	if err != nil {
 		return result, err
@@ -117,6 +154,9 @@ func (s *Source) DailyDimension(ctx context.Context, dimension string, pq stats.
 }
 
 func (s *Source) Models(ctx context.Context, pq stats.PeriodQuery) (stats.ModelStats, error) {
+	if err := s.ensureStore(ctx); err != nil {
+		return stats.ModelStats{}, err
+	}
 	result, err := stats.Models(ctx, s.store, pq)
 	if err != nil {
 		return result, err
@@ -126,6 +166,9 @@ func (s *Source) Models(ctx context.Context, pq stats.PeriodQuery) (stats.ModelS
 }
 
 func (s *Source) Tools(ctx context.Context, pq stats.PeriodQuery) (stats.ToolStats, error) {
+	if err := s.ensureStore(ctx); err != nil {
+		return stats.ToolStats{}, err
+	}
 	result, err := stats.Tools(ctx, s.store, pq)
 	if err != nil {
 		return result, err
@@ -135,6 +178,9 @@ func (s *Source) Tools(ctx context.Context, pq stats.PeriodQuery) (stats.ToolSta
 }
 
 func (s *Source) Projects(ctx context.Context, pq stats.PeriodQuery) (stats.ProjectStats, error) {
+	if err := s.ensureStore(ctx); err != nil {
+		return stats.ProjectStats{}, err
+	}
 	result, err := stats.Projects(ctx, s.store, pq)
 	if err != nil {
 		return result, err
@@ -144,6 +190,9 @@ func (s *Source) Projects(ctx context.Context, pq stats.PeriodQuery) (stats.Proj
 }
 
 func (s *Source) ProjectByID(ctx context.Context, id string, pq stats.PeriodQuery, page, limit int) (*stats.ProjectDetail, error) {
+	if err := s.ensureStore(ctx); err != nil {
+		return nil, err
+	}
 	result, err := stats.ProjectByID(ctx, s.store, id, pq, page, limit)
 	if err != nil {
 		return result, err
@@ -153,6 +202,9 @@ func (s *Source) ProjectByID(ctx context.Context, id string, pq stats.PeriodQuer
 }
 
 func (s *Source) Sessions(ctx context.Context, query stats.SessionQuery) (stats.SessionList, error) {
+	if err := s.ensureStore(ctx); err != nil {
+		return stats.SessionList{}, err
+	}
 	result, err := stats.SessionsWithQuery(ctx, s.store, query)
 	if err != nil {
 		return result, err
@@ -162,6 +214,9 @@ func (s *Source) Sessions(ctx context.Context, query stats.SessionQuery) (stats.
 }
 
 func (s *Source) SessionByID(ctx context.Context, id string) (*stats.SessionDetail, error) {
+	if err := s.ensureStore(ctx); err != nil {
+		return nil, err
+	}
 	result, err := stats.SessionByID(ctx, s.store, id)
 	if err != nil {
 		return result, err
@@ -171,6 +226,9 @@ func (s *Source) SessionByID(ctx context.Context, id string) (*stats.SessionDeta
 }
 
 func (s *Source) Messages(ctx context.Context, pq stats.PeriodQuery, page, limit int, sort stats.MessageSort) (stats.MessageList, error) {
+	if err := s.ensureStore(ctx); err != nil {
+		return stats.MessageList{}, err
+	}
 	result, err := stats.MessagesByPeriod(ctx, s.store, pq, page, limit, sort)
 	if err != nil {
 		return result, err
@@ -180,6 +238,9 @@ func (s *Source) Messages(ctx context.Context, pq stats.PeriodQuery, page, limit
 }
 
 func (s *Source) MessageByID(ctx context.Context, id string) (*stats.MessageDetail, error) {
+	if err := s.ensureStore(ctx); err != nil {
+		return nil, err
+	}
 	result, err := stats.MessageByID(ctx, s.store, id)
 	if err != nil {
 		return result, err

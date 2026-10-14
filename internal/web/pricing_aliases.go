@@ -524,17 +524,8 @@ func (h *Handlers) pricingAliasCatalogs(ctx context.Context) []PricingAliasCatal
 	if h.registry == nil {
 		return catalogs
 	}
-	for _, candidate := range h.registry.Available(ctx) {
-		catalogSource, ok := candidate.(source.PricingCatalogSource)
-		if !ok {
-			continue
-		}
-		info := candidate.Info(ctx)
-		catalog := catalogSource.PricingCatalog(ctx)
-		if len(catalog.Models) == 0 {
-			continue
-		}
-		catalogs = append(catalogs, pricingAliasCatalogResponse(info.ID, info.Label, catalog))
+	for _, reference := range h.registry.PricingCatalogs(ctx) {
+		catalogs = append(catalogs, pricingAliasCatalogResponse(reference.Catalog.SourceID, reference.Label, reference.Catalog))
 	}
 	sort.SliceStable(catalogs, func(i, j int) bool {
 		return catalogs[i].SourceID < catalogs[j].SourceID
@@ -557,22 +548,12 @@ func badRequestPtr(message string) *APIError {
 
 // pricingAliasTargetCatalog resolves the catalog an alias wants to borrow from.
 func (h *Handlers) pricingAliasTargetCatalog(ctx context.Context, targetSourceID source.SourceID) (source.PricingCatalog, *APIError) {
-	target, err := h.registry.Resolve(string(targetSourceID))
-	if err != nil {
-		return source.PricingCatalog{}, badRequestPtr("target_source_id " + string(targetSourceID) + " is not an available source")
+	for _, reference := range h.registry.PricingCatalogs(ctx) {
+		if reference.Catalog.SourceID == targetSourceID {
+			return reference.Catalog, nil
+		}
 	}
-	if target.Info(ctx).ID != targetSourceID {
-		return source.PricingCatalog{}, badRequestPtr("target_source_id does not match the resolved target source")
-	}
-	catalogSource, ok := target.(source.PricingCatalogSource)
-	if !ok {
-		return source.PricingCatalog{}, badRequestPtr("source " + string(targetSourceID) + " has no bundled pricing catalog to target")
-	}
-	catalog := catalogSource.PricingCatalog(ctx)
-	if len(catalog.Models) == 0 {
-		return source.PricingCatalog{}, badRequestPtr("source " + string(targetSourceID) + " has no bundled pricing catalog to target")
-	}
-	return catalog, nil
+	return source.PricingCatalog{}, badRequestPtr("source " + string(targetSourceID) + " has no bundled pricing catalog to target")
 }
 
 func sourceLabel(ctx context.Context, selected source.Source) string {

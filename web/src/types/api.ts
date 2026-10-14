@@ -3,7 +3,7 @@ export interface CacheStats {
   write: number
 }
 
-export const SOURCE_ID_VALUES = ['opencode', 'claude_code', 'codex', 'kimi_code', 'qwen_code'] as const
+export const SOURCE_ID_VALUES = ['opencode', 'claude_code', 'codex', 'kimi_code', 'qwen_code', 'antigravity'] as const
 
 export type SourceID = (typeof SOURCE_ID_VALUES)[number]
 
@@ -38,6 +38,7 @@ export interface PrivacyInfo {
 }
 
 export interface SourceInfo {
+  enabled?: boolean
   id: SourceID
   label: string
   kind: 'sqlite' | 'jsonl' | string
@@ -58,6 +59,7 @@ export interface SourceInfo {
 }
 
 export interface SourceListResponse {
+  sources_revision?: number
   default_source_id: SourceID
   startup_source_id?: SourceID
   sources: SourceInfo[]

@@ -187,7 +187,7 @@ type ChatResult struct {
 
 const privacyNotice = "Questions, the assistant conversation included with them, and aggregate usage metrics used to answer them are sent to the selected provider destination. The current dashboard route, source, selected preset or custom date range, browser timezone, aggregate UTC day/hour bucket labels, aggregate source diagnostics, request-accounting evidence, sanitized cache health, model/provider/tool names, and project names without their directories may also be sent. Raw source diagnostics and errors, coding transcripts, coding prompts or reasoning, session titles, raw configuration, credentials, file paths, raw event or per-session activity timestamps, raw request/session identifiers, and coding-tool input/output are never exposed by analytics tools."
 
-const crossSourceCostNotice = "Cost scope: source costs are not additive. OpenCode reports recorded spend, Claude Code may mix reported and computed values, and Codex/Kimi Code/Qwen Code values are API-equivalent estimates rather than subscription, membership, coding-plan, or token-plan spend."
+const crossSourceCostNotice = "Cost scope: source costs are not additive. OpenCode reports recorded spend, Claude Code may mix reported and computed values, and Codex/Kimi Code/Qwen Code/Antigravity values are API-equivalent estimates rather than subscription, membership, coding-plan, or token-plan spend."
 
 const truncationNotice = "Evidence scope: at least one analytics result or specialist finding was truncated to its configured limit. Treat omitted rows, earlier buckets, or report text as unknown unless the answer explicitly states that fuller evidence was fetched."
 

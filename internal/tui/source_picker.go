@@ -24,7 +24,13 @@ func sourceUnavailableReason(info source.SourceInfo) string {
 }
 
 func (m *model) openSourcePicker() {
-	infos := m.registry.List(context.Background())
+	_ = m.registry.RefreshPreferences(context.Background())
+	infos := []source.SourceInfo{}
+	for _, info := range m.registry.List(context.Background()) {
+		if info.Enabled {
+			infos = append(infos, info)
+		}
+	}
 	cursor := 0
 	for i, info := range infos {
 		if info.ID == m.selectedSource {

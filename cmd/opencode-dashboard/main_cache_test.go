@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	usagecache "opencode-dashboard/internal/cache"
+	"opencode-dashboard/internal/pricingalias"
 	"opencode-dashboard/internal/source"
 	"opencode-dashboard/internal/source/codex"
 	"opencode-dashboard/internal/stats"
@@ -400,4 +402,134 @@ func (s *failingTestSource) MessageByID(context.Context, string) (*stats.Message
 
 func (s *failingTestSource) Config(context.Context) (stats.ConfigView, error) {
 	return stats.ConfigView{}, nil
+}
+
+type toggleTestPreferences struct {
+	disabled bool
+	revision int64
+}
+
+func (p *toggleTestPreferences) SourceSettings(context.Context) (map[source.SourceID]bool, int64, error) {
+	return map[source.SourceID]bool{source.SourceCodex: !p.disabled}, p.revision, nil
+}
+func TestDisabledSourceCannotSyncAndRetainsKnownIdentity(t *testing.T) {
+	ctx := context.Background()
+	cache := newTestCacheRuntime(t)
+	reg := source.NewRegistry(source.SourceOpenCode)
+	cache.registry = reg
+	prefs := &toggleTestPreferences{disabled: true, revision: 1}
+	if err := reg.ConfigurePreferences(prefs, cache.sourcePreferencesChanged); err != nil {
+		t.Fatal(err)
+	}
+	src := codex.New(codex.Options{CodexHome: codexFixtureHome()})
+	cache.rememberSourceAs(source.SourceCodex, src)
+	reg.RegisterWithInfo(src, source.SourceInfo{ID: source.SourceCodex, Label: "Codex"})
+	cache.runAutoSyncTick()
+	if cache.isCached(source.SourceCodex) {
+		t.Fatal("disabled source synced")
+	}
+	if _, err := cache.Sync(ctx, "codex", "incremental"); !errors.Is(err, source.ErrDisabledSource) {
+		t.Fatalf("manual disabled sync: %v", err)
+	}
+	known := cache.knownSourceIDs()
+	if len(known) != 1 || known[0] != "codex" {
+		t.Fatal("disabled source became prunable")
+	}
+	prefs.disabled = false
+	prefs.revision++
+	reg.RefreshPreferences(ctx)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !cache.isCached(source.SourceCodex) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !cache.isCached(source.SourceCodex) {
+		t.Fatal("reenabling did not catch up")
+	}
+	cache.Close()
+}
+
+type cancellableConsolidationSource struct {
+	source.Source
+	started, cancelled chan struct{}
+}
+
+func (s *cancellableConsolidationSource) ConsolidationData(ctx context.Context, _ stats.PeriodQuery) (source.ConsolidationData, error) {
+	close(s.started)
+	<-ctx.Done()
+	close(s.cancelled)
+	return source.ConsolidationData{}, ctx.Err()
+}
+
+type emptySuccessfulSource struct{ failingTestSource }
+
+func (s *emptySuccessfulSource) Info(context.Context) source.SourceInfo {
+	return source.SourceInfo{ID: source.SourceQwenCode, Label: "Qwen", Kind: "jsonl", Available: true}
+}
+func (s *emptySuccessfulSource) Messages(context.Context, stats.PeriodQuery, int, int, stats.MessageSort) (stats.MessageList, error) {
+	return stats.MessageList{}, nil
+}
+
+func TestDisablingCancelsActiveSourceAndContinuesOthersWithCacheRetained(t *testing.T) {
+	ctx := context.Background()
+	cache := newTestCacheRuntime(t)
+	defer cache.Close()
+	reg := source.NewRegistry(source.SourceOpenCode)
+	cache.registry = reg
+	settings, err := pricingalias.Open(ctx, filepath.Join(t.TempDir(), "settings.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer settings.Close()
+	if err := reg.ConfigurePreferences(settings, cache.sourcePreferencesChanged); err != nil {
+		t.Fatal(err)
+	}
+	raw := codex.New(codex.Options{CodexHome: codexFixtureHome()})
+	cache.rememberSourceAs(source.SourceCodex, raw)
+	reg.Register(raw)
+	cache.runAutoSyncTick()
+	before, err := cache.store.Overview(ctx, "codex", stats.PeriodQuery{Period: "all"})
+	if err != nil || before.Requests == 0 {
+		t.Fatalf("seed=%+v %v", before, err)
+	}
+	blocked := &cancellableConsolidationSource{Source: raw, started: make(chan struct{}), cancelled: make(chan struct{})}
+	cache.rememberSourceAs(source.SourceCodex, blocked)
+	reg.Register(blocked)
+	other := &emptySuccessfulSource{}
+	cache.rememberSourceAs(source.SourceQwenCode, other)
+	reg.Register(other)
+	if _, err := cache.Sync(ctx, "all", "rebuild"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blocked.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("sync did not start")
+	}
+	if err := settings.SetSourceEnabled(ctx, source.SourceCodex, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RefreshPreferences(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blocked.cancelled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("active source was not cancelled")
+	}
+	waitForCacheJob(t, cache)
+	if !cache.isCached(source.SourceQwenCode) {
+		t.Fatal("other source was interrupted")
+	}
+	after, err := cache.store.Overview(ctx, "codex", stats.PeriodQuery{Period: "all"})
+	if err != nil || after.Requests != before.Requests {
+		t.Fatalf("retained cache=%+v %v", after, err)
+	}
+	for _, mode := range []string{"incremental", "rebuild"} {
+		if _, err := cache.Sync(ctx, "codex", mode); !errors.Is(err, source.ErrDisabledSource) {
+			t.Fatalf("disabled %s=%v", mode, err)
+		}
+	}
+	if cache.NotifyPricingChange(ctx, source.SourceCodex) != web.PricingChangeStatusDisabled {
+		t.Fatal("disabled source repriced")
+	}
 }

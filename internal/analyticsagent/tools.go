@@ -428,6 +428,9 @@ func (r *ToolRegistry) execute(ctx context.Context, name string, arguments json.
 	if r == nil || r.registry == nil {
 		return nil, errors.New("source registry is not configured")
 	}
+	if err := r.registry.RefreshPreferences(ctx); err != nil {
+		return nil, errors.New("source preferences are unavailable")
+	}
 	switch name {
 	case "list_sources":
 		var args struct{}
@@ -489,7 +492,7 @@ func (r *ToolRegistry) execute(ctx context.Context, name string, arguments json.
 		}
 		unavailable := make([]string, 0)
 		for _, info := range r.registry.List(ctx) {
-			if !info.Available {
+			if info.Enabled && !info.Available {
 				unavailable = appendUnique(unavailable, string(info.ID))
 			}
 		}
@@ -881,7 +884,7 @@ func (r *ToolRegistry) listSources(ctx context.Context) []safeSourceInfo {
 	infos := r.registry.List(ctx)
 	result := make([]safeSourceInfo, 0, len(infos))
 	for _, info := range infos {
-		if !isSafeSourceID(string(info.ID)) {
+		if !info.Enabled || !isSafeSourceID(string(info.ID)) {
 			continue
 		}
 		item := safeSourceInfo{

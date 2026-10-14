@@ -17,11 +17,82 @@ type registryEntry struct {
 }
 
 type Registry struct {
-	mu        sync.RWMutex
-	defaultID SourceID
-	startupID SourceID
-	entries   map[SourceID]registryEntry
-	order     []SourceID
+	mu          sync.RWMutex
+	defaultID   SourceID
+	startupID   SourceID
+	entries     map[SourceID]registryEntry
+	order       []SourceID
+	disabled    map[SourceID]bool
+	revision    int64
+	preferences Preferences
+	onChange    func([]SourceID)
+}
+
+func (r *Registry) ConfigurePreferences(p Preferences, onChange func([]SourceID)) error {
+	r.mu.Lock()
+	r.preferences = p
+	r.onChange = onChange
+	r.mu.Unlock()
+	return r.RefreshPreferences(context.Background())
+}
+
+func (r *Registry) RefreshPreferences(ctx context.Context) error {
+	r.mu.RLock()
+	p := r.preferences
+	r.mu.RUnlock()
+	if p == nil {
+		return nil
+	}
+	settings, revision, err := p.SourceSettings(ctx)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	if revision < r.revision {
+		r.mu.Unlock()
+		return nil
+	}
+	changed := make([]SourceID, 0)
+	for _, id := range KnownIDs() {
+		enabled, exists := settings[id]
+		disabled := exists && !enabled
+		if r.disabled[id] != disabled {
+			changed = append(changed, id)
+		}
+	}
+	r.disabled = make(map[SourceID]bool)
+	for id, enabled := range settings {
+		r.disabled[id] = !enabled
+	}
+	r.revision = revision
+	callback := r.onChange
+	r.mu.Unlock()
+	if callback != nil && len(changed) != 0 {
+		callback(changed)
+	}
+	return nil
+}
+
+func (r *Registry) Enabled(id SourceID) bool {
+	if r == nil {
+		return true
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return !r.disabled[id]
+}
+
+func (r *Registry) Revision() int64 { r.mu.RLock(); defer r.mu.RUnlock(); return r.revision }
+
+// RegisterWithInfo avoids discovery reads when a source starts disabled.
+func (r *Registry) RegisterWithInfo(src Source, info SourceInfo) error {
+	if src == nil || info.ID == "" {
+		return InvalidSourceError{ID: string(info.ID)}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.upsert(info.ID, registryEntry{source: src, info: info})
+	return nil
 }
 
 func NewRegistry(defaultID SourceID) *Registry {
@@ -112,8 +183,10 @@ func (r *Registry) Resolve(selectedID string) (Source, error) {
 	if r == nil {
 		return nil, UnavailableSourceError{ID: SourceOpenCode, Reason: "source registry is not configured"}
 	}
+	if err := r.RefreshPreferences(context.Background()); err != nil {
+		return nil, UnavailableSourceError{Reason: "source preferences could not be loaded"}
+	}
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	id := strings.TrimSpace(selectedID)
 	if id == "" {
 		// Omitted/empty source parameters intentionally resolve to the API
@@ -122,17 +195,26 @@ func (r *Registry) Resolve(selectedID string) (Source, error) {
 		id = string(r.defaultIDLocked())
 	}
 	if id == "both" {
+		r.mu.RUnlock()
 		return nil, UnsupportedSourceError{ID: id, Reason: "v1 supports one selected source at a time"}
 	}
 
 	sourceID := SourceID(id)
+	if r.disabled[sourceID] {
+		r.mu.RUnlock()
+		return nil, DisabledSourceError{ID: sourceID}
+	}
 	entry, ok := r.entries[sourceID]
+	r.mu.RUnlock()
 	if !ok {
 		return nil, InvalidSourceError{ID: id}
 	}
 	info := entry.info
 	if entry.source != nil {
 		info = entry.source.Info(context.Background())
+	}
+	if !r.Enabled(sourceID) {
+		return nil, DisabledSourceError{ID: sourceID}
 	}
 	if !info.Available || entry.source == nil {
 		return nil, UnavailableSourceError{ID: sourceID, Reason: info.Diagnostics.Reason}
@@ -141,23 +223,38 @@ func (r *Registry) Resolve(selectedID string) (Source, error) {
 }
 
 func (r *Registry) List(ctx context.Context) []SourceInfo {
+	infos, _ := r.ListWithRevision(ctx)
+	return infos
+}
+
+// ListWithRevision captures preferences and their revision together. Source
+// discovery runs without the registry lock because pricing can consult other
+// registered catalogs and source discovery can take time.
+func (r *Registry) ListWithRevision(ctx context.Context) ([]SourceInfo, int64) {
 	if r == nil {
-		return []SourceInfo{}
+		return []SourceInfo{}, 0
 	}
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	infos := make([]SourceInfo, 0, len(r.order))
+	entries := make([]registryEntry, 0, len(r.order))
 	for _, id := range r.order {
 		entry := r.entries[id]
+		entry.info.Enabled = !r.disabled[id]
+		entry.info.Default = id == r.defaultIDLocked()
+		entry.info.Selected = id == r.startupIDLocked()
+		entries = append(entries, entry)
+	}
+	revision := r.revision
+	r.mu.RUnlock()
+	infos := make([]SourceInfo, 0, len(entries))
+	for _, entry := range entries {
 		info := entry.info
-		if entry.source != nil {
+		if entry.source != nil && info.Enabled {
 			info = entry.source.Info(ctx)
+			info.Enabled, info.Default, info.Selected = entry.info.Enabled, entry.info.Default, entry.info.Selected
 		}
-		info.Default = id == r.defaultIDLocked()
-		info.Selected = id == r.startupIDLocked()
 		infos = append(infos, info)
 	}
-	return infos
+	return infos, revision
 }
 
 // Available returns the live, available Source instances in registration order.
@@ -167,18 +264,22 @@ func (r *Registry) Available(ctx context.Context) []Source {
 	if r == nil {
 		return nil
 	}
+	if err := r.RefreshPreferences(ctx); err != nil {
+		return []Source{}
+	}
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]Source, 0, len(r.order))
+	entries := make([]registryEntry, 0, len(r.order))
 	for _, id := range r.order {
-		entry := r.entries[id]
-		if entry.source == nil {
-			continue
+		if entry := r.entries[id]; entry.source != nil && !r.disabled[id] {
+			entries = append(entries, entry)
 		}
-		if !entry.source.Info(ctx).Available {
-			continue
+	}
+	r.mu.RUnlock()
+	out := make([]Source, 0, len(entries))
+	for _, entry := range entries {
+		if entry.source.Info(ctx).Available && r.Enabled(entry.info.ID) {
+			out = append(out, entry.source)
 		}
-		out = append(out, entry.source)
 	}
 	return out
 }
@@ -210,12 +311,9 @@ func (r *Registry) Close() error {
 	if r == nil {
 		return nil
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
 	var errs []error
-	for _, id := range r.order {
-		entry := r.entries[id]
-		if closer, ok := entry.source.(closeableSource); ok {
+	for _, src := range r.registered() {
+		if closer, ok := src.(closeableSource); ok {
 			if err := closer.Close(); err != nil {
 				errs = append(errs, err)
 			}

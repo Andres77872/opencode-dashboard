@@ -135,6 +135,9 @@ func dailyRequestAccounting(sourceID string, days []stats.DayStats) *stats.Reque
 }
 
 func requestAccountingForSource(sourceID string, accounting *stats.RequestAccounting) *stats.RequestAccounting {
+	if accounting == nil && sourceID == "antigravity" {
+		return &stats.RequestAccounting{TraceCoverage: stats.TraceCoverageSuccessfulOnly}
+	}
 	if accounting == nil && sourceID == "kimi_code" {
 		return &stats.RequestAccounting{TraceCoverage: stats.TraceCoverageUnknown}
 	}

@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Card, EmptyState, ErrorState, Notice, Skeleton, vendorMeta } from '../components/vael'
 import { ConfigHeader } from '../components/config/config-header'
 import { PricingAliases } from '../components/config/pricing-aliases'
+import { DataSources } from '../components/config/data-sources'
 import { AssistantProviders } from '../components/config/assistant-providers'
 import { ConfigTreePane } from '../components/config/config-tree'
 import { SectionNav } from '../components/config/section-nav'
@@ -31,11 +32,14 @@ import type { ConfigViewMode } from '../types/config'
 const COPY_RESET_MS = 1600
 
 export function ConfigView() {
+  const { sourceAvailable, sourceMetadata } = useDashboardContext()
+  const revision = sourceMetadata?.sources_revision ?? 0
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <SourceConfigExplorer />
+      <DataSources />
+      {sourceAvailable && <SourceConfigExplorer key={`config:${revision}`} />}
       <AssistantProviders />
-      <PricingAliases />
+      {sourceAvailable && <PricingAliases key={`pricing:${revision}`} />}
     </div>
   )
 }

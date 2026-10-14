@@ -15,6 +15,10 @@ type QuotaService interface {
 }
 
 func (h *Handlers) Quotas(w http.ResponseWriter, r *http.Request) {
+	if err := h.registry.RefreshPreferences(r.Context()); err != nil {
+		InternalError("failed to load source preferences").Write(w)
+		return
+	}
 	if h.quotas == nil {
 		writeJSONNoStore(w, http.StatusOK, quota.Response{Providers: []quota.ProviderQuota{}, FetchedAtMS: time.Now().UnixMilli()})
 		return

@@ -1,5 +1,6 @@
 /* Source notice (Vael) — surfaces the selected source's path, cost policy, privacy
    warnings, and any source-state error. Rendered at the top of the page body. */
+import { Link } from 'react-router-dom'
 import { Badge } from '../vael/atoms'
 import { Icon, type IconName } from '../vael/icon'
 import { useDashboardContext } from '../layout/dashboard-context'
@@ -10,7 +11,7 @@ function compactPath(path: string) {
 }
 
 function dataLayoutLabel(layout: string) {
-  return layout === 'opencode-v2' ? 'OpenCode 2 schema' : layout
+  return layout === 'antigravity-sqlite-pb-v1' ? 'Antigravity conversations' : layout === 'opencode-v2' ? 'OpenCode 2 schema' : layout
 }
 
 type Tone = 'info' | 'warning' | 'danger'
@@ -22,7 +23,11 @@ const TONE: Record<Tone, { fg: string; soft: string; icon: IconName }> = {
 }
 
 export function SourceNotice() {
-  const { selectedSourceId, selectedSourceInfo, sourceMetadataError, sourceMetadataLoading, sourceStateError } = useDashboardContext()
+  const { selectedSourceId, selectedSourceInfo, sourceMetadataError, sourceMetadataLoading, sourceStateError, sources } = useDashboardContext()
+
+  if (!sourceMetadataLoading && sources.length > 0 && sources.every(source => source.enabled === false)) {
+    return <div role="status" style={{ padding: 16, marginBottom: 16, background: 'var(--accent-soft)', borderRadius: 'var(--radius-lg)' }}>All data sources are disabled. <Link to="/config">Manage data sources in Config</Link> to resume analytics.</div>
+  }
 
   if (sourceMetadataLoading && !selectedSourceInfo) {
     return (
@@ -70,6 +75,7 @@ export function SourceNotice() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, font: '400 13px/1.5 var(--font-ui)', color: 'var(--fg-secondary)' }}>
+          {(sourceStateError?.kind === 'disabled' || selectedSourceInfo?.available === false) && <Link to="/config">Manage data sources in Config</Link>}
           {selectedSourceInfo?.path && (
             <div>
               <span style={{ color: 'var(--fg-primary)', fontWeight: 600 }}>Path:</span>{' '}

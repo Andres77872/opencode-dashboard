@@ -2,7 +2,7 @@ import { lazy, useEffect, useMemo, useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { DashboardLayout } from './components/layout/dashboard-layout'
 import { DashboardProvider } from './components/layout/dashboard-provider'
-import { getSources } from './lib/api'
+import { getSources, withBypassCache } from './lib/api'
 import { useSourceState } from './lib/use-source-state'
 import type { SourceListResponse } from './types/api'
 
@@ -58,14 +58,14 @@ function App() {
       setSourceMetadataError(null)
 
       try {
-        const next = await getSources(controller.signal)
+        const next = await withBypassCache(() => getSources(controller.signal))
         if (controller.signal.aborted) return
-        setSourceMetadata(next)
+        setSourceMetadata(previous => previous && (previous.sources_revision ?? 0) > (next.sources_revision ?? 0) ? previous : next)
       } catch (caught) {
         if (controller.signal.aborted) return
         const message = caught instanceof Error ? caught.message : 'Failed to load source metadata'
         setSourceMetadataError(message)
-        setSourceMetadata(fallbackSourceMetadata(message))
+        setSourceMetadata(previous => previous ?? fallbackSourceMetadata(message))
       } finally {
         if (!controller.signal.aborted) {
           setSourceMetadataLoading(false)
@@ -76,6 +76,12 @@ function App() {
     void loadSources()
 
     return () => controller.abort()
+  }, [refreshTick])
+
+  useEffect(() => {
+    const onFocus = () => setRefreshTick(value => value + 1)
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
   }, [])
 
   const sourceState = useSourceState(sourceMetadata)
@@ -88,6 +94,10 @@ function App() {
       requestRefresh: () => setRefreshTick((value) => value + 1),
       setLastUpdatedAt,
       setRefreshing,
+      updateSourceMetadata: (next: SourceListResponse) => {
+        setSourceMetadata(previous => previous && (previous.sources_revision ?? 0) > (next.sources_revision ?? 0) ? previous : next)
+        setRefreshTick(value => value + 1)
+      },
       sourceMetadata,
       sourceMetadataLoading,
       sourceMetadataError,
