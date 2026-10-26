@@ -3,11 +3,15 @@ package cache
 import (
 	"context"
 	"errors"
+	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"opencode-dashboard/internal/source"
+	"opencode-dashboard/internal/source/codex"
 	"opencode-dashboard/internal/stats"
 )
 
@@ -92,6 +96,59 @@ func TestPricingSnapshotChangeRebuildsHistoricalCosts(t *testing.T) {
 			assertCachedMessageCost(t, store, syncFakeSourceID, "historical", 0.42)
 		})
 	}
+}
+
+func TestTerraCatalogRefreshRepricesHistoricalCodexRequest(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	path := filepath.Join(home, "sessions", "2026", "10", "26", "rollout-2026-10-26T12-00-00Z-terra.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollout := strings.Join([]string{
+		`{"timestamp":"2026-10-26T12:00:00Z","type":"session_meta","payload":{"id":"terra-session","model_provider":"openai"}}`,
+		`{"timestamp":"2026-10-26T12:00:01Z","type":"turn_context","payload":{"turn_id":"terra-turn","model":"gpt-6.1-terra","model_provider":"openai"}}`,
+		`{"timestamp":"2026-10-26T12:00:02Z","type":"event_msg","payload":{"type":"token_count","turn_id":"terra-turn","info":{"total_token_usage":{"input_tokens":10000,"cached_input_tokens":2000,"output_tokens":1000,"reasoning_output_tokens":300,"total_tokens":11000}}}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(rollout), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldSource := codex.New(codex.Options{
+		CodexHome:           home,
+		PricingSnapshotPath: filepath.Join("..", "source", "codex", "testdata", "pricing_snapshot.json"),
+	})
+	newSource := codex.New(codex.Options{CodexHome: home})
+	store := newTestStore(t)
+	cutoff := time.Date(2026, 10, 26, 13, 0, 0, 0, time.UTC)
+	if _, err := store.SyncSourceWithOptions(ctx, oldSource, SyncOptions{Mode: SyncModeIncremental, Cutoff: cutoff}); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+	const messageID = "codex:terra-session:terra-turn:r0"
+	assertRow := func(wantCost float64, wantStatus stats.CostStatus) {
+		t.Helper()
+		var cost float64
+		var status string
+		if err := store.db.QueryRowContext(ctx, `SELECT cost, cost_status FROM message_index WHERE source_id = ? AND message_id = ?`, source.SourceCodex, messageID).Scan(&cost, &status); err != nil {
+			t.Fatalf("read historical Terra request: %v", err)
+		}
+		if math.Abs(cost-wantCost) > 1e-9 || status != string(wantStatus) {
+			t.Fatalf("historical Terra request = cost %v, status %q; want %v, %q", cost, status, wantCost, wantStatus)
+		}
+	}
+	assertRow(0, stats.CostMissing)
+
+	need, err := store.NeedsSync(ctx, newSource)
+	if err != nil || !need.Needed || !need.PricingChange {
+		t.Fatalf("NeedsSync after catalog refresh = %#v, %v; want pricing rebuild", need, err)
+	}
+	report, err := store.SyncSourceWithOptions(ctx, newSource, SyncOptions{Mode: SyncModeIncremental, Cutoff: cutoff})
+	if err != nil {
+		t.Fatalf("repricing sync: %v", err)
+	}
+	if report.Mode != SyncModeRebuild || !report.Since.IsZero() || report.Messages != 1 {
+		t.Fatalf("repricing report = %#v, want historical rebuild with one message", report)
+	}
+	assertRow(0.0131, stats.CostEstimatedAPIEquivalent)
 }
 
 func TestPricingRebuildFailureKeepsOldIdentityForRetry(t *testing.T) {

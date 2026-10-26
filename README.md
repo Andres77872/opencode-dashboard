@@ -142,9 +142,28 @@ The September 29, 2026 catalog adds `gpt-6.1-sol`, which replaces GPT-6 Sol amon
 
 Only cached input changes from GPT-6 Sol: it bills at 5% of input instead of 10%. Tier and context rules match GPT-6 Sol. Fast is 2x Standard and Flex is 0.5x Standard. Above 272K raw input, the whole request bills at 2x input/cache rates and 1.5x output. OpenAI publishes long-context Fast rates, so Fast requests above 272K stay priced. The `gpt-6-sol` row is unchanged and remains available in Codex as an alternative model.
 
-OpenAI has announced a GPT-6.1 Sol Ultrafast mode but has not published its price. The catalog does not model Ultrafast for any model.
+OpenAI publishes GPT-6.1 Sol Ultrafast rates. The catalog does not model Ultrafast for any model.
 
 Sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), [GPT-6.1 Sol model details](https://developers.openai.com/api/docs/models/gpt-6.1-sol), and [Codex models](https://learn.chatgpt.com/docs/models).
+
+### Codex GPT-6.1 Terra pricing
+
+The October 26, 2026 catalog adds `gpt-6.1-terra` to Codex cost estimates and pricing-alias targets. Published API prices are USD per million tokens; output includes reasoning tokens:
+
+| Context / processing tier | Input | Cached input | Cache writes, 30 minutes | Output |
+| --- | ---: | ---: | ---: | ---: |
+| Up to 272K input / Standard | $1 | $0.05 | $1.25 | $5 |
+| Up to 272K input / Fast | $2 | $0.10 | $2.50 | $10 |
+| Up to 272K input / Flex | $0.50 | $0.025 | $0.625 | $2.50 |
+| Above 272K input / Standard | $2 | $0.10 | $2.50 | $7.50 |
+| Above 272K input / Fast | $4 | $0.20 | $5 | $15 |
+| Above 272K input / Flex | $1 | $0.05 | $1.25 | $3.75 |
+
+Above 272K raw input tokens, the higher rates apply to the whole request. Fast and Flex use their published rates at both context sizes; an unknown requested tier remains unknown and uses Standard rates for the estimate. Saved pricing aliases still take precedence over a native catalog match. Changing the snapshot ID triggers historical repricing, so earlier Terra requests can acquire estimates after the cache rebuilds.
+
+The catalog's cache-write prices represent 30-minute retention. OpenAI also publishes 12-hour retention rates, which this catalog does not model. Codex rollouts currently expose no cache-write counter or retention duration; estimates therefore include only the token buckets that the parser can recover. As with other Codex models, these are API-equivalent estimates, not ChatGPT credit usage or actual billed spend, and they exclude regional premiums and tool fees.
+
+Sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), [GPT-6.1 Terra model details](https://developers.openai.com/api/docs/models/gpt-6.1-terra), [prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching), and [Codex models](https://learn.chatgpt.com/docs/models).
 
 ### Claude model pricing catalog
 
@@ -239,7 +258,7 @@ Computed and estimated costs come from pinned, dated catalogs compiled into the 
 | Source | Snapshot ID | Retrieved | Models |
 |--------|-------------|-----------|--------|
 | Claude Code | `anthropic-bundled-2026-10-07` | 2026-10-07 | 27 |
-| Codex | `openai-codex-api-pricing-2026-09-29` | 2026-09-29 | 19 |
+| Codex | `openai-codex-api-pricing-2026-10-26` | 2026-10-26 | 20 |
 | Kimi Code | `kimi-api-pricing-2026-07-16` | 2026-07-16 | 5 |
 | Qwen Code | `qwen-modelstudio-pricing-2026-08-02` | 2026-08-02 | 6 |
 | Antigravity | `gemini-standard-api-pricing-2026-10-14` | 2026-10-14 | 2 |

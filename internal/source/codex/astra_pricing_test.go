@@ -11,7 +11,7 @@ func TestBundledAstraCatalogAndResolution(t *testing.T) {
 	src := New(Options{})
 	ctx := testContext(t)
 	catalog := src.PricingCatalog(ctx)
-	if catalog.SnapshotID != "openai-codex-api-pricing-2026-09-29" || catalog.Currency != "USD" {
+	if catalog.SnapshotID != "openai-codex-api-pricing-2026-10-26" || catalog.Currency != "USD" {
 		t.Fatalf("catalog metadata = %#v", catalog)
 	}
 	found := false
@@ -45,7 +45,7 @@ func TestBundledFastLongContextRates(t *testing.T) {
 	// cache writes. Long-context multipliers apply to the entire request.
 	tokens := stats.TokenStats{Input: 1_000_000, Output: 1_000_000, Reasoning: 1_000_000, Cache: stats.CacheStats{Read: 1_000_000, Write: 1_000_000}}
 	for model, standardLong := range map[string]float64{
-		"gpt-6-astra": 197, "gpt-6.1-sol": 39.2, "gpt-6-sol": 39.4, "gpt-6-luna": 1.97,
+		"gpt-6-astra": 197, "gpt-6.1-sol": 39.2, "gpt-6.1-terra": 19.6, "gpt-6-sol": 39.4, "gpt-6-luna": 1.97,
 		"gpt-5.6": 78.8, "gpt-5.6-sol": 78.8,
 		"gpt-5.6-terra": 45.4, "gpt-5.6-luna": 4.54,
 	} {
@@ -90,33 +90,42 @@ func TestAstraContextThresholdAndAlias(t *testing.T) {
 	}
 }
 
-func TestAstraRolloutUsesPerRequestContextAndProcessingTier(t *testing.T) {
-	home := writeTempCodexHome(t, map[string][]string{
-		"sessions/2026/09/05/rollout-2026-09-05T12-00-00Z-astra.jsonl": {
-			`{"timestamp":"2026-09-05T12:00:00Z","type":"session_meta","payload":{"id":"astra-session","model_provider":"openai"}}`,
-			`{"timestamp":"2026-09-05T12:00:01Z","type":"turn_context","payload":{"turn_id":"astra-turn","model":"gpt-6-astra","model_provider":"openai"}}`,
-			`{"timestamp":"2026-09-05T12:00:02Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"fast"}}}`,
-			`{"timestamp":"2026-09-05T12:00:03Z","type":"event_msg","payload":{"type":"token_count","turn_id":"astra-turn","info":{"total_token_usage":{"input_tokens":300000,"cached_input_tokens":200000,"output_tokens":10000,"reasoning_output_tokens":4000,"total_tokens":310000}}}}`,
-			`{"timestamp":"2026-09-05T12:00:04Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"default"}}}`,
-			`{"timestamp":"2026-09-05T12:00:05Z","type":"event_msg","payload":{"type":"token_count","turn_id":"astra-turn","info":{"total_token_usage":{"input_tokens":301000,"cached_input_tokens":200100,"output_tokens":10050,"reasoning_output_tokens":4025,"total_tokens":311050}}}}`,
-		},
-	})
-	src := New(Options{CodexHome: home})
-	messages := readAllMessages(t, src)
-	for _, tc := range []struct {
-		id   string
-		mode stats.ProcessingMode
-		cost float64
+func TestGPT6RolloutUsesPerRequestContextAndProcessingTier(t *testing.T) {
+	for _, model := range []struct {
+		id                      string
+		fastLong, standardShort float64
 	}{
-		{"codex:astra-session:astra-turn:r0", stats.ProcessingModeFast, 6.3},
-		{"codex:astra-session:astra-turn:r1", stats.ProcessingModeStandard, 0.0116},
+		{id: "gpt-6-astra", fastLong: 6.3, standardShort: 0.0116},
+		{id: "gpt-6.1-terra", fastLong: 0.59, standardShort: 0.001155},
 	} {
-		entry := findMessage(t, messages, func(m stats.MessageEntry) bool { return m.ID == tc.id })
-		if entry.ModelID != "gpt-6-astra" || entry.ProcessingMode != tc.mode || entry.CostStatus != stats.CostEstimatedAPIEquivalent || !approxEqual(entry.Cost, tc.cost) {
-			t.Errorf("request %s = %#v, want Astra/%s cost %v", tc.id, entry, tc.mode, tc.cost)
-		}
-		if entry.CostProvenance == nil || entry.CostProvenance.PricingSnapshotID != "openai-codex-api-pricing-2026-09-29" {
-			t.Errorf("request %s provenance = %#v", tc.id, entry.CostProvenance)
-		}
+		t.Run(model.id, func(t *testing.T) {
+			home := writeTempCodexHome(t, map[string][]string{
+				"sessions/2026/10/26/rollout-2026-10-26T12-00-00Z-pricing.jsonl": {
+					`{"timestamp":"2026-10-26T12:00:00Z","type":"session_meta","payload":{"id":"pricing-session","model_provider":"openai"}}`,
+					`{"timestamp":"2026-10-26T12:00:01Z","type":"turn_context","payload":{"turn_id":"pricing-turn","model":"` + model.id + `","model_provider":"openai"}}`,
+					`{"timestamp":"2026-10-26T12:00:02Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"fast"}}}`,
+					`{"timestamp":"2026-10-26T12:00:03Z","type":"event_msg","payload":{"type":"token_count","turn_id":"pricing-turn","info":{"total_token_usage":{"input_tokens":300000,"cached_input_tokens":200000,"output_tokens":10000,"reasoning_output_tokens":4000,"total_tokens":310000}}}}`,
+					`{"timestamp":"2026-10-26T12:00:04Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"default"}}}`,
+					`{"timestamp":"2026-10-26T12:00:05Z","type":"event_msg","payload":{"type":"token_count","turn_id":"pricing-turn","info":{"total_token_usage":{"input_tokens":301000,"cached_input_tokens":200100,"output_tokens":10050,"reasoning_output_tokens":4025,"total_tokens":311050}}}}`,
+				},
+			})
+			messages := readAllMessages(t, New(Options{CodexHome: home}))
+			for _, tc := range []struct {
+				id   string
+				mode stats.ProcessingMode
+				cost float64
+			}{
+				{"codex:pricing-session:pricing-turn:r0", stats.ProcessingModeFast, model.fastLong},
+				{"codex:pricing-session:pricing-turn:r1", stats.ProcessingModeStandard, model.standardShort},
+			} {
+				entry := findMessage(t, messages, func(m stats.MessageEntry) bool { return m.ID == tc.id })
+				if entry.ModelID != model.id || entry.ProcessingMode != tc.mode || entry.CostStatus != stats.CostEstimatedAPIEquivalent || !approxEqual(entry.Cost, tc.cost) {
+					t.Errorf("request %s = %#v, want %s/%s cost %v", tc.id, entry, model.id, tc.mode, tc.cost)
+				}
+				if entry.CostProvenance == nil || entry.CostProvenance.PricingSnapshotID != "openai-codex-api-pricing-2026-10-26" {
+					t.Errorf("request %s provenance = %#v", tc.id, entry.CostProvenance)
+				}
+			}
+		})
 	}
 }

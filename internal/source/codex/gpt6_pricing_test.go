@@ -7,13 +7,14 @@ import (
 	"opencode-dashboard/internal/stats"
 )
 
-func TestBundledGPT6SolAndLunaCatalogAndResolution(t *testing.T) {
+func TestBundledGPT6CatalogAndResolution(t *testing.T) {
 	src := New(Options{})
 	ctx := testContext(t)
 	want := map[string]source.PricingRateSummary{
-		"gpt-6.1-sol": {InputPerMillion: 2, CachedInputPerMillion: 0.1, CacheWritePerMillion: 2.5, OutputPerMillion: 10},
-		"gpt-6-sol":   {InputPerMillion: 2, CachedInputPerMillion: 0.2, CacheWritePerMillion: 2.5, OutputPerMillion: 10},
-		"gpt-6-luna":  {InputPerMillion: 0.1, CachedInputPerMillion: 0.01, CacheWritePerMillion: 0.125, OutputPerMillion: 0.5},
+		"gpt-6.1-sol":   {InputPerMillion: 2, CachedInputPerMillion: 0.1, CacheWritePerMillion: 2.5, OutputPerMillion: 10},
+		"gpt-6.1-terra": {InputPerMillion: 1, CachedInputPerMillion: 0.05, CacheWritePerMillion: 1.25, OutputPerMillion: 5},
+		"gpt-6-sol":     {InputPerMillion: 2, CachedInputPerMillion: 0.2, CacheWritePerMillion: 2.5, OutputPerMillion: 10},
+		"gpt-6-luna":    {InputPerMillion: 0.1, CachedInputPerMillion: 0.01, CacheWritePerMillion: 0.125, OutputPerMillion: 0.5},
 	}
 	for _, model := range src.PricingCatalog(ctx).Models {
 		rate, ok := want[model.ModelID]
@@ -32,14 +33,18 @@ func TestBundledGPT6SolAndLunaCatalogAndResolution(t *testing.T) {
 	}
 	for model, kind := range map[string]source.PricingResolutionKind{
 		"gpt-6.1-sol":            source.PricingResolutionExact,
+		"gpt-6.1-terra":          source.PricingResolutionExact,
 		"gpt-6-sol":              source.PricingResolutionExact,
 		"gpt-6-luna":             source.PricingResolutionExact,
 		"gpt-6.1-sol-2026-09-29": source.PricingResolutionFallback,
-		"gpt-6-sol-2026-09-22":   source.PricingResolutionFallback,
-		"gpt-6-luna-2026-09-22":  source.PricingResolutionFallback,
-		"gpt-6-sol-pro":          source.PricingResolutionUnknown,
-		"gpt-6":                  source.PricingResolutionUnknown,
-		"gpt-6.1":                source.PricingResolutionUnknown,
+		// Synthetic date suffix tests the fallback, not an announced snapshot.
+		"gpt-6.1-terra-2026-10-26": source.PricingResolutionFallback,
+		"gpt-6-sol-2026-09-22":     source.PricingResolutionFallback,
+		"gpt-6-luna-2026-09-22":    source.PricingResolutionFallback,
+		"gpt-6-sol-pro":            source.PricingResolutionUnknown,
+		"gpt-6.1-terra-pro":        source.PricingResolutionUnknown,
+		"gpt-6":                    source.PricingResolutionUnknown,
+		"gpt-6.1":                  source.PricingResolutionUnknown,
 	} {
 		got := src.ResolvePricing(ctx, "openai", model)
 		if got.Kind != kind {
@@ -48,7 +53,7 @@ func TestBundledGPT6SolAndLunaCatalogAndResolution(t *testing.T) {
 	}
 }
 
-func TestGPT6SolAndLunaContextThreshold(t *testing.T) {
+func TestGPT6ContextThreshold(t *testing.T) {
 	pricing := New(Options{}).loadPricing(testContext(t))
 	for _, tc := range []struct {
 		model string
@@ -57,6 +62,8 @@ func TestGPT6SolAndLunaContextThreshold(t *testing.T) {
 	}{
 		{"gpt-6.1-sol", 272_000, 0.3292},
 		{"gpt-6.1-sol", 272_001, 0.608404},
+		{"gpt-6.1-terra", 272_000, 0.1646},
+		{"gpt-6.1-terra", 272_001, 0.304202},
 		{"gpt-6-sol", 272_000, 0.3459},
 		{"gpt-6-sol", 272_001, 0.641804},
 		{"gpt-6-luna", 272_000, 0.017295},
@@ -68,6 +75,31 @@ func TestGPT6SolAndLunaContextThreshold(t *testing.T) {
 			if got.Status != stats.CostEstimatedAPIEquivalent || !approxEqual(got.Cost, tc.want*factor) {
 				t.Errorf("%s/%s at %d input = %#v, want %v", tc.model, mode, tc.input, got, tc.want*factor)
 			}
+		}
+	}
+}
+
+func TestGPT61TerraPricingAliases(t *testing.T) {
+	aliases := &fakePricingAliases{
+		aliases: map[fakeAliasKey]string{
+			{source.SourceCodex, "openai", "custom-terra"}:  "gpt-6.1-terra",
+			{source.SourceCodex, "openai", "gpt-6.1-terra"}: "gpt-6.1-sol",
+		},
+		revisions: map[source.SourceID]string{source.SourceCodex: "terra-alias"},
+	}
+	src := New(Options{PricingAliases: aliases})
+	ctx := testContext(t)
+	for _, tc := range []struct {
+		model, target string
+		input, output float64
+		overrides     bool
+	}{
+		{model: "custom-terra", target: "gpt-6.1-terra", input: 1, output: 5},
+		{model: "gpt-6.1-terra", target: "gpt-6.1-sol", input: 2, output: 10, overrides: true},
+	} {
+		got := src.ResolvePricing(ctx, "openai", tc.model)
+		if got.Kind != source.PricingResolutionUserAlias || got.TargetModelID != tc.target || got.OverridesNative != tc.overrides || got.Rate == nil || got.Rate.InputPerMillion != tc.input || got.Rate.OutputPerMillion != tc.output {
+			t.Errorf("resolution(%q) = %#v, want alias to %s with input %v, output %v, overrides native %v", tc.model, got, tc.target, tc.input, tc.output, tc.overrides)
 		}
 	}
 }

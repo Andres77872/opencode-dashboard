@@ -147,6 +147,7 @@ func TestBundledCodexPricingCoversCurrentModels(t *testing.T) {
 	}{
 		{model: "gpt-6-astra", wantCost: 123.5},
 		{model: "gpt-6.1-sol", wantCost: 24.6},
+		{model: "gpt-6.1-terra", wantCost: 12.3},
 		{model: "gpt-6-sol", wantCost: 24.7},
 		{model: "gpt-6-luna", wantCost: 1.235},
 		{model: "gpt-5.6", wantCost: 49.4},
@@ -189,6 +190,7 @@ func TestBundledCodexPricingCoversPriorityAndFlexTiers(t *testing.T) {
 	}{
 		{model: "gpt-6-astra", priorityCost: 247, flexCost: 61.75, flexSupported: true},
 		{model: "gpt-6.1-sol", priorityCost: 49.2, flexCost: 12.3, flexSupported: true},
+		{model: "gpt-6.1-terra", priorityCost: 24.6, flexCost: 6.15, flexSupported: true},
 		{model: "gpt-6-sol", priorityCost: 49.4, flexCost: 12.35, flexSupported: true},
 		{model: "gpt-6-luna", priorityCost: 2.47, flexCost: 0.6175, flexSupported: true},
 		{model: "gpt-5.6", priorityCost: 98.8, flexCost: 24.7, flexSupported: true},
@@ -256,6 +258,7 @@ func TestCodexLongContextRulesByModel(t *testing.T) {
 	}{
 		{model: "gpt-6-astra", wantMultiplier: true},
 		{model: "gpt-6.1-sol", wantMultiplier: true},
+		{model: "gpt-6.1-terra", wantMultiplier: true},
 		{model: "gpt-6-sol", wantMultiplier: true},
 		{model: "gpt-6-luna", wantMultiplier: true},
 		{model: "gpt-5.6", wantMultiplier: true},
