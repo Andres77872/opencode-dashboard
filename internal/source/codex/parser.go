@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 )
@@ -100,7 +99,7 @@ type responseItemRecord struct {
 }
 
 func parseTranscriptFile(ctx context.Context, file transcriptFile) ([]codexRecord, parseDiagnostics, error) {
-	fh, err := os.Open(file.Path)
+	fh, err := openRollout(file.Path)
 	if err != nil {
 		return nil, parseDiagnostics{}, err
 	}

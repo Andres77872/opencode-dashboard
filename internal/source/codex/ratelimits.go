@@ -97,7 +97,7 @@ type rawRateWindow struct {
 }
 
 func lastRateLimitsInFile(ctx context.Context, file transcriptFile) (*RateLimits, error) {
-	fh, err := os.Open(file.Path)
+	fh, err := openRollout(file.Path)
 	if err != nil {
 		return nil, err
 	}

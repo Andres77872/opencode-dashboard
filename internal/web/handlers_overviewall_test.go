@@ -16,7 +16,7 @@ func TestOverviewAllAggregatesSources(t *testing.T) {
 		newHandlerFakeSource(source.SourceCodex, true, 4),
 	)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview/all?period=all", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview/all?period=all", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -41,7 +41,7 @@ func TestOverviewAllSourceDimensionSkipsModelsColdScan(t *testing.T) {
 	src.models = []stats.ModelEntry{{ModelID: "slow-model-scan"}}
 	handler := newSourceTestHandler(t, src)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview/all?period=all&dimension=source&trend=true", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview/all?period=all&dimension=source&trend=true", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -79,7 +79,7 @@ func TestOverviewAllIgnoresSourceParam(t *testing.T) {
 	)
 
 	// A source param is irrelevant: the aggregate always spans all sources.
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview/all?source=codex&period=all", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview/all?source=codex&period=all", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -98,7 +98,7 @@ func TestOverviewAllIgnoresSourceParam(t *testing.T) {
 func TestOverviewAllRejectsBadPeriod(t *testing.T) {
 	handler := newSourceTestHandler(t, newHandlerFakeSource(source.SourceOpenCode, true, 8))
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview/all?from=not-a-date", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview/all?from=not-a-date", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -116,7 +116,7 @@ func TestOverviewAllRejectsUnknownPresetBeforeAggregation(t *testing.T) {
 			src := newHandlerFakeSource(source.SourceOpenCode, true, 8)
 			handler := newSourceTestHandler(t, src)
 
-			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req := httptest.NewRequest(http.MethodGet, testOrigin+path, nil)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 
@@ -136,7 +136,7 @@ func TestOverviewAllRejectsUnknownPresetBeforeAggregation(t *testing.T) {
 func TestOverviewAllRejectsUnknownDimension(t *testing.T) {
 	handler := newSourceTestHandler(t, newHandlerFakeSource(source.SourceOpenCode, true, 8))
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview/all?period=all&dimension=provider", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview/all?period=all&dimension=provider", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -156,7 +156,7 @@ func TestOverviewAllModelDimensionReturnsLeanCompletePayload(t *testing.T) {
 	}
 	handler := newSourceTestHandler(t, src)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview/all?period=all&dimension=model&trend=true&top=1", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview/all?period=all&dimension=model&trend=true&top=1", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

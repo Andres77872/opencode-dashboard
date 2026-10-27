@@ -15,6 +15,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.2
 	charm.land/lipgloss/v2 v2.0.2
 	github.com/BurntSushi/toml v1.6.0
+	github.com/klauspost/compress v1.20.3
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.0
 )

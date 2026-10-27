@@ -163,7 +163,7 @@ func pricingAliasTestServer(t *testing.T, src source.Source, store PricingAliasS
 
 func performPricingAliasRequest(t *testing.T, server *http.Server, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	req := httptest.NewRequest(method, testOrigin+target, strings.NewReader(body))
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -516,7 +516,7 @@ func TestPricingAliasPostValidationAndNativePrecedence(t *testing.T) {
 		}
 		for _, test := range tests {
 			t.Run(test.name, func(t *testing.T) {
-				req := httptest.NewRequest(http.MethodPost, "/api/v1/pricing/aliases", strings.NewReader(test.body))
+				req := httptest.NewRequest(http.MethodPost, testOrigin+"/api/v1/pricing/aliases", strings.NewReader(test.body))
 				req.Header.Set("Content-Type", test.contentType)
 				rec := httptest.NewRecorder()
 				server.Handler.ServeHTTP(rec, req)
@@ -739,7 +739,7 @@ func TestPricingAliasStoreAvailabilityAndErrors(t *testing.T) {
 		server := pricingAliasTestServer(t, src, store, nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/pricing/aliases?source=codex", nil).WithContext(ctx)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/pricing/aliases?source=codex", nil).WithContext(ctx)
 		rec := httptest.NewRecorder()
 
 		server.Handler.ServeHTTP(rec, req)

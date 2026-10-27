@@ -7,8 +7,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -754,49 +752,11 @@ func writeAssistantServiceError(w http.ResponseWriter, err error) {
 }
 
 func rejectNonlocalAssistantOrigin(w http.ResponseWriter, r *http.Request) bool {
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	if origin == "" {
-		// Modern browsers supply Sec-Fetch-Site even on requests (such as GET)
-		// where Origin may be omitted. Command-line/local native clients omit both.
-		if site := strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")); site != "" && site != "same-origin" {
-			writeAssistantError(w, http.StatusForbidden, "assistant requests are allowed only from the local dashboard")
-			return true
-		}
-		return false
-	}
-	if !isAllowedAssistantOrigin(origin, r) {
+	if !isAllowedDashboardRequest(r) {
 		writeAssistantError(w, http.StatusForbidden, "assistant requests are allowed only from the local dashboard")
 		return true
 	}
 	return false
-}
-
-func isAllowedAssistantOrigin(origin string, r *http.Request) bool {
-	parsed, err := url.Parse(origin)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-		return false
-	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if parsed.Scheme != scheme {
-		return false
-	}
-	if strings.EqualFold(parsed.Host, r.Host) {
-		// Embedded assets use this same origin for both loopback and LAN access.
-		return true
-	}
-
-	// The checked-in Vite development server is the one explicit cross-port
-	// exception. Production assets are same-origin with the Go server.
-	requestURL := &url.URL{Scheme: scheme, Host: r.Host}
-	return parsed.Port() == "7451" && requestURL.Port() == strconv.Itoa(DefaultPort) &&
-		isLoopbackHostname(parsed.Hostname()) && isLoopbackHostname(requestURL.Hostname())
-}
-
-func isLoopbackHostname(host string) bool {
-	return strings.EqualFold(host, "localhost") || host == "127.0.0.1" || host == "::1"
 }
 
 func writeAssistantError(w http.ResponseWriter, status int, message string) {

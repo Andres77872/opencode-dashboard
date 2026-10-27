@@ -27,7 +27,7 @@ func TestSourceAwareCodexAPIRoutingFromFixture(t *testing.T) {
 
 	t.Run("sources metadata exposes available Codex", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sources", nil)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/sources", nil)
 
 		handler.ServeHTTP(rec, req)
 
@@ -62,7 +62,7 @@ func TestSourceAwareCodexAPIRoutingFromFixture(t *testing.T) {
 
 	t.Run("explicit codex overview routes only to Codex source", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?source=codex&period=all", nil)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?source=codex&period=all", nil)
 
 		handler.ServeHTTP(rec, req)
 
@@ -89,7 +89,7 @@ func TestSourceAwareCodexAPIRoutingFromFixture(t *testing.T) {
 
 	t.Run("omitted source still defaults to OpenCode", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?period=all", nil)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?period=all", nil)
 
 		handler.ServeHTTP(rec, req)
 
@@ -140,7 +140,7 @@ func TestCodexAPIEndpointClassesReturnCodexSourceTaggedPayloads(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req := httptest.NewRequest(http.MethodGet, testOrigin+tt.path, nil)
 
 			handler.ServeHTTP(rec, req)
 
@@ -171,7 +171,7 @@ func TestCodexInvalidUnavailableAndDetailCollisionDoNotFallback(t *testing.T) {
 		handler := newSourceTestHandler(t, opencodeSource, codexSource)
 
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?source=codex_typo&period=all", nil)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?source=codex_typo&period=all", nil)
 		handler.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
@@ -188,7 +188,7 @@ func TestCodexInvalidUnavailableAndDetailCollisionDoNotFallback(t *testing.T) {
 		handler := newSourceTestHandler(t, opencodeSource, codexSource)
 
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?source=codex&period=all", nil)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?source=codex&period=all", nil)
 		handler.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusServiceUnavailable {
@@ -338,7 +338,7 @@ func TestDailyDimensionGranularityParam(t *testing.T) {
 	handler := newSourceTestHandler(t, opencodeSource, claudeSource, codexSource)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/daily?source=codex&period=all&dimension=model&granularity=hour", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/daily?source=codex&period=all&dimension=model&granularity=hour", nil)
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("granularity=hour dimension status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())

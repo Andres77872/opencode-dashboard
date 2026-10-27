@@ -113,6 +113,8 @@ Examples:
 Web flags:
   --host <addr>  Bind address (default: 127.0.0.1; use 0.0.0.0 for LAN access)
   --port <n>     Bind port (default: 7450)
+  --allowed-hosts <names>  Comma-separated hostnames to serve, e.g. a reverse
+                 proxy name (IP addresses and localhost are always allowed)
   --db <path>    Use an explicit OpenCode SQLite database path
   --cache-db <path>  Use an explicit dashboard cache SQLite database path
   --rebuild-cache    Remove the dashboard usage cache before starting
@@ -162,6 +164,7 @@ func cmdWeb(args []string) error {
 
 	host := fs.String("host", web.DefaultHost, "address to bind (0.0.0.0 for LAN access)")
 	port := fs.Int("port", web.DefaultPort, "port to bind")
+	allowedHostsFlag := fs.String("allowed-hosts", "", "comma-separated hostnames the dashboard may be reached by (IP addresses and localhost are always allowed)")
 	dbPath := fs.String("db", "", "explicit OpenCode SQLite database path")
 	cacheDBPath := fs.String("cache-db", "", "explicit dashboard cache SQLite database path")
 	rebuildCache := fs.Bool("rebuild-cache", false, "remove the dashboard usage cache before serving")
@@ -175,7 +178,7 @@ func cmdWeb(args []string) error {
 	qwenHome := fs.String("qwen-home", "", "explicit Qwen Code home directory")
 	antigravityHome := fs.String("antigravity-home", "", "Antigravity data directory (default ~/.gemini/antigravity)")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard web [--host <addr>] [--port <n>] [--db <path>] [--cache-db <path>] [--rebuild-cache] [--no-cache] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>] [--kimi-home <dir>] [--qwen-home <dir>] [--antigravity-home <dir>] [--no-open]\n\n")
+		fmt.Fprintf(fs.Output(), "Usage: opencode-dashboard web [--host <addr>] [--port <n>] [--allowed-hosts <names>] [--db <path>] [--cache-db <path>] [--rebuild-cache] [--no-cache] [--channel <name>] [--source <id>] [--claude-home <dir>] [--codex-home <dir>] [--kimi-home <dir>] [--qwen-home <dir>] [--antigravity-home <dir>] [--no-open]\n\n")
 		fmt.Fprintf(fs.Output(), "Starts the web dashboard and API (default: http://%s:%d).\nUse --host 0.0.0.0 to allow access from your local network.\n\n", web.DefaultHost, web.DefaultPort)
 		fs.PrintDefaults()
 	}
@@ -191,6 +194,10 @@ func cmdWeb(args []string) error {
 		return fmt.Errorf("web does not accept positional arguments")
 	}
 	addr, err := webListenAddress(*host, *port)
+	if err != nil {
+		return err
+	}
+	allowedHosts, err := webAllowedHosts(*allowedHostsFlag)
 	if err != nil {
 		return err
 	}
@@ -305,6 +312,7 @@ func cmdWeb(args []string) error {
 	}
 	server := web.NewServer(web.ServerOptions{
 		Addr:               addr,
+		AllowedHosts:       allowedHosts,
 		Registry:           registry,
 		Logger:             logger,
 		Cache:              cacheRuntime,

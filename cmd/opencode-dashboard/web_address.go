@@ -22,6 +22,23 @@ func webListenAddress(host string, port int) (string, error) {
 	return net.JoinHostPort(host, strconv.Itoa(port)), nil
 }
 
+// webAllowedHosts splits --allowed-hosts. Each entry is a bare hostname, like
+// --host: the server matches names, not ports or URLs.
+func webAllowedHosts(value string) ([]string, error) {
+	var hosts []string
+	for _, entry := range strings.Split(value, ",") {
+		host := strings.TrimSpace(entry)
+		if host == "" {
+			continue
+		}
+		if strings.ContainsAny(host, ":/\\?#@[] \t\r\n") {
+			return nil, fmt.Errorf("--allowed-hosts entries must be hostnames without a scheme or port: %q", host)
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
+}
+
 func webBrowserURL(host string, port int) string {
 	// Wildcard addresses describe listeners, not browser destinations.
 	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {

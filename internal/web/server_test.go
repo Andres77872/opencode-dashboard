@@ -16,7 +16,7 @@ func TestLoggingMiddlewareReportsCanceledRequestsAsClientClosed(t *testing.T) {
 	handler := LoggingMiddleware(logger)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	req := httptest.NewRequest(http.MethodGet, "/canceled", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/canceled", nil).WithContext(ctx)
 
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
@@ -44,17 +44,17 @@ func TestCORSMiddleware(t *testing.T) {
 		{
 			name:       "localhost with port 3000",
 			origin:     "http://localhost:3000",
-			wantOrigin: "http://localhost:3000",
+			wantOrigin: "",
 		},
 		{
 			name:       "localhost with backend port 7450",
 			origin:     "http://localhost:7450",
-			wantOrigin: "http://localhost:7450",
+			wantOrigin: "",
 		},
 		{
 			name:       "localhost with any port",
 			origin:     "http://localhost:9000",
-			wantOrigin: "http://localhost:9000",
+			wantOrigin: "",
 		},
 		{
 			name:       "no origin header gets no CORS grant",
@@ -83,7 +83,7 @@ func TestCORSMiddleware(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", "/test", nil)
+			req := httptest.NewRequest("GET", testOrigin+"/test", nil)
 			if tt.origin != "" {
 				req.Header.Set("Origin", tt.origin)
 			}
@@ -111,7 +111,7 @@ func TestCORSMiddlewareOptionsRequest(t *testing.T) {
 		t.Error("handler should not be called for OPTIONS request")
 	})
 
-	req := httptest.NewRequest("OPTIONS", "/test", nil)
+	req := httptest.NewRequest("OPTIONS", testOrigin+"/test", nil)
 	req.Header.Set("Origin", "http://localhost:7451")
 
 	w := httptest.NewRecorder()
@@ -126,36 +126,42 @@ func TestCORSMiddlewareOptionsRequest(t *testing.T) {
 	}
 }
 
-func TestIsLocalOrigin(t *testing.T) {
+func TestAllowedDashboardOrigin(t *testing.T) {
 	tests := []struct {
 		origin string
 		want   bool
 	}{
 		{"http://localhost:7451", true},
-		{"http://localhost:3000", true},
-		{"http://localhost:7450", true},
-		{"http://localhost:5123", true},
-		{"http://localhost:4000", true},
-		{"http://localhost:9000", true},
-		{"http://localhost:80", true},
+		{"http://localhost:3000", false},
+		{"http://localhost:7450", false},
+		{"http://localhost:5123", false},
+		{"http://localhost:4000", false},
+		{"http://localhost:9000", false},
+		{"http://localhost:80", false},
 		{"http://127.0.0.1:7451", true},
-		{"http://127.0.0.1:3000", true},
+		{"http://127.0.0.1:3000", false},
 		{"http://127.0.0.1:7450", true},
-		{"http://127.0.0.1:9000", true},
+		{"http://127.0.0.1:9000", false},
 		{"http://[::1]:7451", true},
-		{"http://[::1]:3000", true},
-		{"http://localhost", true},
+		{"http://[::1]:3000", false},
+		{"http://localhost", false},
 		{"https://example.com", false},
 		{"http://192.168.1.1:7451", false},
 		{"not-a-url", false},
+		{"null", false},
+		{"http://127.0.0.1:7450@attacker.invalid", false},
+		{"http://127.0.0.1:7450/other", false},
+		{"http://127.0.0.1:7450?token=x", false},
+		{"http://127.0.0.1:7450#fragment", false},
 		{"", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.origin, func(t *testing.T) {
-			got := isLocalOrigin(tt.origin)
+			req := httptest.NewRequest(http.MethodGet, testOrigin+"/test", nil)
+			got := isAllowedDashboardOrigin(tt.origin, req)
 			if got != tt.want {
-				t.Errorf("isLocalOrigin(%q) = %v, want %v", tt.origin, got, tt.want)
+				t.Errorf("isAllowedDashboardOrigin(%q) = %v, want %v", tt.origin, got, tt.want)
 			}
 		})
 	}

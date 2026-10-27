@@ -3,6 +3,7 @@ package codex
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,6 +25,11 @@ const (
 	// pruning files by mtime, absorbing filesystem timestamp coarseness and
 	// small clock skew.
 	boundedLoadMargin = 10 * time.Minute
+
+	// rolloutLayout is SourceInfo.DataLayout: rollouts are read whether plain
+	// or zstd-compressed. Caches consolidated before compressed rollouts were
+	// read are missing that history, so the layout change forces one rebuild.
+	rolloutLayout = "codex-rollouts-zst-v1"
 )
 
 type Options struct {
@@ -99,6 +105,7 @@ func (s *Source) Info(ctx context.Context) source.SourceInfo {
 		PathSource:   s.opts.PathSource,
 		ReadOnly:     true,
 		LocalOnly:    true,
+		DataLayout:   rolloutLayout,
 		Capabilities: []string{"overview", "daily", "models", "tools", "projects", "sessions", "messages", "config"},
 		Warnings: []string{
 			"Codex transcripts are plaintext local files and may contain sensitive content",
@@ -419,6 +426,11 @@ func (s *Source) parseFileRecords(ctx context.Context, files []transcriptFile, d
 				diag.Reason = appendReason(diag.Reason, "some Codex transcript files could not be read due to permissions")
 				continue
 			}
+			var undecodable *compressedRolloutError
+			if errors.As(err, &undecodable) {
+				diag.Reason = appendReason(diag.Reason, "some compressed Codex transcripts could not be decoded")
+				continue
+			}
 			return nil, diag, err
 		}
 		diag.MalformedLines += parseDiag.MalformedLines
@@ -592,7 +604,7 @@ type fileThreadMeta struct {
 // even for multi-hundred-MB transcripts. Returns false if no usable meta is
 // found before the scan cap or the file cannot be read.
 func readThreadMeta(ctx context.Context, file transcriptFile) (fileThreadMeta, bool) {
-	fh, err := os.Open(file.Path)
+	fh, err := openRollout(file.Path)
 	if err != nil {
 		return fileThreadMeta{}, false
 	}

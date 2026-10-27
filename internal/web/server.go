@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -44,6 +43,9 @@ type ServerOptions struct {
 	Addr     string
 	Registry *source.Registry
 	Logger   *slog.Logger
+	// AllowedHosts lists extra DNS names the server answers to (for example a
+	// reverse proxy's name). IP addresses and localhost are always allowed.
+	AllowedHosts []string
 
 	Cache              CacheManager
 	Quotas             QuotaService
@@ -86,9 +88,11 @@ func NewServer(opts ServerOptions) *http.Server {
 				next.ServeHTTP(w, r)
 			})
 		},
+		hostGuardMiddleware(newHostPolicy(opts.Addr, opts.AllowedHosts), opts.Logger),
 		corsMiddleware,
 		LoggingMiddleware(opts.Logger),
 		RecoveryMiddleware(opts.Logger),
+		mutationOriginMiddleware,
 	)
 
 	return &http.Server{
@@ -146,15 +150,10 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Cross-origin reads are granted only to loopback origins for development.
-		// The embedded SPA uses same-origin requests, including over the LAN,
-		// and needs no CORS grant. The API serves project paths, session titles and
-		// config, so a wildcard would let any site the user happens to visit read
-		// their local usage data — and POST /cache/sync is a CORS-simple request.
-		// A non-local cross-origin caller gets no Access-Control-Allow-Origin
-		// header, which makes the browser withhold the response from that caller.
-		origin := r.Header.Get("Origin")
-		if origin != "" && isLocalOrigin(origin) {
+		// A different localhost port is not implicitly trusted. Grant reads only
+		// to the same origins that may issue mutations and use the assistant.
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin != "" && isAllowedDashboardOrigin(origin, r) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 		}
@@ -172,18 +171,6 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
-}
-
-func isLocalOrigin(origin string) bool {
-	u, err := url.Parse(origin)
-	if err != nil {
-		return false
-	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Host == "" {
-		return false
-	}
-	host := u.Hostname()
-	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 func GracefulShutdown(ctx context.Context, srv *http.Server) error {

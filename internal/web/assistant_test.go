@@ -147,7 +147,7 @@ func validAssistantBody(prompt string) string {
 }
 
 func newAssistantRequest(method, path, body string) *http.Request {
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req := httptest.NewRequest(method, testOrigin+path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	return req
 }
@@ -158,7 +158,7 @@ func TestAssistantStatusContractAndNoStore(t *testing.T) {
 	fake := &fakeAssistantService{status: status}
 	server := assistantTestServer(fake, nil)
 	recorder := httptest.NewRecorder()
-	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/status", nil))
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/assistant/status", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -177,7 +177,7 @@ func TestAssistantStatusContractAndNoStore(t *testing.T) {
 func TestAssistantStatusWithoutServiceIsUnavailable(t *testing.T) {
 	server := assistantTestServer(nil, nil)
 	recorder := httptest.NewRecorder()
-	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/status", nil))
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/assistant/status", nil))
 	var body analyticsagent.Status
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestAssistantStatusWithoutServiceIsUnavailable(t *testing.T) {
 func TestAssistantStatusRejectsNonlocalOrigin(t *testing.T) {
 	fake := &fakeAssistantService{status: analyticsagent.BaseStatus()}
 	server := assistantTestServer(fake, nil)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/assistant/status", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/assistant/status", nil)
 	req.Header.Set("Origin", "https://attacker.example")
 	recorder := httptest.NewRecorder()
 	server.Handler.ServeHTTP(recorder, req)
@@ -202,7 +202,7 @@ func TestAssistantStatusRejectsNonlocalOrigin(t *testing.T) {
 func TestAssistantStatusRejectsCrossSiteFetchMetadataWithoutProbing(t *testing.T) {
 	fake := &fakeAssistantService{status: analyticsagent.BaseStatus()}
 	server := assistantTestServer(fake, nil)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/assistant/status", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/assistant/status", nil)
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	recorder := httptest.NewRecorder()
 	server.Handler.ServeHTTP(recorder, req)
@@ -649,7 +649,7 @@ func TestAssistantChatStreamRetainsJSONErrorsBeforeCommit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := assistantTestServer(tt.service, nil)
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/assistant/chat/stream", strings.NewReader(tt.body))
+			req := httptest.NewRequest(http.MethodPost, testOrigin+"/api/v1/assistant/chat/stream", strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", tt.contentType)
 			recorder := httptest.NewRecorder()
 			server.Handler.ServeHTTP(recorder, req)
@@ -742,7 +742,7 @@ func TestAssistantChatAllowsNoOriginAndDashboardOrigin(t *testing.T) {
 		origin string
 		host   string
 	}{
-		{host: "example.com"},
+		{host: "127.0.0.1:7450"},
 		{origin: "http://127.0.0.1:7450", host: "127.0.0.1:7450"},
 		{origin: "http://localhost:7451", host: "127.0.0.1:7450"},
 		{origin: "http://[::1]:7450", host: "[::1]:7450"},
@@ -753,7 +753,8 @@ func TestAssistantChatAllowsNoOriginAndDashboardOrigin(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.origin, func(t *testing.T) {
 			fake := &fakeAssistantService{result: analyticsagent.ChatResult{Message: analyticsagent.BrowserMessage{Role: "assistant", Content: "ok"}, Model: analyticsagent.MiniMaxM3Model}}
-			server := assistantTestServer(fake, nil)
+			// A named LAN host is served only once it is allowed explicitly.
+			server := NewServer(ServerOptions{Registry: source.NewRegistry(source.SourceOpenCode), Assistant: fake, AllowedHosts: []string{"dashboard.lan"}})
 			req := newAssistantRequest(http.MethodPost, "/api/v1/assistant/chat", validAssistantBody("Report."))
 			req.Host = test.host
 			if test.origin != "" {
@@ -765,6 +766,23 @@ func TestAssistantChatAllowsNoOriginAndDashboardOrigin(t *testing.T) {
 				t.Fatalf("origin=%q status=%d calls=%d body=%s", test.origin, recorder.Code, fake.calls, recorder.Body.String())
 			}
 		})
+	}
+}
+
+// TestAssistantRejectsRebindingOrigin covers DNS rebinding: after a rebind the
+// attacker's page and the request share one origin, so only the Host check can
+// tell the request was not addressed to the dashboard.
+func TestAssistantRejectsRebindingOrigin(t *testing.T) {
+	fake := &fakeAssistantService{}
+	server := assistantTestServer(fake, nil)
+	req := newAssistantRequest(http.MethodPost, "/api/v1/assistant/chat", validAssistantBody("Report."))
+	req.Host = "rebind.attacker.example:7450"
+	req.Header.Set("Origin", "http://rebind.attacker.example:7450")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	recorder := httptest.NewRecorder()
+	server.Handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusForbidden || fake.calls != 0 {
+		t.Fatalf("status=%d calls=%d body=%s, want 403 before the assistant runs", recorder.Code, fake.calls, recorder.Body.String())
 	}
 }
 
@@ -831,7 +849,7 @@ func TestAssistantChatValidatesJSONContentAndSize(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := &fakeAssistantService{}
 			server := assistantTestServer(fake, nil)
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/assistant/chat", strings.NewReader(tt.body))
+			req := httptest.NewRequest(http.MethodPost, testOrigin+"/api/v1/assistant/chat", strings.NewReader(tt.body))
 			if tt.contentType != "" {
 				req.Header.Set("Content-Type", tt.contentType)
 			}
@@ -1022,7 +1040,7 @@ func TestAssistantChatStreamPersistsTurnWithToolCalls(t *testing.T) {
 	}
 	server, store := assistantTestServerWithChatLog(t, service)
 
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/assistant/chat/stream", strings.NewReader(validAssistantBody("Summarize.")))
+	request := httptest.NewRequest(http.MethodPost, testOrigin+"/api/v1/assistant/chat/stream", strings.NewReader(validAssistantBody("Summarize.")))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := &flushCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
 	server.Handler.ServeHTTP(recorder, request)
@@ -1098,7 +1116,7 @@ func TestAssistantChatStreamPersistsTurnWithToolCalls(t *testing.T) {
 			{Role: "user", Content: "Follow up."},
 		},
 	})
-	request = httptest.NewRequest(http.MethodPost, "/api/v1/assistant/chat/stream", bytes.NewReader(followBody))
+	request = httptest.NewRequest(http.MethodPost, testOrigin+"/api/v1/assistant/chat/stream", bytes.NewReader(followBody))
 	request.Header.Set("Content-Type", "application/json")
 	recorder = &flushCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
 	server.Handler.ServeHTTP(recorder, request)
@@ -1304,7 +1322,7 @@ func TestAssistantChatStreamRejectsUnknownSessionBeforeService(t *testing.T) {
 		SessionID:      "cs_00000000000000000000000000000000",
 		Messages:       []analyticsagent.BrowserMessage{{Role: "user", Content: "Hi."}},
 	})
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/assistant/chat/stream", bytes.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, testOrigin+"/api/v1/assistant/chat/stream", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	server.Handler.ServeHTTP(recorder, request)
@@ -1336,7 +1354,7 @@ func TestAssistantSessionEndpointsListGetDelete(t *testing.T) {
 	sessionID := receipt.SessionID
 
 	recorder := httptest.NewRecorder()
-	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/sessions", nil))
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/assistant/sessions", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("list status = %d", recorder.Code)
 	}
@@ -1360,7 +1378,7 @@ func TestAssistantSessionEndpointsListGetDelete(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/sessions/"+sessionID, nil))
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/assistant/sessions/"+sessionID, nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("get status = %d", recorder.Code)
 	}
@@ -1381,18 +1399,18 @@ func TestAssistantSessionEndpointsListGetDelete(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/sessions/cs_00000000000000000000000000000000", nil))
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/assistant/sessions/cs_00000000000000000000000000000000", nil))
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("missing get status = %d", recorder.Code)
 	}
 
 	recorder = httptest.NewRecorder()
-	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/api/v1/assistant/sessions/"+sessionID, nil))
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, testOrigin+"/api/v1/assistant/sessions/"+sessionID, nil))
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("delete status = %d", recorder.Code)
 	}
 	recorder = httptest.NewRecorder()
-	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/api/v1/assistant/sessions/"+sessionID, nil))
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, testOrigin+"/api/v1/assistant/sessions/"+sessionID, nil))
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("repeat delete status = %d", recorder.Code)
 	}
@@ -1409,7 +1427,7 @@ func TestAssistantSessionEndpointsWithoutStoreAreUnavailable(t *testing.T) {
 		{http.MethodDelete, "/api/v1/assistant/sessions/cs_00000000000000000000000000000000"},
 	} {
 		recorder := httptest.NewRecorder()
-		server.Handler.ServeHTTP(recorder, httptest.NewRequest(endpoint.method, endpoint.path, nil))
+		server.Handler.ServeHTTP(recorder, httptest.NewRequest(endpoint.method, testOrigin+endpoint.path, nil))
 		if recorder.Code != http.StatusServiceUnavailable {
 			t.Fatalf("%s %s status = %d, want 503", endpoint.method, endpoint.path, recorder.Code)
 		}
@@ -1417,7 +1435,7 @@ func TestAssistantSessionEndpointsWithoutStoreAreUnavailable(t *testing.T) {
 
 	// Status reports persistence availability so the UI can hide history.
 	recorder := httptest.NewRecorder()
-	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/status", nil))
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/assistant/status", nil))
 	if !strings.Contains(recorder.Body.String(), `"sessions_persisted":false`) {
 		t.Fatalf("status body = %s", recorder.Body.String())
 	}
@@ -1426,7 +1444,7 @@ func TestAssistantSessionEndpointsWithoutStoreAreUnavailable(t *testing.T) {
 func TestAssistantSessionsRejectNonlocalOrigin(t *testing.T) {
 	service := &fakeAssistantService{}
 	server, _ := assistantTestServerWithChatLog(t, service)
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/assistant/sessions", nil)
+	request := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/assistant/sessions", nil)
 	request.Header.Set("Origin", "https://evil.example")
 	recorder := httptest.NewRecorder()
 	server.Handler.ServeHTTP(recorder, request)

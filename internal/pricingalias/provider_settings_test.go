@@ -3,6 +3,7 @@ package pricingalias
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,5 +105,52 @@ func TestAssistantCatalogFailureKeepsLastGoodModelsAcrossReopen(t *testing.T) {
 	}
 	if loaded.Catalog.Status != "error" || len(loaded.Models) != 1 || loaded.Models[0].ID != "verified-model" {
 		t.Fatalf("loaded=%#v", loaded)
+	}
+}
+
+func TestAssistantProviderKeyDoesNotFollowBaseURLToAnotherHost(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dashboard-settings.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	created, err := store.CreateAssistantProvider(ctx, CreateAssistantProviderInput{Name: "Hosted", BaseURL: "https://api.example.com/v1", APIKey: "SECRET_SENTINEL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	update := func(input UpdateAssistantProviderInput) (AssistantProvider, error) {
+		return store.UpdateAssistantProvider(ctx, created.ID, input)
+	}
+	str := func(value string) *string { return &value }
+
+	var kept AssistantProvider
+	for _, sameOrigin := range []string{"https://api.example.com/v2", "HTTPS://API.EXAMPLE.COM:443/v1/"} {
+		kept, err = update(UpdateAssistantProviderInput{BaseURL: str(sameOrigin)})
+		if err != nil || kept.APIKey != "SECRET_SENTINEL" {
+			t.Fatalf("path-only move to %q: provider=%#v err=%v, want key kept", sameOrigin, kept, err)
+		}
+	}
+
+	for _, otherOrigin := range []string{"https://attacker.example/v1", "http://api.example.com/v1", "https://api.example.com:8443/v1"} {
+		if _, err := update(UpdateAssistantProviderInput{BaseURL: str(otherOrigin)}); !errors.Is(err, ErrProviderKeyRequired) {
+			t.Fatalf("move to %q without key: err=%v, want ErrProviderKeyRequired", otherOrigin, err)
+		}
+	}
+	if current, err := store.GetAssistantProvider(ctx, created.ID); err != nil || current.BaseURL != kept.BaseURL || current.APIKey != "SECRET_SENTINEL" {
+		t.Fatalf("rejected moves changed the provider: %#v err=%v", current, err)
+	}
+
+	updated, err := update(UpdateAssistantProviderInput{BaseURL: str("https://other.example/v1"), APIKey: str("NEW_KEY")})
+	if err != nil || updated.BaseURL != "https://other.example/v1" || updated.APIKey != "NEW_KEY" {
+		t.Fatalf("move with a re-entered key: %#v err=%v", updated, err)
+	}
+	updated, err = update(UpdateAssistantProviderInput{BaseURL: str("https://third.example/v1"), ClearAPIKey: true})
+	if err != nil || updated.APIKeyConfigured {
+		t.Fatalf("move while clearing the key: %#v err=%v", updated, err)
+	}
+	updated, err = update(UpdateAssistantProviderInput{BaseURL: str("https://fourth.example/v1")})
+	if err != nil || updated.BaseURL != "https://fourth.example/v1" {
+		t.Fatalf("keyless provider move: %#v err=%v", updated, err)
 	}
 }

@@ -21,7 +21,7 @@ func TestSourcesEndpointListsRegisteredSourceMetadata(t *testing.T) {
 
 	handler := newSourceTestHandler(t, opencodeSource, claudeSource)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sources", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/sources", nil)
 
 	handler.ServeHTTP(rec, req)
 
@@ -142,7 +142,7 @@ func TestSourceAwareOverviewRouting(t *testing.T) {
 			handler := newSourceTestHandler(t, opencodeSource, claudeSource)
 
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req := httptest.NewRequest(http.MethodGet, testOrigin+tt.path, nil)
 
 			handler.ServeHTTP(rec, req)
 
@@ -220,7 +220,7 @@ func TestSourceAwareDetailRouting(t *testing.T) {
 			handler := newSourceTestHandler(t, opencodeSource, claudeSource)
 
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req := httptest.NewRequest(http.MethodGet, testOrigin+tt.path, nil)
 
 			handler.ServeHTTP(rec, req)
 

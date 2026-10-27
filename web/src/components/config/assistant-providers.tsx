@@ -232,7 +232,7 @@ function CustomProviderCard({ provider, busy, mutate }: { provider: AssistantPro
         <input aria-label={`${provider.name} name`} style={fieldStyle} value={name} onChange={(event) => setName(event.target.value)} />
         <input aria-label={`${provider.name} base URL`} style={fieldStyle} value={baseURL} onChange={(event) => setBaseURL(event.target.value)} />
       </div>
-      <input aria-label={`${provider.name} replacement API key`} type="password" autoComplete="new-password" style={fieldStyle} value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={provider.api_key_configured ? 'Replacement API key (leave blank to preserve)' : 'API key (optional)'} />
+      <input aria-label={`${provider.name} replacement API key`} type="password" autoComplete="new-password" style={fieldStyle} value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={provider.api_key_configured ? 'Replacement API key (leave blank to keep; required to change host)' : 'API key (optional)'} />
       {baseURL.trim().toLowerCase().startsWith('http://') && (
         <label style={{ display: 'flex', gap: 8, fontSize: 12, color: 'var(--warning)' }}>
           <input type="checkbox" checked={insecureAck} onChange={(event) => setInsecureAck(event.target.checked)} /> Acknowledge insecure loopback/private-LAN HTTP

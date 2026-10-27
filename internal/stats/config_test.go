@@ -33,6 +33,12 @@ func TestIsSensitiveKey(t *testing.T) {
 		{name: "TOKEN uppercase", key: "TOKEN", expected: true},
 		{name: "SECRET uppercase", key: "SECRET", expected: true},
 		{name: "PASSWORD uppercase", key: "PASSWORD", expected: true},
+		{name: "authorization", key: "Authorization", expected: true},
+		{name: "custom API key header", key: "X-Api-Key", expected: true},
+		{name: "access token", key: "access_token", expected: true},
+		{name: "refresh token", key: "Refresh-Token", expected: true},
+		{name: "auth token", key: "authToken", expected: true},
+		{name: "secret key", key: "secretKey", expected: true},
 
 		// Non-sensitive keys
 		{name: "name", key: "name", expected: false},
@@ -42,12 +48,11 @@ func TestIsSensitiveKey(t *testing.T) {
 		{name: "created_at", key: "created_at", expected: false},
 		{name: "empty string", key: "", expected: false},
 		{name: "random string", key: "randomKey", expected: false},
+		{name: "token budget", key: "maxTokens", expected: false},
 
 		// Keys containing sensitive words but not exact matches
 		{name: "apiKeyPrefix should not match", key: "apiKeyPrefix", expected: false},
 		{name: "myToken should not match", key: "myToken", expected: false},
-		{name: "authToken should not match", key: "authToken", expected: false},
-		{name: "secretKey should not match", key: "secretKey", expected: false},
 	}
 
 	for _, tt := range tests {

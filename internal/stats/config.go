@@ -13,20 +13,31 @@ import (
 )
 
 var sensitiveKeys = []string{
-	"apiKey",
-	"api_key",
+	"apikey",
+	"xapikey",
 	"key",
 	"token",
+	"accesstoken",
+	"refreshtoken",
+	"authtoken",
 	"secret",
+	"secretkey",
+	"clientsecret",
+	"privatekey",
 	"password",
 	"credential",
 	"auth",
+	"authorization",
+	"proxyauthorization",
 }
 
 var sensitivePrefixes = []string{
 	"env",
 	"header",
+	"httpheader",
 }
+
+var sensitiveKeyNormalizer = strings.NewReplacer("_", "", "-", "")
 
 // globalConfigNames are the files OpenCode reads from its global config
 // directory, lowest precedence first. Both OpenCode 1.x (loadGlobal in
@@ -161,19 +172,42 @@ func redactValue(key string, value any) any {
 	if value == nil {
 		return nil
 	}
+	// Apply the parent policy before descending into containers: a custom
+	// header or environment variable name need not identify its value as secret.
+	if isSensitiveKey(key) || hasSensitivePrefix(key) {
+		return redactWholeConfigValue(value)
+	}
 
 	switch v := value.(type) {
 	case map[string]any:
 		return redactMap(v)
 	case []any:
 		return redactArray(key, v)
-	case string:
-		if isSensitiveKey(key) {
-			return "[REDACTED]"
-		}
-		return v
 	default:
 		return v
+	}
+}
+
+// redactWholeConfigValue preserves object keys and array shape for the tree
+// preview, but never retains a value under a sensitive key or container.
+func redactWholeConfigValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(v))
+		for key, item := range v {
+			result[key] = redactWholeConfigValue(item)
+		}
+		return result
+	case []any:
+		result := make([]any, len(v))
+		for i, item := range v {
+			result[i] = redactWholeConfigValue(item)
+		}
+		return result
+	case nil:
+		return nil
+	default:
+		return "[REDACTED]"
 	}
 }
 
@@ -186,30 +220,17 @@ func redactMap(m map[string]any) map[string]any {
 }
 
 func redactArray(parentKey string, arr []any) []any {
-	if hasSensitivePrefix(parentKey) {
-		result := make([]any, len(arr))
-		for i := range arr {
-			result[i] = "[REDACTED]"
-		}
-		return result
-	}
-
 	result := make([]any, len(arr))
 	for i, v := range arr {
-		switch item := v.(type) {
-		case map[string]any:
-			result[i] = redactMap(item)
-		default:
-			result[i] = item
-		}
+		result[i] = redactValue(parentKey, v)
 	}
 	return result
 }
 
 func isSensitiveKey(key string) bool {
-	lowerKey := strings.ToLower(key)
+	lowerKey := sensitiveKeyNormalizer.Replace(strings.ToLower(key))
 	for _, sensitive := range sensitiveKeys {
-		if lowerKey == strings.ToLower(sensitive) {
+		if lowerKey == sensitive {
 			return true
 		}
 	}
@@ -217,7 +238,7 @@ func isSensitiveKey(key string) bool {
 }
 
 func hasSensitivePrefix(key string) bool {
-	lowerKey := strings.ToLower(key)
+	lowerKey := sensitiveKeyNormalizer.Replace(strings.ToLower(key))
 	for _, prefix := range sensitivePrefixes {
 		if strings.HasPrefix(lowerKey, strings.ToLower(prefix)) {
 			return true

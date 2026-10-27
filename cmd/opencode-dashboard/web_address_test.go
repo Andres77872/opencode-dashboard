@@ -44,6 +44,24 @@ func TestWebRejectsInvalidBindFlagsBeforeOpeningStores(t *testing.T) {
 			t.Errorf("--port %q: got %v, want port validation error", port, err)
 		}
 	}
+	for _, hosts := range []string{"https://dash.example", "dash.example:443", "ok.example,bad host", "dash.example/path"} {
+		if err := cmdWeb([]string{"--allowed-hosts", hosts}); err == nil || !strings.Contains(err.Error(), "--allowed-hosts entries must be") {
+			t.Errorf("--allowed-hosts %q: got %v, want hostname validation error", hosts, err)
+		}
+	}
+}
+
+func TestWebAllowedHosts(t *testing.T) {
+	got, err := webAllowedHosts(" dash.example , ,mybox.local,")
+	if err != nil {
+		t.Fatalf("webAllowedHosts error = %v", err)
+	}
+	if want := []string{"dash.example", "mybox.local"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("webAllowedHosts = %#v, want %#v", got, want)
+	}
+	if got, err := webAllowedHosts(""); err != nil || got != nil {
+		t.Errorf("webAllowedHosts(\"\") = %#v, %v; want nil, nil", got, err)
+	}
 }
 
 func TestWebNetworkURLs(t *testing.T) {

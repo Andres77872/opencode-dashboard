@@ -81,6 +81,10 @@ When OpenCode 2 upgrades a 1.x database in place, it keeps the 1.x tables as a f
 
 The Overview deliberately does **not** present a single combined cost number. OpenCode reports real dollars, Codex, Kimi Code, Qwen Code, and Antigravity report estimated API-equivalent values, and Claude Code is mixed — summing them would be misleading. Costs are always shown per source with each source's own provenance, while additive metrics (sessions, requests, messages, tokens, days) are combined. A **request** is an outbound assistant/API attempt and excludes user prompts; **messages** remain the transcript/history count. Cross-source "top" signals (models, projects, tools) are ranked by a cost-neutral metric (tokens / invocations) so real and estimated dollars are never compared.
 
+### Codex compressed rollouts
+
+Roughly a week after a session goes idle, Codex compresses its rollout in place to `rollout-*.jsonl.zst`. The dashboard reads both the plain and compressed forms. While both copies exist mid-compression, it reads the plain file. A compressed file that cannot be decoded is skipped and reported in the source diagnostics. Earlier releases read only `.jsonl`, so the first sync after upgrading rebuilds the Codex cache once to recover the older history.
+
 ### Codex requested processing mode
 
 For recent Codex CLI rollouts, the dashboard reads each persisted `thread_settings_applied.thread_settings.service_tier` event and attaches that setting to the assistant API requests that follow it. Message rows and session details show **Fast requested**, **Standard requested**, **Flex requested**, or **Tier unknown**. The Codex Daily view can group estimated USD cost and exact input, cache-read, output, and reasoning token totals by this requested mode; the equivalent API query is `GET /api/v1/daily?source=codex&period=all&dimension=processing_mode`.
@@ -304,7 +308,8 @@ The equivalent API is `GET`/`POST`/`DELETE /api/v1/pricing/aliases`.
 - **Self-maintaining consolidation** — an empty cache is built by a background sync at startup (views serve live raw data meanwhile). Once ready, the cache covers only hours older than the finality cutoff; the window after it is read live from raw content on every read and merged, so cached views stay complete through now. A background sync also runs every 30 minutes, and a read starts one when the last successful sync is stale. The web top bar database action opens a sync panel with status, progress, last update, logs, incremental resync, and clear-and-rebuild.
 - **No cached transcripts** — raw conversation text, reasoning text, tool input, tool output, and patches are not stored in the dashboard cache.
 - **Plaintext transcripts** — Claude Code, Codex, Kimi Code, Qwen Code, and Antigravity JSONL data is local plaintext and may contain prompts, reasoning, tool output, file paths, patches, and secrets.
-- **Redaction** — config previews (`/api/v1/config`) redact obvious secrets before display.
+- **Redaction** — config previews (`/api/v1/config`) mask known credential fields and all values inside environment/header containers, including nested maps and arrays. Both tree and raw previews use the sanitized data; source files are unchanged.
+- **Browser request boundaries** — browser mutations are restricted to the dashboard's own origin, with the checked-in loopback Vite development origin on port 7451 permitted against port 7450. Unrelated origins receive no CORS grant and cannot trigger mutations. Native clients without browser origin headers retain local API access; LAN mode still has no authentication.
 
 #### Dashboard-owned files
 
@@ -360,7 +365,7 @@ Answers can carry figures. The lead analyst may write a ` ```chart ` block — a
 
 Completed conversations are saved locally with everything that produced them — tool inputs and outputs, specialist findings, per-turn provider token usage, timing, and the view the question was asked from — so a saved conversation restores exactly what was shown live. Assistant history lives in its own SQLite database and is never migrated: a database from a different schema version is rebuilt empty and the reset is logged.
 
-Configure a provider in **Config → Assistant providers**, select a model, and open the floating assistant. Kimi prefers `OPENCODE_DASHBOARD_KIMI_API_KEY` (and optional `OPENCODE_DASHBOARD_KIMI_BASE_URL`) before reusing Kimi Code OAuth; MiniMax uses `OPENCODE_DASHBOARD_MINIMAX_API_KEY` before the existing OpenCode auth-store fallback. Custom keys are optional for unauthenticated local servers and are stored as plaintext in the hardened local settings DB; they are never returned by the API. HTTP requires an explicit warning acknowledgement and is limited to loopback/private-LAN IP endpoints. The first-use disclosure is bound to the provider destination. A model switch at the same endpoint keeps consent; a provider or endpoint change renews it. A complete run is limited to 90 seconds by default; `OPENCODE_DASHBOARD_ASSISTANT_TIMEOUT` accepts `10s` through `5m`, with `OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` retained as a deprecated fallback. See [the agent architecture, tool contracts, loop limits, and privacy model](docs/analytics-assistant.md).
+Configure a provider in **Config → Assistant providers**, select a model, and open the floating assistant. Kimi prefers `OPENCODE_DASHBOARD_KIMI_API_KEY` (and optional `OPENCODE_DASHBOARD_KIMI_BASE_URL`) before reusing Kimi Code OAuth; MiniMax uses `OPENCODE_DASHBOARD_MINIMAX_API_KEY` before the existing OpenCode auth-store fallback. Custom keys are optional for unauthenticated local servers and are stored as plaintext in the hardened local settings DB; they are never returned by the API. A saved key follows a base URL edit only within the same scheme, host, and port: moving a provider to another host requires re-entering the key or clearing it, so a settings change cannot redirect the key to a different server. HTTP requires an explicit warning acknowledgement and is limited to loopback/private-LAN IP endpoints. The first-use disclosure is bound to the provider destination. A model switch at the same endpoint keeps consent; a provider or endpoint change renews it. A complete run is limited to 90 seconds by default; `OPENCODE_DASHBOARD_ASSISTANT_TIMEOUT` accepts `10s` through `5m`, with `OPENCODE_DASHBOARD_MINIMAX_TIMEOUT` retained as a deprecated fallback. See [the agent architecture, tool contracts, loop limits, and privacy model](docs/analytics-assistant.md).
 
 ## Prerequisites
 
@@ -491,6 +496,14 @@ network. The dashboard has no authentication: anyone who can reach it can read
 dashboard data and use its settings and assistant, so use LAN mode on a trusted
 network.
 
+The server answers only requests addressed to an IP address, `localhost`, the
+`--host` name, or (in `0.0.0.0`/`::` mode) the machine's own hostname and
+`<hostname>.local`. Any other `Host` header gets `403`, which blocks DNS
+rebinding: a web page that re-points its own domain at `127.0.0.1` can no
+longer read or change the dashboard. To reach the dashboard through another
+name, such as a reverse proxy, list it with `--allowed-hosts`, for example
+`--allowed-hosts dash.example.com`.
+
 ### TUI dashboard
 
 ```bash
@@ -527,6 +540,7 @@ Key bindings:
 |------|----------|-------------|
 | `--host <addr>` | `web` | Bind address (default `127.0.0.1`; `0.0.0.0` for LAN access) |
 | `--port <n>` | `web` | Port to bind (default `7450`) |
+| `--allowed-hosts <names>` | `web` | Comma-separated hostnames the server answers besides IP addresses and `localhost` (for example a reverse proxy name) |
 | `--db <path>` | `web`, `tui` | Explicit OpenCode SQLite database path |
 | `--channel <c>` | `web`, `tui` | Resolve a channel-specific OpenCode DB (`stable`/`latest`/`beta`/custom) |
 | `--source <id>` | `web`, `tui` | Initial source: `opencode`, `claude_code`, `codex`, `kimi_code`, `qwen_code`, or `antigravity` (default `opencode`) |

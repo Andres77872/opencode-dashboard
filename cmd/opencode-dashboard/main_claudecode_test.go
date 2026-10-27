@@ -177,7 +177,7 @@ func TestBuildWebRegistrySourcesEndpointReportsClaudeStartupAndOpenCodeDefault(t
 
 	server := web.NewServer(web.ServerOptions{Registry: registry})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sources", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7450/api/v1/sources", nil)
 
 	server.Handler.ServeHTTP(rec, req)
 

@@ -99,7 +99,7 @@ func applyCachedCostPolicy(sourceID string, status stats.CostStatus, provenance 
 		case sourceID == "kimi_code" && status == stats.CostMissing:
 			result.Note = "aggregate Kimi Code cost is unknown because supported model pricing or request usage is unavailable"
 		case status == stats.CostMixed && policy.Note != "":
-			result.Note = policy.Note + "; aggregate also includes costs with different or missing provenance"
+			result.Note = policy.Note + " Some costs in this total are priced differently or unknown."
 		}
 	}
 	result.Status = status

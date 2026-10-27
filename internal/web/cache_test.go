@@ -70,7 +70,7 @@ func TestCacheEndpoints(t *testing.T) {
 	manager := &fakeCacheManager{}
 	server := NewServer(ServerOptions{Registry: registry, Cache: manager})
 
-	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/cache", nil)
+	statusReq := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/cache", nil)
 	statusRec := httptest.NewRecorder()
 	server.Handler.ServeHTTP(statusRec, statusReq)
 	if statusRec.Code != http.StatusOK {
@@ -96,7 +96,7 @@ func TestCacheEndpoints(t *testing.T) {
 		t.Fatalf("sync progress = %#v, want phase/items passthrough", status.Sync)
 	}
 
-	syncReq := httptest.NewRequest(http.MethodPost, "/api/v1/cache/sync?source=codex&mode=rebuild", nil)
+	syncReq := httptest.NewRequest(http.MethodPost, testOrigin+"/api/v1/cache/sync?source=codex&mode=rebuild", nil)
 	syncRec := httptest.NewRecorder()
 	server.Handler.ServeHTTP(syncRec, syncReq)
 	if syncRec.Code != http.StatusOK {

@@ -209,6 +209,8 @@ func (h *Handlers) providerSettingsFailure(w http.ResponseWriter, err error) {
 		writeAssistantError(w, http.StatusNotFound, "assistant provider not found")
 	case errors.Is(err, analyticsagent.ErrModelNotSelectable), errors.Is(err, pricingalias.ErrInvalidSelection):
 		writeAssistantError(w, http.StatusConflict, "assistant model is not selectable")
+	case errors.Is(err, pricingalias.ErrProviderKeyRequired):
+		writeAssistantError(w, http.StatusBadRequest, "Re-enter the API key to move this provider to a different host, or clear the key first.")
 	case errors.Is(err, pricingalias.ErrInvalidProvider), strings.Contains(err.Error(), "base_url"), strings.Contains(err.Error(), "HTTP endpoint"):
 		writeAssistantError(w, http.StatusBadRequest, "assistant provider configuration is invalid")
 	case strings.Contains(err.Error(), "built-in"):

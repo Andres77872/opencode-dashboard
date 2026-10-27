@@ -23,7 +23,7 @@ func TestSourceAwareKimiCodeAPIRoutingFromFixture(t *testing.T) {
 
 	t.Run("sources metadata exposes available Kimi Code", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sources", nil)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/sources", nil)
 		handler.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusOK {
@@ -55,7 +55,7 @@ func TestSourceAwareKimiCodeAPIRoutingFromFixture(t *testing.T) {
 
 	t.Run("explicit Kimi overview routes only to Kimi Code", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?source=kimi_code&period=all", nil)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?source=kimi_code&period=all", nil)
 		handler.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusOK {
@@ -94,7 +94,7 @@ func TestSourceAwareKimiCodeAPIRoutingFromFixture(t *testing.T) {
 		}
 		for _, path := range paths {
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req := httptest.NewRequest(http.MethodGet, testOrigin+path, nil)
 			handler.ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusOK {
@@ -125,7 +125,7 @@ func TestSourceAwareKimiCodeAPIRoutingFromFixture(t *testing.T) {
 
 		detailPath := "/api/v1/messages/" + url.PathEscape(assistantID) + "?source=kimi_code"
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, detailPath, nil)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+detailPath, nil)
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET Kimi message detail status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())

@@ -57,7 +57,7 @@ func TestQuotasEndpoint(t *testing.T) {
 	}}
 	server := NewServer(ServerOptions{Registry: registry, Quotas: fake})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/quotas", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/quotas", nil)
 	rec := httptest.NewRecorder()
 	server.Handler.ServeHTTP(rec, req)
 
@@ -95,7 +95,7 @@ func TestQuotasEndpointWithoutService(t *testing.T) {
 	registry := source.NewRegistry(source.SourceOpenCode)
 	server := NewServer(ServerOptions{Registry: registry})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/quotas", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/quotas", nil)
 	rec := httptest.NewRecorder()
 	server.Handler.ServeHTTP(rec, req)
 

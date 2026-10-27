@@ -24,7 +24,7 @@ func TestSourceAwareClaudeCodeAPIRoutingFromFixture(t *testing.T) {
 
 	t.Run("sources metadata exposes available Claude Code", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sources", nil)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/sources", nil)
 
 		handler.ServeHTTP(rec, req)
 
@@ -59,7 +59,7 @@ func TestSourceAwareClaudeCodeAPIRoutingFromFixture(t *testing.T) {
 
 	t.Run("explicit claude overview routes only to Claude source", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?source=claude_code&period=all", nil)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?source=claude_code&period=all", nil)
 
 		handler.ServeHTTP(rec, req)
 
@@ -86,7 +86,7 @@ func TestSourceAwareClaudeCodeAPIRoutingFromFixture(t *testing.T) {
 
 	t.Run("explicit claude messages return source-tagged Claude rows", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/messages?source=claude_code&period=all&page=1&limit=50", nil)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/messages?source=claude_code&period=all&page=1&limit=50", nil)
 
 		handler.ServeHTTP(rec, req)
 
@@ -121,7 +121,7 @@ func TestSourceAwareClaudeCodeAPIRoutingFromFixture(t *testing.T) {
 
 	t.Run("omitted source still defaults to OpenCode", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?period=all", nil)
+		req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?period=all", nil)
 
 		handler.ServeHTTP(rec, req)
 
@@ -171,7 +171,7 @@ func TestClaudeCodeAPIEndpointClassesReturnClaudeSourceTaggedPayloads(t *testing
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req := httptest.NewRequest(http.MethodGet, testOrigin+tt.path, nil)
 
 			handler.ServeHTTP(rec, req)
 
@@ -317,7 +317,7 @@ func containsHTTPMessageID(messages []stats.MessageEntry, want string) bool {
 func getHandlerJSON(t *testing.T, handler http.Handler, path string, dest any) {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+path, nil)
 
 	handler.ServeHTTP(rec, req)
 

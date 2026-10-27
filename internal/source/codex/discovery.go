@@ -76,7 +76,7 @@ func discoverTranscripts(ctx context.Context, codexHome string) discoveryResult 
 			return nil
 		}
 		name := d.Name()
-		if !strings.HasPrefix(name, "rollout-") || !strings.EqualFold(filepath.Ext(name), ".jsonl") {
+		if !isRolloutFileName(name) {
 			return nil
 		}
 		fileInfo, err := d.Info()
@@ -106,6 +106,7 @@ func discoverTranscripts(ctx context.Context, codexHome string) discoveryResult 
 	}
 
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	files = preferPlainRollouts(files)
 	diag.ScannedFiles = int64(len(files))
 	if len(files) == 0 {
 		diag.Status = "empty"
@@ -115,8 +116,28 @@ func discoverTranscripts(ctx context.Context, codexHome string) discoveryResult 
 	return discoveryResult{files: files, diagnostics: diag, available: true}
 }
 
+// preferPlainRollouts drops a compressed rollout while its plain original is
+// still on disk. Mid-compression both copies exist with the same records; the
+// plain file is complete, while the .zst may still be being written.
+func preferPlainRollouts(files []transcriptFile) []transcriptFile {
+	plain := make(map[string]bool, len(files))
+	for _, file := range files {
+		if !isCompressedRollout(file.Path) {
+			plain[rolloutStem(file.Path)] = true
+		}
+	}
+	kept := files[:0]
+	for _, file := range files {
+		if isCompressedRollout(file.Path) && plain[rolloutStem(file.Path)] {
+			continue
+		}
+		kept = append(kept, file)
+	}
+	return kept
+}
+
 func rolloutSessionID(name string) string {
-	base := strings.TrimSuffix(name, filepath.Ext(name))
+	base := rolloutStem(name)
 	if idx := strings.LastIndex(base, "Z-"); idx >= 0 && idx+2 < len(base) {
 		return base[idx+2:]
 	}

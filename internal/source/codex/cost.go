@@ -16,14 +16,14 @@ import (
 //go:embed pricing_snapshot.json
 var defaultPricingFS embed.FS
 
-const apiEquivalentNote = "API-equivalent estimate in USD using official OpenAI API per-token rates for each request's requested processing tier (Fast maps to Priority, Flex maps to Flex, and Standard maps to Standard). An unknown processing tier remains unclassified and defaults to Standard pricing for this estimate only. Local Codex transcripts expose the requested tier, not the tier actually served; this is not actual API-billed spend."
+const apiEquivalentNote = "API-equivalent USD estimate at official OpenAI rates for each request's tier: Fast uses Priority, Flex uses Flex, and Standard or an unknown tier uses Standard. Codex logs the requested tier, not the one served. Not actual API-billed spend."
 
 const (
 	priorityMaxInputTokens    = 272_000
-	standardAPIEquivalentNote = "API-equivalent estimate in USD using official OpenAI Standard API per-token rates for the requested Standard tier. Local Codex transcripts expose the requested tier, not the tier actually served; this is not actual API-billed spend."
-	unknownAPIEquivalentNote  = "API-equivalent estimate in USD using official OpenAI Standard API per-token rates because the processing tier is unknown. The unknown processing tier remains classified as unknown and defaults to Standard pricing for this estimate only; this does not mean Standard was requested, served, or billed, and this is not actual API-billed spend."
-	priorityAPIEquivalentNote = "API-equivalent estimate in USD using official OpenAI Priority API per-token rates because Fast was requested. Local Codex transcripts expose the requested tier, not the tier actually served; this is not actual API-billed spend."
-	flexAPIEquivalentNote     = "API-equivalent estimate in USD using official OpenAI Flex API per-token rates for the requested Flex tier. Local Codex transcripts expose the requested tier, not the tier actually served; this is not actual API-billed spend."
+	standardAPIEquivalentNote = "API-equivalent USD estimate at OpenAI Standard API rates. Codex logs the requested tier, not the one served. Not actual API-billed spend."
+	unknownAPIEquivalentNote  = "API-equivalent USD estimate at OpenAI Standard API rates. The unknown processing tier stays unknown and uses Standard pricing for this estimate only. Not actual API-billed spend."
+	priorityAPIEquivalentNote = "API-equivalent USD estimate at OpenAI Priority API rates because Fast was requested. Codex logs the requested tier, not the one served. Not actual API-billed spend."
+	flexAPIEquivalentNote     = "API-equivalent USD estimate at OpenAI Flex API rates. Codex logs the requested tier, not the one served. Not actual API-billed spend."
 )
 
 type pricingSnapshot struct {
@@ -422,7 +422,7 @@ func missingCost(currency string) costResult {
 			Status:       stats.CostMissing,
 			Currency:     currency,
 			MissingCount: 1,
-			Note:         "Codex cost is unknown because supported pricing/model usage is unavailable",
+			Note:         "Codex cost is unknown because this model's pricing or usage is unavailable",
 		},
 	}
 }

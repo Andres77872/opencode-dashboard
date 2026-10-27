@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -26,6 +28,10 @@ var (
 	ErrModelNotFound    = errors.New("assistant model not found")
 	ErrInvalidProvider  = errors.New("invalid assistant provider")
 	ErrInvalidSelection = errors.New("invalid assistant selection")
+	// ErrProviderKeyRequired rejects moving a provider that stores an API key
+	// to another scheme, host or port without re-entering or clearing the key.
+	// Otherwise one PATCH could redirect the saved key to any server.
+	ErrProviderKeyRequired = errors.New("assistant provider API key must be re-entered when its base URL moves to another host")
 )
 
 // AssistantProvider is the safe settings representation returned by public
@@ -205,8 +211,12 @@ func (s *Store) UpdateAssistantProvider(ctx context.Context, id string, input Up
 	if input.BaseURL != nil {
 		baseURL = *input.BaseURL
 	}
-	if input.APIKey != nil && strings.TrimSpace(*input.APIKey) != "" {
+	keyProvided := input.APIKey != nil && strings.TrimSpace(*input.APIKey) != ""
+	if keyProvided {
 		apiKey = *input.APIKey
+	}
+	if current.APIKey != "" && !keyProvided && !input.ClearAPIKey && !sameProviderOrigin(current.BaseURL, baseURL) {
+		return AssistantProvider{}, ErrProviderKeyRequired
 	}
 	if input.ClearAPIKey {
 		apiKey = ""
@@ -509,6 +519,31 @@ func normalizeAssistantProviderInput(name, baseURL, apiKey string) (string, stri
 		return "", "", "", fmt.Errorf("%w: api_key is too long", ErrInvalidProvider)
 	}
 	return name, baseURL, apiKey, nil
+}
+
+// sameProviderOrigin reports whether two base URLs share scheme, host and
+// port, so a stored API key may follow a path-only edit. Unparseable URLs
+// never match.
+func sameProviderOrigin(a, b string) bool {
+	ua, errA := url.Parse(strings.TrimSpace(a))
+	ub, errB := url.Parse(strings.TrimSpace(b))
+	if errA != nil || errB != nil {
+		return false
+	}
+	return strings.EqualFold(ua.Scheme, ub.Scheme) && providerHostPort(ua) == providerHostPort(ub)
+}
+
+func providerHostPort(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		switch strings.ToLower(u.Scheme) {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		}
+	}
+	return net.JoinHostPort(strings.ToLower(u.Hostname()), port)
 }
 
 func assistantIdentifier(field, value string, limit int) (string, error) {

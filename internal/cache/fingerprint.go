@@ -206,8 +206,10 @@ func hashCodexFiles(ctx context.Context, h hashWriter, home string) error {
 			}
 			return false, nil
 		}
-		name := d.Name()
-		return strings.HasPrefix(name, "rollout-") && strings.EqualFold(filepath.Ext(name), ".jsonl"), nil
+		// Codex compresses idle rollouts in place to .jsonl.zst; the codex
+		// source reads both forms, so both feed the fingerprint.
+		name := strings.ToLower(d.Name())
+		return strings.HasPrefix(name, "rollout-") && (strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".jsonl.zst")), nil
 	})
 }
 

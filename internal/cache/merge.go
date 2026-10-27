@@ -237,6 +237,9 @@ type costAgg struct {
 	missing  int64
 	statuses map[stats.CostStatus]int64
 	metadata stats.CostProvenance
+	// noteConflict drops the aggregate note once requests disagree: a
+	// per-request rationale ("Fast was requested") is wrong for the whole.
+	noteConflict bool
 }
 
 func (c *costAgg) add(entry stats.MessageEntry) {
@@ -256,6 +259,9 @@ func (c *costAgg) add(entry stats.MessageEntry) {
 		c.computed++
 	}
 	mergeCostMetadata(&c.metadata, entry.CostProvenance)
+	if p := entry.CostProvenance; p != nil && p.Note != "" && p.Note != c.metadata.Note {
+		c.noteConflict = true
+	}
 }
 
 // result mirrors costSummaryWhere: single status passes through, several mix.
@@ -278,6 +284,9 @@ func (c *costAgg) result() (stats.CostStatus, *stats.CostProvenance) {
 	result.MissingCount = c.missing
 	result.ComputedCount = c.computed
 	result.ReportedCount = c.reported
+	if c.noteConflict {
+		result.Note = ""
+	}
 	return status, &result
 }
 
@@ -294,10 +303,10 @@ func mergeCostMetadata(dst *stats.CostProvenance, src *stats.CostProvenance) {
 	if dst.PricingSource == "" {
 		dst.PricingSource = src.PricingSource
 	}
+	// First note wins, like the pricing fields. Concatenating distinct notes
+	// grew without bound when request notes alternated (A; B; A; B; ...).
 	if dst.Note == "" {
 		dst.Note = src.Note
-	} else if src.Note != "" && dst.Note != src.Note {
-		dst.Note += "; " + src.Note
 	}
 }
 

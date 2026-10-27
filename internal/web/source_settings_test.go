@@ -32,7 +32,7 @@ func TestSourceToggleAPIAndDisabledQueries(t *testing.T) {
 	server := NewServer(ServerOptions{Registry: reg, SourceSettings: settings})
 	for _, body := range []string{`{}`, `{"enabled":null}`, `{"enabled":"false"}`, `{"enabled":false,"extra":1}`, `{"enabled":false} {}`} {
 		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodPut, "/api/v1/sources/antigravity", strings.NewReader(body))
+		r := httptest.NewRequest(http.MethodPut, testOrigin+"/api/v1/sources/antigravity", strings.NewReader(body))
 		server.Handler.ServeHTTP(w, r)
 		if w.Code != 400 {
 			t.Fatalf("accepted %s: %d", body, w.Code)
@@ -40,13 +40,13 @@ func TestSourceToggleAPIAndDisabledQueries(t *testing.T) {
 	}
 	for _, id := range source.KnownIDs() {
 		w := httptest.NewRecorder()
-		server.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/v1/sources/"+string(id), strings.NewReader(`{"enabled":false}`)))
+		server.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodPut, testOrigin+"/api/v1/sources/"+string(id), strings.NewReader(`{"enabled":false}`)))
 		if w.Code != 200 {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
 	w := httptest.NewRecorder()
-	server.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/sources", nil))
+	server.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/sources", nil))
 	var list source.SourceListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
 		t.Fatal(err)
@@ -60,12 +60,12 @@ func TestSourceToggleAPIAndDisabledQueries(t *testing.T) {
 		}
 	}
 	w = httptest.NewRecorder()
-	server.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/overview?source=antigravity", nil))
+	server.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?source=antigravity", nil))
 	if w.Code != 409 || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("disabled query: %d %s", w.Code, w.Body.String())
 	}
 	w = httptest.NewRecorder()
-	server.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/overview/all?period=all", nil))
+	server.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview/all?period=all", nil))
 	if w.Code != 200 {
 		t.Fatalf("all disabled overview failed: %d", w.Code)
 	}

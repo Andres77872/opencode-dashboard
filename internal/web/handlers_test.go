@@ -36,7 +36,7 @@ func TestParseIntQuery(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rawURL := "/?" + tt.queryKey + "=" + tt.queryValue
-			req := httptest.NewRequest(http.MethodGet, rawURL, nil)
+			req := httptest.NewRequest(http.MethodGet, testOrigin+rawURL, nil)
 			result := parseIntQuery(req, tt.queryKey, tt.defaultVal, tt.maxVal)
 
 			if result != tt.expected {
@@ -47,7 +47,7 @@ func TestParseIntQuery(t *testing.T) {
 }
 
 func TestParseIntQueryMissingKey(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/?other=value", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/?other=value", nil)
 	result := parseIntQuery(req, "page", 1, maxPageQuery)
 
 	if result != 1 {
@@ -58,7 +58,7 @@ func TestParseIntQueryMissingKey(t *testing.T) {
 // A page/limit pair that survives parseIntQuery must never make (page-1)*limit
 // overflow into a negative slice offset — that used to panic the merge layer.
 func TestParseIntQueryOffsetCannotOverflow(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/?page=184467440737095517&limit=99999", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/?page=184467440737095517&limit=99999", nil)
 	page := parseIntQuery(req, "page", 1, maxPageQuery)
 	limit := parseIntQuery(req, "limit", 50, maxLimitQuery)
 
@@ -210,7 +210,7 @@ func TestExtractMessageID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParsePeriodQuery_defaultPeriod(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview", nil)
 	pq, apierr := parsePeriodQuery(req)
 	if apierr != nil {
 		t.Fatalf("unexpected API error: %v", apierr)
@@ -224,7 +224,7 @@ func TestParsePeriodQuery_defaultPeriod(t *testing.T) {
 }
 
 func TestParsePeriodQuery_periodOnly(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?period=30d", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?period=30d", nil)
 	pq, apierr := parsePeriodQuery(req)
 	if apierr != nil {
 		t.Fatalf("unexpected API error: %v", apierr)
@@ -238,7 +238,7 @@ func TestParsePeriodQuery_periodOnly(t *testing.T) {
 }
 
 func TestParsePeriodQuery_validFromAndTo(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?from=2026-01-15&to=2026-01-20", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?from=2026-01-15&to=2026-01-20", nil)
 	pq, apierr := parsePeriodQuery(req)
 	if apierr != nil {
 		t.Fatalf("unexpected API error: %v", apierr)
@@ -255,7 +255,7 @@ func TestParsePeriodQuery_validFromAndTo(t *testing.T) {
 }
 
 func TestParsePeriodQuery_fromOnly(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?from=2026-04-01", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?from=2026-04-01", nil)
 	pq, apierr := parsePeriodQuery(req)
 	if apierr != nil {
 		t.Fatalf("unexpected API error: %v", apierr)
@@ -269,7 +269,7 @@ func TestParsePeriodQuery_fromOnly(t *testing.T) {
 }
 
 func TestParsePeriodQuery_fromBeatsPeriod(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?from=2026-02-01&to=2026-02-10&period=1d", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?from=2026-02-01&to=2026-02-10&period=1d", nil)
 	pq, apierr := parsePeriodQuery(req)
 	if apierr != nil {
 		t.Fatalf("unexpected API error: %v", apierr)
@@ -286,7 +286,7 @@ func TestParsePeriodQuery_fromBeatsPeriod(t *testing.T) {
 }
 
 func TestParsePeriodQuery_fromBeatsInvalidPeriod(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?from=2026-02-01&to=2026-02-10&period=not-a-preset", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?from=2026-02-01&to=2026-02-10&period=not-a-preset", nil)
 	pq, apierr := parsePeriodQuery(req)
 	if apierr != nil {
 		t.Fatalf("from/to range should preserve compatibility by ignoring period: %v", apierr)
@@ -311,7 +311,7 @@ func TestParsePeriodQuery_invalidFromFormat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?from="+tt.from, nil)
+			req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?from="+tt.from, nil)
 			_, apierr := parsePeriodQuery(req)
 
 			if tt.wantMsg == "" {
@@ -346,7 +346,7 @@ func TestParsePeriodQuery_invalidToFormat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?from=2026-01-01&to="+tt.to, nil)
+			req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?from=2026-01-01&to="+tt.to, nil)
 			_, apierr := parsePeriodQuery(req)
 
 			if apierr == nil {
@@ -363,7 +363,7 @@ func TestParsePeriodQuery_invalidToFormat(t *testing.T) {
 }
 
 func TestParsePeriodQuery_futureFromDate(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?from=2099-01-01", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?from=2099-01-01", nil)
 	_, apierr := parsePeriodQuery(req)
 
 	if apierr == nil {
@@ -378,7 +378,7 @@ func TestParsePeriodQuery_futureFromDate(t *testing.T) {
 }
 
 func TestParsePeriodQuery_futureToDate(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?from=2026-01-01&to=2099-12-31", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?from=2026-01-01&to=2099-12-31", nil)
 	_, apierr := parsePeriodQuery(req)
 
 	if apierr == nil {
@@ -394,7 +394,7 @@ func TestParsePeriodQuery_futureToDate(t *testing.T) {
 
 func TestParsePeriodQuery_fromAfterTo(t *testing.T) {
 	// Both dates must be in the past; "from" must be after "to"
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?from=2026-05-01&to=2026-04-15", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?from=2026-05-01&to=2026-04-15", nil)
 	_, apierr := parsePeriodQuery(req)
 
 	if apierr == nil {
@@ -409,7 +409,7 @@ func TestParsePeriodQuery_fromAfterTo(t *testing.T) {
 }
 
 func TestParsePeriodQuery_sameFromAndTo(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?from=2026-04-15&to=2026-04-15", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?from=2026-04-15&to=2026-04-15", nil)
 	pq, apierr := parsePeriodQuery(req)
 	if apierr != nil {
 		t.Fatalf("unexpected API error for same from/to: %v", apierr)
@@ -422,7 +422,7 @@ func TestParsePeriodQuery_sameFromAndTo(t *testing.T) {
 func TestParsePeriodQuery_allPresetsPassthrough(t *testing.T) {
 	for _, p := range stats.SupportedPeriodPresets() {
 		t.Run("preset_"+p, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?period="+p, nil)
+			req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?period="+p, nil)
 			pq, apierr := parsePeriodQuery(req)
 			if apierr != nil {
 				t.Fatalf("unexpected API error for period=%q: %v", p, apierr)
@@ -435,7 +435,7 @@ func TestParsePeriodQuery_allPresetsPassthrough(t *testing.T) {
 }
 
 func TestParsePeriodQuery_rejectsUnknownPreset(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview?period=bogus", nil)
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/v1/overview?period=bogus", nil)
 	_, apierr := parsePeriodQuery(req)
 	if apierr == nil {
 		t.Fatal("expected API error for unsupported preset")

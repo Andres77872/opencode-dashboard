@@ -467,7 +467,10 @@ The web server exposes:
   consent token, capabilities, specialist roster, and persistence state.
 - `GET`/`POST /api/v1/assistant/providers` and
   `PATCH`/`DELETE /api/v1/assistant/providers/{id}` — safe provider management;
-  responses expose `api_key_configured`, never the key.
+  responses expose `api_key_configured`, never the key. A `PATCH` that moves
+  `base_url` to another scheme, host, or port must also send `api_key` or
+  `clear_api_key`; otherwise it is rejected with `400` and the stored key never
+  reaches the new host.
 - `POST /api/v1/assistant/providers/{id}/models/refresh` — explicit bounded
   discovery without erasing a last-good catalog.
 - `PUT /api/v1/assistant/providers/{id}/models` — exact manual model/context
