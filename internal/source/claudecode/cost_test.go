@@ -145,6 +145,17 @@ func TestBundledPricingSnapshotCoversCurrentClaudeRates(t *testing.T) {
 		wantApproximate bool
 	}{
 		{
+			name: "current fable 5.2 exact rate uses its lower input output and cache prices",
+			key:  "claude-fable-5-2",
+			want: pricingRate{
+				InputPerMillion:         8.0,
+				OutputPerMillion:        40.0,
+				CacheReadPerMillion:     0.2,
+				CacheCreatePerMillion:   10.0,
+				CacheCreate1hPerMillion: 16.0,
+			},
+		},
+		{
 			name: "current fable 5.1 exact rate uses its lower cache read price",
 			key:  "claude-fable-5-1",
 			want: pricingRate{
@@ -378,6 +389,7 @@ func TestBundledPricingRealClaudeModelsComputeNonMissingCosts(t *testing.T) {
 		model    string
 		wantCost float64
 	}{
+		{name: "fable 5.2 uses current input output price", model: "claude-fable-5-2", wantCost: 48.0},
 		{name: "fable 5.1 uses current input output price", model: "claude-fable-5-1", wantCost: 60.0},
 		{name: "opus 5.5 uses current input output price", model: "claude-opus-5-5", wantCost: 24.0},
 		{name: "opus 5 uses current input output price", model: "claude-opus-5", wantCost: 30.0},
@@ -417,7 +429,8 @@ func TestBundledPricingRealClaudeModelsComputeNonMissingCosts(t *testing.T) {
 
 // Point releases share a boundary-aware prefix with their predecessor, so
 // without their own rows they would silently fall back to the older family
-// rates (Fable 5.1 cache reads at Fable 5's 4x price, Opus 5.5 at Opus 5's).
+// rates (Fable 5.2 at Fable 5's higher prices, Fable 5.1 cache reads at Fable
+// 5's 4x price, Opus 5.5 at Opus 5's).
 // Sonnet 5.5 matches Sonnet 5 except for cache reads, which bill at half
 // Sonnet 5's price.
 func TestBundledPricingPointReleasesDoNotFallBackToPredecessor(t *testing.T) {
@@ -430,6 +443,8 @@ func TestBundledPricingPointReleasesDoNotFallBackToPredecessor(t *testing.T) {
 		wantStatus    stats.CostStatus
 		wantCost      float64
 	}{
+		{model: "claude-fable-5-2", wantCanonical: "claude-fable-5-2", wantStatus: stats.CostComputed, wantCost: 74.2},
+		{model: "claude-fable-5-2-custom", wantCanonical: "claude-fable-5-2", wantStatus: stats.CostApproximate, wantCost: 74.2},
 		{model: "claude-fable-5-1", wantCanonical: "claude-fable-5-1", wantStatus: stats.CostComputed, wantCost: 92.75},
 		{model: "claude-mythos-5-1", wantCanonical: "claude-mythos-5-1", wantStatus: stats.CostComputed, wantCost: 92.75},
 		{model: "claude-fable-5", wantCanonical: "claude-fable-5", wantStatus: stats.CostComputed, wantCost: 93.5},
@@ -452,6 +467,47 @@ func TestBundledPricingPointReleasesDoNotFallBackToPredecessor(t *testing.T) {
 			}
 			if !approxEqual(result.Cost, tt.wantCost) {
 				t.Errorf("computeCost(%q) = %.9f, want %.9f", tt.model, result.Cost, tt.wantCost)
+			}
+		})
+	}
+}
+
+func TestBundledPricingFable52UsesStandardRatesAcrossContextWindow(t *testing.T) {
+	pricing := loadBundledPricingForTest(t)
+	rate, ok := pricing.Models["claude-fable-5-2"]
+	if !ok {
+		t.Fatal("bundled pricing missing claude-fable-5-2")
+	}
+	if rate.LongContextThresholdTokens != 0 || rate.LongContext != nil {
+		t.Fatal("Fable 5.2 must use standard rates throughout its 1M-token context window")
+	}
+
+	tests := []struct {
+		name     string
+		usage    tokenUsage
+		wantCost float64
+	}{
+		{
+			name: "900k prompt uses standard rates and separate cache write durations",
+			usage: tokenUsage{
+				Input: 100_000, Output: 10_000, CacheRead: 500_000,
+				CacheCreate: 300_000, CacheCreate5m: 200_000, CacheCreate1h: 100_000,
+			},
+			wantCost: 4.9,
+		},
+		{name: "cache reads bill at 2.5 percent of input", usage: tokenUsage{CacheRead: 500_000}, wantCost: 0.1},
+		{name: "unsplit cache writes use five minute rates", usage: tokenUsage{CacheCreate: 300_000}, wantCost: 3.0},
+		{name: "one hour cache writes use their own rate", usage: tokenUsage{CacheCreate: 100_000, CacheCreate1h: 100_000}, wantCost: 1.6},
+		{name: "separate reasoning tokens bill at the output rate", usage: tokenUsage{Output: 1_000, Reasoning: 500}, wantCost: 0.06},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := computeCost("claude-fable-5-2", "anthropic", tt.usage, true, nil, pricing)
+			if result.Status != stats.CostComputed || !approxEqual(result.Cost, tt.wantCost) {
+				t.Fatalf("computeCost(claude-fable-5-2) = %#v, want computed cost %.9f", result, tt.wantCost)
+			}
+			if result.Provenance == nil || result.Provenance.PricingSnapshotID != pricing.ID {
+				t.Fatalf("Fable 5.2 provenance = %#v, want snapshot %q", result.Provenance, pricing.ID)
 			}
 		})
 	}

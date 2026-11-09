@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"opencode-dashboard/internal/source"
+	"opencode-dashboard/internal/source/claudecode"
 	"opencode-dashboard/internal/source/codex"
 	"opencode-dashboard/internal/stats"
 )
@@ -149,6 +150,77 @@ func TestTerraCatalogRefreshRepricesHistoricalCodexRequest(t *testing.T) {
 		t.Fatalf("repricing report = %#v, want historical rebuild with one message", report)
 	}
 	assertRow(0.0131, stats.CostEstimatedAPIEquivalent)
+}
+
+func TestFable52CatalogRefreshRepricesHistoricalClaudeRequest(t *testing.T) {
+	for _, readTriggered := range []bool{false, true} {
+		name := "explicit"
+		if readTriggered {
+			name = "read-triggered"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			home := t.TempDir()
+			path := filepath.Join(home, "projects", "-repo-fable", "fable-session.jsonl")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			transcript := `{"type":"assistant","uuid":"fable-request","session_id":"fable-session","timestamp":"2026-11-09T12:00:00Z","cwd":"/repo/fable","message":{"role":"assistant","model":"claude-fable-5-2","content":[{"type":"text","text":"Catalog refresh fixture."}],"usage":{"input_tokens":100000,"output_tokens":10000,"cache_read_input_tokens":500000,"cache_creation_input_tokens":300000,"cache_creation":{"ephemeral_5m_input_tokens":200000,"ephemeral_1h_input_tokens":100000}}}}` + "\n"
+			if err := os.WriteFile(path, []byte(transcript), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cutoff := time.Date(2026, 11, 9, 18, 0, 0, 0, time.UTC)
+			mtime := cutoff.Add(-6 * time.Hour)
+			if err := os.Chtimes(path, mtime, mtime); err != nil {
+				t.Fatal(err)
+			}
+			// Reproduce the previous catalog's Fable 5 prefix fallback without
+			// adding a second full historical snapshot to the repository.
+			oldPricing := `{"id":"anthropic-bundled-2026-10-07","currency":"USD","models":{"claude-fable-5":{"input_per_million":10,"output_per_million":50,"cache_read_input_per_million":1,"cache_creation_input_per_million":12.5,"cache_creation_input_1h_per_million":20}}}`
+			oldPricingPath := filepath.Join(t.TempDir(), "pricing_snapshot.json")
+			if err := os.WriteFile(oldPricingPath, []byte(oldPricing), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			oldSource := claudecode.New(claudecode.Options{ClaudeHome: home, PricingSnapshotPath: oldPricingPath})
+			newSource := claudecode.New(claudecode.Options{ClaudeHome: home})
+			store := newTestStore(t)
+			if _, err := store.SyncSourceWithOptions(ctx, oldSource, SyncOptions{Mode: SyncModeIncremental, Cutoff: cutoff}); err != nil {
+				t.Fatalf("initial sync: %v", err)
+			}
+			const messageID = "claude_code:fable-session:fable-request"
+			assertRow := func(wantCost float64, wantStatus stats.CostStatus) {
+				t.Helper()
+				var cost float64
+				var status string
+				if err := store.db.QueryRowContext(ctx, `SELECT cost, cost_status FROM message_index WHERE source_id = ? AND message_id = ?`, source.SourceClaudeCode, messageID).Scan(&cost, &status); err != nil {
+					t.Fatalf("read historical Fable 5.2 request: %v", err)
+				}
+				if math.Abs(cost-wantCost) > 1e-9 || status != string(wantStatus) {
+					t.Fatalf("historical Fable 5.2 request = cost %v, status %q; want %v, %q", cost, status, wantCost, wantStatus)
+				}
+			}
+			assertRow(6.5, stats.CostApproximate)
+
+			need, err := store.NeedsSync(ctx, newSource)
+			if err != nil || !need.Needed || !need.PricingChange {
+				t.Fatalf("NeedsSync after Fable 5.2 refresh = %#v, %v; want pricing rebuild", need, err)
+			}
+			report, err := store.SyncSourceWithOptions(ctx, newSource, SyncOptions{
+				Mode: SyncModeIncremental, Cutoff: cutoff, ReadTriggered: readTriggered,
+			})
+			if err != nil {
+				t.Fatalf("repricing sync: %v", err)
+			}
+			if report.Mode != SyncModeRebuild || !report.Since.IsZero() || report.Messages != 1 {
+				t.Fatalf("repricing report = %#v, want historical rebuild with one message", report)
+			}
+			assertRow(4.9, stats.CostComputed)
+			need, err = store.NeedsSync(ctx, newSource)
+			if err != nil || need.PricingChange {
+				t.Fatalf("NeedsSync after Fable 5.2 rebuild = %#v, %v; want new pricing identity recorded", need, err)
+			}
+		})
+	}
 }
 
 func TestPricingRebuildFailureKeepsOldIdentityForRetry(t *testing.T) {

@@ -343,6 +343,74 @@ func TestClaudePricingAliasesResolutionCatalogAndReportedPrecedence(t *testing.T
 	}
 }
 
+func TestBundledFable52CatalogAndAliasesPreservePrecedence(t *testing.T) {
+	ctx := testContext(t)
+	native := New(Options{ClaudeHome: t.TempDir()})
+	resolution := native.ResolvePricing(ctx, "anthropic", "claude-fable-5-2")
+	if resolution.Kind != source.PricingResolutionExact || resolution.TargetModelID != "claude-fable-5-2" {
+		t.Fatalf("Fable 5.2 native resolution = %#v, want exact model", resolution)
+	}
+	wantRate := source.PricingRateSummary{
+		InputPerMillion: 8.0, CachedInputPerMillion: 0.2, CacheWritePerMillion: 10.0, OutputPerMillion: 40.0,
+	}
+	if resolution.Rate == nil || *resolution.Rate != wantRate {
+		t.Fatalf("Fable 5.2 resolved rate = %#v, want %#v", resolution.Rate, wantRate)
+	}
+	for _, catalog := range []source.PricingCatalog{native.PricingCatalog(ctx), native.BasePricingCatalog(ctx)} {
+		if catalog.SnapshotID != "anthropic-bundled-2026-11-09" || catalog.Currency != "USD" {
+			t.Fatalf("Fable 5.2 catalog metadata = %#v", catalog)
+		}
+		found := false
+		for _, model := range catalog.Models {
+			if model.ModelID == "claude-fable-5-2" {
+				found = true
+				if model.Rate != wantRate {
+					t.Errorf("Fable 5.2 catalog rate = %#v, want %#v", model.Rate, wantRate)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("Fable 5.2 is missing from selectable pricing catalog targets")
+		}
+	}
+
+	aliases := &fakePricingAliases{
+		aliases: map[fakeAliasKey]string{
+			{source.SourceClaudeCode, "anthropic", "custom-fable"}:     "claude-fable-5-2",
+			{source.SourceClaudeCode, "anthropic", "claude-fable-5-2"}: "claude-fable-5-1",
+		},
+		revisions: map[source.SourceID]string{source.SourceClaudeCode: "fable-52-test"},
+	}
+	src := New(Options{ClaudeHome: t.TempDir(), PricingAliases: aliases})
+	pricing := src.loadPricing(ctx)
+	for _, tt := range []struct {
+		model        string
+		wantTarget   string
+		wantOverride bool
+		wantCost     float64
+	}{
+		{model: "custom-fable", wantTarget: "claude-fable-5-2", wantCost: 48.0},
+		{model: "claude-fable-5-2", wantTarget: "claude-fable-5-1", wantOverride: true, wantCost: 60.0},
+	} {
+		t.Run(tt.model, func(t *testing.T) {
+			got := src.ResolvePricing(ctx, "anthropic", tt.model)
+			if got.Kind != source.PricingResolutionUserAlias || got.TargetModelID != tt.wantTarget || got.OverridesNative != tt.wantOverride {
+				t.Fatalf("Fable alias resolution = %#v, want target %q, override %v", got, tt.wantTarget, tt.wantOverride)
+			}
+			usage := tokenUsage{Input: 1_000_000, Output: 1_000_000}
+			result := computeCost(tt.model, "anthropic", usage, true, nil, pricing)
+			if result.Status != stats.CostComputed || !approxEqual(result.Cost, tt.wantCost) {
+				t.Fatalf("Fable alias cost = %#v, want computed cost %v", result, tt.wantCost)
+			}
+			reported := 0.123
+			result = computeCost(tt.model, "anthropic", usage, true, &reported, pricing)
+			if result.Status != stats.CostReported || result.Cost != reported || result.Provenance == nil || result.Provenance.PricingSnapshotID != "" {
+				t.Fatalf("Fable reported cost precedence changed: %#v", result)
+			}
+		})
+	}
+}
+
 func TestInvalidateDuringClaudeSnapshotLoadRetriesWithFreshAliasCapture(t *testing.T) {
 	for _, bounded := range []bool{false, true} {
 		name := "full"

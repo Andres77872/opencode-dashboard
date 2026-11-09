@@ -171,10 +171,11 @@ Sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), [
 
 ### Claude model pricing catalog
 
-The `anthropic-bundled-2026-10-07` catalog adds Claude Haiku 5.5, released October 7, 2026 as `claude-haiku-5-5`. It also fixes the Claude Sonnet 5.5 cache-read price. It retains Claude Fable 5.1, Claude Opus 5.5, Claude Sonnet 5.5, and the limited-availability Claude Mythos 5 and 5.1 from earlier refreshes. Prices are USD per million tokens:
+The `anthropic-bundled-2026-11-09` catalog adds Claude Fable 5.2, released November 9, 2026 as `claude-fable-5-2`. It retains Claude Fable 5.1, Claude Opus 5.5, Claude Sonnet 5.5, Claude Haiku 5.5, and the limited-availability Claude Mythos 5 and 5.1 from earlier refreshes. Prices are USD per million tokens:
 
 | Model | Input | 5m cache writes | 1h cache writes | Cache reads | Output |
 | --- | ---: | ---: | ---: | ---: | ---: |
+| `claude-fable-5-2` | $8 | $10 | $16 | $0.20 | $40 |
 | `claude-fable-5-1` / `claude-mythos-5-1` | $10 | $12.50 | $20 | $0.25 | $50 |
 | `claude-fable-5` / `claude-mythos-5` | $10 | $12.50 | $20 | $1 | $50 |
 | `claude-opus-5-5` | $4 | $5 | $8 | $0.20 | $20 |
@@ -182,11 +183,13 @@ The `anthropic-bundled-2026-10-07` catalog adds Claude Haiku 5.5, released Octob
 | `claude-haiku-5-5`, prompts up to 100K tokens | $0.10 | $0.125 | $0.20 | $0.01 | $0.50 |
 | `claude-haiku-5-5`, prompts over 100K tokens | $0.50 | $0.625 | $1 | $0.05 | $2.50 |
 
-Fable 5.1 and Mythos 5.1 bill cache reads at 0.025x input. Opus 5.5 and Sonnet 5.5 bill them at 0.05x, and every other Claude model uses 0.1x. The previous catalog charged Sonnet 5.5 cache reads at Sonnet 5's $0.20, so Sonnet 5.5 history reprices lower after upgrading. Claude Sonnet 5's $2/$10 launch price is now its standard price; the increase Anthropic had scheduled for September 1, 2026 was cancelled.
+Fable 5.2, Fable 5.1, and Mythos 5.1 bill cache reads at 0.025x input. Opus 5.5 and Sonnet 5.5 bill them at 0.05x, and every other Claude model in this catalog uses 0.1x. The October 7 refresh corrected Sonnet 5.5 cache reads from Sonnet 5's $0.20 to $0.10, and that correction is retained. Claude Sonnet 5's $2/$10 launch price is now its standard price; the increase Anthropic had scheduled for September 1, 2026 was cancelled.
 
-Haiku 5.5 is the only current Claude model priced by prompt length. A request's prompt is its fresh input plus cache reads and cache writes. Output does not count toward it. When the prompt exceeds 100,000 tokens, every token in the request, output included, bills at the long-context rates, 5x the short-prompt rates. Each Claude Code transcript entry is one API request, so the threshold applies per request. Before this refresh `claude-haiku-5-5` matched no catalog row and stayed `missing`. A pricing alias from another source that borrows Haiku 5.5 gets only the short-prompt rates, because shared rate summaries carry no threshold. Every other current Claude model bills its 1M context window at standard rates.
+Before this refresh, `claude-fable-5-2` fell back to Fable 5's higher prices ($10 input, $50 output, and $1 cache reads) and was marked `approximate`. It now resolves exactly and is marked `computed`. The new snapshot ID triggers historical repricing, so existing Fable 5.2 estimates decrease after the cache rebuilds. Fable 5 and Fable 5.1 rates are unchanged.
 
-Estimates use global-routing first-party rates. The 1.1x US-only `inference_geo` multiplier, Opus fast mode ($8/$40 on Opus 5.5), and Batch discounts are not applied. Sources: [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing), [Claude Sonnet 5.5 model details](https://platform.claude.com/docs/en/models/sonnet-5-5/overview), and [Claude Haiku 5.5 model details](https://platform.claude.com/docs/en/models/haiku-5-5/overview).
+Haiku 5.5 is the only current Claude model priced by prompt length. A request's prompt is its fresh input plus cache reads and cache writes. Output does not count toward it. When the prompt exceeds 100,000 tokens, every token in the request, output included, bills at the long-context rates, 5x the short-prompt rates. Each Claude Code transcript entry is one API request, so the threshold applies per request. Before its October 7 addition, `claude-haiku-5-5` matched no catalog row and stayed `missing`. A pricing alias from another source that borrows Haiku 5.5 gets only the short-prompt rates, because shared rate summaries carry no threshold. Every other current Claude model bills its 1M context window at standard rates.
+
+Estimates use global-routing first-party rates. The 1.1x US-only `inference_geo` multiplier, Fast mode ($16/$80 on Fable 5.2 and $8/$40 on Opus 5.5), and Batch discounts are not applied. Sources: [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing), [Claude Fable 5.2 model details](https://platform.claude.com/docs/en/models/fable-5-2/overview), [Claude Sonnet 5.5 model details](https://platform.claude.com/docs/en/models/sonnet-5-5/overview), and [Claude Haiku 5.5 model details](https://platform.claude.com/docs/en/models/haiku-5-5/overview).
 
 ### Kimi Code wire accounting
 
@@ -261,7 +264,7 @@ Computed and estimated costs come from pinned, dated catalogs compiled into the 
 
 | Source | Snapshot ID | Retrieved | Models |
 |--------|-------------|-----------|--------|
-| Claude Code | `anthropic-bundled-2026-10-07` | 2026-10-07 | 27 |
+| Claude Code | `anthropic-bundled-2026-11-09` | 2026-11-09 | 28 |
 | Codex | `openai-codex-api-pricing-2026-10-26` | 2026-10-26 | 20 |
 | Kimi Code | `kimi-api-pricing-2026-07-16` | 2026-07-16 | 5 |
 | Qwen Code | `qwen-modelstudio-pricing-2026-08-02` | 2026-08-02 | 6 |

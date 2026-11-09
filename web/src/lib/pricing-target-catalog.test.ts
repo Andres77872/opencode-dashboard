@@ -75,6 +75,34 @@ for (const [modelId, query, want] of [
   })
 }
 
+test('the shipped Fable 5.2 catalog is searchable and selectable with all four rate columns', () => {
+  const snapshot = JSON.parse(readFileSync(new URL('../../../internal/source/claudecode/pricing_snapshot.json', import.meta.url), 'utf8'))
+  const modelId = 'claude-fable-5-2'
+  const rate = snapshot.models[modelId]
+  const groups = buildPricingTargetGroups([{
+    source_id: 'claude_code',
+    source_label: 'Claude Code',
+    currency: snapshot.currency,
+    models: [{
+      model_id: modelId,
+      targetable: true,
+      rate: {
+        input_per_million: rate.input_per_million,
+        cached_input_per_million: rate.cache_read_input_per_million,
+        cache_write_per_million: rate.cache_creation_input_per_million,
+        output_per_million: rate.output_per_million,
+      },
+    }],
+  }], 'claude_code')
+  const matches = filterPricingTargetGroups(groups, 'FABLE-5-2')
+  const target = findPricingTarget(matches, { source_id: 'claude_code', model_id: modelId })
+
+  assert.ok(target)
+  assert.deepEqual(formatPricingTargetRates(target.rate, target.currency), {
+    input: '$8.00', cached: '$0.20', cacheWrite: '$10.00', output: '$40.00',
+  })
+})
+
 test('lists the aliasing source first, then other catalogs by label', () => {
   const groups = buildPricingTargetGroups(CATALOGS, 'claude_code')
 
