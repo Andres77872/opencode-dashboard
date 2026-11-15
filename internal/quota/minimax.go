@@ -34,6 +34,15 @@ type minimaxProvider struct {
 	lastGood  *ProviderQuota
 }
 
+// configured makes MiniMax an opt-in monitor: with no key in the environment
+// or opencode's auth store, the user has no MiniMax plan to watch, so the card
+// is left out instead of showing "no MiniMax API key found". An auth store
+// that cannot be read or parsed still counts, so that error stays visible.
+func (p *minimaxProvider) configured() bool {
+	key, err := resolveMiniMaxKey(p.authPath)
+	return err != nil || key != ""
+}
+
 func (p *minimaxProvider) quota(ctx context.Context) ProviderQuota {
 	p.mu.Lock()
 	defer p.mu.Unlock()

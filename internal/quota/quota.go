@@ -101,6 +101,13 @@ type quotaTimeoutProvider interface {
 	quotaTimeout() time.Duration
 }
 
+// optInProvider is implemented by providers the user opts into by configuring
+// them, rather than by enabling a data source. Quotas leaves an unconfigured
+// one out of the response entirely instead of reporting it as unavailable.
+type optInProvider interface {
+	configured() bool
+}
+
 // Service aggregates quota from all providers.
 type Service struct {
 	providers      []provider
@@ -134,7 +141,8 @@ func NewService(opts Options) *Service {
 }
 
 // Quotas queries all providers concurrently. Providers never fail the whole
-// response: errors surface as StatusUnavailable entries.
+// response: errors surface as StatusUnavailable entries. Opt-in providers that
+// are not configured are omitted.
 func (s *Service) Quotas(ctx context.Context) Response {
 	providers := make([]provider, 0, len(s.providers))
 	ids := []source.SourceID{source.SourceCodex, source.SourceClaudeCode, source.SourceKimiCode}
@@ -143,6 +151,9 @@ func (s *Service) Quotas(ctx context.Context) Response {
 			if i != 1 || !s.claudeOpenCode || !s.sourceEnabled(source.SourceOpenCode) {
 				continue
 			}
+		}
+		if optIn, ok := p.(optInProvider); ok && !optIn.configured() {
+			continue
 		}
 		providers = append(providers, p)
 	}

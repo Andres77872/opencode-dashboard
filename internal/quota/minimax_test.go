@@ -223,6 +223,43 @@ func TestResolveMiniMaxKey(t *testing.T) {
 	})
 }
 
+func TestMiniMaxConfiguredOnlyWithKey(t *testing.T) {
+	writeAuth := func(t *testing.T, content string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "auth.json")
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write auth fixture: %v", err)
+		}
+		return path
+	}
+	tests := []struct {
+		name     string
+		env      string
+		authPath func(t *testing.T) string
+		want     bool
+	}{
+		{"env key", "env-key", func(t *testing.T) string { return filepath.Join(t.TempDir(), "absent.json") }, true},
+		{"auth store key", "", func(t *testing.T) string {
+			return writeAuth(t, `{"minimax-coding-plan":{"type":"api","key":"store-key"}}`)
+		}, true},
+		{"no auth store", "", func(t *testing.T) string { return filepath.Join(t.TempDir(), "absent.json") }, false},
+		{"auth store without minimax", "", func(t *testing.T) string {
+			return writeAuth(t, `{"openai":{"type":"api","key":"other"}}`)
+		}, false},
+		// A broken auth store is an error to surface, not an opt-out.
+		{"unparseable auth store", "", func(t *testing.T) string { return writeAuth(t, `{not json`) }, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("OPENCODE_DASHBOARD_MINIMAX_API_KEY", tt.env)
+			p := &minimaxProvider{authPath: tt.authPath(t)}
+			if got := p.configured(); got != tt.want {
+				t.Errorf("configured() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMiniMaxResponseFixtureParses(t *testing.T) {
 	var remains minimaxRemainsResponse
 	if err := json.Unmarshal([]byte(minimaxRemainsFixture), &remains); err != nil {

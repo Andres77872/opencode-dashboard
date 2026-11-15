@@ -144,9 +144,54 @@ func TestNewServiceBuildsAllProviders(t *testing.T) {
 		KimiHome:           t.TempDir(),
 		MiniMaxAuthPath:    filepath.Join(t.TempDir(), "absent.json"),
 	})
+	if len(svc.providers) != 4 {
+		t.Fatalf("built providers = %d, want 4", len(svc.providers))
+	}
 	got := svc.Quotas(context.Background())
-	if len(got.Providers) != 4 {
-		t.Fatalf("providers = %d, want 4", len(got.Providers))
+	if len(got.Providers) != 3 {
+		t.Fatalf("providers = %d, want 3 (MiniMax omitted without a key)", len(got.Providers))
+	}
+	for _, q := range got.Providers {
+		if q.Provider == ProviderMiniMax {
+			t.Fatalf("MiniMax reported without a key: %+v", q)
+		}
+	}
+}
+
+type optInQuota struct {
+	isConfigured bool
+	calls        int
+}
+
+func (p *optInQuota) configured() bool { return p.isConfigured }
+func (p *optInQuota) quota(context.Context) ProviderQuota {
+	p.calls++
+	return ProviderQuota{Provider: ProviderMiniMax, Status: StatusOK}
+}
+
+func TestUnconfiguredOptInProviderIsOmitted(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configured bool
+		want       int
+	}{
+		{"configured", true, 2},
+		{"not configured", false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			optIn := &optInQuota{isConfigured: tc.configured}
+			svc := &Service{now: time.Now, timeout: time.Second, providers: []provider{
+				&fakeProvider{result: ProviderQuota{Provider: ProviderCodex, Status: StatusOK}},
+				optIn,
+			}}
+			got := svc.Quotas(context.Background())
+			if len(got.Providers) != tc.want {
+				t.Fatalf("providers = %d, want %d", len(got.Providers), tc.want)
+			}
+			if !tc.configured && optIn.calls != 0 {
+				t.Fatal("unconfigured opt-in provider was queried")
+			}
+		})
 	}
 }
 
