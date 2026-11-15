@@ -6,7 +6,7 @@ import (
 	"opencode-dashboard/internal/store"
 )
 
-const overviewQuery = `
+var overviewQuery = `
 	SELECT
 		COUNT(DISTINCT session_id),
 		COUNT(*),
@@ -18,7 +18,7 @@ const overviewQuery = `
 		COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.cache.read'), 0) ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN COALESCE(json_extract(data, '$.tokens.cache.write'), 0) ELSE 0 END), 0),
 		COUNT(DISTINCT DATE(time_created / 1000, 'unixepoch'))
-	FROM message
+	FROM ` + V1MessagesSQL + `
 	WHERE time_created >= ? AND time_created < ?
 `
 

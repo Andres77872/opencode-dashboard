@@ -34,16 +34,20 @@ func isV2(s *store.Store) bool {
 	return s.Version() == store.SchemaV2
 }
 
-// v2Message returns the predicate selecting session_message rows (alias m)
-// that the dashboard counts as messages.
-func v2Message(m string) string {
+// v2TranscriptMessage selects meaningful transcript items before accounting
+// ownership is applied (also used to distinguish an empty session).
+func v2TranscriptMessage(m string) string {
 	return `(` + m + `.type IN ('user', 'assistant') OR (` + m + `.type = 'compaction' AND json_extract(` + m + `.data, '$.status') IS NOT 'running'))`
+}
+
+func v2Message(m string) string {
+	return `(` + v2TranscriptMessage(m) + ` AND ` + v2Accounted(m) + `)`
 }
 
 // v2Request returns the predicate selecting session_message rows (alias m)
 // that are outbound model requests.
 func v2Request(m string) string {
-	return `(` + m + `.type = 'assistant' OR (` + m + `.type = 'compaction' AND json_extract(` + m + `.data, '$.status') IS NOT 'running'))`
+	return `((` + m + `.type = 'assistant' OR (` + m + `.type = 'compaction' AND json_extract(` + m + `.data, '$.status') IS NOT 'running')) AND ` + v2Accounted(m) + `)`
 }
 
 // v2Owned excludes rows a fork (session alias s) copied from its parent.
@@ -133,12 +137,12 @@ var overviewV2Query = `
 
 // session_message.time_created is indexed and always an integer, so MIN uses
 // the index instead of scanning (and parsing) every large row.
-const earliestActivityV2Query = `
+var earliestActivityV2Query = `
 	SELECT MIN(created_at)
 	FROM (
-		SELECT MIN(time_created) AS created_at FROM session_v2
+		SELECT MIN(time_created) AS created_at FROM ` + V2SessionsSQL + `
 		UNION ALL
-		SELECT MIN(time_created) AS created_at FROM session_message
+		SELECT MIN(time_created) AS created_at FROM ` + V2MessagesSQL + `
 	)
 	WHERE created_at IS NOT NULL
 `
@@ -146,7 +150,7 @@ const earliestActivityV2Query = `
 func sessionCountsByBucketV2Query(bucket string) string {
 	return `
 		SELECT ` + bucket + ` AS bucket, COUNT(*) AS count
-		FROM session_v2
+		FROM ` + V2SessionsSQL + `
 		WHERE time_created >= ? AND time_created < ?
 		GROUP BY bucket
 	`
@@ -283,7 +287,7 @@ var projectsV2Query = `
 		COALESCE(SUM(u.cache_read), 0) AS total_cache_read,
 		COALESCE(SUM(u.cache_write), 0) AS total_cache_write
 	FROM project p
-	LEFT JOIN session_v2 s ON s.project_id = p.id
+	LEFT JOIN ` + V2SessionsSQL + ` s ON s.project_id = p.id
 	LEFT JOIN session_usage u ON u.session_id = s.id
 	GROUP BY p.id
 	ORDER BY total_cost DESC
@@ -299,7 +303,7 @@ var projectAggregateV2Query = `
 		COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.reasoning') AS INTEGER)), 0) AS reasoning_tokens,
 		COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.cache.read') AS INTEGER)), 0) AS cache_read,
 		COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.cache.write') AS INTEGER)), 0) AS cache_write
-	FROM session_v2 s
+	FROM ` + V2SessionsSQL + ` s
 	LEFT JOIN session_message m ON m.session_id = s.id
 		AND ` + v2Request("m") + `
 		AND ` + v2Owned("m", "s") + `
@@ -307,7 +311,7 @@ var projectAggregateV2Query = `
 	WHERE s.project_id = ?
 `
 
-const projectSessionCountV2Query = `SELECT COUNT(*) FROM session_v2 WHERE project_id = ?`
+var projectSessionCountV2Query = `SELECT COUNT(*) FROM ` + V2SessionsSQL + ` WHERE project_id = ?`
 
 var projectRecentSessionsV2Query = `
 	SELECT
@@ -320,16 +324,16 @@ var projectRecentSessionsV2Query = `
 		s.time_updated,
 		(SELECT COUNT(*) FROM session_message m2 WHERE m2.session_id = s.id AND ` + v2Message("m2") + ` AND ` + v2Owned("m2", "s") + `) AS message_count,
 		COALESCE((SELECT SUM(CAST(json_extract(m3.data, '$.cost') AS REAL)) FROM session_message m3 WHERE m3.session_id = s.id AND ` + v2Request("m3") + ` AND ` + v2Owned("m3", "s") + `), 0) AS total_cost
-	FROM session_v2 s
+	FROM ` + V2SessionsSQL + ` s
 	LEFT JOIN project p ON p.id = s.project_id
 	WHERE s.project_id = ?
 	ORDER BY s.time_created DESC
 	LIMIT ? OFFSET ?
 `
 
-const sessionsCountV2Query = `
+var sessionsCountV2Query = `
 	SELECT COUNT(*)
-	FROM session_v2 s
+	FROM ` + V2SessionsSQL + ` s
 	LEFT JOIN project p ON p.id = s.project_id
 	WHERE (? = '' OR LOWER(COALESCE(s.title, '')) LIKE LOWER(?) OR LOWER(COALESCE(p.name, p.worktree, '')) LIKE LOWER(?))
 `
@@ -345,7 +349,7 @@ var sessionsListV2Query = `
 		s.time_updated,
 		COUNT(m.id) AS message_count,
 		COALESCE(SUM(COALESCE(json_extract(m.data, '$.cost'), 0)), 0) AS total_cost
-	FROM session_v2 s
+	FROM ` + V2SessionsSQL + ` s
 	LEFT JOIN project p ON p.id = s.project_id
 	LEFT JOIN session_message m ON m.session_id = s.id
 		AND ` + v2Request("m") + `
@@ -364,7 +368,7 @@ var sessionActiveV2Clause = ` AND EXISTS (
 			AND m2.time_created >= ? AND m2.time_created < ?
 	)`
 
-const sessionMetaV2Query = `
+var sessionMetaV2Query = `
 	SELECT
 		s.id,
 		s.title,
@@ -374,7 +378,7 @@ const sessionMetaV2Query = `
 		s.directory,
 		s.time_created,
 		s.time_updated
-	FROM session_v2 s
+	FROM ` + V2SessionsSQL + ` s
 	LEFT JOIN project p ON p.id = s.project_id
 	WHERE s.id = ?
 `

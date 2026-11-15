@@ -44,7 +44,7 @@ func Projects(ctx context.Context, s *store.Store, pq PeriodQuery) (ProjectStats
 			COALESCE(SUM(m.cache_read), 0) AS total_cache_read,
 			COALESCE(SUM(m.cache_write), 0) AS total_cache_write
 		FROM project p
-		LEFT JOIN session s ON s.project_id = p.id
+		LEFT JOIN ` + V1SessionsSQL + ` s ON s.project_id = p.id
 		LEFT JOIN (
 			SELECT 
 				session_id,
@@ -55,7 +55,7 @@ func Projects(ctx context.Context, s *store.Store, pq PeriodQuery) (ProjectStats
 				COALESCE(JSON_EXTRACT(data, '$.tokens.reasoning'), 0) AS reasoning_tokens,
 				COALESCE(JSON_EXTRACT(data, '$.tokens.cache.read'), 0) AS cache_read,
 				COALESCE(JSON_EXTRACT(data, '$.tokens.cache.write'), 0) AS cache_write
-			FROM message
+			FROM ` + V1MessagesSQL + `
 			WHERE JSON_EXTRACT(data, '$.role') = 'assistant'
 				AND time_created >= ? AND time_created < ?
 		) m ON m.session_id = s.id
@@ -197,8 +197,8 @@ func ProjectByID(ctx context.Context, s *store.Store, id string, pq PeriodQuery,
 			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.reasoning') AS INTEGER)), 0) AS reasoning_tokens,
 			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.cache.read') AS INTEGER)), 0) AS cache_read,
 			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.cache.write') AS INTEGER)), 0) AS cache_write
-		FROM session s
-		LEFT JOIN message m ON m.session_id = s.id
+		FROM ` + V1SessionsSQL + ` s
+		LEFT JOIN ` + V1MessagesSQL + ` m ON m.session_id = s.id
 			AND JSON_EXTRACT(m.data, '$.role') = 'assistant'
 			AND m.time_created >= ? AND m.time_created < ?
 		WHERE s.project_id = ?
@@ -237,7 +237,7 @@ func ProjectByID(ctx context.Context, s *store.Store, id string, pq PeriodQuery,
 
 	// Total session count for pagination
 	var totalSessions int64
-	countQuery := "SELECT COUNT(*) FROM session WHERE project_id = ?"
+	countQuery := `SELECT COUNT(*) FROM ` + V1SessionsSQL + ` WHERE project_id = ?`
 	if v2 {
 		countQuery = projectSessionCountV2Query
 	}
@@ -260,9 +260,9 @@ func ProjectByID(ctx context.Context, s *store.Store, id string, pq PeriodQuery,
 			p.worktree,
 			s.time_created,
 			s.time_updated,
-			(SELECT COUNT(*) FROM message m2 WHERE m2.session_id = s.id) AS message_count,
-			COALESCE((SELECT SUM(CAST(JSON_EXTRACT(m3.data, '$.cost') AS REAL)) FROM message m3 WHERE m3.session_id = s.id AND JSON_EXTRACT(m3.data, '$.role') = 'assistant'), 0) AS total_cost
-		FROM session s
+			(SELECT COUNT(*) FROM ` + V1MessagesSQL + ` m2 WHERE m2.session_id = s.id) AS message_count,
+			COALESCE((SELECT SUM(CAST(JSON_EXTRACT(m3.data, '$.cost') AS REAL)) FROM ` + V1MessagesSQL + ` m3 WHERE m3.session_id = s.id AND JSON_EXTRACT(m3.data, '$.role') = 'assistant'), 0) AS total_cost
+		FROM ` + V1SessionsSQL + ` s
 		LEFT JOIN project p ON p.id = s.project_id
 		WHERE s.project_id = ?
 		ORDER BY s.time_created DESC

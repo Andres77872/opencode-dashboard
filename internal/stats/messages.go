@@ -53,7 +53,7 @@ func MessagesByPeriod(ctx context.Context, s *store.Store, pq PeriodQuery, page,
 	var total int64
 	countQuery := `
 		SELECT COUNT(*)
-		FROM message m
+		FROM ` + V1MessagesSQL + ` m
 		WHERE m.time_created >= ? AND m.time_created < ?
 	`
 	if v2 {
@@ -84,7 +84,7 @@ func MessagesByPeriod(ctx context.Context, s *store.Store, pq PeriodQuery, page,
 			COALESCE(JSON_EXTRACT(m.data, '$.tokens.cache.write'), 0) AS cache_write,
 			JSON_EXTRACT(m.data, '$.modelID') AS model_id,
 			JSON_EXTRACT(m.data, '$.providerID') AS provider_id
-		FROM message m
+		FROM ` + V1MessagesSQL + ` m
 		LEFT JOIN session s ON s.id = m.session_id
 		WHERE m.time_created >= ? AND m.time_created < ?
 		ORDER BY ` + sort.OrderByClause() + `
@@ -223,7 +223,7 @@ func MessageByID(ctx context.Context, s *store.Store, id string) (*MessageDetail
 			COALESCE(JSON_EXTRACT(m.data, '$.tokens.cache.write'), 0) AS cache_write,
 			JSON_EXTRACT(m.data, '$.modelID') AS model_id,
 			JSON_EXTRACT(m.data, '$.providerID') AS provider_id
-		FROM message m
+		FROM ` + V1MessagesSQL + ` m
 		LEFT JOIN session s ON s.id = m.session_id
 		WHERE m.id = ?
 	`
@@ -318,7 +318,7 @@ func MessageByID(ctx context.Context, s *store.Store, id string) (*MessageDetail
 		SELECT 
 			JSON_EXTRACT(data, '$.type') AS type,
 			JSON_EXTRACT(data, '$.text') AS text
-		FROM part
+		FROM ` + V1PartsSQL + `
 		WHERE message_id = ?
 			AND JSON_EXTRACT(data, '$.type') IN ('text', 'reasoning')
 		ORDER BY id
@@ -366,7 +366,7 @@ func MessageByID(ctx context.Context, s *store.Store, id string) (*MessageDetail
 	// Query tool parts from part.data
 	toolQuery := `
 		SELECT data
-		FROM part
+		FROM ` + V1PartsSQL + `
 		WHERE message_id = ?
 			AND JSON_EXTRACT(data, '$.type') = 'tool'
 		ORDER BY id

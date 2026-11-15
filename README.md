@@ -41,7 +41,7 @@ Each source is detected automatically and exposed with its own capabilities, dia
 
 The web **Config → Data sources** card controls which sources participate. All six known sources are listed, including unavailable ones. An absent preference means enabled; saved switches apply to the web dashboard and to TUI startup/refresh and survive usage-cache rebuilds in `dashboard-settings.sqlite`.
 
-Disabling removes a source from selection, combined totals, assistant analytics tools, and sync scheduling. Its associated Codex, Claude Code, or Kimi Code quota collector also stops. Cached history remains on disk, while MiniMax quota and assistant provider connections remain independent. Re-enabling rechecks availability and schedules incremental catch-up. All sources may be off; Config remains accessible. An explicit disabled `--source` fails with a clear error; implicit startup selects an enabled, available source.
+Disabling removes a source from selection, combined totals, assistant analytics tools, and sync scheduling. Its associated Codex, Claude Code, or Kimi Code quota collector also stops. Claude quota remains available through an enabled OpenCode source with Claude Agent rate-limit observations, even when Claude Code analytics is disabled. Cached history remains on disk, while MiniMax quota and assistant provider connections remain independent. Re-enabling rechecks availability and schedules incremental catch-up. All sources may be off; Config remains accessible. An explicit disabled `--source` fails with a clear error; implicit startup selects an enabled, available source.
 
 `GET /api/v1/sources` includes `enabled` on every entry and a persistent `sources_revision`. `PUT /api/v1/sources/<id>` accepts `{"enabled":false}` or `{"enabled":true}` and returns the updated source list. Explicit queries against disabled sources return HTTP 409. Source-dependent API responses are not stored in the browser HTTP cache.
 
@@ -69,6 +69,8 @@ Both OpenCode storage layouts are supported, and the dashboard picks one automat
 - A forked session copies its parent's history into itself. Those copies are excluded, as in OpenCode's own usage statistics, so history is not counted twice.
 - A step that failed or was aborted before usage was recorded shows as *usage unavailable* rather than as zero.
 - Tool names follow what OpenCode recorded. Imported 1.x history keeps names like `bash` and `task`; 2.x renamed them to `shell` and `subagent`.
+
+OpenCode's `claude-agent` provider runs Claude Code, whose transcripts already record its usage. The dashboard counts that consumption only in the **Claude Code** source: Claude Agent requests, attributable prompts, tools, and compactions are excluded from OpenCode analytics and its cache. Other providers in the same conversation remain included, including Claude models accessed through the Anthropic API or OpenRouter. The dashboard rebuilds older aggregate caches automatically to remove previously counted copies; OpenCode's database and configuration remain read-only.
 
 When OpenCode 2 upgrades a 1.x database in place, it keeps the 1.x tables as a frozen snapshot and copies their history into the 2.x tables. That copy runs in the background the first time an OpenCode 2 server starts.
 
@@ -330,7 +332,7 @@ Besides historical usage, the dashboard shows the **remaining subscription quota
 | Provider | Setup | How the data is obtained |
 |----------|-------|--------------------------|
 | Codex | automatic | The Codex CLI records `rate_limits` snapshots in its own rollout files under `~/.codex/sessions`; the dashboard reads the newest one. No network, no credentials. |
-| Claude Code | one command (below) | Claude Code's [documented statusline integration](https://code.claude.com/docs/en/statusline) pipes JSON including `rate_limits` to a configured statusline command. Pro/Max plans only. |
+| Claude Code / Claude Agent | automatic for OpenCode's `claude-agent`; optional statusline command for standalone Claude Code | Reads Claude Code's original `native.rateLimit` observations saved in OpenCode, or the snapshot from Claude Code's [documented statusline integration](https://code.claude.com/docs/en/statusline). Displays one account quota using the newest observation, without summing percentages or mixing older windows. No OpenCode configuration changes are needed. |
 | Kimi Code | automatic after `kimi login` | The same managed `/usages` surface used by Kimi Code's official [`/usage` command](https://www.kimi.com/code/docs/en/kimi-code-cli/reference/slash-commands.html) is called with the OAuth credential under `$KIMI_CODE_HOME/credentials/`. Short-lived access tokens are refreshed through Kimi's official OAuth flow, using Kimi Code's `oauth/<credential>.lock` protocol to avoid refresh-token races with a running CLI. |
 | MiniMax | API key | MiniMax's documented `token_plan/remains` endpoint, called with the key from `OPENCODE_DASHBOARD_MINIMAX_API_KEY` or, as a fallback, opencode's auth store (`~/.local/share/opencode/auth.json`, entry `minimax-coding-plan`). |
 

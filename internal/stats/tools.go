@@ -55,14 +55,14 @@ func Tools(ctx context.Context, st *store.Store, pq PeriodQuery) (ToolStats, err
 	return toolsSQL(ctx, st, startMs, endMs)
 }
 
-const toolsV1Query = `
+var toolsV1Query = `
 	SELECT
 		JSON_EXTRACT(p.data, '$.tool') AS tool_name,
 		COUNT(*) AS invocations,
 		SUM(CASE WHEN JSON_EXTRACT(p.data, '$.state.status') = 'completed' THEN 1 ELSE 0 END) AS successes,
 		SUM(CASE WHEN JSON_EXTRACT(p.data, '$.state.status') = 'error' THEN 1 ELSE 0 END) AS failures,
 		COUNT(DISTINCT p.session_id) AS sessions
-	FROM part p
+	FROM ` + V1PartsSQL + ` p
 	WHERE p.time_created >= ? AND p.time_created < ?
 		AND JSON_EXTRACT(p.data, '$.type') = 'tool'
 		AND JSON_EXTRACT(p.data, '$.tool') IS NOT NULL
@@ -112,7 +112,7 @@ func toolsSQL(ctx context.Context, st *store.Store, startMs, endMs int64) (ToolS
 func toolsLegacy(ctx context.Context, st *store.Store, startMs, endMs int64) (ToolStats, error) {
 	db := st.DB()
 
-	query := `SELECT session_id, data FROM part WHERE time_created >= ? AND time_created < ?`
+	query := `SELECT session_id, data FROM ` + V1PartsSQL + ` WHERE time_created >= ? AND time_created < ?`
 	rows, err := db.QueryContext(ctx, query, startMs, endMs)
 	if err != nil {
 		return ToolStats{}, fmt.Errorf("failed to query parts: %w", err)

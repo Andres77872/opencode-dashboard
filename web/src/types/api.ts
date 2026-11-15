@@ -698,6 +698,8 @@ export interface QuotaExtraUsage {
 
 export interface ProviderQuota {
   provider: QuotaProviderID
+  source_id?: SourceID
+  source_provider_id?: string
   label: string
   plan?: string
   windows?: QuotaWindow[]

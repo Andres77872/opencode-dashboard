@@ -45,7 +45,9 @@ const (
 	// reasoning tokens at the output rate, and every source's assistant rows
 	// carry a derived usage status so unknown usage stays distinct from a
 	// measured zero across the cache round trip.
-	dataVersion            = 9
+	// v10: Claude Agent usage belongs exclusively to the Claude Code source;
+	// discard previously consolidated OpenCode copies, including old rollups.
+	dataVersion            = 10
 	busyTimeout            = 5000 * time.Millisecond
 	DefaultSyncSafetyDelay = 6 * time.Hour
 	// collectCallTimeout bounds one bulk snapshot or one generic pagination

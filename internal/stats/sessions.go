@@ -58,7 +58,7 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 	// Get total count first
 	countQuery := `
 		SELECT COUNT(*)
-		FROM session s
+		FROM ` + V1SessionsSQL + ` s
 		LEFT JOIN project p ON p.id = s.project_id
 		WHERE (? = '' OR LOWER(COALESCE(s.title, '')) LIKE LOWER(?) OR LOWER(COALESCE(p.name, p.worktree, '')) LIKE LOWER(?))
 	`
@@ -77,7 +77,7 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 			countQuery += sessionActiveV2Clause
 		} else {
 			countQuery += ` AND EXISTS (
-			SELECT 1 FROM message m
+			SELECT 1 FROM ` + V1MessagesSQL + ` m
 			WHERE m.session_id = s.id
 				AND m.time_created >= ? AND m.time_created < ?
 		)`
@@ -107,14 +107,14 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 			s.time_updated,
 			COUNT(m.id) AS message_count,
 			COALESCE(SUM(m.cost), 0) AS total_cost
-		FROM session s
+		FROM ` + V1SessionsSQL + ` s
 		LEFT JOIN project p ON p.id = s.project_id
 		LEFT JOIN (
 			SELECT 
 				session_id,
 				id,
 				COALESCE(JSON_EXTRACT(data, '$.cost'), 0) AS cost
-			FROM message
+			FROM ` + V1MessagesSQL + `
 			WHERE JSON_EXTRACT(data, '$.role') = 'assistant'
 				AND time_created >= ? AND time_created < ?
 		) m ON m.session_id = s.id
@@ -135,7 +135,7 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 			listQuery += sessionActiveV2Clause
 		} else {
 			listQuery += ` AND EXISTS (
-			SELECT 1 FROM message m2
+			SELECT 1 FROM ` + V1MessagesSQL + ` m2
 			WHERE m2.session_id = s.id
 				AND m2.time_created >= ? AND m2.time_created < ?
 		)`
@@ -257,7 +257,7 @@ func SessionByID(ctx context.Context, s *store.Store, id string) (*SessionDetail
 			s.directory,
 			s.time_created,
 			s.time_updated
-		FROM session s
+		FROM ` + V1SessionsSQL + ` s
 		LEFT JOIN project p ON p.id = s.project_id
 		WHERE s.id = ?
 	`
@@ -312,7 +312,7 @@ func SessionByID(ctx context.Context, s *store.Store, id string) (*SessionDetail
 			JSON_EXTRACT(m.data, '$.modelID') AS model_id,
 			JSON_EXTRACT(m.data, '$.providerID') AS provider_id,
 			JSON_EXTRACT(m.data, '$.agent') AS agent
-		FROM message m
+		FROM ` + V1MessagesSQL + ` m
 		WHERE m.session_id = ?
 		ORDER BY m.time_created ASC
 	`

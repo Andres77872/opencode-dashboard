@@ -5,6 +5,7 @@ import { useEffect, useSyncExternalStore } from 'react'
 import { getQuotas, withBypassCache } from './api'
 import type { QuotasResponse } from '../types/api'
 import { useDashboardContext } from '../components/layout/dashboard-context'
+import { quotaSourceID } from './quotas'
 
 const POLL_INTERVAL_MS = 60_000
 
@@ -88,6 +89,5 @@ export function useQuotas(): QuotasState {
   }, [refreshNonce])
 
   if (!snapshot.data) return snapshot
-  const linked = new Set(['codex', 'claude_code', 'kimi_code'])
-  return { ...snapshot, data: { ...snapshot.data, providers: snapshot.data.providers.filter(provider => !linked.has(provider.provider) || !sources.some(source => source.id === provider.provider && source.enabled === false)) } }
+  return { ...snapshot, data: { ...snapshot.data, providers: snapshot.data.providers.filter(provider => !sources.some(source => source.id === quotaSourceID(provider) && source.enabled === false)) } }
 }

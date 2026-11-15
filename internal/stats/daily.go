@@ -109,9 +109,9 @@ func queryEarliestActivityDate(ctx context.Context, db *store.Store) (time.Time,
 	query := `
 		SELECT MIN(created_at)
 		FROM (
-			SELECT MIN(CAST(time_created AS INTEGER)) AS created_at FROM session
+			SELECT MIN(CAST(time_created AS INTEGER)) AS created_at FROM ` + V1SessionsSQL + `
 			UNION ALL
-			SELECT MIN(CAST(time_created AS INTEGER)) AS created_at FROM message
+			SELECT MIN(CAST(time_created AS INTEGER)) AS created_at FROM ` + V1MessagesSQL + `
 		)
 		WHERE created_at IS NOT NULL
 	`
@@ -144,7 +144,7 @@ type dayMessageStats struct {
 func querySessionCountsByDay(ctx context.Context, db *store.Store, startMs, endMs int64) (map[string]int64, error) {
 	query := `
 		SELECT DATE(time_created / 1000, 'unixepoch') as day, COUNT(*) as count
-		FROM session
+		FROM ` + V1SessionsSQL + `
 		WHERE time_created >= ? AND time_created < ?
 		GROUP BY day
 	`
@@ -221,7 +221,7 @@ func queryMessageStatsByDay(ctx context.Context, db *store.Store, startMs, endMs
 					ELSE 0 
 				END
 			), 0) as cache_write_tokens
-		FROM message m
+		FROM ` + V1MessagesSQL + ` m
 		WHERE m.time_created >= ? AND m.time_created < ?
 		GROUP BY day
 	`
@@ -364,7 +364,7 @@ func querySessionCountsByHour(ctx context.Context, db *store.Store, startTime, e
 		SELECT 
 			STRFTIME('%Y-%m-%dT%H:00:00Z', DATETIME(time_created / 1000, 'unixepoch')) as hour,
 			COUNT(*) as count
-		FROM session
+		FROM ` + V1SessionsSQL + `
 		WHERE time_created >= ? AND time_created < ?
 		GROUP BY hour
 	`
@@ -443,7 +443,7 @@ func queryMessageStatsByHour(ctx context.Context, db *store.Store, startTime, en
 					ELSE 0 
 				END
 			), 0) as cache_write_tokens
-		FROM message m
+		FROM ` + V1MessagesSQL + ` m
 		WHERE m.time_created >= ? AND m.time_created < ?
 		GROUP BY hour
 	`
@@ -537,7 +537,7 @@ func DailyDimension(ctx context.Context, db *store.Store, dimension string, pq P
 			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.reasoning') AS INTEGER)), 0) AS reasoning_tokens,
 			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.cache.read') AS INTEGER)), 0) AS cache_read_tokens,
 			COALESCE(SUM(CAST(JSON_EXTRACT(m.data, '$.tokens.cache.write') AS INTEGER)), 0) AS cache_write_tokens
-		FROM message m
+		FROM `+V1MessagesSQL+` m
 		WHERE JSON_EXTRACT(m.data, '$.role') = 'assistant'
 			AND JSON_EXTRACT(m.data, '%[1]s') IS NOT NULL
 			AND JSON_EXTRACT(m.data, '%[1]s') != ''
@@ -563,7 +563,7 @@ func DailyDimension(ctx context.Context, db *store.Store, dimension string, pq P
 					COALESCE(CAST(JSON_EXTRACT(data, '$.tokens.reasoning') AS INTEGER), 0) AS reasoning,
 					COALESCE(CAST(JSON_EXTRACT(data, '$.tokens.cache.read') AS INTEGER), 0) AS cache_read,
 					COALESCE(CAST(JSON_EXTRACT(data, '$.tokens.cache.write') AS INTEGER), 0) AS cache_write
-				FROM message
+				FROM `+V1MessagesSQL+`
 				WHERE JSON_EXTRACT(data, '$.role') = 'assistant'
 					AND JSON_EXTRACT(data, '$.modelID') IS NOT NULL
 					AND JSON_EXTRACT(data, '$.modelID') != ''
@@ -578,7 +578,7 @@ func DailyDimension(ctx context.Context, db *store.Store, dimension string, pq P
 					SUM(COALESCE(JSON_EXTRACT(p.data, '$.tokens.cache.read'), 0)) AS cache_read,
 					SUM(COALESCE(JSON_EXTRACT(p.data, '$.tokens.cache.write'), 0)) AS cache_write
 				FROM filtered_messages m
-				CROSS JOIN part p
+				CROSS JOIN `+V1PartsSQL+` p
 				WHERE p.message_id = m.id
 					AND JSON_EXTRACT(p.data, '$.type') = 'step-finish'
 				GROUP BY p.message_id

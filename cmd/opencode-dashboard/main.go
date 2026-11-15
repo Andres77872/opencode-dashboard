@@ -290,6 +290,7 @@ func cmdWeb(args []string) error {
 	quotaService := quota.NewService(quota.Options{
 		CodexHome:          codexSelection.Path,
 		ClaudeSnapshotPath: config.DefaultClaudeRateLimitsPath(),
+		OpenCodeDBPath:     selection.Path,
 		KimiHome:           kimiSelection.Path,
 		MiniMaxAuthPath:    config.DefaultOpenCodeAuthPath(),
 		SourceEnabled:      registry.Enabled,
@@ -374,7 +375,7 @@ func cmdWeb(args []string) error {
 		if claudeStatuslineInstalled(claudeSelection.Path) {
 			fmt.Println("claude quota: statusline configured — data appears after the next Claude Code response")
 		} else {
-			fmt.Println(`claude quota: not tracking — run "opencode-dashboard claude-statusline --install" (Pro/Max)`)
+			fmt.Println(`claude quota: automatic for OpenCode Claude Agent; standalone Claude Code: "opencode-dashboard claude-statusline --install" (Pro/Max)`)
 		}
 	}
 	if web.HasAssets() {

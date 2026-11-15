@@ -8,7 +8,7 @@ import (
 	"opencode-dashboard/internal/store"
 )
 
-const modelsQuery = `
+var modelsQuery = `
 	WITH filtered_messages AS MATERIALIZED (
 		SELECT
 			id,
@@ -21,7 +21,7 @@ const modelsQuery = `
 			COALESCE(json_extract(data, '$.tokens.reasoning'), 0) AS reasoning,
 			COALESCE(json_extract(data, '$.tokens.cache.read'), 0) AS cache_read,
 			COALESCE(json_extract(data, '$.tokens.cache.write'), 0) AS cache_write
-		FROM message
+		FROM ` + V1MessagesSQL + `
 		WHERE json_extract(data, '$.role') = 'assistant'
 			AND json_extract(data, '$.modelID') IS NOT NULL
 			AND json_extract(data, '$.modelID') != ''
@@ -36,7 +36,7 @@ const modelsQuery = `
 			SUM(COALESCE(json_extract(p.data, '$.tokens.cache.read'), 0)) AS cache_read,
 			SUM(COALESCE(json_extract(p.data, '$.tokens.cache.write'), 0)) AS cache_write
 		FROM filtered_messages msg
-		CROSS JOIN part p
+		CROSS JOIN ` + V1PartsSQL + ` p
 		WHERE p.message_id = msg.id
 			AND json_extract(p.data, '$.type') = 'step-finish'
 		GROUP BY p.message_id

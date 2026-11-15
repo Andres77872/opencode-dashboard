@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { clampPercent, formatQuotaCurrency, formatResetCountdown, formatResetLabel, providerMeta, quotaTone, windowLabel } from './quotas.ts'
+import { clampPercent, formatQuotaCurrency, formatResetCountdown, formatResetLabel, providerMeta, quotaSourceID, quotaTone, windowLabel } from './quotas.ts'
 
 test('windowLabel derives from actual window duration, not the id', () => {
   assert.equal(windowLabel({ id: '5h', used_percent: 0, window_minutes: 300 }), '5h')
@@ -60,4 +60,12 @@ test('Kimi quota metadata and Extra Usage currency formatting are available', ()
   assert.equal(formatQuotaCurrency(12345, 'USD'), '$123.45')
   assert.equal(formatQuotaCurrency(5000, 'cny'), '¥50.00')
   assert.equal(formatQuotaCurrency(42, 'EUR'), '0.42 EUR')
+})
+
+test('Claude Agent keeps one Claude quota linked to OpenCode', () => {
+  const quota = { provider: 'claude_code', label: 'Claude Agent (Claude Code)', status: 'ok', source_id: 'opencode', source_provider_id: 'claude-agent' } as const
+  assert.equal(providerMeta(quota).label, 'Claude Agent (Claude Code)')
+  assert.equal(quotaSourceID(quota), 'opencode')
+  assert.equal(quotaSourceID({ provider: 'claude_code', label: 'Claude Code', status: 'ok' }), 'claude_code')
+  assert.equal(quotaSourceID({ provider: 'minimax', label: 'MiniMax', status: 'ok' }), null)
 })

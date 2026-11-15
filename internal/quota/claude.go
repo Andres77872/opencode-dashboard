@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"opencode-dashboard/internal/source"
+	"opencode-dashboard/internal/stats"
 )
 
 // ClaudeSetupHelp tells the user how to enable Claude quota collection; it is
@@ -175,13 +178,30 @@ func StatuslineText(in StatuslineInput) string {
 }
 
 type claudeProvider struct {
-	snapshotPath string
-	now          func() time.Time
+	snapshotPath   string
+	openCodeDBPath string
+	sourceEnabled  func(source.SourceID) bool
+	now            func() time.Time
 }
 
-func (p *claudeProvider) quota(_ context.Context) ProviderQuota {
+func (p *claudeProvider) quota(ctx context.Context) ProviderQuota {
 	result := ProviderQuota{Provider: ProviderClaude, Label: "Claude Code"}
 	snap, err := ReadClaudeSnapshot(p.snapshotPath)
+	if p.openCodeDBPath != "" && (p.sourceEnabled == nil || p.sourceEnabled(source.SourceOpenCode)) {
+		native, nativeErr := latestOpenCodeClaudeSnapshot(ctx, p.openCodeDBPath)
+		if nativeErr == nil && native != nil {
+			if err != nil || snap == nil || (snap.FiveHour == nil && snap.SevenDay == nil) || native.SavedAtMS >= snap.SavedAtMS {
+				snap, err = native, nil
+			}
+			// One account quota serves both clients. Associate that monitor
+			// with OpenCode while it supplies Claude Agent observations, even
+			// when a more recent statusline snapshot wins. Never add windows
+			// from different observations or refresh their timestamps on poll.
+			result.SourceID = source.SourceOpenCode
+			result.SourceProviderID = stats.ClaudeAgentProvider
+			result.Label = "Claude Agent (Claude Code)"
+		}
+	}
 	if err != nil {
 		result.Status = StatusUnavailable
 		if os.IsNotExist(err) {
@@ -190,6 +210,9 @@ func (p *claudeProvider) quota(_ context.Context) ProviderQuota {
 			result.Reason = err.Error()
 		}
 		result.Help = ClaudeSetupHelp
+		if p.openCodeDBPath != "" && (p.sourceEnabled == nil || p.sourceEnabled(source.SourceOpenCode)) {
+			result.Help = "Use Claude Agent in OpenCode to record a quota observation. For standalone Claude Code: " + ClaudeSetupHelp
+		}
 		return result
 	}
 	if w := snap.FiveHour; w != nil {

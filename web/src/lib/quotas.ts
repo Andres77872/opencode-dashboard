@@ -85,7 +85,14 @@ export function clampPercent(value: number): number {
 }
 
 export function providerMeta(quota: ProviderQuota): QuotaProviderMeta {
-  return QUOTA_PROVIDER_META[quota.provider] ?? { label: quota.label || quota.provider, color: 'var(--fg-muted)' }
+  const meta = QUOTA_PROVIDER_META[quota.provider] ?? { label: quota.provider, color: 'var(--fg-muted)' }
+  return { ...meta, label: quota.label || meta.label }
+}
+
+/** A Claude Code quota observed through OpenCode follows OpenCode's toggle. */
+export function quotaSourceID(quota: ProviderQuota): string | null {
+  if (quota.source_id) return quota.source_id
+  return ['codex', 'claude_code', 'kimi_code'].includes(quota.provider) ? quota.provider : null
 }
 
 /** Deterministic compact money formatting for Kimi Code Extra Usage. */

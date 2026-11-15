@@ -63,7 +63,7 @@ func (s *Source) ConsolidationData(ctx context.Context, pq stats.PeriodQuery) (s
 	return data, nil
 }
 
-const consolidationMessagesV1Query = `
+var consolidationMessagesV1Query = `
 	SELECT
 		m.id,
 		m.session_id,
@@ -82,7 +82,7 @@ const consolidationMessagesV1Query = `
 		COALESCE(p.worktree, ''),
 		COALESCE(s.time_created, m.time_created),
 		COALESCE(s.time_updated, m.time_created)
-	FROM message m
+	FROM ` + stats.V1MessagesSQL + ` m
 	LEFT JOIN session s ON s.id = m.session_id
 	LEFT JOIN project p ON p.id = s.project_id
 	WHERE m.time_created >= ? AND m.time_created < ?
@@ -229,7 +229,7 @@ func consolidationParts(ctx context.Context, tx *sql.Tx, startMs, endMs int64, m
 	rows, err := tx.QueryContext(ctx, `
 		WITH filtered_messages AS MATERIALIZED (
 			SELECT id
-			FROM message
+			FROM `+stats.V1MessagesSQL+`
 			WHERE time_created >= ? AND time_created < ?
 		)
 		SELECT

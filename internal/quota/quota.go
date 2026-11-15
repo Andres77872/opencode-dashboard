@@ -1,7 +1,8 @@
 // Package quota reports remaining subscription quota for the provider
 // accounts on this machine, using only official surfaces: the Codex CLI's own
 // rate-limit records in its rollout files, Claude Code's documented statusline
-// JSON (persisted by the claude-statusline subcommand), Kimi Code's managed
+// JSON (persisted by the claude-statusline subcommand) or its rate-limit events
+// saved by OpenCode's Claude Agent provider, Kimi Code's managed
 // /usages endpoint, and MiniMax's documented token_plan/remains endpoint.
 // Values are normalized to used-percent with epoch-second reset times.
 package quota
@@ -59,15 +60,19 @@ type ExtraUsage struct {
 
 // ProviderQuota is one provider's latest known quota state.
 type ProviderQuota struct {
-	Provider   string      `json:"provider"`
-	Label      string      `json:"label"`
-	Plan       string      `json:"plan,omitempty"`
-	Windows    []Window    `json:"windows,omitempty"`
-	ExtraUsage *ExtraUsage `json:"extra_usage,omitempty"`
-	AsOfMS     int64       `json:"as_of_ms,omitempty"` // when the data was observed
-	Status     Status      `json:"status"`
-	Reason     string      `json:"reason,omitempty"`
-	Help       string      `json:"help,omitempty"` // setup guidance when unavailable
+	Provider string `json:"provider"`
+	Label    string `json:"label"`
+	// SourceID identifies the enabled source exposing this account monitor;
+	// SourceProviderID identifies a nested provider such as Claude Agent.
+	SourceID         source.SourceID `json:"source_id,omitempty"`
+	SourceProviderID string          `json:"source_provider_id,omitempty"`
+	Plan             string          `json:"plan,omitempty"`
+	Windows          []Window        `json:"windows,omitempty"`
+	ExtraUsage       *ExtraUsage     `json:"extra_usage,omitempty"`
+	AsOfMS           int64           `json:"as_of_ms,omitempty"` // when the data was observed
+	Status           Status          `json:"status"`
+	Reason           string          `json:"reason,omitempty"`
+	Help             string          `json:"help,omitempty"` // setup guidance when unavailable
 }
 
 // Response is the payload of GET /api/v1/quotas.
@@ -80,6 +85,7 @@ type Response struct {
 type Options struct {
 	CodexHome          string
 	ClaudeSnapshotPath string
+	OpenCodeDBPath     string // read-only Claude Agent rate-limit snapshots
 	KimiHome           string
 	MiniMaxAuthPath    string       // opencode auth.json fallback for the API key
 	HTTPClient         *http.Client // nil => default client with providerTimeout
@@ -97,10 +103,11 @@ type quotaTimeoutProvider interface {
 
 // Service aggregates quota from all providers.
 type Service struct {
-	providers     []provider
-	now           func() time.Time
-	timeout       time.Duration
-	sourceEnabled func(source.SourceID) bool
+	providers      []provider
+	now            func() time.Time
+	timeout        time.Duration
+	sourceEnabled  func(source.SourceID) bool
+	claudeOpenCode bool
 }
 
 func NewService(opts Options) *Service {
@@ -113,12 +120,13 @@ func NewService(opts Options) *Service {
 		client = &http.Client{Timeout: providerTimeout}
 	}
 	return &Service{
-		now:           now,
-		timeout:       providerTimeout,
-		sourceEnabled: opts.SourceEnabled,
+		now:            now,
+		timeout:        providerTimeout,
+		sourceEnabled:  opts.SourceEnabled,
+		claudeOpenCode: opts.OpenCodeDBPath != "",
 		providers: []provider{
 			&codexProvider{home: opts.CodexHome, now: now},
-			&claudeProvider{snapshotPath: opts.ClaudeSnapshotPath, now: now},
+			&claudeProvider{snapshotPath: opts.ClaudeSnapshotPath, openCodeDBPath: opts.OpenCodeDBPath, sourceEnabled: opts.SourceEnabled, now: now},
 			&kimiProvider{home: opts.KimiHome, client: client, now: now},
 			&minimaxProvider{authPath: opts.MiniMaxAuthPath, client: client, now: now},
 		},
@@ -132,7 +140,9 @@ func (s *Service) Quotas(ctx context.Context) Response {
 	ids := []source.SourceID{source.SourceCodex, source.SourceClaudeCode, source.SourceKimiCode}
 	for i, p := range s.providers {
 		if i < len(ids) && s.sourceEnabled != nil && !s.sourceEnabled(ids[i]) {
-			continue
+			if i != 1 || !s.claudeOpenCode || !s.sourceEnabled(source.SourceOpenCode) {
+				continue
+			}
 		}
 		providers = append(providers, p)
 	}
@@ -152,6 +162,16 @@ func (s *Service) Quotas(ctx context.Context) Response {
 		}(i, p)
 	}
 	wg.Wait()
+	if s.sourceEnabled != nil && !s.sourceEnabled(source.SourceClaudeCode) {
+		filtered := results[:0]
+		for _, result := range results {
+			if result.Provider == ProviderClaude && result.SourceID != source.SourceOpenCode {
+				continue // no Claude Agent observation to link to enabled OpenCode
+			}
+			filtered = append(filtered, result)
+		}
+		results = filtered
+	}
 	return Response{Providers: results, FetchedAtMS: s.now().UnixMilli()}
 }
 
