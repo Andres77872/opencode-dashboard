@@ -25,6 +25,22 @@
   --glow-success: 0 0 18px rgba(61, 220, 151, 0.20);
   --inset-hairline: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 
+  /* ---- Scrim behind modal surfaces (drawers, dialogs) ---- */
+  --scrim: rgba(0, 0, 0, 0.55);
+
+  /* ---- Stacking order. One scale so overlays never guess at each other:
+     page content < chrome bars < in-flow popovers < assistant < modals <
+     anything portalled to <body> (which must clear every modal). ---- */
+  --z-filterbar: 30;
+  --z-topbar: 40;
+  --z-popover: 60;
+  --z-tooltip: 70;
+  --z-assistant: 75;
+  --z-modal: 80;
+  --z-nav-drawer: 90;
+  --z-popover-portal: 95;
+  --z-dialog: 100;
+
   /* ---- Motion — calm, precise ---- */
   --dur-fast: 120ms;
   --dur-base: 180ms;

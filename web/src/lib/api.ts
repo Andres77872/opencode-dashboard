@@ -10,7 +10,6 @@ import type {
   MessageDetail,
   MessageList,
   ModelStats,
-  OverviewStats,
   PricingAliasDeleteInput,
   PricingAliasMutationInput,
   PricingAliasMutationResponse,
@@ -27,7 +26,6 @@ import type {
 } from '../types/api'
 import type {
   AssistantChatRequest,
-  AssistantChatResponse,
   AssistantChatSessionDetail,
   AssistantChatSessionListResponse,
   AssistantStatusResponse,
@@ -199,10 +197,6 @@ function withModelFilter(
   return params
 }
 
-export function getOverview(period: string, signal?: AbortSignal, sourceId?: SourceID, filter?: ModelFilterParams) {
-  return request<OverviewStats>(buildUrl('/api/v1/overview', period, withModelFilter(undefined, filter), sourceId), { signal })
-}
-
 // getOverviewAll fetches the cross-source aggregate. It deliberately takes no
 // sourceId — the Overview view spans every source.
 export function getOverviewAll(period: string, signal?: AbortSignal) {
@@ -274,19 +268,6 @@ export function deletePricingAlias(input: PricingAliasDeleteInput, signal?: Abor
     method: 'DELETE',
     signal,
   })
-}
-
-export function getSessions(
-  page: number,
-  limit: number,
-  period: string,
-  signal?: AbortSignal,
-  sourceId?: SourceID,
-) {
-  return request<SessionList>(
-    buildUrl('/api/v1/sessions', period, { page: String(page), limit: String(limit) }, sourceId),
-    { signal },
-  )
 }
 
 export function getSessionsWithFilter(
@@ -447,17 +428,6 @@ export async function deleteAssistantSession(id: string, signal?: AbortSignal) {
   if (!response.ok) {
     throw new ApiClientError(await parseError(response), response.status)
   }
-}
-
-export function sendAssistantChat(payload: AssistantChatRequest, signal?: AbortSignal) {
-  return request<AssistantChatResponse>('/api/v1/assistant/chat', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-    signal,
-  })
 }
 
 export async function streamAssistantChat(

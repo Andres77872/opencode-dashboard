@@ -1,3 +1,5 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+
 /**
  * Copies text to the clipboard, reporting whether it worked.
  *
@@ -37,4 +39,41 @@ function legacyCopy(value: string): boolean {
   } finally {
     area.remove()
   }
+}
+
+export type CopyState = 'idle' | 'copied' | 'failed'
+
+/**
+ * Copy-with-confirmation state for one button: `copy(value)` writes to the
+ * clipboard and `state` reports "copied" or "failed" for a moment before
+ * returning to idle. Every copy control in the app shares this, so a blocked
+ * clipboard is always reported instead of looking like a dead button.
+ *
+ * A thunk defers assembling a large value until the button is actually used.
+ */
+export function useCopyFeedback(resetMs = 1_500) {
+  const [state, setState] = useState<CopyState>('idle')
+  const timerRef = useRef<number | undefined>(undefined)
+  const mountedRef = useRef(true)
+
+  // The owner can unmount while the confirmation is still showing (a cleared
+  // chat, a collapsed tree row), so the timer is cancelled, not left to fire.
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      window.clearTimeout(timerRef.current)
+    }
+  }, [])
+
+  const copy = useCallback((value: string | (() => string)) => {
+    void copyText(typeof value === 'function' ? value() : value).then((ok) => {
+      if (!mountedRef.current) return
+      setState(ok ? 'copied' : 'failed')
+      window.clearTimeout(timerRef.current)
+      timerRef.current = window.setTimeout(() => setState('idle'), resetMs)
+    })
+  }, [resetMs])
+
+  return { state, copy }
 }

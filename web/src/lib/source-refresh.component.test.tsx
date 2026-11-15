@@ -12,7 +12,7 @@ function context(revision = 0, enabled = true): DashboardContextValue {
     sourceMetadataLoading: false, sourceMetadataError: null, selectedSourceId: 'antigravity', selectedSourceInfo: source,
     sourceAvailable: enabled, sourceStateError: enabled ? null : { kind: 'disabled', message: 'Disabled' },
     setSelectedSourceId: vi.fn(), lastUpdatedAt: null, isRefreshing: false, refreshNonce: 0,
-    requestRefresh: vi.fn(), setRefreshing: vi.fn(), setLastUpdatedAt: vi.fn(),
+    requestRefresh: vi.fn(), trackRefresh: () => () => {}, setLastUpdatedAt: vi.fn(),
   }
 }
 

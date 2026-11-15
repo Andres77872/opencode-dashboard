@@ -1,15 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { copyText } from '../../lib/clipboard'
+import { useCopyFeedback } from '../../lib/clipboard'
 import { Icon } from '../vael/icon'
-
-const RESET_MS = 1_400
-
-type CopyState = 'idle' | 'copied' | 'failed'
 
 /**
  * Copies a string and confirms it in place. Used for code blocks, individual
  * messages, and the whole transcript, so the value is always the raw Markdown
  * source the panel was given — never the rendered DOM.
+ *
+ * The copy/confirm/fail behavior is the shared `useCopyFeedback`; this file
+ * only supplies the assistant panel's look.
  */
 export function CopyButton({
   value,
@@ -27,27 +25,13 @@ export function CopyButton({
   className?: string
   showLabel?: boolean
 }) {
-  const [state, setState] = useState<CopyState>('idle')
-  const timerRef = useRef<number | undefined>(undefined)
-
-  // A message can be cleared by "New chat" while its confirmation is still
-  // pending, so the timer has to be cancelled rather than left to fire.
-  useEffect(() => () => window.clearTimeout(timerRef.current), [])
-
-  const onClick = useCallback(() => {
-    void copyText(typeof value === 'function' ? value() : value).then((ok) => {
-      setState(ok ? 'copied' : 'failed')
-      window.clearTimeout(timerRef.current)
-      timerRef.current = window.setTimeout(() => setState('idle'), RESET_MS)
-    })
-  }, [value])
-
+  const { state, copy } = useCopyFeedback(1_400)
   const text = state === 'copied' ? copiedLabel : state === 'failed' ? 'Copy failed' : label
   return (
     <button
       type="button"
       className={`analytics-assistant-copy${state === 'failed' ? ' failed' : ''}${className ? ` ${className}` : ''}`}
-      onClick={onClick}
+      onClick={() => copy(value)}
       aria-label={text}
       title={text}
     >

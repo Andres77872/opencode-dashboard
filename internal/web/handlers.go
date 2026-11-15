@@ -375,6 +375,16 @@ func (h *Handlers) Sessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// logDetailFailure records a failed detail lookup unless the client simply
+// went away. The UI aborts in-flight requests on navigation; logging each as
+// an error would bury the real ones.
+func (h *Handlers) logDetailFailure(r *http.Request, msg, id string, err error) {
+	if r.Context().Err() != nil {
+		return
+	}
+	h.logger.Error(msg, "id", id, "source", r.URL.Query().Get("source"), "err", err)
+}
+
 func (h *Handlers) SessionByID(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	selected, ok := h.sourceForRequest(w, r)
@@ -392,7 +402,7 @@ func (h *Handlers) SessionByID(w http.ResponseWriter, r *http.Request) {
 			InternalError("database schema invalid").Write(w)
 			return
 		}
-		h.logger.Error("failed to get session", "id", id, "source", r.URL.Query().Get("source"), "err", err)
+		h.logDetailFailure(r, "failed to get session", id, err)
 		InternalError("failed to get session").Write(w)
 		return
 	}
@@ -480,7 +490,7 @@ func parsePeriodQuery(r *http.Request) (stats.PeriodQuery, *APIError) {
 		}
 
 		// Reject future from date
-		if fromTime.After(time.Now().UTC()) {
+		if isFutureCalendarDate(fromTime) {
 			return stats.PeriodQuery{}, &APIError{
 				Error:   http.StatusText(http.StatusBadRequest),
 				Code:    http.StatusBadRequest,
@@ -500,7 +510,7 @@ func parsePeriodQuery(r *http.Request) (stats.PeriodQuery, *APIError) {
 			}
 
 			// Reject future to date
-			if toTime.After(time.Now().UTC()) {
+			if isFutureCalendarDate(toTime) {
 				return stats.PeriodQuery{}, &APIError{
 					Error:   http.StatusText(http.StatusBadRequest),
 					Code:    http.StatusBadRequest,
@@ -594,7 +604,7 @@ func (h *Handlers) MessageByID(w http.ResponseWriter, r *http.Request) {
 			InternalError("database schema invalid").Write(w)
 			return
 		}
-		h.logger.Error("failed to get message", "id", id, "source", r.URL.Query().Get("source"), "err", err)
+		h.logDetailFailure(r, "failed to get message", id, err)
 		InternalError("failed to get message").Write(w)
 		return
 	}
@@ -616,4 +626,13 @@ func extractMessageID(path string) string {
 		return ""
 	}
 	return id
+}
+
+// isFutureCalendarDate reports whether a YYYY-MM-DD date (parsed as midnight
+// UTC) has not started anywhere on Earth yet. The date comes from the browser's
+// local calendar, so "today" for a user east of UTC can be a day ahead of the
+// server's UTC date; comparing against plain UTC rejected it as "in the
+// future". UTC+14 is the furthest-ahead offset in use.
+func isFutureCalendarDate(date time.Time) bool {
+	return date.After(time.Now().UTC().Add(14 * time.Hour))
 }

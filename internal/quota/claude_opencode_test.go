@@ -3,8 +3,10 @@ package quota
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -164,5 +166,145 @@ func TestClaudeAgentQuotaAvailableDuringOpenCodeHistoryImport(t *testing.T) {
 	snap, err := latestOpenCodeClaudeSnapshot(ctx, path)
 	if err != nil || snap == nil || snap.SevenDay == nil || !approxEqual(snap.SevenDay.UsedPercentage, 7) {
 		t.Fatalf("2.x quota during 1.x import = %+v, %v", snap, err)
+	}
+}
+
+// fakeNativeScan stands in for the database scan: each call records its lower
+// bound and blocks until the test releases it with a result.
+type fakeNativeScan struct {
+	mu    sync.Mutex
+	since []int64
+	next  chan fakeNativeResult
+}
+
+type fakeNativeResult struct {
+	snap *ClaudeSnapshot
+	err  error
+}
+
+func (f *fakeNativeScan) scan(_ context.Context, _ string, sinceMS int64) (*ClaudeSnapshot, error) {
+	f.mu.Lock()
+	f.since = append(f.since, sinceMS)
+	f.mu.Unlock()
+	result := <-f.next
+	return result.snap, result.err
+}
+
+func (f *fakeNativeScan) calls() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.since...)
+}
+
+func newFakeNativeReader() (*claudeNativeReader, *fakeNativeScan, *time.Time) {
+	clock := time.UnixMilli(1_800_000_000_000)
+	fake := &fakeNativeScan{next: make(chan fakeNativeResult, 4)}
+	reader := &claudeNativeReader{now: func() time.Time { return clock }, scan: fake.scan}
+	return reader, fake, &clock
+}
+
+func canceledContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+func TestClaudeNativeReaderReusesAScanAndThenReadsOnlyRecentMessages(t *testing.T) {
+	reader, fake, clock := newFakeNativeReader()
+	first := &ClaudeSnapshot{SavedAtMS: 100, SevenDay: &ClaudeWindow{UsedPercentage: 7}}
+	fake.next <- fakeNativeResult{snap: first}
+	scanStart := clock.UnixMilli()
+
+	for i := 0; i < 3; i++ {
+		got, err := reader.latest(context.Background(), "db")
+		if err != nil || got != first {
+			t.Fatalf("call %d = %+v, %v; want the scanned snapshot", i, got, err)
+		}
+	}
+	if calls := fake.calls(); len(calls) != 1 || calls[0] != 0 {
+		t.Fatalf("scans = %v, want one full scan shared by every call inside the TTL", calls)
+	}
+
+	// Past the TTL the next call looks only at messages created since the
+	// previous scan (less the overlap), and nothing newer there must not
+	// discard the observation already held.
+	*clock = clock.Add(claudeNativeTTL + time.Second)
+	fake.next <- fakeNativeResult{}
+	got, err := reader.latest(context.Background(), "db")
+	if err != nil || got != first {
+		t.Fatalf("after an empty incremental scan = %+v, %v; want the earlier observation kept", got, err)
+	}
+	if calls := fake.calls(); len(calls) != 2 || calls[1] != scanStart-claudeNativeOverlap.Milliseconds() {
+		t.Fatalf("scans = %v, want a second scan bounded to %d", calls, scanStart-claudeNativeOverlap.Milliseconds())
+	}
+}
+
+// A scan that outlasts its request must not be thrown away: the request gives
+// up, the scan finishes, and the next request is served from it.
+func TestClaudeNativeReaderKeepsASlowScanForTheNextCaller(t *testing.T) {
+	reader, fake, _ := newFakeNativeReader()
+
+	if got, err := reader.latest(canceledContext(), "db"); got != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("impatient first call = %+v, %v; want no snapshot and the context error", got, err)
+	}
+	// A second impatient caller joins the scan in flight instead of starting another.
+	if _, err := reader.latest(canceledContext(), "db"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("second impatient call err = %v", err)
+	}
+
+	want := &ClaudeSnapshot{SavedAtMS: 100, SevenDay: &ClaudeWindow{UsedPercentage: 14}}
+	fake.next <- fakeNativeResult{snap: want}
+	got, err := reader.latest(context.Background(), "db")
+	if err != nil || got != want {
+		t.Fatalf("after the scan finished = %+v, %v; want its snapshot", got, err)
+	}
+	if calls := fake.calls(); len(calls) != 1 {
+		t.Fatalf("scans = %v, want exactly one for all three calls", calls)
+	}
+}
+
+// Once an observation is known, a later slow or failing read keeps serving it
+// rather than letting the provider fall back to a different, older source.
+func TestClaudeNativeReaderServesTheLastObservationWhenARescanIsSlowOrFails(t *testing.T) {
+	reader, fake, clock := newFakeNativeReader()
+	known := &ClaudeSnapshot{SavedAtMS: 100, SevenDay: &ClaudeWindow{UsedPercentage: 14}}
+	fake.next <- fakeNativeResult{snap: known}
+	if got, err := reader.latest(context.Background(), "db"); err != nil || got != known {
+		t.Fatalf("first scan = %+v, %v", got, err)
+	}
+
+	*clock = clock.Add(claudeNativeTTL + time.Second)
+	if got, err := reader.latest(canceledContext(), "db"); err != nil || got != known {
+		t.Fatalf("slow rescan = %+v, %v; want the last observation", got, err)
+	}
+	fake.next <- fakeNativeResult{err: errors.New("database is locked")}
+	if got, err := reader.latest(context.Background(), "db"); err != nil || got != known {
+		t.Fatalf("failed rescan = %+v, %v; want the last observation", got, err)
+	}
+
+	// A newer observation still replaces it once a scan succeeds again.
+	*clock = clock.Add(claudeNativeTTL + time.Second)
+	newer := &ClaudeSnapshot{SavedAtMS: 200, SevenDay: &ClaudeWindow{UsedPercentage: 15}}
+	fake.next <- fakeNativeResult{snap: newer}
+	if got, err := reader.latest(context.Background(), "db"); err != nil || got != newer {
+		t.Fatalf("recovered scan = %+v, %v; want the newer observation", got, err)
+	}
+}
+
+// The bounded query must return what the full scan would for anything recent,
+// including a response created earlier but updated after the bound.
+func TestScanOpenCodeClaudeSnapshotHonorsTheCreationBound(t *testing.T) {
+	observed := time.Now().UTC().Truncate(time.Second)
+	path := nativeQuotaFixture(t, observed, false)
+	ctx := context.Background()
+
+	// The measured event's message was created two hours before `observed`.
+	inside, err := scanOpenCodeClaudeSnapshot(ctx, path, observed.Add(-3*time.Hour).UnixMilli())
+	if err != nil || inside == nil || inside.SevenDay == nil || !approxEqual(inside.SevenDay.UsedPercentage, 7) || inside.SavedAtMS != observed.UnixMilli() {
+		t.Fatalf("bounded scan = %+v, %v; want the 7%% observation", inside, err)
+	}
+	after, err := scanOpenCodeClaudeSnapshot(ctx, path, observed.Add(time.Hour).UnixMilli())
+	if err != nil || after != nil {
+		t.Fatalf("scan bounded after every message = %+v, %v; want nothing", after, err)
 	}
 }

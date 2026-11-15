@@ -20,8 +20,7 @@
   --space-32: 64px;
 
   /* ---- Layout rails (fixed chrome of the app) ---- */
-  --rail-width: 232px;        /* left nav, expanded */
-  --rail-width-collapsed: 60px;
+  --rail-width: 232px;        /* left nav */
   --topbar-height: 56px;
   --filterbar-height: 52px;
   --content-max: 1440px;

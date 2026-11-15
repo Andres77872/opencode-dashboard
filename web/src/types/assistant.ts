@@ -155,23 +155,6 @@ export interface AssistantSubagentRun {
   duration_ms?: number
 }
 
-export interface AssistantChatResponse {
-  message: AssistantMessage & { role: 'assistant'; signature: string }
-  model: string
-  provider?: string
-  agent?: string
-  rounds?: number
-  duration_ms?: number
-  usage?: AssistantUsage
-  tools_used: string[]
-  tool_calls?: AssistantToolCall[]
-  subagents?: AssistantSubagentRun[]
-  notices?: string[]
-  session_id?: string
-  session_title?: string
-  session_usage?: AssistantUsage
-}
-
 export interface AssistantStreamStartEvent {
   type: 'start'
   model: string

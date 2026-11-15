@@ -1,43 +1,51 @@
 /* Projects — per-source project ranking (Vael). Costs are reported per source and
    never combined across sources. No fabricated data: the API has no per-project
-   14d trend, branch name, or period-over-period delta, so those Vael mock columns
-   are omitted. Token share is a real derived ratio (project tokens / total). */
-import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+   trend, branch name, or period-over-period delta, so none is shown. Token
+   share is a real derived ratio (project tokens / total). */
+import { useMemo, useState } from 'react'
 import {
-  Card,
-  StatCard,
-  DataTable,
-  VendorChip,
-  Badge,
-  EmptyState,
-  Icon,
-  SearchInput,
-  Skeleton,
-  ErrorState,
-  Notice,
   Button,
+  Card,
+  DataTable,
+  EmptyState,
+  ErrorState,
+  Icon,
+  Notice,
+  SearchInput,
+  ShareBar,
+  StatCard,
+  StatGrid,
+  VendorChip,
+  ViewSkeleton,
   vendorMeta,
   type Column,
   type SortSpec,
 } from '../components/vael'
-import { Drawer } from '../components/vael'
 import { useDashboardContext } from '../components/layout/dashboard-context'
+import { ProjectDrawer } from '../components/projects/project-drawer'
 import { usePeriodControls, useResetOnChange } from '../lib/use-period-controls'
 import { usePeriodResource } from '../lib/use-period-resource'
-import { getProjects, getProjectDetail } from '../lib/api'
+import { useMediaQuery } from '../lib/use-media-query'
+import { periodTriggerLabel } from '../lib/period-label'
+import { isTranscriptSource } from '../lib/message-display'
+import { getProjects } from '../lib/api'
 import { getTokenTotal } from '../lib/token-breakdown'
 import { getNextSortState, type SortDirection, type SortState } from '../lib/table-sort'
 import {
   formatCompactCurrencyWithProvenance,
   formatCompactInteger,
+  formatCount,
+  formatCurrencyExact,
   formatCurrencyWithProvenance,
-  formatDateTime,
   formatInteger,
+  formatShare,
+  formatShortId,
   formatTokenCount,
+  getCostLabel,
+  isMissingCost,
   safeDivide,
 } from '../lib/format'
-import type { ProjectDetail, ProjectEntry, SessionEntry, SourceID } from '../types/api'
+import type { ProjectEntry, SourceID } from '../types/api'
 
 type SortKey = 'project' | 'sessions' | 'messages' | 'tokens' | 'cost'
 
@@ -52,18 +60,37 @@ const DEFAULT_SORT_DIRECTIONS: Record<SortKey, SortDirection> = {
 const DEFAULT_TABLE_SORT: SortState<SortKey> = { key: 'cost', direction: 'desc' }
 
 interface EnrichedProjectRow extends ProjectEntry {
+  /** Unique within the list; the project id when there is one. */
+  rowKey: string
+  /** Unnamed, or sharing its name with another project in the list. */
+  ambiguousName: boolean
   totalTokens: number
   tokenShare: number // 0..1
   avgCostPerSession: number
+}
+
+interface ProjectSelection {
+  sourceId: SourceID
+  period: string
+  rowKey: string
 }
 
 function getProjectLabel(project: ProjectEntry) {
   return project.project_name || 'Unnamed project'
 }
 
-function getProjectIdentifier(project: ProjectEntry) {
-  if (!project.project_id) return 'unknown'
-  return project.project_id.length > 12 ? project.project_id.slice(0, 12) : project.project_id
+/**
+ * The id as a secondary line under the name. It is only worth the space when
+ * the name alone does not identify the row; the full id is always in the
+ * row's tooltip and in the drawer. Path-style ids (Claude Code's
+ * "-home-user-code-app") share their prefix across projects, so their
+ * distinguishing tail is what is shown.
+ */
+function getProjectIdHint(project: ProjectEntry): string | null {
+  const id = project.project_id
+  if (!id) return null
+  if (/^[-/]/.test(id)) return id.length > 26 ? `…${id.slice(-25)}` : id
+  return formatShortId(id)
 }
 
 function compareRows(sortKey: SortKey, left: EnrichedProjectRow, right: EnrichedProjectRow) {
@@ -85,385 +112,273 @@ function compareRows(sortKey: SortKey, left: EnrichedProjectRow, right: Enriched
 export function ProjectsView() {
   const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
   const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
-  const [selectedProject, setSelectedProject] = useState<{ sourceId: SourceID; projectId: string } | null>(null)
+  const [selection, setSelection] = useState<ProjectSelection | null>(null)
   const [filter, setFilter] = useState('')
+  const compact = useMediaQuery('(max-width: 760px)')
 
-  const { cacheKey } = usePeriodControls()
-  // Reset sort, filter, and the open drawer when the period changes — they all
-  // describe a result set that no longer exists.
-  useResetOnChange(cacheKey, () => {
+  const { cacheKey, state: periodState } = usePeriodControls()
+  const periodLabel = periodTriggerLabel(periodState)
+  // Sort, filter and the open drawer describe one source's ranking for one
+  // range; start over when either changes.
+  useResetOnChange(`${selectedSourceId}|${cacheKey}`, () => {
     setSortState(null)
-    setSelectedProject(null)
     setFilter('')
+    setSelection(null)
   })
-  const { data, loading, error } = usePeriodResource(getProjects, cacheKey)
+  const { data, loading, error } = usePeriodResource(getProjects, cacheKey, { cacheId: 'projects' })
 
-  const sourceLabel = selectedSourceInfo?.label ?? selectedSourceId
-  // Only keep the drawer open when the selection matches the active source.
-  const selectedProjectId = selectedProject?.sourceId === selectedSourceId ? selectedProject.projectId : null
+  const sourceLabel = selectedSourceInfo?.label ?? vendorMeta(selectedSourceId).name
+  const effectiveSort = sortState ?? DEFAULT_TABLE_SORT
 
   const summary = useMemo(() => {
     if (!data) return null
 
-    const totalCost = data.projects.reduce((a, p) => a + p.cost, 0)
-    const totalSessions = data.projects.reduce((a, p) => a + p.sessions, 0)
-    const totalMessages = data.projects.reduce((a, p) => a + p.messages, 0)
-
-    const rows = data.projects.map<EnrichedProjectRow>((project) => ({
-      ...project,
-      totalTokens: getTokenTotal(project.tokens),
-      avgCostPerSession: safeDivide(project.cost, project.sessions),
-      tokenShare: 0, // filled below once the total is known
-    }))
-    const totalTokens = rows.reduce((a, r) => a + r.totalTokens, 0)
-    for (const r of rows) r.tokenShare = safeDivide(r.totalTokens, totalTokens)
-
-    const effectiveSort = sortState ?? DEFAULT_TABLE_SORT
-    const sortedRows = [...rows].sort((left, right) => {
-      const primary = compareRows(effectiveSort.key, left, right)
-      const m = effectiveSort.direction === DEFAULT_SORT_DIRECTIONS[effectiveSort.key] ? 1 : -1
-      const d = primary * m
-      if (d !== 0) return d
-      if (right.cost !== left.cost) return right.cost - left.cost
-      return getProjectLabel(left).localeCompare(getProjectLabel(right))
+    const nameCounts = new Map<string, number>()
+    for (const project of data.projects) {
+      const name = getProjectLabel(project)
+      nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1)
+    }
+    const seen = new Map<string, number>()
+    const rows = data.projects.map<EnrichedProjectRow>((project) => {
+      const base = project.project_id || getProjectLabel(project)
+      const repeat = seen.get(base) ?? 0
+      seen.set(base, repeat + 1)
+      return {
+        ...project,
+        rowKey: repeat === 0 ? base : `${base}#${repeat}`,
+        ambiguousName: !project.project_name || (nameCounts.get(getProjectLabel(project)) ?? 0) > 1,
+        totalTokens: getTokenTotal(project.tokens),
+        avgCostPerSession: safeDivide(project.cost, project.sessions),
+        tokenShare: 0, // filled below once the total is known
+      }
     })
+    const totalTokens = rows.reduce((sum, row) => sum + row.totalTokens, 0)
+    for (const row of rows) row.tokenShare = safeDivide(row.totalTokens, totalTokens)
 
-    return { rows: sortedRows, totalCost, totalSessions, totalMessages, totalTokens, empty: rows.length === 0 }
-  }, [data, sortState])
+    return {
+      rows,
+      totalCost: rows.reduce((sum, row) => sum + row.cost, 0),
+      totalSessions: rows.reduce((sum, row) => sum + row.sessions, 0),
+      totalMessages: rows.reduce((sum, row) => sum + row.messages, 0),
+      totalTokens,
+      topByTokens: rows.reduce<EnrichedProjectRow | null>((top, row) => (!top || row.totalTokens > top.totalTokens ? row : top), null),
+      // Rows carry their own source only when a list mixes several.
+      mixedSources: rows.some((row) => row.source_id && row.source_id !== selectedSourceId),
+    }
+  }, [data, selectedSourceId])
 
   // Matches the TUI's `/` filter, which matches on project name *or* id.
   const visibleRows = useMemo(() => {
     const rows = summary?.rows ?? []
     const needle = filter.trim().toLowerCase()
-    if (!needle) return rows
-    return rows.filter(
-      (row) =>
-        getProjectLabel(row).toLowerCase().includes(needle) ||
-        (row.project_id ?? '').toLowerCase().includes(needle),
-    )
-  }, [summary?.rows, filter])
+    const matching = needle
+      ? rows.filter((row) => getProjectLabel(row).toLowerCase().includes(needle) || (row.project_id ?? '').toLowerCase().includes(needle))
+      : rows
+    const flip = effectiveSort.direction === DEFAULT_SORT_DIRECTIONS[effectiveSort.key] ? 1 : -1
+    return [...matching].sort((left, right) => {
+      const primary = compareRows(effectiveSort.key, left, right) * flip
+      if (primary !== 0) return primary
+      if (right.cost !== left.cost) return right.cost - left.cost
+      return getProjectLabel(left).localeCompare(getProjectLabel(right))
+    })
+  }, [summary?.rows, filter, effectiveSort])
 
-  const onSort = (key: string) => setSortState((s) => getNextSortState(s, key as SortKey, DEFAULT_SORT_DIRECTIONS[key as SortKey]))
-
-  const sortSpec: SortSpec | null = sortState ? { key: sortState.key, dir: sortState.direction } : null
-
-  const handleProjectSelect = (project: EnrichedProjectRow) => {
-    if (!project.project_id) return
-    setSelectedProject({ sourceId: selectedSourceId, projectId: project.project_id })
-  }
-
-  const columns: Column<EnrichedProjectRow>[] = [
-    {
-      key: 'project',
-      header: 'Project',
-      sortable: true,
-      width: '34%',
-      render: (row) => (
-        <span style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-          <Icon name="folder" size={16} color="var(--fg-muted)" />
-          <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
-            <span style={{ font: '600 13px/1.2 var(--font-ui)', color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {getProjectLabel(row)}
-            </span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, font: '400 11px/1 var(--font-mono)', color: 'var(--fg-faint)' }}>
-              <span>id {getProjectIdentifier(row)}</span>
-              <span aria-hidden="true">·</span>
-              <span>{formatCurrencyWithProvenance(row.avgCostPerSession, row.cost_status, row.cost_provenance)} / session</span>
-            </span>
-          </span>
-        </span>
-      ),
-    },
-    { key: 'source', header: 'Source', render: (row) => <VendorChip id={row.source_id ?? selectedSourceId} /> },
-    { key: 'sessions', header: 'Sessions', numeric: true, sortable: true, render: (row) => formatCompactInteger(row.sessions) },
-    { key: 'messages', header: 'Messages', numeric: true, sortable: true, render: (row) => formatCompactInteger(row.messages) },
-    {
-      key: 'tokens',
-      header: 'Tokens',
-      numeric: true,
-      sortable: true,
-      render: (row) => <span title={formatInteger(row.totalTokens)}>{formatTokenCount(row.totalTokens)}</span>,
-    },
-    {
-      key: 'cost',
-      header: 'Est. cost',
-      numeric: true,
-      sortable: true,
-      render: (row) => formatCompactCurrencyWithProvenance(row.cost, row.cost_status, row.cost_provenance),
-    },
-    {
-      key: 'share',
-      header: 'Token share',
-      numeric: true,
-      width: 140,
-      render: (row) => {
-        const pct = Math.round(row.tokenShare * 100)
-        return (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-            <span style={{ width: 54, height: 6, borderRadius: 3, background: 'var(--ink-700)', overflow: 'hidden' }}>
-              <span style={{ display: 'block', width: `${row.totalTokens > 0 ? Math.max(pct, 3) : 0}%`, height: '100%', background: vendorMeta(row.source_id ?? selectedSourceId).color }} />
-            </span>
-            <span style={{ width: 34, textAlign: 'right' }}>{pct}%</span>
-          </span>
-        )
-      },
-    },
-  ]
-
-  // Loading state
-  if (loading && !data) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-lg)', padding: 16 }}>
-              <Skeleton width={90} height={11} />
-              <Skeleton width={120} height={28} style={{ marginTop: 12 }} />
-            </div>
-          ))}
-        </div>
-        <div style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', height: 320 }} />
-      </div>
-    )
-  }
-
-  if (!summary) {
+  if (!data || !summary) {
+    if (loading) return <ViewSkeleton stats={4} panels={[420]} label="Loading projects" />
     return <Card><ErrorState title="Projects failed to load" message={error ?? undefined} onRetry={requestRefresh} /></Card>
   }
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {error && <Notice tone="warning" title="Projects partially loaded">{error}</Notice>}
+  // The drawer belongs to the source and range it was opened under: once
+  // either changes, the selection no longer names a row of this ranking.
+  const selectedRow = selection && selection.sourceId === selectedSourceId && selection.period === cacheKey
+    ? summary.rows.find((row) => row.rowKey === selection.rowKey) ?? null
+    : null
 
-      {/* KPI row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-        <StatCard
-          accent
-          label="Tracked projects"
-          value={formatInteger(summary.rows.length)}
-          hint={summary.rows.length === 1 ? 'One project visible' : `Distinct projects from ${sourceLabel}`}
-        />
-        <StatCard
-          label="Total cost"
-          value={formatCurrencyWithProvenance(summary.totalCost, data?.cost_status, data?.cost_provenance)}
-          hint={`${formatCompactInteger(summary.totalMessages)} messages attributed`}
-        />
-        <StatCard label="Sessions touched" value={formatInteger(summary.totalSessions)} hint="across all projects" />
-        <StatCard
-          accent
-          label="Token load"
-          value={formatTokenCount(summary.totalTokens)}
-          title={formatInteger(summary.totalTokens)}
-          hint="combined across projects"
-        />
-      </div>
+  const costStatus = data.cost_status
+  const costProvenance = data.cost_provenance
+  const costMissing = isMissingCost(costStatus, costProvenance)
+  const costLabel = getCostLabel(costStatus, costProvenance)
+  const count = summary.rows.length
 
-      {/* Ranking table */}
-      {summary.empty ? (
-        <Card>
-          <Notice tone="info" title="No project activity recorded yet">
-            Once activity lands, this view ranks {sourceLabel} projects by cost and shows message and token load.
-          </Notice>
-        </Card>
-      ) : (
-        <Card
-          title="Project usage ranking"
-          subtitle={`${summary.rows.length} projects · ${formatTokenCount(summary.totalTokens)} tokens · costs per source`}
-          action={<SearchInput value={filter} onChange={setFilter} placeholder="Filter projects…" label="Filter projects" width={220} />}
-          pad={0}
-        >
-          {visibleRows.length === 0 ? (
-            <EmptyState
-              icon="search"
-              title="No projects match this filter"
-              description={`No project name or id contains “${filter.trim()}”.`}
-              action={<Button size="sm" variant="secondary" onClick={() => setFilter('')}>Clear filter</Button>}
-            />
-          ) : (
-            <DataTable
-              columns={columns}
-              rows={visibleRows}
-              sort={sortSpec}
-              onSort={onSort}
-              onRowClick={handleProjectSelect}
-              rowKey={(row) => row.project_id || getProjectLabel(row)}
-            />
-          )}
-        </Card>
-      )}
+  // The table always shows its sort: the ranking opens ordered by cost, and
+  // clicking that header reverses it instead of appearing to do nothing.
+  const sortSpec: SortSpec = { key: effectiveSort.key, dir: effectiveSort.direction }
+  const onSort = (key: string) =>
+    setSortState((current) => getNextSortState(current ?? DEFAULT_TABLE_SORT, key as SortKey, DEFAULT_SORT_DIRECTIONS[key as SortKey]))
 
-      {/* Drill-down drawer */}
-      <ProjectDrilldownDrawer projectId={selectedProjectId} period={cacheKey} onClose={() => setSelectedProject(null)} />
-    </div>
+  const projectCell = (row: EnrichedProjectRow, sub: string) => (
+    <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <Icon name="folder" size={16} color="var(--fg-muted)" style={{ flexShrink: 0 }} />
+      {/* Inline-size containment lets the name truncate to the column instead
+          of the column growing to the longest name. */}
+      <span style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1, contain: 'inline-size', minWidth: compact ? 120 : 180 }}>
+        <span title={getProjectLabel(row)} style={{ font: '600 13px/1.25 var(--font-ui)', color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {getProjectLabel(row)}
+        </span>
+        <span title={row.project_id || undefined} style={{ font: '400 11px/1.2 var(--font-mono)', color: 'var(--fg-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {sub}
+        </span>
+      </span>
+    </span>
   )
-}
 
-// ── Drill-down drawer ──────────────────────────────────────────────
-
-const SESSIONS_PER_PAGE = 10
-
-function getSessionLabel(session: SessionEntry) {
-  return session.title || 'Untitled session'
-}
-
-function getSessionProjectLabel(session: SessionEntry) {
-  return session.project_name || session.project_id || 'No linked project'
-}
-
-function ProjectDrilldownDrawer({ projectId, period, onClose }: { projectId: string | null; period: string; onClose: () => void }) {
-  const { selectedSourceId, selectedSourceInfo } = useDashboardContext()
-  const navigate = useNavigate()
-  const [detail, setDetail] = useState<ProjectDetail | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [sessionPage, setSessionPage] = useState(1)
-  const [requestNonce, setRequestNonce] = useState(0)
-
-  // Open a session from the drawer in the Sessions view, scoped to this project.
-  // Sessions already reads ?project_id= — until now nothing in the UI produced
-  // it, so that filter was unreachable and the drawer's rows were inert (the TUI
-  // has drilled project → session all along).
-  const openSession = (sessionId: string) => {
-    if (!projectId) return
-    // Name the source explicitly: this is a deep link, and the session id is only
-    // meaningful within the source it came from.
-    const params = new URLSearchParams({
-      project_id: projectId,
-      session: sessionId,
-      source: selectedSourceId,
-      page: '1',
-    })
-    navigate(`/sessions?${params.toString()}`)
+  const costPerSession = (row: EnrichedProjectRow) => {
+    const status = row.cost_status ?? costStatus
+    const provenance = row.cost_provenance ?? costProvenance
+    if (isMissingCost(status, provenance)) return 'cost unknown'
+    return `${formatCurrencyWithProvenance(row.avgCostPerSession, status, provenance)} / session`
   }
 
-  // Reset paging/detail when the target project changes.
-  useEffect(() => {
-    setSessionPage(1)
-    setDetail(null)
-    setError(null)
-    setRequestNonce(0)
-  }, [projectId])
+  const projectColumn: Column<EnrichedProjectRow> = {
+    key: 'project',
+    header: 'Project',
+    sortable: true,
+    width: '100%',
+    render: compact
+      // On a phone the counts fold into the name cell.
+      ? (row) => projectCell(row, `${formatCount(row.sessions, 'session')} · ${formatTokenCount(row.totalTokens)} tokens`)
+      : (row) => projectCell(row, [row.ambiguousName ? getProjectIdHint(row) : null, costPerSession(row)].filter(Boolean).join(' · ')),
+  }
 
-  useEffect(() => {
-    if (projectId === null) return
-    const activeProjectId = projectId
-    const ctrl = new AbortController()
-
-    async function load() {
-      setLoading(true)
-      setError(null)
-      try {
-        const next = await getProjectDetail(activeProjectId, period, sessionPage, SESSIONS_PER_PAGE, ctrl.signal, selectedSourceId)
-        setDetail(next)
-      } catch (caught) {
-        if (ctrl.signal.aborted) return
-        setError(caught instanceof Error ? caught.message : 'Failed to load project detail')
-      } finally {
-        if (!ctrl.signal.aborted) setLoading(false)
-      }
-    }
-
-    void load()
-    return () => ctrl.abort()
-  }, [projectId, period, sessionPage, requestNonce, selectedSourceId])
-
-  const open = projectId !== null
-  const totalPages = detail ? Math.max(1, Math.ceil(detail.total_sessions / SESSIONS_PER_PAGE)) : 0
-
-  const sessionCols: Column<SessionEntry>[] = [
-    {
-      key: 'session',
-      header: 'Session',
-      render: (s) => (
-        <span style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-          <span style={{ font: '500 13px/1.2 var(--font-ui)', color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getSessionLabel(s)}</span>
-          <span style={{ font: '400 11px/1 var(--font-mono)', color: 'var(--fg-faint)' }}>{getSessionProjectLabel(s)}</span>
+  const costColumn: Column<EnrichedProjectRow> = {
+    key: 'cost',
+    header: costLabel,
+    numeric: true,
+    sortable: true,
+    render: (row) => {
+      const status = row.cost_status ?? costStatus
+      const provenance = row.cost_provenance ?? costProvenance
+      return (
+        <span title={isMissingCost(status, provenance) ? undefined : formatCurrencyExact(row.cost)}>
+          {formatCompactCurrencyWithProvenance(row.cost, status, provenance)}
         </span>
-      ),
+      )
     },
-    { key: 'activity', header: 'Activity', render: (s) => <span style={{ font: '400 12px/1 var(--font-mono)', color: 'var(--fg-muted)' }}>{formatDateTime(s.time_created)}</span> },
-    { key: 'messages', header: 'Msgs', numeric: true, render: (s) => formatCompactInteger(s.message_count) },
-    { key: 'cost', header: 'Cost', numeric: true, render: (s) => formatCompactCurrencyWithProvenance(s.cost, s.cost_status, s.cost_provenance) },
-  ]
+  }
+
+  const columns: Column<EnrichedProjectRow>[] = compact
+    ? [projectColumn, costColumn]
+    : [
+        projectColumn,
+        ...(summary.mixedSources
+          ? [{ key: 'source', header: 'Source', render: (row: EnrichedProjectRow) => <VendorChip id={row.source_id ?? selectedSourceId} /> }]
+          : []),
+        { key: 'sessions', header: 'Sessions', numeric: true, sortable: true, render: (row) => formatCompactInteger(row.sessions) },
+        {
+          key: 'messages',
+          header: 'Messages',
+          numeric: true,
+          sortable: true,
+          render: (row) => <span title={`${formatInteger(row.messages)} messages`}>{formatCompactInteger(row.messages)}</span>,
+        },
+        {
+          key: 'tokens',
+          header: 'Tokens',
+          numeric: true,
+          sortable: true,
+          render: (row) => <span title={`${formatInteger(row.totalTokens)} tokens`}>{formatTokenCount(row.totalTokens)}</span>,
+        },
+        costColumn,
+        {
+          key: 'share',
+          header: 'Token share',
+          numeric: true,
+          render: (row) => <ShareBar share={row.tokenShare} color={vendorMeta(row.source_id ?? selectedSourceId).color} />,
+        },
+      ]
+
+  const refreshNotice = error && (
+    <Notice
+      tone="warning"
+      title="Couldn't refresh — showing the last loaded data"
+      action={<Button size="sm" iconLeft="refresh" onClick={requestRefresh}>Retry</Button>}
+    >
+      {error}
+    </Notice>
+  )
+
+  if (count === 0) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {refreshNotice}
+        <Card>
+          <EmptyState
+            icon="folder"
+            title="No project activity in this range"
+            description={
+              isTranscriptSource(selectedSourceInfo)
+                ? `No ${sourceLabel} activity was found in readable local transcripts for this range. Try a longer range.`
+                : `${sourceLabel} recorded no project activity in this range. Try a longer range.`
+            }
+          />
+        </Card>
+      </div>
+    )
+  }
+
+  const needle = filter.trim()
+  const filterBox = (
+    <SearchInput value={filter} onChange={setFilter} placeholder="Filter projects…" label="Filter projects by name or id" width={compact ? '100%' : 260} />
+  )
 
   return (
-    <Drawer
-      open={open}
-      onClose={onClose}
-      title={detail?.project_name || 'Project detail'}
-      subtitle={`${selectedSourceInfo?.label ?? selectedSourceId} · ${period}`}
-      width={640}
-    >
-      {loading && !detail ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-lg)', padding: 14 }}>
-                <Skeleton width={70} height={10} />
-                <Skeleton width={90} height={24} style={{ marginTop: 10 }} />
-              </div>
-            ))}
-          </div>
-          <Skeleton height={180} radius="var(--radius-lg)" />
-        </div>
-      ) : error ? (
-        <ErrorState title="Project detail failed to load" message={error} onRetry={() => setRequestNonce((v) => v + 1)} />
-      ) : detail ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* Header chips */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-            <Badge tone="accent">Project drilldown</Badge>
-            {detail.project_id && <Badge dot>id {detail.project_id.slice(0, 12)}</Badge>}
-          </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {refreshNotice}
 
-          {/* Aggregate KPI cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
-            <StatCard label="Sessions" value={formatInteger(detail.sessions)} hint="in selected period" />
-            <StatCard label="Messages" value={formatInteger(detail.messages)} hint="assistant messages" />
-            <StatCard
-              label="Est. cost"
-              value={formatCompactCurrencyWithProvenance(detail.cost, detail.cost_status, detail.cost_provenance)}
-              hint={`${formatCurrencyWithProvenance(safeDivide(detail.cost, Math.max(1, detail.sessions)), detail.cost_status, detail.cost_provenance)} / session`}
-            />
-            <StatCard
-              label="Token load"
-              value={formatTokenCount(getTokenTotal(detail.tokens))}
-              title={formatInteger(getTokenTotal(detail.tokens))}
-              hint={`${formatCompactInteger(detail.tokens.input)} in · ${formatCompactInteger(detail.tokens.output)} out`}
-            />
-          </div>
+      <StatGrid>
+        <StatCard accent label="Projects" value={formatInteger(count)} hint={periodLabel} />
+        <StatCard
+          label={costLabel}
+          value={formatCurrencyWithProvenance(summary.totalCost, costStatus, costProvenance)}
+          title={costMissing ? undefined : formatCurrencyExact(summary.totalCost)}
+          hint={`${formatCompactInteger(summary.totalMessages)} messages`}
+        />
+        <StatCard
+          label="Sessions"
+          value={formatInteger(summary.totalSessions)}
+          hint={costMissing || summary.totalSessions === 0 ? 'across all projects' : `${formatCurrencyWithProvenance(safeDivide(summary.totalCost, summary.totalSessions), costStatus, costProvenance)} / session`}
+        />
+        <StatCard
+          label="Tokens"
+          value={formatTokenCount(summary.totalTokens)}
+          title={`${formatInteger(summary.totalTokens)} tokens`}
+          hint={summary.topByTokens && summary.totalTokens > 0 ? `${formatShare(summary.topByTokens.totalTokens, summary.totalTokens)} in ${getProjectLabel(summary.topByTokens)}` : 'across all projects'}
+        />
+      </StatGrid>
 
-          {/* Recent sessions */}
-          <Card title="Recent sessions" subtitle="Most recent first" pad={0}>
-            {detail.recent_sessions && detail.recent_sessions.length > 0 ? (
-              <>
-                <DataTable
-                  dense
-                  columns={sessionCols}
-                  rows={detail.recent_sessions}
-                  rowKey={(s) => s.id}
-                  onRowClick={(s) => openSession(s.id)}
-                />
-                {totalPages > 1 && (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 14px', borderTop: '1px solid var(--border-subtle)' }}>
-                    <span style={{ font: '400 12px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>
-                      Page {sessionPage} of {totalPages} · {formatInteger(detail.total_sessions)} sessions
-                    </span>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <Button variant="ghost" size="sm" disabled={sessionPage <= 1} onClick={() => setSessionPage((p) => Math.max(1, p - 1))}>Previous</Button>
-                      <Button variant="ghost" size="sm" disabled={sessionPage >= totalPages} onClick={() => setSessionPage((p) => p + 1)}>Next</Button>
-                    </div>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div style={{ padding: '24px 16px', textAlign: 'center', font: '400 13px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>
-                No session activity for this project in the selected period.
-              </div>
-            )}
-          </Card>
-        </div>
-      ) : null}
-    </Drawer>
+      <Card
+        flush
+        title="Project ranking"
+        subtitle={
+          needle
+            ? `${formatInteger(visibleRows.length)} of ${formatCount(count, 'project')} match`
+            : `${formatCount(count, 'project')} · select one to see its sessions`
+        }
+        action={compact ? undefined : filterBox}
+      >
+        {/* On a phone the filter box gets a full-width row of its own. */}
+        {compact && <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }}>{filterBox}</div>}
+        {visibleRows.length === 0 ? (
+          <EmptyState
+            icon="search"
+            title="No projects match"
+            description={`No project name or id contains “${needle}”.`}
+            action={<Button size="sm" onClick={() => setFilter('')}>Clear filter</Button>}
+          />
+        ) : (
+          <DataTable
+            bare
+            columns={columns}
+            rows={visibleRows}
+            sort={sortSpec}
+            onSort={onSort}
+            onRowClick={(row) => setSelection({ sourceId: selectedSourceId, period: cacheKey, rowKey: row.rowKey })}
+            rowKey={(row) => row.rowKey}
+          />
+        )}
+      </Card>
+
+      <ProjectDrawer project={selectedRow} period={cacheKey} periodLabel={periodLabel} onClose={() => setSelection(null)} />
+    </div>
   )
 }

@@ -87,12 +87,4 @@
   --vendor-qwen: #615ced;
   --vendor-gemini: #4d9fff;
   --vendor-minimax: #f2355b;
-
-  /* ---- Chart-series aliases (token breakdown order) → categorical palette.
-     Kept so lib code referencing --color-chart-* resolves to Vael colors. ---- */
-  --color-chart-1: var(--cat-1);
-  --color-chart-2: var(--cat-2);
-  --color-chart-3: var(--cat-3);
-  --color-chart-4: var(--cat-4);
-  --color-chart-5: var(--cat-5);
 }

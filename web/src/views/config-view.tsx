@@ -1,11 +1,15 @@
-/* Config — format-aware two-pane explorer over the redacted config snapshot
-   (JSON / TOML / YAML). Left: section navigator. Right: structured tree or
-   syntax-highlighted source, toggled in the header. Periodless: the config
-   endpoint takes no period, so we lean on usePeriodResource with a fixed
-   period arg + cachePeriods:false (re-fetches on source change / refresh).
-   No fabricated data — everything derives from the redacted payload. */
+/* Config — four sections behind one tab row: which sources feed the dashboard,
+   the selected source's config file, its pricing aliases, and the assistant's
+   providers. The active section lives in the URL hash, so each one is a link
+   (the assistant launcher opens /config#assistant-providers).
+
+   A section is mounted the first time it is opened and then kept, hidden, when
+   another is shown: its requests are not made until it is needed, and unsaved
+   form input survives a look at another tab. */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Card, EmptyState, ErrorState, Notice, Skeleton, vendorMeta } from '../components/vael'
+import type { ReactNode } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { Button, Card, EmptyState, ErrorState, Notice, Skeleton, Tabs, vendorMeta } from '../components/vael'
 import { ConfigHeader } from '../components/config/config-header'
 import { PricingAliases } from '../components/config/pricing-aliases'
 import { DataSources } from '../components/config/data-sources'
@@ -16,7 +20,6 @@ import { SourcePane } from '../components/config/source-pane'
 import { useDashboardContext } from '../components/layout/dashboard-context'
 import { usePeriodResource } from '../lib/use-period-resource'
 import { getConfig } from '../lib/api'
-import { copyText } from '../lib/clipboard'
 import { useMediaQuery } from '../lib/use-media-query'
 import {
   ALL_SECTIONS,
@@ -29,17 +32,83 @@ import {
 import type { ConfigStats, SourceID } from '../types/api'
 import type { ConfigViewMode } from '../types/config'
 
-const COPY_RESET_MS = 1600
+type ConfigSection = 'data-sources' | 'source-config' | 'pricing-aliases' | 'assistant-providers'
+
+const SECTION_LABELS: Record<ConfigSection, string> = {
+  'data-sources': 'Data sources',
+  'source-config': 'Source config',
+  'pricing-aliases': 'Pricing aliases',
+  'assistant-providers': 'Assistant providers',
+}
+const SECTION_ORDER = Object.keys(SECTION_LABELS) as ConfigSection[]
+const DEFAULT_SECTION: ConfigSection = 'data-sources'
+
+function sectionFromHash(hash: string): ConfigSection {
+  const value = hash.replace(/^#/, '')
+  return (SECTION_ORDER as string[]).includes(value) ? (value as ConfigSection) : DEFAULT_SECTION
+}
 
 export function ConfigView() {
-  const { sourceAvailable, sourceMetadata } = useDashboardContext()
-  const revision = sourceMetadata?.sources_revision ?? 0
+  const { hash, search } = useLocation()
+  const navigate = useNavigate()
+  const { sources, sourceAvailable, selectedSourceId, selectedSourceInfo, sourceStateError } = useDashboardContext()
+  const active = sectionFromHash(hash)
+  const tabsRef = useRef<HTMLDivElement>(null)
+
+  // Sections already opened stay mounted. Adjusted during render (not in an
+  // effect) so the newly opened section is in the same commit as its tab.
+  const [visited, setVisited] = useState<ReadonlySet<ConfigSection>>(() => new Set([active]))
+  if (!visited.has(active)) setVisited(new Set([...visited, active]))
+
+  // A link to a section from elsewhere on the page (the assistant launcher)
+  // can arrive while this view is scrolled: bring the tab row back into view.
+  useEffect(() => {
+    tabsRef.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [active])
+
+  const selectSection = (next: ConfigSection) => {
+    // The query string carries the selected source; only the hash changes.
+    navigate({ search, hash: `#${next}` }, { replace: true })
+  }
+
+  const enabledCount = sources.filter((source) => source.enabled !== false).length
+  const sourceLabel = selectedSourceInfo?.label ?? vendorMeta(selectedSourceId).name
+  const tabs = SECTION_ORDER.map((value) => ({
+    value,
+    label: SECTION_LABELS[value],
+    count: value === 'data-sources' && sources.length > 0 ? `${enabledCount}/${sources.length}` : undefined,
+  }))
+
+  const sourceUnavailable = (
+    <Card>
+      <EmptyState
+        icon="database"
+        title={`${sourceLabel} is not available`}
+        description={sourceStateError?.message ?? 'This section reads from the selected source. Turn the source on, or pick another one in the bar above.'}
+        action={<Button size="sm" variant="secondary" onClick={() => selectSection('data-sources')}>Open data sources</Button>}
+      />
+    </Card>
+  )
+
+  const panels: Record<ConfigSection, () => ReactNode> = {
+    'data-sources': () => <DataSources />,
+    'source-config': () => (sourceAvailable ? <SourceConfigExplorer /> : sourceUnavailable),
+    'pricing-aliases': () => (sourceAvailable ? <PricingAliases /> : sourceUnavailable),
+    'assistant-providers': () => <AssistantProviders />,
+  }
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <DataSources />
-      {sourceAvailable && <SourceConfigExplorer key={`config:${revision}`} />}
-      <AssistantProviders />
-      {sourceAvailable && <PricingAliases key={`pricing:${revision}`} />}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div ref={tabsRef} style={{ scrollMarginTop: 12 }}>
+        <Tabs<ConfigSection> tabs={tabs} value={active} onChange={selectSection} ariaLabel="Config sections" />
+      </div>
+      {SECTION_ORDER.map((section) =>
+        visited.has(section) ? (
+          <div key={section} id={section} role="tabpanel" aria-label={SECTION_LABELS[section]} hidden={section !== active}>
+            {panels[section]()}
+          </div>
+        ) : null,
+      )}
     </div>
   )
 }
@@ -51,15 +120,15 @@ function SourceConfigExplorer() {
   const [selectedSection, setSelectedSection] = useState<string>(ALL_SECTIONS)
   const [openDepthOverride, setOpenDepthOverride] = useState<number | null>(null)
   const [treeEpoch, setTreeEpoch] = useState(0)
-  const [copiedId, setCopiedId] = useState<string | null>(null)
-  const copyResetRef = useRef<number | null>(null)
   const narrow = useMediaQuery('(max-width: 880px)')
 
-  // Periodless: fetcher ignores the period arg; cachePeriods:false always re-fetches.
+  // The config endpoint takes no period, so the "period" is a fixed key. The
+  // file is cached like any other resource: coming back to this tab shows it
+  // at once and a refresh re-reads it in the background.
   const { data: rawData, loading, error } = usePeriodResource<ConfigStats>(
-    (_p: string, signal?: AbortSignal, sourceId?: SourceID) => getConfig(signal, sourceId),
-    '7d',
-    { cachePeriods: false },
+    (_period: string, signal?: AbortSignal, sourceId?: SourceID) => getConfig(signal, sourceId),
+    'file',
+    { cacheId: 'config' },
   )
 
   const sourceLabel = selectedSourceInfo?.label ?? vendorMeta(selectedSourceId).name
@@ -83,22 +152,6 @@ function SourceConfigExplorer() {
     setOpenDepthOverride(null)
     setSearchValue('')
     setViewMode('tree')
-  }
-
-  useEffect(() => {
-    return () => {
-      if (copyResetRef.current !== null) window.clearTimeout(copyResetRef.current)
-    }
-  }, [])
-
-  const handleCopy = async (copyId: string, value: string) => {
-    if (await copyText(value)) {
-      setCopiedId(copyId)
-      if (copyResetRef.current !== null) window.clearTimeout(copyResetRef.current)
-      copyResetRef.current = window.setTimeout(() => setCopiedId(null), COPY_RESET_MS)
-    } else {
-      setCopiedId(null)
-    }
   }
 
   const sectionKeys = useMemo(() => summary?.sections.map((s) => s.key) ?? [], [summary])
@@ -130,21 +183,27 @@ function SourceConfigExplorer() {
     setTreeEpoch((e) => e + 1)
   }
 
+  const paneColumns = narrow ? 'minmax(0, 1fr)' : '220px minmax(0, 1fr)'
+
   // --- Loading ---
   if (loading && !data) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', padding: 16 }}>
-          <Skeleton width={320} height={13} />
-          <Skeleton width={220} height={12} style={{ marginTop: 14 }} />
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '220px minmax(0, 1fr)', gap: 12, alignItems: 'start' }}>
-          <div style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} width="80%" height={12} />
-            ))}
-          </div>
-          <div style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', height: 420 }} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }} aria-busy="true" aria-label="Loading config">
+        <Card pad={14}>
+          <Skeleton width="min(320px, 70%)" height={13} />
+          <Skeleton width="min(220px, 50%)" height={12} style={{ marginTop: 14 }} />
+        </Card>
+        <div style={{ display: 'grid', gridTemplateColumns: paneColumns, gap: 12, alignItems: 'start' }}>
+          {!narrow && (
+            <Card pad={12}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Skeleton key={i} width="80%" height={12} />
+                ))}
+              </div>
+            </Card>
+          )}
+          <Card style={{ height: 320 }} />
         </div>
       </div>
     )
@@ -162,7 +221,7 @@ function SourceConfigExplorer() {
   if (!data || !doc || !summary) {
     return (
       <Card>
-        <EmptyState icon="settings" title="No config available" description={`No ${sourceLabel} config snapshot to inspect.`} />
+        <EmptyState icon="settings" title="No config available" description={`There is no ${sourceLabel} config snapshot to inspect.`} />
       </Card>
     )
   }
@@ -182,68 +241,70 @@ function SourceConfigExplorer() {
       ? `${visibleSectionCount}/${summary.sections.length} sections`
       : null
 
-  const header = (
-    <ConfigHeader
-      data={data}
-      doc={doc}
-      insights={summary.insights}
-      status={status}
-      searchValue={searchValue}
-      onSearchChange={setSearchValue}
-      viewMode={effectiveViewMode}
-      onViewModeChange={setViewMode}
-      showModeToggle={data.exists && treeAvailable && doc.raw !== ''}
-      showFilter={data.exists && (treeAvailable || sourceOnly)}
-      matchSummary={matchSummary}
-      copiedId={copiedId}
-      onCopy={handleCopy}
-    />
-  )
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {error && <Notice tone="warning" title="Config partially loaded">{error}</Notice>}
+      {error && (
+        <Notice
+          tone="warning"
+          title="Refresh failed — showing the last loaded config"
+          action={<Button size="sm" variant="secondary" onClick={requestRefresh}>Retry</Button>}
+        >
+          {error}
+        </Notice>
+      )}
 
-      {header}
+      <ConfigHeader
+        data={data}
+        doc={doc}
+        insights={summary.insights}
+        status={status}
+        searchValue={searchValue}
+        onSearchChange={setSearchValue}
+        viewMode={effectiveViewMode}
+        onViewModeChange={setViewMode}
+        showModeToggle={data.exists && treeAvailable && doc.raw !== ''}
+        showFilter={data.exists && (treeAvailable || sourceOnly)}
+        matchSummary={matchSummary}
+      />
 
       {!data.exists ? (
         <Card>
           <EmptyState
             icon="file-text"
             title="No config file found"
-            description={`The resolved ${sourceLabel} config path has no file to inspect. Once a config exists, it is parsed into a browsable tree and a highlighted source view automatically.`}
+            description={`There is no file at the ${sourceLabel} config path. Once one exists it is shown here as a browsable tree and as highlighted source.`}
           />
         </Card>
       ) : summary.parseError ? (
         <>
-          <Notice tone="warning" title="Structured parsing failed">
-            {summary.parseError} — {doc.raw ? 'the redacted source is shown below.' : 'no safe raw snapshot is available for this file.'}
+          <Notice tone="warning" title="The file could not be parsed">
+            {summary.parseError} {doc.raw ? 'The redacted source is shown below.' : 'No redacted copy of the file is available.'}
           </Notice>
           {doc.raw ? (
-            <SourcePane doc={doc} searchQuery={searchQuery} copiedId={copiedId} onCopy={handleCopy} />
+            <SourcePane doc={doc} searchQuery={searchQuery} />
           ) : (
             <Card>
-              <EmptyState icon="alert-triangle" title="Source unavailable" description="The file exists but could not be parsed, and no redacted raw text was provided." />
+              <EmptyState icon="alert-triangle" title="Source unavailable" description="The file exists but could not be parsed, and no redacted copy of its text was provided." />
             </Card>
           )}
         </>
       ) : commentsOnly ? (
         <>
           <Notice tone="info" title="No structured values">
-            The file parsed successfully but holds no keys — likely only comments. The source is shown below.
+            The file parsed but holds no keys — probably only comments. The source is shown below.
           </Notice>
-          <SourcePane doc={doc} searchQuery={searchQuery} copiedId={copiedId} onCopy={handleCopy} />
+          <SourcePane doc={doc} searchQuery={searchQuery} />
         </>
       ) : summary.emptyObject ? (
         <Card>
           <EmptyState
             icon="file-text"
-            title="Config present but empty"
-            description="The file exists, but the redacted payload has no inspectable keys. It may be blank, intentionally minimal, or fully redacted before aggregation."
+            title="The config file is empty"
+            description="The file exists but has no keys to inspect. It may be blank, intentionally minimal, or fully redacted."
           />
         </Card>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '220px minmax(0, 1fr)', gap: 12, alignItems: 'start' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: paneColumns, gap: 12, alignItems: 'start' }}>
           <SectionNav
             projections={projections}
             selectedKey={effectiveSelected}
@@ -261,11 +322,9 @@ function SourceConfigExplorer() {
               onExpandAll={handleExpandAll}
               onCollapseAll={handleCollapseAll}
               onClearFilter={() => setSearchValue('')}
-              copiedId={copiedId}
-              onCopy={handleCopy}
             />
           ) : (
-            <SourcePane doc={doc} searchQuery={searchQuery} copiedId={copiedId} onCopy={handleCopy} />
+            <SourcePane doc={doc} searchQuery={searchQuery} />
           )}
         </div>
       )}

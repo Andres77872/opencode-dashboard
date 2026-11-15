@@ -1,9 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useId } from 'react'
 import { useDashboardContext } from '../components/layout/dashboard-context.ts'
-import { withBypassCache } from './api.ts'
 import type { SourceID } from '../types/api.ts'
+import { useCachedResource, type CachedResourceResult } from './use-cached-resource.ts'
 
 export interface UsePeriodResourceOptions {
+  /**
+   * Names the resource so its results outlive the view: coming back to a view
+   * then shows the last data at once. Give each endpoint its own id. Without
+   * one, results are cached only for this mounted component.
+   */
+  cacheId?: string
   /** When false, always fetch even if the period is already cached. Default: true. */
   cachePeriods?: boolean
   /**
@@ -18,15 +24,7 @@ export interface UsePeriodResourceOptions {
   deps?: readonly unknown[]
 }
 
-export interface UsePeriodResourceResult<T> {
-  data: T | null
-  loading: boolean
-  error: string | null
-  /** Returns cached data for ANY period key without triggering a fetch. Returns null if uncached. */
-  dataForPeriod: (period: string) => T | null
-  /** Silently prefetches a period in the background. Loading state is NOT affected. */
-  prefetch: (period: string) => void
-}
+export type UsePeriodResourceResult<T> = CachedResourceResult<T>
 
 type Fetcher<T> = (period: string, signal?: AbortSignal, sourceId?: SourceID) => Promise<T>
 
@@ -35,18 +33,16 @@ export function getSourceScopedCacheKey(sourceId: SourceID, period: string) {
 }
 
 /**
- * Generic per-period fetch + cache + refresh hook.
+ * Per-period, per-source resource for the selected data source.
  *
- * - Caches results keyed by string (supports both preset periods and serialized custom range keys).
- * - Aborts in-flight requests when period changes.
- * - Re-fetches when `refreshNonce` changes (from DashboardContext).
- * - `cachePeriods: false` skips the cache — always fetches.
- * - `dataForPeriod(key)` returns cached data for any key without triggering a fetch.
- * - `prefetch(key)` silently fetches in the background. Skips keys starting with "from_" (custom ranges).
+ * Keyed by source revision + source + period (supports preset periods and
+ * serialized custom-range keys). Waits for source metadata, reports the
+ * source-state error when the source is unavailable, and otherwise behaves
+ * like any cached resource: aborts on scope change, revalidates on refresh.
  *
  * @example
  * ```tsx
- * const { data, loading, error } = usePeriodResource(getOverview, period)
+ * const { data, loading, error } = usePeriodResource(getDaily, period, { cacheId: 'daily' })
  * ```
  */
 export function usePeriodResource<T>(
@@ -54,201 +50,20 @@ export function usePeriodResource<T>(
   period: string,
   options?: UsePeriodResourceOptions,
 ): UsePeriodResourceResult<T> {
-  const {
-    refreshNonce,
-    selectedSourceId,
-    sourceMetadata,
-    sourceAvailable,
-    sourceMetadataLoading,
-    sourceStateError,
-    setLastUpdatedAt,
-    setRefreshing,
-  } = useDashboardContext()
-  const { cachePeriods = true, deps } = options ?? {}
-  // Compared by value: callers pass a fresh array literal every render.
-  const depsKey = JSON.stringify(deps ?? [])
+  const { selectedSourceId, sourceMetadata, sourceAvailable, sourceMetadataLoading, sourceStateError } = useDashboardContext()
+  const { cacheId, cachePeriods = true, deps } = options ?? {}
+  const instanceId = useId()
+  const revision = sourceMetadata?.sources_revision ?? 0
 
-  const [data, setData] = useState<T | null>(null)
-  const scopeKey = `${sourceMetadata?.sources_revision ?? 0}:${getSourceScopedCacheKey(selectedSourceId, period)}`
-  const [dataScope, setDataScope] = useState(scopeKey)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const cacheRef = useRef<Map<string, T>>(new Map())
-  const activeControllerRef = useRef<AbortController | null>(null)
-  const mountedRef = useRef(true)
-  const lastCacheKeyRef = useRef<string | null>(null)
-  const prefetchControllersRef = useRef<Set<AbortController>>(new Set())
-  /**
-   * Tracks the refreshNonce value that was current when the last successful
-   * fetch completed. Used to skip the cache short-circuit when refreshNonce
-   * changes (user clicked Refresh) — even for already-cached periods.
-   * Initialized as a Symbol so it never matches the first render's refreshNonce (0),
-   * ensuring the first fetch always happens (cache is empty anyway, but the
-   * nonce-ref comparison serves as an additional guard).
-   */
-  const lastRefreshNonceRef = useRef<number | symbol>(Symbol('initial'))
-
-  useEffect(() => {
-    const controllers = prefetchControllersRef.current
-    mountedRef.current = true
-    return () => {
-      mountedRef.current = false
-      for (const controller of controllers) controller.abort()
-      controllers.clear()
-    }
-  }, [])
-
-  useEffect(() => {
-    const controllers = prefetchControllersRef.current
-    return () => {
-      for (const controller of controllers) controller.abort()
-      controllers.clear()
-    }
-  }, [selectedSourceId, sourceAvailable, sourceMetadata?.sources_revision])
-
-  const dataForPeriod = useCallback((p: string): T | null => {
-    return cacheRef.current.get(`${sourceMetadata?.sources_revision ?? 0}:${getSourceScopedCacheKey(selectedSourceId, p)}`) ?? null
-  }, [selectedSourceId, sourceMetadata?.sources_revision])
-
-  // Main fetch effect — triggers on period change or refreshNonce change
-  useEffect(() => {
-    if (sourceMetadataLoading) {
-      setLoading(true)
-      setError(null)
-      setData(null)
-      return
-    }
-
-    if (!sourceAvailable) {
-      if (activeControllerRef.current) {
-        activeControllerRef.current.abort()
-        activeControllerRef.current = null
-      }
-      setData(null)
-      setLoading(false)
-      setRefreshing(false)
-      setError(sourceStateError?.message ?? 'Selected source is unavailable')
-      return
-    }
-
-    const cacheKey = `${sourceMetadata?.sources_revision ?? 0}:${getSourceScopedCacheKey(selectedSourceId, period)}`
-
-    // Determine whether this effect re-ran because refreshNonce changed.
-    // On first render lastRefreshNonceRef is a Symbol so the !== check is true
-    // (the cache will be empty, so the short-circuit below won't match anyway).
-    const isRefreshTriggered = lastRefreshNonceRef.current !== refreshNonce
-
-    // Cache short-circuit: use cached data only when NOT a refresh trigger.
-    // When the user clicked Refresh (refreshNonce changed), force a real fetch
-    // even if this period already has cached data.
-    if (cachePeriods && !isRefreshTriggered && cacheRef.current.has(cacheKey)) {
-      setData(cacheRef.current.get(cacheKey) ?? null)
-      setDataScope(cacheKey)
-      setLoading(false)
-      setError(null)
-      lastCacheKeyRef.current = cacheKey
-      return
-    }
-
-    // Blank the rows only when the *scope* changed (period or source): showing
-    // one source's rows under another's label would be wrong.
-    //
-    // When merely a `deps` dimension changed (a page turn, a filter keystroke),
-    // keep the previous rows on screen while the next set loads. Nulling them
-    // here would drop the view back to its first-load skeleton — which unmounts
-    // the whole page including the search input, losing focus and the caret
-    // mid-typing on every debounced keystroke.
-    const scopeChanged = lastCacheKeyRef.current !== cacheKey
-    if (scopeChanged) {
-      setData(cachePeriods ? (cacheRef.current.get(cacheKey) ?? null) : null)
-      setDataScope(cacheKey)
-      lastCacheKeyRef.current = cacheKey
-    }
-
-    const controller = new AbortController()
-
-    // Abort any in-flight request from a previous period
-    if (activeControllerRef.current) {
-      activeControllerRef.current.abort()
-    }
-    activeControllerRef.current = controller
-
-    const doFetch = async () => {
-      setRefreshing(true)
-      setError(null)
-      setLoading(true)
-
-      try {
-        // When this fetch was triggered by a user-initiated refresh (nonce
-        // change), scope the HTTP cache bypass around the fetch initiation so
-        // the underlying fetch() uses cache: 'no-cache'.
-        const next = isRefreshTriggered
-          ? await withBypassCache(() => fetcher(period, controller.signal, selectedSourceId))
-          : await fetcher(period, controller.signal, selectedSourceId)
-
-        if (controller.signal.aborted || !mountedRef.current) return
-
-        // The cache is keyed by source+period only, so a result that also depends
-        // on `deps` (page, filter, …) must never enter it — it would be replayed
-        // for a different page. Those resources set cachePeriods: false.
-        if (cachePeriods) {
-          cacheRef.current.set(cacheKey, next)
-        }
-        lastRefreshNonceRef.current = refreshNonce
-        setData(next)
-        setDataScope(cacheKey)
-        setLastUpdatedAt(new Date())
-      } catch (caught) {
-        if (controller.signal.aborted) return
-        setError(caught instanceof Error ? caught.message : 'Failed to load data')
-      } finally {
-        if (!controller.signal.aborted && mountedRef.current) {
-          setLoading(false)
-          setRefreshing(false)
-        }
-      }
-    }
-
-    void doFetch()
-
-    return () => {
-      controller.abort()
-    }
-    // Period, source, availability, refreshNonce, and the caller's extra query
-    // dimensions (depsKey) are the reactive inputs. `fetcher` is deliberately
-    // excluded — callers pass an inline closure that reads the latest dimensions.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period, refreshNonce, selectedSourceId, sourceAvailable, sourceMetadataLoading, sourceStateError?.message, sourceMetadata?.sources_revision, depsKey])
-
-  const prefetch = useCallback(
-    (p: string) => {
-      // Skip prefetch for custom ranges (unbounded key space)
-      if (p.startsWith('from_')) return
-      if (!sourceAvailable) return
-      const cacheKey = `${sourceMetadata?.sources_revision ?? 0}:${getSourceScopedCacheKey(selectedSourceId, p)}`
-      if (cacheRef.current.has(cacheKey)) return
-      const controller = new AbortController()
-      prefetchControllersRef.current.add(controller)
-      fetcher(p, controller.signal, selectedSourceId)
-        .then((next) => {
-          if (controller.signal.aborted || !mountedRef.current) return
-          cacheRef.current.set(cacheKey, next)
-        })
-        .catch(() => {
-          // Prefetch failures are intentionally silent
-        })
-        .finally(() => prefetchControllersRef.current.delete(controller))
-    },
-    // fetcher is intentionally omitted — the ref pattern avoids stale closure issues
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedSourceId, sourceAvailable, sourceMetadata?.sources_revision],
-  )
-
-  return {
-    data: dataScope === scopeKey && sourceAvailable ? data : null,
-    loading,
-    error,
-    dataForPeriod,
-    prefetch,
-  }
+  return useCachedResource<T>({
+    key: `${cacheId ?? instanceId}|${revision}:${getSourceScopedCacheKey(selectedSourceId, period)}`,
+    ready: !sourceMetadataLoading,
+    blocked: sourceAvailable ? null : (sourceStateError?.message ?? 'Selected source is unavailable'),
+    cache: cachePeriods,
+    // Compared by value: callers pass a fresh array literal every render.
+    depsKey: JSON.stringify(deps ?? []),
+    // `fetcher` is deliberately read at call time — callers pass an inline
+    // closure that reads the latest dimensions.
+    load: (signal) => fetcher(period, signal, selectedSourceId),
+  })
 }

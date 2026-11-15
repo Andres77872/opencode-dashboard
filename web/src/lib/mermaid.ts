@@ -166,7 +166,6 @@ const ACTOR_H = 30
 const ACTOR_GAP = 26
 const MESSAGE_GAP = 34
 const SEQUENCE_TOP = 10
-const SELF_CALL_WIDTH = 30
 
 /* ------------------------------------------------------------------ *
  * Text measurement
@@ -871,9 +870,6 @@ function layoutSequence(
     notes,
   }
 }
-
-/** Widest point a self-call loop reaches, exported for the renderer's geometry. */
-export const SELF_CALL_OFFSET = SELF_CALL_WIDTH
 
 /* ------------------------------------------------------------------ *
  * Pie

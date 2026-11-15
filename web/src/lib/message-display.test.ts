@@ -67,7 +67,10 @@ test('formats estimated API-equivalent cost honestly', () => {
     currency: 'USD',
     note: 'Estimated using OpenAI API rates. This is not actual billed spend.',
   }
-  assert.equal(formatCurrencyWithProvenance(0.123456, 'estimated_api_equivalent', provenance), '≈ $0.123456')
+  // Currency precision adapts to magnitude (see format.test.ts); the estimate
+  // marker is what this guards.
+  assert.equal(formatCurrencyWithProvenance(0.123456, 'estimated_api_equivalent', provenance), '≈ $0.12')
+  assert.equal(formatCurrencyWithProvenance(12.5, 'estimated_api_equivalent', provenance), '≈ $12.50')
   assert.equal(formatCostProvenance('estimated_api_equivalent', provenance), provenance.note)
   assert.equal(formatCurrencyWithProvenance(0, 'missing'), 'Unknown')
 })

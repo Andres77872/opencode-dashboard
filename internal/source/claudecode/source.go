@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +19,13 @@ const (
 	claudeSourceID       = string(source.SourceClaudeCode)
 	defaultSnapshotTTL   = 15 * time.Second
 	defaultSourceTimeout = 10 * time.Second
+
+	// scopedSnapshotTTL bounds how long one session's parse is kept for
+	// follow-up lookups (its messages are usually opened one after another,
+	// and a long session with subagents is hundreds of megabytes to re-read).
+	// Staleness is not what it guards: the slot is keyed by each file's size
+	// and mtime, so a session that is still being written is re-read anyway.
+	scopedSnapshotTTL = 2 * time.Minute
 
 	// boundedLoadMargin is subtracted from a bounded load's lower bound before
 	// pruning files by mtime, absorbing filesystem timestamp coarseness and
@@ -56,6 +65,12 @@ type Source struct {
 	bounded         *snapshot
 	boundedFrom     time.Time // prune threshold the bounded slot was built with
 	boundedLoadedAt time.Time
+
+	// Single-session slot for detail lookups (see sessionSnapshot). Like the
+	// bounded slot it is partial, so it never stands in for the full snapshot.
+	scoped         *snapshot
+	scopedKey      string
+	scopedLoadedAt time.Time
 }
 
 func New(opts Options) *Source {
@@ -211,11 +226,29 @@ func (s *Source) Sessions(ctx context.Context, query stats.SessionQuery) (stats.
 }
 
 func (s *Source) SessionByID(ctx context.Context, id string) (*stats.SessionDetail, error) {
-	snap, err := s.loadSnapshot(ctx)
+	if s == nil {
+		return nil, source.UnavailableSourceError{ID: source.SourceClaudeCode, Reason: "Claude Code source is not configured"}
+	}
+	if snap := s.freshSnapshot(); snap != nil {
+		return snap.sessionByID(id), nil
+	}
+	// One session is stored under its own id, so read just those transcripts.
+	snap, err := s.sessionSnapshot(ctx, func(pathSessionID string) bool { return pathSessionID == id })
 	if err != nil {
 		return nil, err
 	}
-	return snap.sessionByID(id), nil
+	if snap != nil {
+		if detail := snap.sessionByID(id); detail != nil {
+			return detail, nil
+		}
+	}
+	// Not stored under its own id (a record may name another session than its
+	// file does): only the full history can answer.
+	full, err := s.loadSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return full.sessionByID(id), nil
 }
 
 func (s *Source) Messages(ctx context.Context, pq stats.PeriodQuery, page, limit int, sort stats.MessageSort) (stats.MessageList, error) {
@@ -227,6 +260,9 @@ func (s *Source) Messages(ctx context.Context, pq stats.PeriodQuery, page, limit
 }
 
 func (s *Source) MessageByID(ctx context.Context, id string) (*stats.MessageDetail, error) {
+	if !strings.HasPrefix(id, claudeSourceID+":") {
+		return nil, nil // not an id this source issues (see synthesizeMessageID)
+	}
 	// A fresh bounded snapshot usually already holds recent messages (the
 	// consolidation collect lists with FromTime and then fetches details);
 	// fall back to the full snapshot only on a miss.
@@ -238,6 +274,22 @@ func (s *Source) MessageByID(ctx context.Context, id string) (*stats.MessageDeta
 		}
 	}
 	s.mu.Unlock()
+	if snap := s.freshSnapshot(); snap != nil {
+		return snap.messageByID(id), nil
+	}
+	// A message id names its session, so an older message is read from that
+	// session's transcripts instead of the whole history.
+	scoped, err := s.sessionSnapshot(ctx, func(pathSessionID string) bool {
+		return strings.HasPrefix(id, messageIDPrefix(pathSessionID))
+	})
+	if err != nil {
+		return nil, err
+	}
+	if scoped != nil {
+		if detail := scoped.messageByID(id); detail != nil {
+			return detail, nil
+		}
+	}
 	snap, err := s.loadSnapshot(ctx)
 	if err != nil {
 		return nil, err
@@ -300,6 +352,9 @@ func (s *Source) Invalidate() {
 	s.bounded = nil
 	s.boundedFrom = time.Time{}
 	s.boundedLoadedAt = time.Time{}
+	s.scoped = nil
+	s.scopedKey = ""
+	s.scopedLoadedAt = time.Time{}
 }
 
 func (s *Source) currentDiagnostics(ctx context.Context) (source.SourceDiagnostics, bool) {
@@ -316,6 +371,13 @@ func (s *Source) currentDiagnostics(ctx context.Context) (source.SourceDiagnosti
 
 	disc := discoverTranscripts(ctx, s.opts.ClaudeHome)
 	if !disc.available {
+		// An interrupted scan says nothing about the source: keep what was known.
+		if ctx.Err() != nil {
+			if lastDiag.Status != "" {
+				return lastDiag, lastAvailable
+			}
+			return disc.diagnostics, false
+		}
 		s.setLastDiagnostics(disc.diagnostics, false)
 		return disc.diagnostics, false
 	}
@@ -362,6 +424,11 @@ func (s *Source) loadSnapshot(ctx context.Context) (*snapshot, error) {
 			if s.generation != generation {
 				s.mu.Unlock()
 				continue
+			}
+			// An interrupted scan says nothing about the source itself.
+			if err := ctx.Err(); err != nil {
+				s.mu.Unlock()
+				return nil, err
 			}
 			s.lastDiag = disc.diagnostics
 			s.lastStatus = false
@@ -470,6 +537,11 @@ func (s *Source) loadBoundedSnapshot(ctx context.Context, from time.Time) (*snap
 				s.mu.Unlock()
 				continue
 			}
+			// An interrupted scan says nothing about the source itself.
+			if err := ctx.Err(); err != nil {
+				s.mu.Unlock()
+				return nil, err
+			}
 			s.lastDiag = disc.diagnostics
 			s.lastStatus = false
 			s.mu.Unlock()
@@ -503,6 +575,78 @@ func (s *Source) loadBoundedSnapshot(ctx context.Context, from time.Time) (*snap
 		s.mu.Unlock()
 		return snap, nil
 	}
+}
+
+// freshSnapshot returns the full snapshot while it is within its TTL, or nil.
+func (s *Source) freshSnapshot() *snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.snapshot != nil && time.Since(s.loadedAt) <= s.opts.SnapshotTTL {
+		return s.snapshot
+	}
+	return nil
+}
+
+// sessionSnapshot parses only the transcripts whose path stores them under a
+// session id accepted by belongs: a session's own file plus its subagent
+// files. It returns nil when no transcript matches.
+//
+// Detail lookups need one session, and the full snapshot they used to load
+// grows with the whole history: on a few gigabytes of transcripts it cannot
+// finish inside a request, so every lookup failed. Claude Code writes a
+// session to <project>/<session>.jsonl (subagents below <session>/subagents),
+// which makes the matching files a complete view of that session. The result
+// is partial, so it is kept in its own slot and never replaces the full
+// snapshot or its diagnostics.
+func (s *Source) sessionSnapshot(ctx context.Context, belongs func(pathSessionID string) bool) (*snapshot, error) {
+	ctx, cancel := s.contextWithTimeout(ctx)
+	defer cancel()
+
+	s.mu.Lock()
+	generation := s.generation
+	s.mu.Unlock()
+
+	disc := discoverTranscripts(ctx, s.opts.ClaudeHome)
+	if !disc.available {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, source.UnavailableSourceError{ID: source.SourceClaudeCode, Reason: disc.diagnostics.Reason}
+	}
+	files := make([]transcriptFile, 0, 4)
+	stamps := make([]string, 0, 4)
+	for _, file := range disc.files {
+		if file.SessionID != "" && belongs(file.SessionID) {
+			files = append(files, file)
+			// Transcripts are append-only: an unchanged size and mtime means
+			// an unchanged file, so the key also says when a parse is stale.
+			stamps = append(stamps, fmt.Sprintf("%s|%d|%d", file.Path, file.Size, file.ModTime.UnixNano()))
+		}
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+	sort.Strings(stamps)
+	key := strings.Join(stamps, "\x00")
+
+	s.mu.Lock()
+	if s.scoped != nil && s.scopedKey == key && time.Since(s.scopedLoadedAt) <= scopedSnapshotTTL {
+		snap := s.scoped
+		s.mu.Unlock()
+		return snap, nil
+	}
+	s.mu.Unlock()
+
+	snap, err := s.parseFiles(ctx, files, disc.diagnostics)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.generation == generation {
+		s.scoped, s.scopedKey, s.scopedLoadedAt = snap, key, time.Now()
+	}
+	s.mu.Unlock()
+	return snap, nil
 }
 
 func (s *Source) contextWithTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

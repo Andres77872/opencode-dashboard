@@ -1,53 +1,56 @@
-/* Sessions — list + full-page detail (Vael). The old Radix Sheet drawer is replaced
-   by an in-view full-page swap keyed on a ?session=<id> URL param for deep-linking.
-   No fabricated data: duration is time_updated − time_created, cache-hit is derived
-   from total_tokens, and costs always use the *WithProvenance helpers. */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+/* Sessions — paged session list (Vael) with a full-page detail swap keyed on
+   ?session=<id> for deep-linking. The list is driven entirely by the URL:
+   ?page, ?sort, ?filter (search text) and ?project_id (project scope), so
+   back/forward and shared links restore exactly what was on screen. */
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
-  Card,
-  StatCard,
-  DataTable,
-  VendorChip,
-  Badge,
-  Legend,
   Button,
-  Icon,
-  Tabs,
-  Skeleton,
+  Card,
+  DataTable,
   EmptyState,
   ErrorState,
+  Icon,
   Notice,
+  Pagination,
+  SearchInput,
+  StatCard,
+  StatGrid,
+  VendorChip,
+  ViewSkeleton,
   vendorMeta,
   type Column,
   type SortSpec,
 } from '../components/vael'
 import { useDashboardContext } from '../components/layout/dashboard-context'
-import { getSessionDetail, getSessionsWithFilter } from '../lib/api'
-import { usePeriodResource } from '../lib/use-period-resource'
+import { SessionDetailScreen } from '../components/sessions/session-detail'
+import { getSessionLabel, getSessionProjectLabel } from '../components/sessions/session-labels'
+import { useHeldValue } from '../lib/use-held-value'
+import { getSessionsWithFilter } from '../lib/api'
+import { useCachedResource } from '../lib/use-cached-resource'
+import { useMediaQuery } from '../lib/use-media-query'
 import { usePeriodControls } from '../lib/use-period-controls'
-import { getTokenTotal } from '../lib/token-breakdown'
-import { getProcessingModeMeta, REQUESTED_TIER_DISCLOSURE } from '../lib/processing-mode'
+import { periodTriggerLabel } from '../lib/period-label'
+import { isTranscriptSource } from '../lib/message-display'
 import {
   formatCompactCurrencyWithProvenance,
   formatCompactInteger,
+  formatCount,
+  formatCurrencyExact,
   formatCurrencyWithProvenance,
   formatDateTime,
+  formatDuration,
   formatInteger,
   formatRelativeTime,
-  formatTokenCount,
+  formatShortId,
+  getCostLabel,
+  isMissingCost,
   safeDivide,
 } from '../lib/format'
-import type {
-  SessionDetail,
-  SessionEntry,
-  SessionList,
-  SessionMessage,
-  SourceID,
-} from '../types/api'
+import type { SessionEntry, SessionList } from '../types/api'
 
 const PAGE_SIZE = 12
-const SEARCH_DEBOUNCE_MS = 300
+const SEARCH_DEBOUNCE_MS = 250
 
 /**
  * Sorting is server-side (`GET /api/v1/sessions?sort=`), because the API pages
@@ -55,8 +58,7 @@ const SEARCH_DEBOUNCE_MS = 300
  *
  * The backend orders by cost and by message count in one direction only, so
  * those columns are single-direction here. Offering a toggle whose ascending
- * arrow the server ignores would render the same inverted-indicator bug the
- * Models table had.
+ * arrow the server ignores would show an indicator that does not match the rows.
  */
 const SESSION_SORTS = ['newest', 'oldest', 'cost', 'messages'] as const
 type SessionSort = (typeof SESSION_SORTS)[number]
@@ -74,6 +76,13 @@ const SORT_INDICATOR: Record<SessionSort, SortSpec> = {
   messages: { key: 'messages', dir: 'desc' },
 }
 
+const SORT_DESCRIPTION: Record<SessionSort, string> = {
+  newest: 'newest first',
+  oldest: 'oldest first',
+  cost: 'highest cost first',
+  messages: 'most messages first',
+}
+
 /** Clicking a header: Started toggles newest/oldest; cost and messages are one-way. */
 function nextSessionSort(current: SessionSort, columnKey: string): SessionSort {
   switch (columnKey) {
@@ -88,259 +97,303 @@ function nextSessionSort(current: SessionSort, columnKey: string): SessionSort {
   }
 }
 
-function getSessionLabel(session: Pick<SessionEntry, 'title'>) {
-  return session.title || 'Untitled session'
+function parsePage(value: string | null) {
+  const page = parseInt(value ?? '1', 10)
+  return Number.isNaN(page) || page < 1 ? 1 : page
 }
 
-function getSessionProjectLabel(
-  session: Pick<SessionEntry, 'project_name' | 'project_id'>,
-) {
-  return session.project_name || session.project_id || 'No linked project'
+interface SearchDraft {
+  /** What the box shows. */
+  text: string
+  /** The URL value this draft was typed over. */
+  base: string
+  /** The value this draft last wrote to the URL, once it has written one. */
+  committed?: string
 }
 
-// Duration between created/updated, e.g. "4m 12s" / "2h 30m" / "3d 4h".
-function fmtDur(createdAt: string, updatedAt: string): string {
-  const ms = new Date(updatedAt).getTime() - new Date(createdAt).getTime()
-  const totalSec = Math.max(0, Math.round(ms / 1000))
-  if (totalSec < 1) return '0s'
-  const d = Math.floor(totalSec / 86400)
-  const h = Math.floor((totalSec % 86400) / 3600)
-  const m = Math.floor((totalSec % 3600) / 60)
-  const s = totalSec % 60
-  if (d > 0) return `${d}d ${h}h`
-  if (h > 0) return `${h}h ${m}m`
-  if (m > 0) return `${m}m ${s}s`
-  return `${s}s`
+/**
+ * Text for a search box that writes to a URL param after a pause in typing.
+ *
+ * The URL stays the source of truth; the draft only covers the gap between a
+ * keystroke and the URL catching up. A draft is live while the URL holds the
+ * value it was typed over or the value it wrote. Any other URL value arrived
+ * from elsewhere (back/forward, a link) and is shown instead — the box's text
+ * is derived on each render, so there is nothing to copy back into state.
+ */
+function useSearchDraft(urlValue: string, write: (value: string, replace: boolean) => void) {
+  const [draft, setDraft] = useState<SearchDraft | null>(null)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Once the URL shows what the draft wrote, that is the value it sits on. The
+  // one it was typed over then stops counting, so Back to it clears the box.
+  if (draft && draft.committed !== undefined && urlValue === draft.committed && draft.base !== draft.committed) {
+    setDraft({ ...draft, base: draft.committed })
+  }
+  const live = draft !== null && (urlValue === draft.base || urlValue === draft.committed)
+
+  const cancel = () => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = null
+  }
+
+  // A pending write belongs to a draft the URL has since moved away from.
+  useEffect(() => {
+    if (!live) cancel()
+  }, [live])
+  useEffect(() => cancel, [])
+
+  const commit = (value: string) => {
+    setDraft((current) => current && { ...current, base: current.committed ?? current.base, committed: value })
+    if (value === urlValue) return
+    // Refining a search rewrites the current history entry, so Back leaves the
+    // search in one step instead of replaying every pause in the typing.
+    write(value, urlValue !== '' && value !== '')
+  }
+
+  return {
+    text: live && draft ? draft.text : urlValue,
+    onChange: (text: string) => {
+      cancel()
+      setDraft({ text, base: live && draft ? draft.base : urlValue, committed: live && draft ? draft.committed : undefined })
+      const value = text.trim()
+      // Clearing the box applies at once; typing waits for a pause.
+      if (value === '') commit('')
+      else timerRef.current = setTimeout(() => commit(value), SEARCH_DEBOUNCE_MS)
+    },
+    /** Empties the box now; the caller clears the URL param itself. */
+    reset: () => {
+      cancel()
+      setDraft({ text: '', base: urlValue, committed: '' })
+    },
+  }
 }
 
 export function SessionsView() {
-  const { requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
+  const {
+    requestRefresh,
+    selectedSourceId,
+    selectedSourceInfo,
+    sourceMetadata,
+    sourceMetadataLoading,
+    sourceAvailable,
+    sourceStateError,
+  } = useDashboardContext()
   const [searchParams, setSearchParams] = useSearchParams()
+  const { cacheKey, state: periodState } = usePeriodControls()
+  const compact = useMediaQuery('(max-width: 760px)')
   const sourceLabel = selectedSourceInfo?.label ?? vendorMeta(selectedSourceId).name
 
-  const { cacheKey } = usePeriodControls()
   const rawFilter = searchParams.get('filter') ?? ''
-  const projectId = searchParams.get('project_id') ?? undefined
-  const selectedSessionId = searchParams.get('session')
+  const projectId = searchParams.get('project_id') ?? ''
   const sort = parseSessionSort(searchParams.get('sort'))
 
-  const pageFromUrl = parseInt(searchParams.get('page') ?? '1', 10)
-  const page = isNaN(pageFromUrl) || pageFromUrl < 1 ? 1 : pageFromUrl
+  // ── ?page and ?session belong to the source they were chosen under ──
+  // The source picker changes only ?source, so the page number and open session
+  // of the previous source would carry over to one they mean nothing in.
+  // Switching therefore restarts the list at page 1 with no session open. That
+  // is decided while rendering, so the first request already asks for page 1;
+  // the effect below then brings the URL in line. Two things are not a switch:
+  // a source that only resolves once the source list has loaded, and a history
+  // step that arrives with its own page and session.
+  const urlPosition = `${searchParams.get('page') ?? ''}|${searchParams.get('session') ?? ''}`
+  const [urlOwner, setUrlOwner] = useState({ sourceId: selectedSourceId, position: urlPosition })
+  const [wasLoadingSources, setWasLoadingSources] = useState(sourceMetadataLoading)
+  if (wasLoadingSources !== sourceMetadataLoading) setWasLoadingSources(sourceMetadataLoading)
+  let sourceSwitched = false
+  if (urlOwner.sourceId !== selectedSourceId) {
+    const carriedOver = urlOwner.position === urlPosition && urlPosition !== '|'
+    if (carriedOver && !wasLoadingSources) sourceSwitched = true
+    else setUrlOwner({ sourceId: selectedSourceId, position: urlPosition })
+  } else if (urlOwner.position !== urlPosition) {
+    setUrlOwner({ sourceId: selectedSourceId, position: urlPosition })
+  }
+  useEffect(() => {
+    if (!sourceSwitched) return
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete('page')
+        next.delete('session')
+        return next
+      },
+      { replace: true },
+    )
+  }, [sourceSwitched, setSearchParams])
 
-  // Sorting reorders the whole result set, so the current page number is
-  // meaningless afterwards — go back to the first page.
+  const page = sourceSwitched ? 1 : parsePage(searchParams.get('page'))
+  const selectedSessionId = sourceSwitched ? null : searchParams.get('session')
+
+  /** Edits the list's query. Anything that changes the result set restarts at page 1. */
+  const updateQuery = (mutate: (params: URLSearchParams) => void, options?: { replace?: boolean }) =>
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      mutate(next)
+      return next
+    }, options)
+
+  const setPage = (next: number) =>
+    updateQuery((params) => {
+      if (next <= 1) params.delete('page')
+      else params.set('page', String(next))
+    })
+
   const handleSort = (columnKey: string) => {
     const next = nextSessionSort(sort, columnKey)
     if (next === sort) return
-    setSearchParams((prev) => {
-      const n = new URLSearchParams(prev)
-      n.set('page', '1')
-      if (next === DEFAULT_SESSION_SORT) n.delete('sort')
-      else n.set('sort', next)
-      return n
+    updateQuery((params) => {
+      params.delete('page')
+      if (next === DEFAULT_SESSION_SORT) params.delete('sort')
+      else params.set('sort', next)
     })
   }
 
-  // ── Reset list + close detail when the source changes ──
-  const previousSourceRef = useRef(selectedSourceId)
-  useEffect(() => {
-    if (previousSourceRef.current === selectedSourceId) return
-    previousSourceRef.current = selectedSourceId
-    setSearchParams(
-      (prev) => {
-        const n = new URLSearchParams(prev)
-        n.set('page', '1')
-        n.delete('session')
-        return n
+  const openSession = (id: string) => updateQuery((params) => params.set('session', id))
+  const closeSession = () => updateQuery((params) => params.delete('session'))
+
+  const filterByProject = (id: string) =>
+    updateQuery((params) => {
+      params.set('project_id', id)
+      params.delete('page')
+      params.delete('session')
+    })
+
+  // ── Search: typed text, written to ?filter after a pause ──
+  const search = useSearchDraft(rawFilter, (value, replace) =>
+    updateQuery(
+      (params) => {
+        params.delete('page')
+        if (value) params.set('filter', value)
+        else params.delete('filter')
       },
-      { replace: true },
-    )
-  }, [selectedSourceId, setSearchParams])
-
-  // Normalize URL params on mount. `replace` matters: pushing a history entry
-  // here means arriving from another view and pressing Back lands you right back
-  // on /sessions (minus the ?page=1), so Back has to be pressed twice to leave.
-  useEffect(() => {
-    if (!searchParams.has('page')) {
-      setSearchParams(
-        (prev) => {
-          const n = new URLSearchParams(prev)
-          n.set('page', '1')
-          return n
-        },
-        { replace: true },
-      )
-    }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const setPage = (updater: number | ((prev: number) => number)) => {
-    const np = typeof updater === 'function' ? updater(page) : updater
-    setSearchParams((prev) => {
-      const n = new URLSearchParams(prev)
-      n.set('page', String(np))
-      return n
-    })
-  }
-
-  const openSession = (id: string) =>
-    setSearchParams((prev) => {
-      const n = new URLSearchParams(prev)
-      n.set('session', id)
-      return n
-    })
-
-  const closeSession = () =>
-    setSearchParams((prev) => {
-      const n = new URLSearchParams(prev)
-      n.delete('session')
-      return n
-    })
-
-  // ── Sessions list via usePeriodResource ──
-  // Sessions has extra query dimensions (page, filter, projectId, sort) beyond
-  // period, so it declares them as `deps`: the hook re-fetches when they change
-  // and keeps the current rows on screen meanwhile. (It used to bump the app-wide
-  // refresh nonce instead, which forced a no-cache refetch of every other mounted
-  // resource on every page turn, and blanked this view back to its first-load
-  // skeleton — unmounting the search input and dropping focus mid-typing.)
-  const fetcher = useCallback(
-    (p: string, signal?: AbortSignal, sourceId?: SourceID) =>
-      getSessionsWithFilter(page, PAGE_SIZE, p, rawFilter || undefined, projectId, signal, sourceId, sort),
-    [page, rawFilter, projectId, sort],
+      { replace },
+    ),
   )
 
-  const { data, loading, error } = usePeriodResource<SessionList>(fetcher, cacheKey, {
-    cachePeriods: false,
-    deps: [page, rawFilter, projectId ?? '', sort],
-  })
-
-  // ── Search/filter with 300ms debounce ──
-  const [searchText, setSearchText] = useState(rawFilter)
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = e.target.value
-    setSearchText(v)
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
-    debounceTimerRef.current = setTimeout(() => {
-      setSearchParams((prev) => {
-        const n = new URLSearchParams(prev)
-        n.set('page', '1')
-        if (v) n.set('filter', v)
-        else n.delete('filter')
-        return n
-      })
-    }, SEARCH_DEBOUNCE_MS)
+  const clearFilters = () => {
+    search.reset()
+    updateQuery((params) => {
+      params.delete('filter')
+      params.delete('project_id')
+      params.delete('page')
+    })
   }
-  useEffect(() => () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current) }, [])
+
+  const clearProject = () =>
+    updateQuery((params) => {
+      params.delete('project_id')
+      params.delete('page')
+    })
+
+  // ── Session list ──
+  // Every query dimension is part of the key, so each page is cached on its own:
+  // paging back, or returning from another view, shows it at once. `useHeldValue`
+  // keeps the previous page on screen while the next one loads.
+  const scope = `${sourceMetadata?.sources_revision ?? 0}:${selectedSourceId}::${cacheKey}`
+  const { data: loaded, loading, error } = useCachedResource<SessionList>({
+    key: `sessions|${scope}|${projectId}|${sort}|${page}|${rawFilter}`,
+    ready: !sourceMetadataLoading,
+    blocked: sourceAvailable ? null : (sourceStateError?.message ?? 'Selected source is unavailable'),
+    load: (signal) => getSessionsWithFilter(page, PAGE_SIZE, cacheKey, rawFilter || undefined, projectId || undefined, signal, selectedSourceId, sort),
+    fallbackError: 'Failed to load sessions',
+  })
+  const data = useHeldValue(scope, loaded)
+  // The rows on screen belong to another page or query until `loaded` arrives.
+  const stale = loading && loaded === null && data !== null
 
   // A bookmarked or shared ?page= can point past the end of the result set (the
   // range shrank, or the link was hand-edited). The backend answers with an empty
-  // page, which renders the "no sessions" empty state — and that state has no
-  // pagination controls, so there is no way back to page 1 short of editing the
-  // URL. Snap back to the last real page instead.
-  const totalPages = data ? Math.max(1, Math.ceil(data.total / data.page_size)) : null
+  // page; snap back to the last real page instead of stranding the reader there.
+  const pageCount = loaded ? Math.max(1, Math.ceil(loaded.total / Math.max(1, loaded.page_size))) : null
   useEffect(() => {
-    if (totalPages === null || page <= totalPages) return
+    if (pageCount === null || page <= pageCount) return
     setSearchParams(
       (prev) => {
-        const n = new URLSearchParams(prev)
-        n.set('page', String(totalPages))
-        return n
+        const next = new URLSearchParams(prev)
+        next.set('page', String(pageCount))
+        return next
       },
       { replace: true },
     )
-  }, [page, totalPages, setSearchParams])
+  }, [page, pageCount, setSearchParams])
 
-  // ── Page summary ──
   const summary = useMemo(() => {
     if (!data) return null
-    const totalPages = Math.max(1, Math.ceil(data.total / data.page_size))
-    const firstVisible = data.total === 0 ? 0 : (data.page - 1) * data.page_size + 1
-    const lastVisible = data.total === 0 ? 0 : firstVisible + data.sessions.length - 1
-    const visibleCost = data.sessions.reduce((a, s) => a + s.cost, 0)
-    const visibleMessages = data.sessions.reduce((a, s) => a + s.message_count, 0)
-    const visibleProjects = new Set(data.sessions.map((s) => getSessionProjectLabel(s))).size
+    const sessions = data.sessions
     return {
-      totalPages,
-      firstVisible,
-      lastVisible,
-      visibleCost,
-      visibleMessages,
-      visibleProjects,
       total: data.total,
-      pageSize: data.page_size,
-      page: data.page,
-      empty: data.sessions.length === 0,
-      costStatus: data.cost_status,
-      costProvenance: data.cost_provenance,
+      shown: sessions.length,
+      pageCost: sessions.reduce((sum, s) => sum + s.cost, 0),
+      pageMessages: sessions.reduce((sum, s) => sum + s.message_count, 0),
+      pageProjects: new Set(sessions.map((s) => s.project_id || s.project_name)).size,
+      // Rows carry their own source only when a list mixes several.
+      mixedSources: sessions.some((s) => s.source_id && s.source_id !== selectedSourceId),
+      projectName: projectId ? sessions.find((s) => s.project_id === projectId)?.project_name : undefined,
     }
-  }, [data])
+  }, [data, projectId, selectedSourceId])
 
   // ── Detail full-page swap ──
   if (selectedSessionId) {
+    return <SessionDetailScreen key={selectedSessionId} id={selectedSessionId} onBack={closeSession} onFilterProject={filterByProject} />
+  }
+
+  if (!data || !summary) {
+    if (loading) return <ViewSkeleton stats={4} panels={[420]} label="Loading sessions" />
+    return <Card><ErrorState title="Sessions failed to load" message={error ?? undefined} onRetry={requestRefresh} /></Card>
+  }
+
+  const costStatus = data.cost_status
+  const costProvenance = data.cost_provenance
+  const costLabel = getCostLabel(costStatus, costProvenance)
+  const filtered = rawFilter !== '' || projectId !== ''
+  const projectLabel = summary.projectName || formatShortId(projectId, 24)
+  const scopeHint = rawFilter ? `matching “${rawFilter}”` : projectId ? `in ${projectLabel}` : periodTriggerLabel(periodState)
+
+  // The title column takes whatever width the fixed columns leave. Inline-size
+  // containment keeps a long title from widening the table: the text truncates
+  // to the cell instead of the cell growing to the text.
+  const titleCell = (s: SessionEntry, sub: string, subTitle?: string) => {
+    const label = getSessionLabel(s)
     return (
-      <SessionDetailScreen
-        id={selectedSessionId}
-        sourceId={selectedSourceId}
-        sourceLabel={sourceLabel}
-        onBack={closeSession}
-      />
-    )
-  }
-
-  // ── List loading ──
-  if (loading && !data) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-lg)', padding: 16 }}>
-              <Skeleton width={90} height={11} />
-              <Skeleton width={120} height={28} style={{ marginTop: 12 }} />
-            </div>
-          ))}
-        </div>
-        <div style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', height: 340 }} />
-      </div>
-    )
-  }
-
-  if (!data && error) {
-    return <Card><ErrorState title="Sessions failed to load" message={error} onRetry={requestRefresh} /></Card>
-  }
-
-  const columns: Column<SessionEntry>[] = [
-    {
-      key: 'id',
-      header: 'Session',
-      width: 240,
-      render: (s) => (
-        <span style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
-          <span style={{ font: '600 13px/1.3 var(--font-ui)', color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {getSessionLabel(s)}
-          </span>
-          <span style={{ font: '400 11px/1 var(--font-mono)', color: 'var(--fg-faint)' }} title={s.id}>
-            id {s.id.slice(0, 12)}
-          </span>
+      <span style={{ display: 'flex', flexDirection: 'column', gap: 4, contain: 'inline-size', minWidth: compact ? 128 : 200 }}>
+        <span title={label} style={{ font: '600 13px/1.3 var(--font-ui)', color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {label}
         </span>
-      ),
-    },
-    {
-      key: 'source',
-      header: 'Source',
-      render: (s) => <VendorChip id={s.source_id ?? selectedSourceId} />,
-    },
+        <span title={subTitle} style={{ font: '400 11px/1.2 var(--font-mono)', color: 'var(--fg-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {sub}
+        </span>
+      </span>
+    )
+  }
+
+  const sessionColumn: Column<SessionEntry> = {
+    key: 'id',
+    header: 'Session',
+    width: '100%',
+    render: compact
+      // On a phone the project and start time fold into the title cell.
+      ? (s) => titleCell(s, `${getSessionProjectLabel(s)} · ${formatRelativeTime(new Date(s.time_created))}`, `${formatDateTime(s.time_created)} · id ${s.id}`)
+      : (s) => titleCell(s, `id ${formatShortId(s.id)}`, s.id),
+  }
+
+  const sourceColumn: Column<SessionEntry> = {
+    key: 'source',
+    header: 'Source',
+    render: (s) => <VendorChip id={s.source_id ?? selectedSourceId} />,
+  }
+
+  const wideColumns: Column<SessionEntry>[] = [
     {
       key: 'project',
       header: 'Project',
-      render: (s) => (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, font: '400 12px/1.3 var(--font-ui)', color: 'var(--fg-muted)' }}>
-          <Icon name="folder" size={13} />
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>
-            {getSessionProjectLabel(s)}
+      render: (s) => {
+        const label = getSessionProjectLabel(s)
+        return (
+          <span title={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: 'clamp(110px, 16vw, 240px)', verticalAlign: 'middle', font: '400 12px/1.3 var(--font-ui)', color: 'var(--fg-muted)' }}>
+            <Icon name="folder" size={13} style={{ flexShrink: 0 }} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
           </span>
-        </span>
-      ),
+        )
+      },
     },
     {
       key: 'started',
@@ -356,427 +409,193 @@ export function SessionsView() {
       key: 'duration',
       header: 'Duration',
       numeric: true,
-      render: (s) => fmtDur(s.time_created, s.time_updated),
-    },
-    {
-      key: 'messages',
-      header: 'Messages',
-      sortable: true,
-      numeric: true,
-      render: (s) => formatCompactInteger(s.message_count),
-    },
-    {
-      key: 'cost',
-      header: 'Est. cost',
-      sortable: true,
-      numeric: true,
-      render: (s) => formatCompactCurrencyWithProvenance(s.cost, s.cost_status ?? data?.cost_status, s.cost_provenance ?? data?.cost_provenance),
+      render: (s) => <span title="Time between the first and last activity">{formatDuration(s.time_created, s.time_updated)}</span>,
     },
   ]
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {error && <Notice tone="warning" title="Sessions partially loaded">{error}</Notice>}
-
-      {/* Search */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
-        <div style={{ position: 'relative', flex: '0 1 320px', minWidth: 200 }}>
-          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', color: 'var(--fg-faint)', pointerEvents: 'none' }}>
-            <Icon name="search" size={15} />
+  const columns: Column<SessionEntry>[] = [
+    sessionColumn,
+    ...(summary.mixedSources ? [sourceColumn] : []),
+    ...(compact ? [] : wideColumns),
+    {
+      key: 'messages',
+      header: compact ? 'Msgs' : 'Messages',
+      sortable: true,
+      numeric: true,
+      render: (s) => <span title={`${formatInteger(s.message_count)} messages`}>{formatCompactInteger(s.message_count)}</span>,
+    },
+    {
+      key: 'cost',
+      header: costLabel,
+      sortable: true,
+      numeric: true,
+      render: (s) => {
+        const status = s.cost_status ?? costStatus
+        const provenance = s.cost_provenance ?? costProvenance
+        return (
+          <span title={isMissingCost(status, provenance) ? undefined : formatCurrencyExact(s.cost)}>
+            {formatCompactCurrencyWithProvenance(s.cost, status, provenance)}
           </span>
-          <input
-            type="text"
-            placeholder="Search title, project, or session id…"
-            value={searchText}
-            onChange={handleSearchChange}
-            style={{
-              width: '100%',
-              height: 36,
-              padding: '0 12px 0 34px',
-              background: 'var(--ink-800)',
-              border: '1px solid var(--border-default)',
-              borderRadius: 'var(--radius-md)',
-              color: 'var(--fg-primary)',
-              font: '400 13px/1 var(--font-ui)',
-              outline: 'none',
-            }}
-          />
-        </div>
-        {rawFilter && (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, font: '400 12px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>
-            Filtering
-            <code style={{ font: '500 12px/1 var(--font-mono)', color: 'var(--fg-secondary)', background: 'var(--ink-700)', padding: '3px 6px', borderRadius: 'var(--radius-sm)' }}>{rawFilter}</code>
-          </span>
-        )}
-      </div>
+        )
+      },
+    },
+  ]
 
-      {/* KPI summary */}
-      {summary && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-          <StatCard
-            accent
-            label="Total sessions"
-            value={formatInteger(summary.total)}
-            hint={summary.empty ? 'No sessions in range' : `${formatInteger(summary.totalPages)} pages · ${formatInteger(summary.pageSize)} / page`}
-          />
-          <StatCard
-            label="Visible window"
-            value={summary.empty ? '0' : `${summary.firstVisible}–${summary.lastVisible}`}
-            hint={summary.empty ? 'Nothing to paginate yet' : `Page ${formatInteger(summary.page)} of ${formatInteger(summary.totalPages)}`}
-          />
-          <StatCard
-            label="Visible cost"
-            value={formatCurrencyWithProvenance(summary.visibleCost, summary.costStatus, summary.costProvenance)}
-            hint={`${formatCompactInteger(summary.visibleMessages)} messages on this page`}
-          />
-          <StatCard
-            label="Projects on page"
-            value={formatInteger(summary.visibleProjects)}
-            hint={summary.empty ? 'Awaiting session activity' : 'distinct projects visible'}
-          />
-        </div>
-      )}
+  const refreshNotice = error && (
+    <Notice
+      tone="warning"
+      title="Couldn't refresh — showing the last loaded data"
+      action={<Button size="sm" iconLeft="refresh" onClick={requestRefresh}>Retry</Button>}
+    >
+      {error}
+    </Notice>
+  )
 
-      {/* Table / empty */}
-      {summary?.empty ? (
+  const toolbar = (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: compact ? 'flex-start' : 'flex-end', gap: 8, flexWrap: 'wrap', width: compact ? '100%' : undefined, minWidth: 0 }}>
+      {projectId && <FilterChip label="Project" value={projectLabel} title={projectId} onClear={clearProject} />}
+      <SearchInput
+        value={search.text}
+        onChange={search.onChange}
+        placeholder="Search title, project or id…"
+        label="Search sessions by title, project or session id"
+        width={compact ? '100%' : 280}
+      />
+    </div>
+  )
+
+  // Nothing recorded at all: there is no list to search, so no toolbar either.
+  if (summary.total === 0 && !filtered) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {refreshNotice}
         <Card>
           <EmptyState
-            icon="folder"
-            title="No sessions recorded yet"
+            icon="clock"
+            title="No sessions in this range"
             description={
-              selectedSourceId === 'claude_code' || selectedSourceId === 'kimi_code' || selectedSourceId === 'qwen_code'
-                ? `No persisted ${sourceLabel} sessions were found in readable local transcripts for this window.`
-                : `This view stays empty until ${sourceLabel} contains session rows for this range.`
+              isTranscriptSource(selectedSourceInfo)
+                ? `No ${sourceLabel} sessions were found in readable local transcripts for this range. Try a longer range.`
+                : `${sourceLabel} recorded no sessions in this range. Try a longer range.`
             }
           />
         </Card>
-      ) : (
-        <Card
-          title="Session index"
-          subtitle={summary ? `${formatInteger(summary.total)} total · click a row to inspect` : undefined}
-          action={summary ? <Badge>Page {data?.page ?? 1}</Badge> : undefined}
-          pad={0}
-        >
-          <DataTable<SessionEntry>
-            columns={columns}
-            rows={data?.sessions ?? []}
-            rowKey={(s) => s.id}
-            sort={SORT_INDICATOR[sort]}
-            onSort={handleSort}
-            onRowClick={(s) => openSession(s.id)}
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {refreshNotice}
+
+      <StatGrid>
+        <StatCard accent label="Sessions" value={formatInteger(summary.total)} hint={scopeHint} />
+        <StatCard
+          label={`${costLabel} on page`}
+          value={formatCurrencyWithProvenance(summary.pageCost, costStatus, costProvenance)}
+          title={isMissingCost(costStatus, costProvenance) ? undefined : formatCurrencyExact(summary.pageCost)}
+          hint={`${formatCount(summary.shown, 'session')} shown`}
+        />
+        <StatCard
+          label="Messages on page"
+          value={formatCompactInteger(summary.pageMessages)}
+          title={`${formatInteger(summary.pageMessages)} messages`}
+          hint={summary.shown > 0 ? `${formatCompactInteger(Math.round(safeDivide(summary.pageMessages, summary.shown)))} per session` : 'no sessions shown'}
+        />
+        <StatCard
+          label="Projects on page"
+          value={formatInteger(summary.pageProjects)}
+          hint={summary.pageProjects === 1 ? 'distinct project shown' : 'distinct projects shown'}
+        />
+      </StatGrid>
+
+      <Card
+        flush
+        title="Session index"
+        subtitle={`${formatCount(summary.total, 'session')} · ${SORT_DESCRIPTION[sort]}`}
+        action={compact ? undefined : toolbar}
+      >
+        {/* On a phone the search box gets a full-width row of its own. */}
+        {compact && (
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }}>{toolbar}</div>
+        )}
+        {summary.total === 0 ? (
+          <EmptyState
+            icon="search"
+            title="No sessions match"
+            description={
+              rawFilter && projectId
+                ? `No session in ${projectLabel} matches “${rawFilter}” in this range.`
+                : rawFilter
+                  ? `No session title, project or id contains “${rawFilter}” in this range.`
+                  : `${projectLabel} has no sessions in this range.`
+            }
+            action={<Button size="sm" onClick={clearFilters}>{rawFilter && projectId ? 'Clear filters' : rawFilter ? 'Clear search' : 'Clear project filter'}</Button>}
           />
-          {summary && (
-            <Pagination
-              page={data?.page ?? 1}
-              total={data?.total ?? 0}
-              pageSize={data?.page_size ?? PAGE_SIZE}
-              totalPages={summary.totalPages}
-              firstVisible={summary.firstVisible}
-              lastVisible={summary.lastVisible}
-              onPageChange={setPage}
-            />
-          )}
-        </Card>
-      )}
-    </div>
-  )
-}
-
-// ── Pagination ────────────────────────────────────────────────
-function Pagination({
-  page,
-  total,
-  pageSize,
-  totalPages,
-  firstVisible,
-  lastVisible,
-  onPageChange,
-}: {
-  page: number
-  total: number
-  pageSize: number
-  totalPages: number
-  firstVisible: number
-  lastVisible: number
-  onPageChange: (updater: number | ((prev: number) => number)) => void
-}) {
-  return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 16px', borderTop: '1px solid var(--border-default)' }}>
-      <div style={{ font: '400 12px/1.5 var(--font-ui)', color: 'var(--fg-muted)' }}>
-        <span style={{ color: 'var(--fg-secondary)' }}>Showing {firstVisible}–{lastVisible}</span> of{' '}
-        <span style={{ font: '500 12px/1 var(--font-mono)', color: 'var(--fg-secondary)', fontVariantNumeric: 'tabular-nums' }}>{formatInteger(total)}</span> sessions
-        <span style={{ marginLeft: 8, font: '400 11px/1 var(--font-mono)', color: 'var(--fg-faint)' }}>
-          page_size={pageSize}
-        </span>
-      </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <Button variant="secondary" size="sm" iconLeft="chevron-left" disabled={page <= 1} onClick={() => onPageChange((c) => Math.max(1, c - 1))}>
-          Previous
-        </Button>
-        <Button variant="secondary" size="sm" disabled={page >= totalPages} onClick={() => onPageChange((c) => c + 1)}>
-          Next
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-// ── Detail screen (full-page swap) ────────────────────────────
-function SessionDetailScreen({
-  id,
-  sourceId,
-  sourceLabel,
-  onBack,
-}: {
-  id: string
-  sourceId: SourceID
-  sourceLabel: string
-  onBack: () => void
-}) {
-  const [detail, setDetail] = useState<SessionDetail | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [nonce, setNonce] = useState(0)
-  const [tab, setTab] = useState<'timeline' | 'raw'>('timeline')
-
-  useEffect(() => {
-    const ctrl = new AbortController()
-    async function load() {
-      setDetail(null); setError(null); setLoading(true)
-      try {
-        setDetail(await getSessionDetail(id, ctrl.signal, sourceId))
-      } catch (caught) {
-        if (ctrl.signal.aborted) return
-        setError(caught instanceof Error ? caught.message : 'Failed to load session detail')
-      } finally {
-        if (!ctrl.signal.aborted) setLoading(false)
-      }
-    }
-    void load()
-    return () => ctrl.abort()
-  }, [id, sourceId, nonce])
-
-  const stats = useMemo(() => {
-    if (!detail) return null
-    const t = detail.total_tokens
-    const totalTokens = getTokenTotal(t)
-    const cacheRead = t.cache.read
-    const cacheDenom = t.input + cacheRead
-    const cacheHit = cacheDenom > 0 ? Math.round(safeDivide(cacheRead, cacheDenom) * 100) : 0
-    // Token composition: distinct buckets of total_tokens (no double-counting input/cache.read).
-    const inputOnly = Math.max(0, t.input)
-    const segments = [
-      { key: 'input', label: 'Input', color: 'var(--cat-1)', value: inputOnly },
-      { key: 'cache', label: 'Cached (read)', color: 'var(--cat-2)', value: Math.max(0, cacheRead) },
-      { key: 'output', label: 'Output', color: 'var(--cat-3)', value: Math.max(0, t.output) },
-    ].filter((s) => s.value > 0)
-    const segTotal = segments.reduce((a, s) => a + s.value, 0) || 1
-    return { totalTokens, cacheHit, segments, segTotal }
-  }, [detail])
-
-  const backButton = (
-    <button
-      type="button"
-      onClick={onBack}
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 14, background: 'transparent', border: 'none', color: 'var(--fg-muted)', font: '500 13px/1 var(--font-ui)', cursor: 'pointer', padding: 0 }}
-    >
-      <Icon name="chevron-left" size={16} /> All sessions
-    </button>
-  )
-
-  if (loading) {
-    return (
-      <div>
-        {backButton}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 12 }}>
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-lg)', padding: 16 }}>
-              <Skeleton width={90} height={11} />
-              <Skeleton width={120} height={28} style={{ marginTop: 12 }} />
-            </div>
-          ))}
-        </div>
-        <div style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', height: 320 }} />
-      </div>
-    )
-  }
-
-  if (error || !detail || !stats) {
-    return (
-      <div>
-        {backButton}
-        <Card>
-          <ErrorState title="Session detail failed to load" message={error ?? undefined} onRetry={() => setNonce((c) => c + 1)} />
-        </Card>
-      </div>
-    )
-  }
-
-  return (
-    <div>
-      {backButton}
-
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-        <VendorChip id={detail.source_id ?? sourceId} label={false} size={34} />
-        <div style={{ minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <h2 style={{ margin: 0, font: '700 18px/1.2 var(--font-ui)', color: 'var(--fg-primary)' }}>
-              {getSessionLabel(detail)}
-            </h2>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 7, flexWrap: 'wrap', font: '400 12px/1 var(--font-mono)', color: 'var(--fg-muted)' }}>
-            <span title={detail.id} style={{ color: 'var(--fg-faint)' }}>id {detail.id.slice(0, 14)}</span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><Icon name="folder" size={13} />{getSessionProjectLabel(detail)}</span>
-            <span>{sourceLabel}</span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><Icon name="clock" size={13} />{formatDateTime(detail.time_created)}</span>
-            <span>{fmtDur(detail.time_created, detail.time_updated)}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* KPI */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 16 }}>
-        <StatCard
-          accent
-          label="Total tokens"
-          value={formatTokenCount(stats.totalTokens)}
-          title={`${formatInteger(stats.totalTokens)} tokens`}
-          hint={`${formatTokenCount(detail.total_tokens.input)} in · ${formatTokenCount(detail.total_tokens.output)} out`}
-        />
-        <StatCard
-          label="Est. cost"
-          value={formatCurrencyWithProvenance(detail.total_cost, detail.cost_status, detail.cost_provenance)}
-          hint={detail.messages.length > 0 ? `${formatCurrencyWithProvenance(safeDivide(detail.total_cost, detail.messages.length), detail.cost_status, detail.cost_provenance)} / message` : 'this session'}
-        />
-        <StatCard
-          label="Messages"
-          value={formatInteger(detail.message_count)}
-          hint={`${formatInteger(detail.messages.length)} recorded rows`}
-        />
-        <StatCard
-          label="Cache hit"
-          value={`${stats.cacheHit}%`}
-          hint="read / (input + read)"
-        />
-      </div>
-
-      {/* Token composition */}
-      <Card title="Token composition" subtitle="Distinct buckets of total tokens" style={{ marginBottom: 16 }}>
-        {stats.segments.length > 0 ? (
-          <>
-            <div style={{ display: 'flex', width: '100%', height: 12, borderRadius: 6, overflow: 'hidden', background: 'var(--ink-700)', gap: 1 }}>
-              {stats.segments.map((seg) => (
-                <div
-                  key={seg.key}
-                  title={`${seg.label}: ${formatInteger(seg.value)}`}
-                  style={{ width: `${(seg.value / stats.segTotal) * 100}%`, background: seg.color }}
-                />
-              ))}
-            </div>
-            <div style={{ marginTop: 14 }}>
-              <Legend items={stats.segments.map((seg) => ({ label: seg.label, color: seg.color, value: formatTokenCount(seg.value) }))} />
-            </div>
-          </>
         ) : (
-          <div style={{ font: '400 13px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>No token activity recorded for this session.</div>
+          <>
+            <div aria-busy={stale} style={{ opacity: stale ? 0.55 : 1, transition: 'opacity var(--dur-fast) var(--ease-out)' }}>
+              <DataTable<SessionEntry>
+                bare
+                columns={columns}
+                rows={data.sessions}
+                rowKey={(s) => s.id}
+                sort={SORT_INDICATOR[sort]}
+                onSort={handleSort}
+                onRowClick={(s) => openSession(s.id)}
+              />
+            </div>
+            <Pagination page={data.page} pageSize={data.page_size} total={data.total} noun="sessions" onPageChange={setPage} disabled={loading && loaded === null} />
+          </>
         )}
-      </Card>
-
-      {/* Tabs: Timeline / Raw JSON */}
-      <Card pad={0}>
-        <div style={{ padding: '0 16px' }}>
-          <Tabs
-            tabs={[
-              { value: 'timeline', label: 'Timeline', count: detail.messages.length },
-              { value: 'raw', label: 'Raw JSON' },
-            ]}
-            value={tab}
-            onChange={setTab}
-          />
-        </div>
-        <div style={{ padding: 16 }}>
-          {tab === 'timeline' && (
-            detail.messages.length === 0 ? (
-              <Notice tone="info" title="No message rows">This session exists, but the detail endpoint returned no message rows.</Notice>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                {detail.messages.map((m, i) => (
-                  <MessageRow
-                    key={m.id}
-                    message={m}
-                    sourceId={detail.source_id ?? sourceId}
-                    last={i === detail.messages.length - 1}
-                  />
-                ))}
-              </div>
-            )
-          )}
-          {tab === 'raw' && (
-            <pre style={{ margin: 0, font: '400 12px/1.7 var(--font-mono)', color: 'var(--fg-secondary)', background: 'var(--ink-850)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: 14, overflowX: 'auto', maxHeight: 520, overflowY: 'auto' }}>
-              {JSON.stringify(detail, null, 2)}
-            </pre>
-          )}
-        </div>
       </Card>
     </div>
   )
 }
 
-function roleTone(role: string): { color: string; dot: string } {
-  switch (role) {
-    case 'assistant':
-      return { color: 'var(--blue-300)', dot: 'var(--accent)' }
-    case 'user':
-      return { color: 'var(--fg-muted)', dot: 'var(--fg-muted)' }
-    case 'system':
-      return { color: 'var(--amber-300, var(--cat-4))', dot: 'var(--cat-4)' }
-    default:
-      return { color: 'var(--fg-muted)', dot: 'var(--fg-faint)' }
-  }
-}
-
-function MessageRow({ message, sourceId, last }: { message: SessionMessage; sourceId: SourceID; last: boolean }) {
-  const tone = roleTone(message.role)
-  const tokens = message.tokens ? getTokenTotal(message.tokens) : 0
-  const cost = message.cost ?? 0
-  const meta = [message.model_id, message.provider_id, message.agent].filter(Boolean).join(' · ')
-  const requestedMode = getProcessingModeMeta(message.processing_mode, message.service_tier)
-
+/** A removable scope filter shown beside the search box. */
+function FilterChip({ label, value, title, onClear }: { label: string; value: string; title?: string; onClear: () => void }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '16px minmax(0,1fr) auto', gap: 12, padding: '10px 0', borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}>
-      <div style={{ display: 'flex', justifyContent: 'center' }}>
-        <span style={{ width: 9, height: 9, borderRadius: '50%', background: tone.dot, marginTop: 5 }} />
-      </div>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ font: '600 11px/1 var(--font-ui)', letterSpacing: '0.06em', textTransform: 'uppercase', color: tone.color }}>
-            {message.role || 'unknown'}
-          </span>
-          {message.is_subagent && <Badge tone="accent">subagent</Badge>}
-          {sourceId === 'codex' && message.role === 'assistant' && (
-            <span title={REQUESTED_TIER_DISCLOSURE}>
-              <Badge tone={requestedMode.tone} dot>{requestedMode.label}</Badge>
-            </span>
-          )}
-          <span style={{ font: '400 11px/1 var(--font-mono)', color: 'var(--fg-faint)' }} title={message.id}>
-            {formatDateTime(message.time_created)}
-          </span>
-        </div>
-        {meta && (
-          <div style={{ marginTop: 4, font: '400 11px/1.4 var(--font-mono)', color: 'var(--fg-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '40ch' }}>
-            {meta}
-          </div>
-        )}
-      </div>
-      <div style={{ textAlign: 'right', whiteSpace: 'nowrap', display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
-        <span style={{ font: '600 12px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }} title={`${formatInteger(tokens)} tokens`}>
-          {formatTokenCount(tokens)}
-        </span>
-        <span style={{ font: '400 11px/1 var(--font-mono)', color: 'var(--fg-muted)' }}>
-          {formatCurrencyWithProvenance(cost, message.cost_status, message.cost_provenance)}
-        </span>
-      </div>
-    </div>
+    <span
+      title={title}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        height: 36,
+        maxWidth: '100%',
+        padding: '0 4px 0 10px',
+        background: 'var(--accent-soft)',
+        border: '1px solid var(--border-accent)',
+        borderRadius: 'var(--radius-md)',
+        font: '500 12px/1 var(--font-ui)',
+        color: 'var(--fg-secondary)',
+        minWidth: 0,
+      }}
+    >
+      <Icon name="folder" size={13} color="var(--blue-300)" style={{ flexShrink: 0 }} />
+      <span style={{ color: 'var(--fg-muted)', flexShrink: 0 }}>{label}</span>
+      <span style={{ color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '22ch' }}>{value}</span>
+      <button
+        type="button"
+        aria-label={`Remove ${label.toLowerCase()} filter ${value}`}
+        onClick={onClear}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 26,
+          height: 26,
+          flexShrink: 0,
+          background: 'transparent',
+          border: 'none',
+          borderRadius: 'var(--radius-sm)',
+          color: 'var(--fg-muted)',
+          cursor: 'pointer',
+        }}
+      >
+        <Icon name="x" size={13} />
+      </button>
+    </span>
   )
 }

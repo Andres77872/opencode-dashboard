@@ -5,24 +5,12 @@ import { NavLink, useLocation } from 'react-router-dom'
 import type { CSSProperties } from 'react'
 import { navItems } from './nav-items'
 import { Icon } from '../vael/icon'
+import { useEscapeKey, useFocusTrap } from '../vael/overlay'
 import { useDashboardContext } from './dashboard-context'
 import { NAV_DRAWER_ID, useSidebar } from './sidebar-context'
 import { QuotaSection } from './quota-section'
 import { formatRelativeTime } from '../../lib/format'
-
-// Global filters that follow the user between views; view-specific params are dropped.
-const GLOBAL_PARAM_KEYS = ['source', 'period', 'from', 'to', 'mode'] as const
-
-function globalSearch(search: string): string {
-  const current = new URLSearchParams(search)
-  const next = new URLSearchParams()
-  for (const key of GLOBAL_PARAM_KEYS) {
-    const value = current.get(key)
-    if (value !== null) next.set(key, value)
-  }
-  const serialized = next.toString()
-  return serialized ? `?${serialized}` : ''
-}
+import { globalSearch } from '../../lib/global-params'
 
 const Logo = () => (
   <svg width="26" height="26" viewBox="0 0 40 40" fill="none">
@@ -55,8 +43,8 @@ function navItemStyle(isActive: boolean): CSSProperties {
 
 function NavList({ search, onNavigate }: { search: string; onNavigate?: () => void }) {
   return (
-    <nav style={{ padding: '10px', flex: 1, display: 'flex', flexDirection: 'column', gap: 1, overflowY: 'auto' }}>
-      <div style={{ font: '600 10px/1 var(--font-ui)', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--fg-faint)', padding: '8px 11px 6px' }}>Analyze</div>
+    <nav aria-label="Main" style={{ padding: '10px', flex: 1, display: 'flex', flexDirection: 'column', gap: 1, overflowY: 'auto', minHeight: 96 }}>
+      <div aria-hidden="true" style={{ font: '600 10px/1 var(--font-ui)', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--fg-faint)', padding: '8px 11px 6px' }}>Analyze</div>
       {navItems.map((item) => (
         <NavLink
           key={item.href}
@@ -79,18 +67,19 @@ function NavList({ search, onNavigate }: { search: string; onNavigate?: () => vo
 
 function StatusFooter() {
   const { lastUpdatedAt, isRefreshing, requestRefresh } = useDashboardContext()
+  const status = isRefreshing ? 'Refreshing…' : lastUpdatedAt ? `Updated ${formatRelativeTime(lastUpdatedAt)}` : 'No usage loaded yet'
   return (
-    <div style={{ padding: 10, borderTop: '1px solid var(--border-subtle)' }}>
+    <div style={{ padding: 10, borderTop: '1px solid var(--border-subtle)', flexShrink: 0 }}>
       <button
         type="button"
+        className="vael-nav-status"
         onClick={requestRefresh}
-        title="Refresh data"
-        style={{ display: 'flex', alignItems: 'center', gap: 9, width: '100%', padding: '8px 10px', borderRadius: 'var(--radius-md)', background: 'var(--ink-800)', border: '1px solid var(--border-subtle)', cursor: 'pointer', textAlign: 'left' }}
+        aria-label={`Refresh data. ${status}`}
       >
-        <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--success)', boxShadow: 'var(--glow-success)', flexShrink: 0 }} />
+        <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--success)', boxShadow: 'var(--glow-success)', flexShrink: 0 }} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ font: '600 12px/1.2 var(--font-ui)', color: 'var(--fg-primary)' }}>Local agent</div>
-          <div style={{ font: '400 11px/1 var(--font-mono)', color: 'var(--fg-muted)', marginTop: 3 }}>{isRefreshing ? 'refreshing...' : `refreshed ${formatRelativeTime(lastUpdatedAt)}`}</div>
+          <div style={{ font: '600 12px/1.2 var(--font-ui)', color: 'var(--fg-primary)' }}>Local data</div>
+          <div style={{ font: '400 11px/1 var(--font-mono)', color: 'var(--fg-muted)', marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{status}</div>
         </div>
         <Icon name="refresh" size={14} color="var(--fg-muted)" style={isRefreshing ? { animation: 'vael-spin 0.9s linear infinite' } : undefined} />
       </button>
@@ -118,25 +107,10 @@ export function Sidebar() {
     }
   }, [mobileOpen])
 
-  // Escape closes the drawer, matching every other overlay in the app.
-  useEffect(() => {
-    if (!mobileOpen) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeMobile()
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [mobileOpen, closeMobile])
-
-  // The drawer covers the page, so focus has to follow it in and return to
-  // whatever opened it on the way out. Without this, tabbing from the open
-  // drawer walks into the content hidden behind the scrim.
-  useEffect(() => {
-    if (!mobileOpen) return
-    const opener = document.activeElement as HTMLElement | null
-    drawerRef.current?.focus()
-    return () => opener?.focus?.()
-  }, [mobileOpen])
+  // The drawer is a modal: Escape closes it (topmost overlay only), focus
+  // moves in, Tab stays inside, and focus returns to the menu button after.
+  useEscapeKey(mobileOpen, closeMobile)
+  useFocusTrap(mobileOpen, drawerRef)
 
   return (
     <>
@@ -153,10 +127,10 @@ export function Sidebar() {
 
       {/* Mobile drawer */}
       {mobileOpen && (
-        <div className="xl:hidden" style={{ position: 'fixed', inset: 0, zIndex: 90 }}>
+        <div className="xl:hidden" style={{ position: 'fixed', inset: 0, zIndex: 'var(--z-nav-drawer)' }}>
           {/* Decorative scrim: clicking it closes the drawer, but Escape and
               the nav links cover that for the keyboard, so it is not exposed. */}
-          <div aria-hidden="true" onClick={closeMobile} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)' }} />
+          <div aria-hidden="true" onClick={closeMobile} style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', animation: 'vael-fade-in var(--dur-base) var(--ease-out)' }} />
           <aside
             ref={drawerRef}
             id={NAV_DRAWER_ID}
@@ -171,12 +145,13 @@ export function Sidebar() {
               top: 0,
               height: '100%',
               width: 'var(--rail-width)',
+              maxWidth: 'calc(100vw - 56px)',
               background: 'var(--ink-850)',
               borderRight: '1px solid var(--border-default)',
               display: 'flex',
               flexDirection: 'column',
               boxShadow: 'var(--shadow-xl)',
-              animation: 'vael-slide-in-right var(--dur-base) var(--ease-out)',
+              animation: 'vael-slide-in-left var(--dur-base) var(--ease-out)',
             }}
           >
             <BrandRow />

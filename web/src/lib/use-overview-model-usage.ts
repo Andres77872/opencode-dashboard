@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
 import { useDashboardContext } from '../components/layout/dashboard-context.ts'
 import type { DimensionDayStats, ModelEntry, SourceDimensionError, SourceLoadError } from '../types/api.ts'
-import { getOverviewAllModels, withBypassCache } from './api.ts'
+import { getOverviewAllModels } from './api.ts'
+import { useCachedResource, type CachedResourceResult } from './use-cached-resource.ts'
 
 export interface OverviewModelUsage {
   period: string
@@ -11,101 +11,34 @@ export interface OverviewModelUsage {
   partialErrors: SourceDimensionError[]
 }
 
-export interface UseOverviewModelUsageResult {
-  data: OverviewModelUsage | null
-  loading: boolean
-  error: string | null
-}
+export type UseOverviewModelUsageResult = CachedResourceResult<OverviewModelUsage>
 
 /**
- * Lazily loads the Overview's complete per-model totals and daily trend.
+ * The Overview's complete per-model totals and daily trend.
  *
- * The default source-grouped view never calls the model endpoint. Once loaded,
- * a period is retained in a component-local cache so toggling Source/Model is
- * instant. A global refresh deliberately skips that cache.
+ * This is a separate, leaner request than the base overview so the page's
+ * headline numbers never wait on it. Pass `enabled: false` to hold the request
+ * back (the view enables it once the base overview has rendered).
  */
 export function useOverviewModelUsage(period: string, enabled: boolean): UseOverviewModelUsageResult {
-  const { refreshNonce, sourceMetadata, sourceMetadataLoading, sources } = useDashboardContext()
+  const { sourceMetadata, sourceMetadataLoading, sources } = useDashboardContext()
   const revision = sourceMetadata?.sources_revision ?? 0
-  const hasSources = sources.some(source => source.enabled !== false && source.available)
-  const [dataRevision, setDataRevision] = useState(revision)
-  const [data, setData] = useState<OverviewModelUsage | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [dataRefreshNonce, setDataRefreshNonce] = useState(refreshNonce)
-  const [errorRefreshNonce, setErrorRefreshNonce] = useState(refreshNonce)
-  const cacheRef = useRef<Map<string, OverviewModelUsage>>(new Map())
-  const lastPeriodRef = useRef<string | null>(null)
-  const lastRefreshNonceRef = useRef(refreshNonce)
+  const hasSources = sources.some((source) => source.enabled !== false && source.available)
 
-  useEffect(() => {
-    if (!enabled || sourceMetadataLoading || !hasSources) {
-      return
-    }
-
-    const refreshTriggered = lastRefreshNonceRef.current !== refreshNonce
-    const cacheKey = `${revision}:${period}`
-    const cached = cacheRef.current.get(cacheKey)
-
-    if (!refreshTriggered && cached) {
-      setData(cached)
-      setDataRevision(revision)
-      setDataRefreshNonce(refreshNonce)
-      setError(null)
-      setLoading(false)
-      lastPeriodRef.current = period
-      return
-    }
-
-    if (lastPeriodRef.current !== period) {
-      setData(cached ?? null)
-      lastPeriodRef.current = period
-    }
-
-    const controller = new AbortController()
-
-    async function load() {
-      setLoading(true)
-      setError(null)
-
-      try {
-        const response = refreshTriggered
-          ? await withBypassCache(() => getOverviewAllModels(period, controller.signal))
-          : await getOverviewAllModels(period, controller.signal)
-        if (controller.signal.aborted) return
-
-        const next: OverviewModelUsage = {
-          period,
-          models: response.model_usage ?? [],
-          trend: response.model_trend ?? [],
-          errors: response.errors ?? [],
-          partialErrors: response.partial_errors ?? [],
-        }
-        cacheRef.current.set(cacheKey, next)
-        setDataRevision(revision)
-        lastRefreshNonceRef.current = refreshNonce
-        setDataRefreshNonce(refreshNonce)
-        setData(next)
-      } catch (caught) {
-        if (controller.signal.aborted) return
-        setErrorRefreshNonce(refreshNonce)
-        setError(caught instanceof Error ? caught.message : 'Failed to load model usage')
-      } finally {
-        if (!controller.signal.aborted) setLoading(false)
+  return useCachedResource<OverviewModelUsage>({
+    key: `overview-models|${revision}:${period}`,
+    ready: !sourceMetadataLoading,
+    enabled: enabled && hasSources,
+    load: async (signal) => {
+      const response = await getOverviewAllModels(period, signal)
+      return {
+        period,
+        models: response.model_usage ?? [],
+        trend: response.model_trend ?? [],
+        errors: response.errors ?? [],
+        partialErrors: response.partial_errors ?? [],
       }
-    }
-
-    void load()
-    return () => controller.abort()
-  }, [enabled, period, refreshNonce, revision, hasSources, sourceMetadataLoading])
-
-  // A dashboard refresh also invalidates model data while Source is selected.
-  // Keep the old entry in the period cache only as an implementation detail:
-  // it must not keep the Top Models card visibly stale, and the next Model
-  // selection will bypass it and fetch against the new refresh nonce.
-  return {
-    data: dataRefreshNonce === refreshNonce && dataRevision === revision ? data : null,
-    loading: enabled && loading,
-    error: errorRefreshNonce === refreshNonce ? error : null,
-  }
+    },
+    fallbackError: 'Failed to load model usage',
+  })
 }

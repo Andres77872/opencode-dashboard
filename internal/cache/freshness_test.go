@@ -395,3 +395,42 @@ func TestOpenRebuildsLegacySchemaCache(t *testing.T) {
 		t.Fatalf("rebuilt source_state lacks fresh_through_ms column")
 	}
 }
+
+// TestSessionByIDServesTheConsolidatedSessionWhenTheLiveReadFails: a live
+// detail read that fails must not fail the session view while the cache can
+// still describe the session. Only a session the cache does not know keeps
+// the live error.
+func TestSessionByIDServesTheConsolidatedSessionWhenTheLiveReadFails(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	// syncFakeSource.SessionByID always fails, standing in for a scan that
+	// outlasts its budget.
+	src := &syncFakeSource{messages: []stats.MessageEntry{
+		testMessage("finalized-1", now.Add(-11*time.Hour), 0.01),
+		testMessage("finalized-2", now.Add(-10*time.Hour), 0.02),
+	}}
+	store := newTestStore(t)
+	if _, err := store.SyncSourceWithOptions(ctx, src, SyncOptions{}); err != nil {
+		t.Fatalf("initial sync failed: %v", err)
+	}
+	cached := WrapSource(store, src)
+	t.Cleanup(func() { _ = cached.Close() })
+
+	detail, err := cached.SessionByID(ctx, "session-1")
+	if err != nil || detail == nil {
+		t.Fatalf("SessionByID(session-1) = %+v, %v; want the consolidated session", detail, err)
+	}
+	if detail.MessageCount != 2 || len(detail.Messages) != 2 {
+		t.Fatalf("consolidated session has %d messages (%d listed), want 2", detail.MessageCount, len(detail.Messages))
+	}
+
+	if detail, err := cached.SessionByID(ctx, "unknown-session"); err == nil {
+		t.Fatalf("SessionByID(unknown-session) = %+v, nil; want the live error, since the cache cannot answer either", detail)
+	}
+
+	gone, cancel := context.WithCancel(ctx)
+	cancel()
+	if detail, err := cached.SessionByID(gone, "session-1"); err == nil {
+		t.Fatalf("SessionByID with a cancelled request = %+v, nil; want the error", detail)
+	}
+}

@@ -1,5 +1,6 @@
-/* Vael filter bar — global time-range + data-source pickers. Sticky-fixed flex
-   item below the TopBar. Period is hidden on /config (no period there). */
+/* Vael filter bar — global time-range + data-source pickers. Fixed flex item
+   below the TopBar; the pickers' panels are portalled, so nothing here clips
+   them. Period is hidden on /config (no period there). */
 import { useLocation } from 'react-router-dom'
 import { PeriodPicker } from './period-picker'
 import { SourcePicker } from '../source/source-picker'
@@ -16,19 +17,18 @@ export function FilterBar() {
 
   return (
     <div
+      className="vael-bar"
       style={{
         height: 'var(--filterbar-height)',
         flexShrink: 0,
         display: 'flex',
         alignItems: 'center',
         gap: 8,
-        padding: '0 24px',
+        minWidth: 0,
         borderBottom: '1px solid var(--border-default)',
         background: 'var(--ink-850)',
-        // Keep the period/source picker popovers above the scrollable page body,
-        // and below the TopBar (z 40) so its wider popover can overlap this bar.
         position: 'relative',
-        zIndex: 30,
+        zIndex: 'var(--z-filterbar)',
       }}
     >
       {!isConfig && <PeriodPicker {...pickerProps} />}

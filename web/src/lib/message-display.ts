@@ -1,4 +1,4 @@
-import type { MessageEntry, SourceID } from '../types/api.ts'
+import type { MessageEntry, SourceID, SourceInfo } from '../types/api.ts'
 
 type SourceLike = Pick<MessageEntry, 'source_id' | 'folded_assistant_calls' | 'folded_tool_calls' | 'folded_token_updates'>
 
@@ -95,4 +95,26 @@ function joinParts(parts: string[]): string {
   }
 
   return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+}
+
+/** Badge tone for a message role, shared by every list that shows one. */
+export function getRoleTone(role: string | undefined): 'accent' | 'success' | 'warning' | 'neutral' {
+  switch (role) {
+    case 'assistant':
+      return 'accent'
+    case 'user':
+      return 'success'
+    case 'system':
+      return 'warning'
+    default:
+      return 'neutral'
+  }
+}
+
+/**
+ * True for sources read from local transcript or wire-log files rather than a
+ * database. Their empty states talk about "readable local transcripts".
+ */
+export function isTranscriptSource(source: Pick<SourceInfo, 'kind'> | null | undefined): boolean {
+  return source?.kind === 'jsonl'
 }

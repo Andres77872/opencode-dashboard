@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"opencode-dashboard/internal/stats"
 )
@@ -389,6 +390,28 @@ func TestParsePeriodQuery_futureToDate(t *testing.T) {
 	}
 	if !strings.Contains(apierr.Message, "future") {
 		t.Errorf("error message = %q, want containing 'future'", apierr.Message)
+	}
+}
+
+// A browser east of UTC is already on tomorrow's date while the server's UTC
+// clock is still on today. Its local "today" must be accepted, not rejected as
+// a future date — only a date that has not begun anywhere is in the future.
+func TestIsFutureCalendarDateAllowsTheLocalDayAheadOfUTC(t *testing.T) {
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	if isFutureCalendarDate(today) {
+		t.Error("the current UTC date was treated as future")
+	}
+	if isFutureCalendarDate(today.Add(-48 * time.Hour)) {
+		t.Error("a past date was treated as future")
+	}
+	if !isFutureCalendarDate(today.Add(48 * time.Hour)) {
+		t.Error("a date two days ahead was accepted; no timezone is that far ahead")
+	}
+	// The next UTC date has begun somewhere only once UTC is within 14h of it.
+	next := today.Add(24 * time.Hour)
+	wantFuture := next.After(time.Now().UTC().Add(14 * time.Hour))
+	if got := isFutureCalendarDate(next); got != wantFuture {
+		t.Errorf("isFutureCalendarDate(next UTC date) = %v, want %v", got, wantFuture)
 	}
 }
 

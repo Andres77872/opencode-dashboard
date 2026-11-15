@@ -1,13 +1,14 @@
 /* Vael app shell — full-height flex: Sidebar rail + (TopBar / FilterBar / PageBody).
    The in-page scroll lives in PageBody so the chrome stays fixed. */
-import { Suspense, lazy } from 'react'
+import { Suspense, lazy, useEffect, useRef } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import { Sidebar } from './sidebar'
 import { TopBar } from './topbar'
 import { FilterBar } from './filter-bar'
 import { SidebarProvider } from './sidebar-provider'
 import { ViewErrorBoundary } from './error-boundary'
-import { SourceNotice } from '../source/source-notice'
+import { SourceBlocked, SourceNotice } from '../source/source-notice'
+import { getSourceBlock } from '../source/source-block'
 import { ViewFallback } from './view-fallback'
 import { useDashboardContext } from './dashboard-context'
 
@@ -21,29 +22,39 @@ const AnalyticsAssistant = lazy(() =>
 
 export function DashboardLayout() {
   const { pathname } = useLocation()
-  const { sources, sourceMetadata, sourceStateError } = useDashboardContext()
-  const revision = sourceMetadata?.sources_revision ?? 0
-  const hasSources = sources.some(source => source.enabled !== false && source.available)
-  const analyticsBlocked = pathname !== '/config' && (!hasSources || sourceStateError?.kind === 'disabled')
+  const context = useDashboardContext()
+  // A view with no source it can query is replaced by the reason why. While
+  // the source list is still loading the view is rendered (as its skeleton)
+  // so its code and data load alongside the metadata, not after it.
+  const block = getSourceBlock(context, pathname)
+
+  // The page body is the scroll container and outlives the route, so a new
+  // view would otherwise open at the previous view's scroll offset.
+  const scrollRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: 0 })
+  }, [pathname])
+
   return (
     <SidebarProvider>
-      <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--ink-900)' }}>
+      <a href="#main-content" className="vael-skip-link">Skip to content</a>
+      <div className="vael-shell">
         <Sidebar />
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <TopBar />
           <FilterBar />
-          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-            <div style={{ maxWidth: 'var(--content-max)', margin: '0 auto', padding: '20px 24px 40px' }}>
+          <main ref={scrollRef} id="main-content" tabIndex={-1} style={{ flex: 1, overflowY: 'auto', minHeight: 0, outline: 'none' }}>
+            <div className="vael-page">
               <SourceNotice />
               <ViewErrorBoundary key={pathname}>
                 {/* Keyed by route so switching views shows the fallback rather
                     than holding the previous view's content on screen. */}
-                <Suspense key={`${pathname}:${revision}`} fallback={<ViewFallback />}>
-                  {!analyticsBlocked && <Outlet />}
+                <Suspense key={pathname} fallback={<ViewFallback />}>
+                  {block ? <SourceBlocked block={block} /> : <Outlet />}
                 </Suspense>
               </ViewErrorBoundary>
             </div>
-          </div>
+          </main>
         </div>
       </div>
       <Suspense fallback={null}>

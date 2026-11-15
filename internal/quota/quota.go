@@ -126,7 +126,7 @@ func NewService(opts Options) *Service {
 		claudeOpenCode: opts.OpenCodeDBPath != "",
 		providers: []provider{
 			&codexProvider{home: opts.CodexHome, now: now},
-			&claudeProvider{snapshotPath: opts.ClaudeSnapshotPath, openCodeDBPath: opts.OpenCodeDBPath, sourceEnabled: opts.SourceEnabled, now: now},
+			&claudeProvider{snapshotPath: opts.ClaudeSnapshotPath, openCodeDBPath: opts.OpenCodeDBPath, sourceEnabled: opts.SourceEnabled, now: now, native: newClaudeNativeReader(now)},
 			&kimiProvider{home: opts.KimiHome, client: client, now: now},
 			&minimaxProvider{authPath: opts.MiniMaxAuthPath, client: client, now: now},
 		},
@@ -156,7 +156,12 @@ func (s *Service) Quotas(ctx context.Context) Response {
 			if override, ok := p.(quotaTimeoutProvider); ok {
 				timeout = override.quotaTimeout()
 			}
-			providerCtx, cancel := context.WithTimeout(ctx, timeout)
+			// Providers memoize their result for every caller, so one
+			// request going away must not abort the lookup: a canceled
+			// fetch would be cached and served to the next page load as
+			// "unavailable: context canceled". Each lookup is already
+			// bounded by its own timeout, so it is safe to let it finish.
+			providerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 			defer cancel()
 			results[i] = p.quota(providerCtx)
 		}(i, p)

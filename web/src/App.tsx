@@ -1,4 +1,4 @@
-import { lazy, useEffect, useMemo, useState } from 'react'
+import { lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { DashboardLayout } from './components/layout/dashboard-layout'
 import { DashboardProvider } from './components/layout/dashboard-provider'
@@ -42,69 +42,109 @@ function fallbackSourceMetadata(reason: string): SourceListResponse {
   }
 }
 
+// Coming back to the tab refreshes only when the data on screen is at least
+// this old. Refreshing on every focus re-fetched every view each time the
+// window was clicked.
+const FOCUS_REFRESH_AFTER_MS = 60_000
+
+function newerSourceMetadata(previous: SourceListResponse | null, next: SourceListResponse) {
+  return previous && (previous.sources_revision ?? 0) > (next.sources_revision ?? 0) ? previous : next
+}
+
 function App() {
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null)
-  const [isRefreshing, setRefreshing] = useState(false)
+  const [inFlight, setInFlight] = useState(0)
+  // Two counters on purpose: `refreshTick` is the data generation every view
+  // revalidates against, `sourcesTick` re-reads /sources. A source toggle
+  // already returns fresh metadata, so it advances only the first.
   const [refreshTick, setRefreshTick] = useState(0)
+  const [sourcesTick, setSourcesTick] = useState(0)
   const [sourceMetadata, setSourceMetadata] = useState<SourceListResponse | null>(null)
   const [sourceMetadataLoading, setSourceMetadataLoading] = useState(true)
   const [sourceMetadataError, setSourceMetadataError] = useState<string | null>(null)
+  const lastRefreshAtRef = useRef(0)
 
   useEffect(() => {
     const controller = new AbortController()
 
     async function loadSources() {
-      setSourceMetadataLoading(true)
-      setSourceMetadataError(null)
-
       try {
         const next = await withBypassCache(() => getSources(controller.signal))
         if (controller.signal.aborted) return
-        setSourceMetadata(previous => previous && (previous.sources_revision ?? 0) > (next.sources_revision ?? 0) ? previous : next)
+        setSourceMetadata(previous => newerSourceMetadata(previous, next))
+        setSourceMetadataError(null)
       } catch (caught) {
         if (controller.signal.aborted) return
         const message = caught instanceof Error ? caught.message : 'Failed to load source metadata'
         setSourceMetadataError(message)
         setSourceMetadata(previous => previous ?? fallbackSourceMetadata(message))
       } finally {
-        if (!controller.signal.aborted) {
-          setSourceMetadataLoading(false)
-        }
+        // Only the first load gates the views. Later reloads keep the known
+        // sources on screen and swap them in place when the answer arrives.
+        if (!controller.signal.aborted) setSourceMetadataLoading(false)
       }
     }
 
     void loadSources()
 
     return () => controller.abort()
-  }, [refreshTick])
+  }, [sourcesTick])
 
-  useEffect(() => {
-    const onFocus = () => setRefreshTick(value => value + 1)
-    window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
+  const requestRefresh = useCallback(() => {
+    lastRefreshAtRef.current = Date.now()
+    setSourcesTick(value => value + 1)
+    setRefreshTick(value => value + 1)
   }, [])
 
+  const trackRefresh = useCallback(() => {
+    let released = false
+    setInFlight(count => count + 1)
+    return () => {
+      if (released) return
+      released = true
+      setInFlight(count => Math.max(0, count - 1))
+    }
+  }, [])
+
+  const updateSourceMetadata = useCallback((next: SourceListResponse) => {
+    setSourceMetadata(previous => newerSourceMetadata(previous, next))
+    setRefreshTick(value => value + 1)
+  }, [])
+
+  useEffect(() => {
+    lastRefreshAtRef.current = Date.now()
+    const refreshIfStale = () => {
+      if (document.visibilityState !== 'visible') return
+      if (Date.now() - lastRefreshAtRef.current < FOCUS_REFRESH_AFTER_MS) return
+      requestRefresh()
+    }
+    window.addEventListener('focus', refreshIfStale)
+    document.addEventListener('visibilitychange', refreshIfStale)
+    return () => {
+      window.removeEventListener('focus', refreshIfStale)
+      document.removeEventListener('visibilitychange', refreshIfStale)
+    }
+  }, [requestRefresh])
+
   const sourceState = useSourceState(sourceMetadata)
+  const isRefreshing = inFlight > 0
 
   const contextValue = useMemo(
     () => ({
       lastUpdatedAt,
       isRefreshing,
       refreshNonce: refreshTick,
-      requestRefresh: () => setRefreshTick((value) => value + 1),
+      requestRefresh,
       setLastUpdatedAt,
-      setRefreshing,
-      updateSourceMetadata: (next: SourceListResponse) => {
-        setSourceMetadata(previous => previous && (previous.sources_revision ?? 0) > (next.sources_revision ?? 0) ? previous : next)
-        setRefreshTick(value => value + 1)
-      },
+      trackRefresh,
+      updateSourceMetadata,
       sourceMetadata,
       sourceMetadataLoading,
       sourceMetadataError,
       sources: sourceMetadata?.sources ?? [],
       ...sourceState,
     }),
-    [isRefreshing, lastUpdatedAt, refreshTick, sourceMetadata, sourceMetadataError, sourceMetadataLoading, sourceState],
+    [isRefreshing, lastUpdatedAt, refreshTick, requestRefresh, sourceMetadata, sourceMetadataError, sourceMetadataLoading, sourceState, trackRefresh, updateSourceMetadata],
   )
 
   return (

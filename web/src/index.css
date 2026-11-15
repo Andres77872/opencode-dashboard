@@ -6,9 +6,7 @@
 @import "./styles/tokens/base.css";
 
 :root {
-  /* Vael shell is a full-height flex app; the in-page scroll lives in PageBody.
-     --header-height is retained for any in-page sticky offsets that want it. */
-  --header-height: 108px;
+  /* Vael shell is a full-height flex app; the in-page scroll lives in PageBody. */
   color-scheme: dark;
   font-synthesis: none;
 }
@@ -58,7 +56,269 @@ body {
   }
 }
 
+@keyframes vael-slide-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes vael-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* StatGrid — as many KPI tiles as fit on a desktop row, two abreast on a
+   phone (one per row made every view open with a screen of stacked tiles). */
+.vael-stat-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+@media (max-width: 640px) {
+  .vael-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  /* An odd tile out takes the full row instead of leaving a hole beside it. */
+  .vael-stat-grid > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
+/* App shell: full-viewport flex row. dvh keeps the bottom of the page above
+   mobile browser chrome; vh is the fallback. */
+.vael-shell {
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--ink-900);
+}
+.vael-skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: var(--z-dialog);
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--fg-on-accent);
+  font: 600 13px/1 var(--font-ui);
+  transform: translateY(-200%);
+}
+.vael-skip-link:focus-visible {
+  transform: none;
+}
+/* Page gutters tighten on phones; the bottom inset keeps the last row of any
+   view clear of the floating assistant launcher. */
+.vael-page {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--page-pad-y) var(--page-pad-x) 96px;
+}
+.vael-bar {
+  padding-inline: var(--page-pad-x);
+}
+@media (max-width: 640px) {
+  :root {
+    --page-pad-x: 16px;
+    --page-pad-y: 16px;
+  }
+}
+
+/* Form fields share one focus treatment (border + soft halo) instead of the
+   global ring, which reads as too heavy on a full-width input. */
+.vael-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 11px;
+  background: var(--ink-850);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--fg-primary);
+  font: 400 13px/1 var(--font-ui);
+  transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
+}
+.vael-input::placeholder {
+  color: var(--fg-faint);
+}
+.vael-input:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+.vael-input:focus,
+.vael-input:focus-visible {
+  outline: none;
+  border-color: var(--border-accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.vael-input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+.vael-input[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px var(--danger-soft);
+}
+.vael-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+select.vael-input {
+  appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23727c8b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+
 /* react-day-picker (v9) overrides → Vael dark calendar */
+/* Sidebar footer: data freshness, doubling as the refresh button. */
+.vael-nav-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--ink-800);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast), border-color var(--dur-fast);
+}
+.vael-nav-status:hover {
+  background: var(--ink-750);
+  border-color: var(--border-default);
+}
+
+/* Quiet text button for secondary disclosure ("Details", "Show more"). */
+.vael-link-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg-secondary);
+  font: 500 12px/1 var(--font-ui);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.vael-link-button:hover {
+  background: var(--ink-750);
+  color: var(--fg-primary);
+}
+
+/* Expanded source details: a term column beside its description, stacked on
+   narrow screens. */
+.vael-source-details {
+  margin: 0;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.vael-source-detail {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  font: 400 12px/1.5 var(--font-ui);
+}
+.vael-source-detail dt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 18px;
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+.vael-source-detail dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--fg-secondary);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 480px) {
+  .vael-source-detail {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}
+
+/* Period picker panel: presets beside the calendar, stacked above it on
+   narrow screens where the two columns no longer fit. */
+.vael-period-panel {
+  display: flex;
+}
+.vael-period-presets {
+  width: 150px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-right: 1px solid var(--border-default);
+}
+.vael-period-group-label {
+  padding: 8px 9px 4px;
+  font: 600 11px/1 var(--font-ui);
+  color: var(--fg-faint);
+}
+.vael-period-preset {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-secondary);
+  font: 500 13px/1 var(--font-ui);
+  cursor: pointer;
+  text-align: left;
+}
+.vael-period-preset:hover {
+  background: var(--ink-650);
+}
+.vael-period-preset[aria-pressed='true'] {
+  background: var(--accent-soft);
+  color: var(--blue-300);
+  font-weight: 600;
+}
+@media (max-width: 480px) {
+  .vael-period-panel {
+    flex-direction: column;
+  }
+  .vael-period-presets {
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border-default);
+  }
+  .vael-period-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+  }
+  .vael-period-group-label {
+    width: 52px;
+    padding: 0 0 0 4px;
+  }
+  .vael-period-preset {
+    width: auto;
+    padding: 0 10px;
+  }
+}
+
 .vael-daypicker .rdp-root {
   --rdp-accent-color: var(--accent);
   --rdp-accent-background-color: var(--accent-soft);
@@ -103,7 +363,7 @@ body {
 .analytics-assistant-panel,
 .analytics-assistant-minimized {
   position: fixed;
-  z-index: 75;
+  z-index: var(--z-assistant);
   font-family: var(--font-ui);
 }
 
@@ -139,8 +399,8 @@ body {
   height: 30px;
   flex-shrink: 0;
   color: var(--fg-primary);
-  background: color-mix(in srgb, var(--vendor-minimax) 22%, var(--ink-750));
-  border: 1px solid color-mix(in srgb, var(--vendor-minimax) 48%, transparent);
+  background: color-mix(in srgb, var(--accent) 22%, var(--ink-750));
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, transparent);
   border-radius: var(--radius-md);
 }
 
@@ -150,7 +410,7 @@ body {
   top: -2px;
   width: 7px;
   height: 7px;
-  background: var(--vendor-minimax);
+  background: var(--accent);
   border: 2px solid var(--ink-700);
   border-radius: 50%;
 }
@@ -274,6 +534,7 @@ body {
 .analytics-assistant-drag-handle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -3px;
+  box-shadow: none;
 }
 
 .analytics-assistant-drag-handle.minimized {
@@ -331,6 +592,7 @@ body {
 .analytics-assistant-provider-select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+  box-shadow: none;
 }
 
 .analytics-assistant-header-actions {
@@ -380,7 +642,12 @@ body {
 .analytics-assistant-new-chat:focus-visible,
 .analytics-assistant-restore:focus-visible,
 .analytics-assistant-button:focus-visible,
-.analytics-assistant-quick-prompts button:focus-visible,
+.analytics-assistant-quick-prompts button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
 .analytics-assistant-launcher:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -458,8 +725,7 @@ body {
   gap: 6px;
 }
 
-.analytics-assistant-capabilities span,
-.analytics-assistant-tools span {
+.analytics-assistant-capabilities span {
   padding: 4px 7px;
   color: var(--fg-muted);
   background: var(--ink-750);
@@ -518,6 +784,7 @@ body {
 .analytics-assistant-messages:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -3px;
+  box-shadow: none;
 }
 
 .analytics-assistant-welcome {
@@ -667,6 +934,7 @@ body {
 .analytics-assistant-copy:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+  box-shadow: none;
 }
 
 .analytics-assistant-copy.failed {
@@ -704,6 +972,7 @@ body {
 .analytics-assistant-jump-latest:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+  box-shadow: none;
 }
 
 .analytics-assistant-message-content {
@@ -857,7 +1126,7 @@ body {
 }
 
 .analytics-assistant-md .md-codeblock-copy:hover { color: var(--fg-primary); background: var(--ink-700); }
-.analytics-assistant-md .md-codeblock-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.analytics-assistant-md .md-codeblock-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; box-shadow: none; }
 
 .analytics-assistant-md .md-codeblock pre {
   margin: 0;
@@ -937,7 +1206,7 @@ body {
 
 .analytics-assistant-md .md-artifact-toggle:hover { color: var(--fg-primary); background: var(--ink-700); }
 .analytics-assistant-md .md-artifact-toggle[aria-pressed='true'] { color: var(--accent); background: var(--ink-800); }
-.analytics-assistant-md .md-artifact-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.analytics-assistant-md .md-artifact-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; box-shadow: none; }
 
 .analytics-assistant-md .md-artifact-body { padding: 10px; }
 .analytics-assistant-md .md-artifact-body .md-table-wrap { margin: 0; }
@@ -1333,6 +1602,7 @@ body {
 .analytics-assistant-tool-call-header:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+  box-shadow: none;
 }
 
 .analytics-assistant-tool-name {
@@ -1415,16 +1685,7 @@ body {
   border: 1.5px solid var(--accent);
   border-right-color: transparent;
   border-radius: 50%;
-  animation: analytics-assistant-spin 700ms linear infinite;
-}
-
-.analytics-assistant-tools {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px;
-  padding: 1px 3px 0;
-  color: var(--fg-faint);
+  animation: vael-spin 700ms linear infinite;
 }
 
 /* A tool call made by a specialist is indented under the delegation. */
@@ -1482,6 +1743,7 @@ body {
 .analytics-assistant-specialist-header:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+  box-shadow: none;
 }
 
 .analytics-assistant-specialist small {
@@ -1579,6 +1841,7 @@ body {
 .analytics-assistant-retry:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+  box-shadow: none;
 }
 
 .analytics-assistant-header-button.active {
@@ -1677,8 +1940,9 @@ body {
 }
 
 .analytics-assistant-history-meta {
-  color: var(--fg-faint);
-  font: 500 10px/1 var(--font-mono);
+  color: var(--fg-muted);
+  font: 500 10.5px/1.45 var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 .analytics-assistant-history-delete {
@@ -1686,16 +1950,22 @@ body {
   align-items: center;
   justify-content: center;
   width: 30px;
-  color: var(--fg-faint);
+  color: var(--fg-muted);
   background: var(--ink-800);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   cursor: pointer;
 }
 
-.analytics-assistant-history-delete:hover {
+.analytics-assistant-history-delete:hover:not(:disabled) {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 40%, var(--border-subtle));
+}
+
+.analytics-assistant-history-item:disabled,
+.analytics-assistant-history-delete:disabled {
+  opacity: 0.5;
+  cursor: progress;
 }
 
 .analytics-assistant-thinking {
@@ -1725,10 +1995,6 @@ body {
 
 .analytics-assistant-thinking i:nth-last-child(2) { animation-delay: 120ms; }
 .analytics-assistant-thinking i:nth-last-child(1) { animation-delay: 240ms; }
-
-@keyframes analytics-assistant-spin {
-  to { transform: rotate(360deg); }
-}
 
 .analytics-assistant-status {
   min-height: 25px;
@@ -1772,9 +2038,10 @@ body {
   color: var(--fg-faint);
 }
 
-.analytics-assistant-composer textarea:focus {
+.analytics-assistant-composer textarea:focus,
+.analytics-assistant-composer textarea:focus-visible {
   border-color: var(--border-accent);
-  box-shadow: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .analytics-assistant-composer textarea:disabled {

@@ -1,7 +1,7 @@
 /* View-level error boundary — a single view crashing shows a recoverable card
    instead of blanking the whole app. Keyed by route so navigation clears it. */
 import { Component, type ErrorInfo, type ReactNode } from 'react'
-import { ErrorState } from '../vael'
+import { Card, ErrorState } from '../vael'
 
 interface Props {
   children: ReactNode
@@ -24,13 +24,13 @@ export class ViewErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.error) {
       return (
-        <div style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)' }}>
+        <Card>
           <ErrorState
-            title="This view hit an error"
+            title="This view ran into a problem"
             message={this.state.error.message}
             onRetry={() => window.location.reload()}
           />
-        </div>
+        </Card>
       )
     }
     return this.props.children

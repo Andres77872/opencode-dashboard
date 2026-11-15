@@ -90,23 +90,6 @@ export function isChipArray(value: ConfigJsonValue[]): boolean {
   )
 }
 
-export function titleizeKey(key: string) {
-  if (!key) {
-    return 'Root'
-  }
-
-  return key
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/[_.-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\b\w/g, (letter) => letter.toUpperCase())
-}
-
-export function formatDisplayLabel(label: string) {
-  return /^\[\d+\]$/.test(label) ? label : titleizeKey(label)
-}
-
 export function formatPrimitiveValue(value: ConfigJsonPrimitive) {
   if (value === null) {
     return 'null'
@@ -117,22 +100,6 @@ export function formatPrimitiveValue(value: ConfigJsonPrimitive) {
   }
 
   return String(value)
-}
-
-export function formatPrimitiveType(value: ConfigJsonPrimitive) {
-  if (value === null) {
-    return 'Null'
-  }
-
-  if (typeof value === 'boolean') {
-    return 'Boolean'
-  }
-
-  if (typeof value === 'number') {
-    return 'Number'
-  }
-
-  return 'String'
 }
 
 export function summarizeValue(value: ConfigJsonValue) {
@@ -146,7 +113,7 @@ export function summarizeValue(value: ConfigJsonValue) {
   }
 
   if (value === null) {
-    return 'Null'
+    return 'null'
   }
 
   return typeof value

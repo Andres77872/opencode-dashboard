@@ -99,22 +99,36 @@ func (s *Store) ListAssistantProviders(ctx context.Context) ([]AssistantProvider
 	if err != nil {
 		return nil, fmt.Errorf("list assistant providers: %w", err)
 	}
-	defer rows.Close()
 	providers := make([]AssistantProvider, 0)
 	for rows.Next() {
 		var provider AssistantProvider
 		var insecure int
 		if err := rows.Scan(&provider.ID, &provider.Name, &provider.BaseURL, &provider.APIKey, &insecure, &provider.CreatedMS, &provider.UpdatedMS); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("scan assistant provider: %w", err)
 		}
 		provider.APIKeyConfigured = provider.APIKey != ""
 		provider.InsecureTransportAck = insecure != 0
-		if err := s.loadAssistantProviderDetails(ctx, &provider); err != nil {
-			return nil, err
-		}
 		providers = append(providers, provider)
 	}
-	return providers, rows.Err()
+	err = rows.Err()
+	// Release the cursor's connection before loading per-provider details.
+	// Running those queries inside the loop made every caller hold one pooled
+	// connection while asking for a second; two concurrent listings exhausted
+	// the two-connection pool and deadlocked each other, which then blocked
+	// every other settings read (sources, cache status, quotas) behind them.
+	if closeErr := rows.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list assistant providers: %w", err)
+	}
+	for i := range providers {
+		if err := s.loadAssistantProviderDetails(ctx, &providers[i]); err != nil {
+			return nil, err
+		}
+	}
+	return providers, nil
 }
 
 func (s *Store) GetAssistantProvider(ctx context.Context, id string) (AssistantProvider, error) {

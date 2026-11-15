@@ -25,6 +25,21 @@ Vite proxies `/api` and `/health` to `127.0.0.1:7450` and binds port 7451 with
 server somewhere the backend's origin check will reject. That exact dev origin
 is the only non-dashboard origin the assistant endpoints accept.
 
+To develop against a backend on another port — a scratch instance with its own
+`XDG_DATA_HOME`, say, so the real dashboard's cache and settings are left alone
+— point the proxy at it:
+
+```bash
+OCD_API_TARGET=http://127.0.0.1:8399 npm run dev
+```
+
+Reads work against any target. Changes (toggling a source, saving a pricing
+alias, starting a sync) do not: the backend accepts the dev server's origin
+only when it listens on the default port, and answers `403` otherwise. That
+guard is what keeps another local page from driving the dashboard, so it is
+not relaxed for development — exercise changes on the default port, or against
+the embedded build.
+
 For a full build that exercises the embed path instead, use `../scripts/dev.sh`
 from the repository root.
 
@@ -32,10 +47,12 @@ from the repository root.
 
 | Command | Purpose |
 |---------|---------|
-| `npm run dev` | Vite dev server with HMR, proxying the API to `:7450` |
+| `npm run dev` | Vite dev server with HMR, proxying the API to `:7450` (or `OCD_API_TARGET`) |
 | `npm run build` | `tsc -b` project type-check, then the Vite production build into `dist/` |
 | `npm run lint` | ESLint over the whole package |
+| `npm test` | Both test suites below |
 | `npm run test:source-state` | Unit tests for `src/lib` on Node's built-in runner |
+| `npm run test:components` | Component tests (`*.component.test.tsx`) on Vitest + Testing Library |
 | `npm run preview` | Serve a built `dist/` locally |
 
 `npm run build` type-checks before bundling, so a type error fails the build —
@@ -43,15 +60,39 @@ that is the type-check step in CI, not a separate command.
 
 ## Tests
 
-Tests live next to the module they cover as `src/lib/<name>.test.ts` and run on
-`node --test` with no test framework installed. They deliberately cover the
-pure logic only — source selection and persisted preferences, period labels,
-formatting and token breakdowns, request accounting and processing modes,
-pricing-alias state, markdown and syntax rendering, and assistant stream
-parsing, history, and transcript handling.
+There are two suites, both next to the code they cover:
 
-New test files are not picked up automatically: `test:source-state` lists its
-files explicitly in `package.json`, so add yours there.
+- **Pure logic** — `src/lib/<name>.test.ts`, run on `node --test` with no test
+  framework. They cover source selection and persisted preferences, period
+  labels, formatting and token breakdowns, request accounting and processing
+  modes, the resource cache, pricing-alias state, markdown and syntax
+  rendering, and assistant stream parsing, history, and transcript handling.
+  New files are not picked up automatically: `test:source-state` lists its
+  files explicitly in `package.json`, so add yours there.
+- **Components** — `*.component.test.tsx`, run on Vitest with Testing Library
+  in jsdom. Use these for behavior that only exists once something renders:
+  a form's validation and submit flow, what a refresh re-fetches.
+
+Prefer the first kind. Logic that can be a pure function in `src/lib` should be
+one, and tested there.
+
+## Data loading
+
+Views do not fetch in ad-hoc effects. `lib/use-cached-resource.ts` is the one
+place that fetches, caches and refreshes:
+
+- Results live in an app-wide cache (`lib/resource-cache.ts`), so returning to
+  a view shows its data at once.
+- It is stale-while-revalidate. A refresh — the button, a finished database
+  sync, or coming back to the tab after a minute — refetches in the background
+  and never blanks what is on screen. `loading` can be true while `data` is
+  set: render the skeleton only when there is no data yet.
+- A change of scope (source, period) aborts the in-flight request.
+
+`usePeriodResource(fetcher, period, { cacheId })` wraps it for the common
+"one endpoint per source and period" case; give each endpoint its own
+`cacheId`. `DashboardContext` carries the refresh generation (`refreshNonce`)
+and `requestRefresh()`.
 
 ## Layout
 

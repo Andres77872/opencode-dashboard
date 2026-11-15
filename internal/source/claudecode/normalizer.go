@@ -557,12 +557,18 @@ func firstPromptText(session *sessionRecord, accept func(*messageRecord) bool) s
 	return ""
 }
 
+var messageIDReplacer = strings.NewReplacer("/", "_", " ", "_", "?", "_", "#", "_")
+
+// messageIDPrefix is what every message id of one session starts with.
+func messageIDPrefix(sessionID string) string {
+	return claudeSourceID + ":" + messageIDReplacer.Replace(sessionID) + ":"
+}
+
 func synthesizeMessageID(sessionID, uuid string, line int) string {
 	if uuid == "" {
 		uuid = fmt.Sprintf("line-%d", line)
 	}
-	replacer := strings.NewReplacer("/", "_", " ", "_", "?", "_", "#", "_")
-	return claudeSourceID + ":" + replacer.Replace(sessionID) + ":" + replacer.Replace(uuid)
+	return messageIDPrefix(sessionID) + messageIDReplacer.Replace(uuid)
 }
 
 func toolKey(sessionID, callID string) string {

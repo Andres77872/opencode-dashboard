@@ -1,8 +1,9 @@
 /* Global data-source switcher (Vael). Aggregate read-only state on /overview;
    per-source selector elsewhere. Pending/unavailable sources stay visible so the
-   SourceNotice can explain why they can't be queried. */
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+   page can explain why they can't be queried. */
+import { useMemo } from 'react'
+import { Link, useLocation } from 'react-router-dom'
+import { PickerButton, Popover } from '../vael/controls'
 import { Icon, type IconName } from '../vael/icon'
 import { useDashboardContext } from '../layout/dashboard-context'
 import type { SourceID, SourceInfo } from '../../types/api'
@@ -53,23 +54,9 @@ function StatusDot({ available }: { available: boolean }) {
 export function SourcePicker() {
   const { selectedSourceId, selectedSourceInfo, setSelectedSourceId, sourceMetadataLoading, sources: allSources } = useDashboardContext()
   const sources = useMemo(() => allSources.filter(source => source.enabled !== false), [allSources])
-  const aggregate = useLocation().pathname.startsWith('/overview')
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
+  const { pathname } = useLocation()
+  const aggregate = pathname.startsWith('/overview')
+  const onConfig = pathname.startsWith('/config')
 
   const options = useMemo(() => {
     if (selectedSourceInfo && selectedSourceInfo.enabled !== false && !sources.some((s) => s.id === selectedSourceInfo.id)) {
@@ -80,71 +67,46 @@ export function SourcePicker() {
 
   const listItems = aggregate ? sources : options
   const availableCount = listItems.filter((s) => s.available).length
-  const singleSource = options.length <= 1
   const loadingEmpty = sourceMetadataLoading && options.length === 0
-
-  const selectRow = (sourceId: SourceID) => {
-    if (sourceId !== selectedSourceId) setSelectedSourceId(sourceId)
-    setOpen(false)
-  }
 
   const triggerIcon: IconName = aggregate ? 'layers' : kindIcon(selectedSourceInfo?.kind)
   const triggerLabel = sources.length === 0 && !sourceMetadataLoading ? 'No active sources' : loadingEmpty ? 'Loading sources…' : aggregate ? 'All sources' : selectedSourceInfo?.label ?? selectedSourceId
   const triggerUnavailable = !aggregate && selectedSourceInfo?.available === false
 
   return (
-    <div ref={ref} style={{ position: 'relative', display: 'inline-flex' }}>
-      <button
-        type="button"
-        onClick={() => !loadingEmpty && setOpen((v) => !v)}
-        disabled={loadingEmpty}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 8,
-          height: 32,
-          padding: '0 11px',
-          background: open ? 'var(--ink-700)' : 'var(--ink-750)',
-          border: `1px solid ${open ? 'var(--border-accent)' : 'var(--border-default)'}`,
-          borderRadius: 'var(--radius-md)',
-          cursor: loadingEmpty ? 'default' : 'pointer',
-          font: '500 13px/1 var(--font-ui)',
-          color: 'var(--fg-primary)',
-          whiteSpace: 'nowrap',
-          minWidth: 150,
-        }}
-      >
-        <Icon name={triggerIcon} size={15} color={triggerUnavailable ? 'var(--warning)' : 'var(--fg-muted)'} />
-        <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis' }}>{triggerLabel}</span>
-        <Icon name="chevron-down" size={14} color="var(--fg-muted)" style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform var(--dur-fast)' }} />
-      </button>
-
-      {open && (
-        <div
-          role="dialog"
-          aria-label="Data source"
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 6px)',
-            right: 0,
-            zIndex: 60,
-            width: 320,
-            maxWidth: 'calc(100vw - 2rem)',
-            background: 'var(--ink-700)',
-            border: '1px solid var(--border-strong)',
-            borderRadius: 'var(--radius-lg)',
-            boxShadow: 'var(--shadow-lg)',
-            overflow: 'hidden',
-          }}
+    <Popover
+      portal
+      flush
+      width={320}
+      closeOnClick={false}
+      label="Data source"
+      trigger={(open, toggle) => (
+        <PickerButton
+          open={open}
+          onClick={toggle}
+          disabled={loadingEmpty}
+          popup="dialog"
+          icon={triggerIcon}
+          iconColor={triggerUnavailable ? 'var(--warning)' : undefined}
+          ariaLabel={`Data source: ${triggerLabel}`}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '9px 12px', borderBottom: '1px solid var(--border-default)' }}>
-            <span style={{ font: '600 11px/1 var(--font-ui)', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>{aggregate ? 'Overview · all sources' : 'Data source'}</span>
+          {triggerLabel}
+        </PickerButton>
+      )}
+    >
+      {(close) => (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px', borderBottom: '1px solid var(--border-default)' }}>
+            <span style={{ font: '600 12px/1 var(--font-ui)', color: 'var(--fg-secondary)' }}>{aggregate ? 'Included in the overview' : 'Data source'}</span>
             {availableCount > 0 && <span style={{ font: '500 11px/1 var(--font-mono)', color: 'var(--fg-muted)' }}>{availableCount} available</span>}
           </div>
 
-          <div style={{ maxHeight: 288, overflowY: 'auto', padding: 5 }}>
+          {/* A real radio group when choosing; a plain list on the Overview,
+              where every source is included and there is nothing to pick. */}
+          <div role={aggregate ? 'list' : 'radiogroup'} aria-label={aggregate ? 'Sources included' : 'Data source'} style={{ maxHeight: 288, overflowY: 'auto', padding: 5 }}>
+            {listItems.length === 0 && (
+              <div style={{ padding: '14px 10px', font: '400 12px/1.5 var(--font-ui)', color: 'var(--fg-muted)' }}>No data sources are enabled.</div>
+            )}
             {listItems.map((source) => {
               const selected = !aggregate && source.id === selectedSourceId
               const inner = (
@@ -153,11 +115,11 @@ export function SourcePicker() {
                   <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, flex: 1 }}>
                     <span style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                       <span style={{ font: '600 13px/1 var(--font-ui)', color: 'var(--fg-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{source.label}</span>
-                      {source.default && <span style={{ font: '600 9px/1 var(--font-ui)', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--fg-muted)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-pill)', padding: '2px 6px' }}>default</span>}
-                      {!source.available && <span style={{ font: '600 9px/1 var(--font-ui)', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--warning)', background: 'var(--warning-soft)', borderRadius: 'var(--radius-pill)', padding: '2px 6px' }}>unavailable</span>}
+                      {source.default && <span style={{ font: '600 10px/1 var(--font-ui)', color: 'var(--fg-muted)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-pill)', padding: '2px 6px' }}>Default</span>}
+                      {!source.available && <span style={{ font: '600 10px/1 var(--font-ui)', color: 'var(--warning)', background: 'var(--warning-soft)', borderRadius: 'var(--radius-pill)', padding: '2px 6px' }}>Unavailable</span>}
                     </span>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, font: '400 12px/1.3 var(--font-mono)', color: 'var(--fg-muted)', minWidth: 0 }}>
-                      <Icon name={kindIcon(source.kind)} size={12} color="var(--fg-faint)" />
+                    <span title={sourceSubtitle(source)} style={{ display: 'flex', alignItems: 'center', gap: 6, font: '400 12px/1.3 var(--font-mono)', color: 'var(--fg-muted)', minWidth: 0 }}>
+                      <Icon name={kindIcon(source.kind)} size={12} color="var(--fg-faint)" style={{ flexShrink: 0 }} />
                       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sourceSubtitle(source)}</span>
                     </span>
                   </span>
@@ -167,7 +129,7 @@ export function SourcePicker() {
 
               if (aggregate) {
                 return (
-                  <div key={source.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 8px', borderRadius: 'var(--radius-md)' }}>
+                  <div key={source.id} role="listitem" style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 8px', borderRadius: 'var(--radius-md)' }}>
                     {inner}
                   </div>
                 )
@@ -177,7 +139,12 @@ export function SourcePicker() {
                 <button
                   key={source.id}
                   type="button"
-                  onClick={() => selectRow(source.id)}
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => {
+                    if (source.id !== selectedSourceId) setSelectedSourceId(source.id as SourceID)
+                    close()
+                  }}
                   style={{
                     display: 'flex',
                     alignItems: 'flex-start',
@@ -201,13 +168,17 @@ export function SourcePicker() {
 
           <p style={{ margin: 0, borderTop: '1px solid var(--border-default)', padding: '9px 12px', font: '400 12px/1.5 var(--font-ui)', color: 'var(--fg-muted)' }}>
             {aggregate
-              ? 'The Overview aggregates every source. Costs are shown per source and never combined.'
-              : singleSource
-                ? 'Manage enabled data sources on the Config page.'
-                : 'Applies to every view except the Overview, which aggregates enabled sources.'}
+              ? 'The overview adds up every enabled source. Costs stay separate per source.'
+              : 'Applies to every view except the overview.'}
+            {!onConfig && (
+              <>
+                {' '}
+                <Link to="/config#data-sources" onClick={close} style={{ color: 'var(--blue-300)' }}>Manage sources</Link>
+              </>
+            )}
           </p>
-        </div>
+        </>
       )}
-    </div>
+    </Popover>
   )
 }

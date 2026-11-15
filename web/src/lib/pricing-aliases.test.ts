@@ -244,7 +244,7 @@ test('target equality compares both the source and the model', () => {
   )
 })
 
-test('drafts survive a refresh and only the mutated row is reset to its saved target', () => {
+test('unsaved drafts survive a refresh; only a settled or now-saved choice is retired', () => {
   const rowA = pricingAliasRowKey('codex', 'openai', 'model-a')
   const rowB = pricingAliasRowKey('codex', 'openai', 'model-b')
   const target = (model_id: string) => ({ source_id: 'codex' as const, model_id })
@@ -254,21 +254,24 @@ test('drafts survive a refresh and only the mutated row is reset to its saved ta
 
   const saved = alias('openai', 'model-a', 'gpt-5.4', true, 4)
   const afterSave = mergePricingAliasDrafts(drafts, [saved], [rowA])
-  assert.deepEqual(afterSave[rowA], target('gpt-5.4'))
+  assert.equal(afterSave[rowA], undefined, 'a saved row no longer carries a draft; its target comes from the alias')
   assert.deepEqual(afterSave[rowB], target('gpt-5.3'), 'an unrelated unsaved selection must not be discarded')
 
   const afterRemove = mergePricingAliasDrafts(drafts, [], [rowA])
   assert.equal(afterRemove[rowA], undefined, 'a removed alias clears its own draft')
   assert.deepEqual(afterRemove[rowB], target('gpt-5.3'))
 
-  const serverWins = mergePricingAliasDrafts({ [rowA]: target('stale-choice') }, [saved])
-  assert.deepEqual(serverWins[rowA], target('gpt-5.4'), 'a persisted target overrides an older draft for the same row')
+  // A background refresh used to overwrite a re-pointed alias with the saved
+  // target, silently discarding the user's pending change.
+  const repointed = mergePricingAliasDrafts({ [rowA]: target('gpt-5.5') }, [saved])
+  assert.deepEqual(repointed[rowA], target('gpt-5.5'), 'a refresh keeps an unsaved re-point of an existing alias')
 
-  const crossSource = alias('openai', 'model-a', 'gpt-5.6', true, 4, { target_source_id: 'codex' })
-  assert.deepEqual(
-    mergePricingAliasDrafts({}, [{ ...crossSource, source_id: 'claude_code' }])[
-      pricingAliasRowKey('claude_code', 'openai', 'model-a')
-    ],
-    { source_id: 'codex', model_id: 'gpt-5.6' },
-  )
+  const caughtUp = mergePricingAliasDrafts({ [rowA]: target('gpt-5.4') }, [saved])
+  assert.equal(caughtUp[rowA], undefined, 'a draft equal to the saved target is no longer pending')
+
+  assert.equal(mergePricingAliasDrafts({ [rowA]: target('') }, [])[rowA], undefined, 'an empty selection is not a draft')
+
+  // The same model id in another catalog is a different target, so it stays pending.
+  const crossSource = mergePricingAliasDrafts({ [rowA]: { source_id: 'claude_code', model_id: 'gpt-5.4' } }, [saved])
+  assert.deepEqual(crossSource[rowA], { source_id: 'claude_code', model_id: 'gpt-5.4' })
 })

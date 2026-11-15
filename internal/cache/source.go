@@ -503,12 +503,29 @@ func (s *CachedSource) Sessions(ctx context.Context, query stats.SessionQuery) (
 }
 
 func (s *CachedSource) SessionByID(ctx context.Context, id string) (*stats.SessionDetail, error) {
-	if s.live != nil {
-		if detail, err := s.live.SessionByID(ctx, id); err != nil || detail != nil {
-			return detail, err
-		}
+	if s.live == nil {
+		return s.store.SessionByID(ctx, s.sourceID(), id)
 	}
-	return s.store.SessionByID(ctx, s.sourceID(), id)
+	detail, liveErr := s.live.SessionByID(ctx, id)
+	if liveErr == nil && detail != nil {
+		return detail, nil
+	}
+	if liveErr != nil && ctx.Err() != nil {
+		return nil, liveErr // the caller went away; nothing to serve
+	}
+	cached, err := s.store.SessionByID(ctx, s.sourceID(), id)
+	if liveErr == nil {
+		return cached, err
+	}
+	// The live read failed (a transcript scan that outlasted its budget, a
+	// locked database). The consolidated index still describes the session,
+	// so the view gets that instead of an error; only activity newer than the
+	// last consolidation can be missing from it.
+	if err != nil || cached == nil {
+		return nil, liveErr
+	}
+	s.store.logger.Warn("live session read failed; serving the consolidated session", "source", s.sourceID(), "session", id, "error", liveErr)
+	return cached, nil
 }
 
 func (s *CachedSource) Messages(ctx context.Context, pq stats.PeriodQuery, page, limit int, sort stats.MessageSort) (stats.MessageList, error) {
@@ -536,14 +553,29 @@ func (s *CachedSource) Messages(ctx context.Context, pq stats.PeriodQuery, page,
 }
 
 func (s *CachedSource) MessageByID(ctx context.Context, id string) (*stats.MessageDetail, error) {
+	var liveErr error
 	if s.live != nil {
-		if detail, err := s.live.MessageByID(ctx, id); err != nil || detail != nil {
-			return detail, err
+		detail, err := s.live.MessageByID(ctx, id)
+		if err == nil && detail != nil {
+			return detail, nil
 		}
+		if err != nil && ctx.Err() != nil {
+			return nil, err // the caller went away; nothing to serve
+		}
+		liveErr = err
 	}
+	// Content is never cached, so the index can only supply the message's
+	// metadata: enough when the transcript is gone, or when the live read
+	// failed and the alternative is an error.
 	entry, err := s.store.MessageByID(ctx, s.sourceID(), id)
+	if liveErr != nil && (err != nil || entry == nil) {
+		return nil, liveErr
+	}
 	if err != nil || entry == nil {
 		return nil, err
+	}
+	if liveErr != nil {
+		s.store.logger.Warn("live message read failed; serving the indexed message without content", "source", s.sourceID(), "message", id, "error", liveErr)
 	}
 	return &stats.MessageDetail{
 		MessageEntry: *entry,

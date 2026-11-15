@@ -208,6 +208,10 @@ export function useSourceState(sourceList: SourceListResponse | null): SourceSta
       } else {
         next.set('source', sourceId)
       }
+      // A page number and an open session were chosen under the previous
+      // source and mean nothing in the next one.
+      next.delete('page')
+      next.delete('session')
 
       return next
     })

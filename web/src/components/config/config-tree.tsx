@@ -2,13 +2,14 @@
    Expand state is seeded per-node from openDepth and reset wholesale by
    remounting via treeEpoch (expand/collapse-all are expected to reset
    individual toggles). Search-active force-expands. */
-import { useState } from 'react'
+import { createContext, useContext, useState } from 'react'
+import type { FocusEvent } from 'react'
 import { Badge, Button, Card, Icon, Notice } from '../vael'
-import { CopyButton, InlineCopyButton } from './copy-button'
+import { CopyButton, CopyChip, InlineCopyButton } from './copy-button'
+import { useMediaQuery } from '../../lib/use-media-query'
 import {
   ALL_SECTIONS,
   collectInsights,
-  formatDisplayLabel,
   formatPrimitiveValue,
   isChipArray,
   isObject,
@@ -16,7 +17,6 @@ import {
   isRedactedValue,
   serializeConfigValue,
   summarizeValue,
-  titleizeKey,
 } from '../../lib/config-utils'
 import { formatInteger } from '../../lib/format'
 import type {
@@ -38,8 +38,28 @@ export interface ConfigTreePaneProps {
   onExpandAll: () => void
   onCollapseAll: () => void
   onClearFilter: () => void
-  copiedId: string | null
-  onCopy: (copyId: string, value: string) => void
+}
+
+/* Row copy buttons stay out of the way until a row is hovered or holds focus.
+   A touch screen has no hover to reveal them, so there they are always shown. */
+const AlwaysShowCopyContext = createContext(false)
+
+function useRowReveal() {
+  const alwaysShow = useContext(AlwaysShowCopyContext)
+  const [hover, setHover] = useState(false)
+  const [focusWithin, setFocusWithin] = useState(false)
+  return {
+    hover,
+    revealed: alwaysShow || hover || focusWithin,
+    rowProps: {
+      onMouseEnter: () => setHover(true),
+      onMouseLeave: () => setHover(false),
+      onFocus: () => setFocusWithin(true),
+      onBlur: (event: FocusEvent<HTMLElement>) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setFocusWithin(false)
+      },
+    },
+  }
 }
 
 export function ConfigTreePane({
@@ -51,13 +71,14 @@ export function ConfigTreePane({
   onExpandAll,
   onCollapseAll,
   onClearFilter,
-  copiedId,
-  onCopy,
 }: ConfigTreePaneProps) {
+  const touch = useMediaQuery('(hover: none)')
   const isAll = selectedKey === ALL_SECTIONS
-  const title = isAll ? 'All sections' : titleizeKey(selectedKey)
+  const title = isAll ? 'All sections' : <span style={{ fontFamily: 'var(--font-mono)' }}>{selectedKey}</span>
 
-  const copyValue = isAll
+  // Serialized on demand: building the JSON for every render of a large config
+  // was work nobody asked for until the button is pressed.
+  const copyValue = () => isAll
     ? serializeConfigValue(
         Object.fromEntries(projections.map((p) => [p.section.key, p.section.value])),
       )
@@ -69,9 +90,7 @@ export function ConfigTreePane({
 
   const subtitle = (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      {!isAll && (
-        <span style={{ font: '500 11px/1 var(--font-mono)', color: 'var(--fg-muted)' }}>{selectedKey}</span>
-      )}
+      <span>{isAll ? 'Every top-level key in the file' : 'One top-level key'}</span>
       {totalRedacted > 0 && <Badge tone="warning">{formatInteger(totalRedacted)} redacted</Badge>}
       {searchActive && (
         <span style={{ color: matchCount > 0 ? 'var(--accent)' : 'var(--fg-muted)', fontVariantNumeric: 'tabular-nums' }}>
@@ -85,13 +104,7 @@ export function ConfigTreePane({
     <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
       <Button variant="ghost" size="sm" onClick={onExpandAll}>Expand all</Button>
       <Button variant="ghost" size="sm" onClick={onCollapseAll}>Collapse all</Button>
-      <CopyButton
-        copyId="tree-copy"
-        copiedId={copiedId}
-        label={isAll ? 'Copy all' : 'Copy section'}
-        value={copyValue}
-        onCopy={onCopy}
-      />
+      <CopyButton label={isAll ? 'Copy all' : 'Copy section'} value={copyValue} />
     </div>
   )
 
@@ -107,21 +120,21 @@ export function ConfigTreePane({
           </div>
         </>
       ) : (
-        <div key={treeEpoch}>
-          {visible.map((projection) => (
-            <ConfigNode
-              key={projection.section.key}
-              label={projection.section.key}
-              value={searchActive ? projection.filteredValue ?? projection.section.value : projection.section.value}
-              depth={0}
-              path={projection.section.key}
-              searchActive={searchActive}
-              openDepth={openDepth}
-              copiedId={copiedId}
-              onCopy={onCopy}
-            />
-          ))}
-        </div>
+        <AlwaysShowCopyContext.Provider value={touch}>
+          <div key={treeEpoch}>
+            {visible.map((projection) => (
+              <ConfigNode
+                key={projection.section.key}
+                label={projection.section.key}
+                value={searchActive ? projection.filteredValue ?? projection.section.value : projection.section.value}
+                depth={0}
+                path={projection.section.key}
+                searchActive={searchActive}
+                openDepth={openDepth}
+              />
+            ))}
+          </div>
+        </AlwaysShowCopyContext.Provider>
       )}
     </Card>
   )
@@ -136,11 +149,9 @@ interface ConfigNodeProps {
   path: string
   searchActive: boolean
   openDepth: number
-  copiedId: string | null
-  onCopy: (copyId: string, value: string) => void
 }
 
-function ConfigNode({ label, value, depth, path, searchActive, openDepth, copiedId, onCopy }: ConfigNodeProps) {
+function ConfigNode({ label, value, depth, path, searchActive, openDepth }: ConfigNodeProps) {
   if (Array.isArray(value) || isObject(value)) {
     return (
       <CollectionValue
@@ -150,12 +161,10 @@ function ConfigNode({ label, value, depth, path, searchActive, openDepth, copied
         path={path}
         searchActive={searchActive}
         openDepth={openDepth}
-        copiedId={copiedId}
-        onCopy={onCopy}
       />
     )
   }
-  return <PrimitiveField label={label} value={value} path={path} copiedId={copiedId} onCopy={onCopy} />
+  return <PrimitiveField label={label} value={value} />
 }
 
 interface CollectionValueProps {
@@ -165,15 +174,15 @@ interface CollectionValueProps {
   path: string
   searchActive: boolean
   openDepth: number
-  copiedId: string | null
-  onCopy: (copyId: string, value: string) => void
 }
 
-function CollectionValue({ label, value, depth, path, searchActive, openDepth, copiedId, onCopy }: CollectionValueProps) {
+function CollectionValue({ label, value, depth, path, searchActive, openDepth }: CollectionValueProps) {
   const [open, setOpen] = useState(() => depth < openDepth)
-  const [hover, setHover] = useState(false)
+  const { hover, revealed, rowProps } = useRowReveal()
   const expanded = searchActive ? true : open
-  const displayLabel = formatDisplayLabel(label)
+  // Keys are shown exactly as written: the filter matches the real key, and a
+  // prettified "Small Model" would never be found by typing what is on screen.
+  const displayLabel = label
   const isArrayValue = Array.isArray(value)
   const chips = isArrayValue && isChipArray(value)
   const redactedCount = collectInsights(value).redactedValues
@@ -190,48 +199,63 @@ function CollectionValue({ label, value, depth, path, searchActive, openDepth, c
 
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => setOpen((c) => !c)}
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
-        aria-expanded={expanded}
-        aria-label={`Toggle ${displayLabel} section`}
+      {/* The toggle and the copy button are siblings: a button inside a button
+          is invalid markup and unreachable from the keyboard. */}
+      <div
+        {...rowProps}
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 6,
-          width: '100%',
-          minHeight: 30,
-          padding: '4px 4px',
-          textAlign: 'left',
-          border: 'none',
+          gap: 4,
           background: hover ? 'var(--ink-750)' : 'transparent',
-          cursor: 'pointer',
           borderRadius: 'var(--radius-sm)',
         }}
       >
-        <Icon
-          name="chevron-right"
-          size={14}
-          color="var(--fg-muted)"
-          style={{ transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform var(--dur-fast)', flexShrink: 0 }}
-        />
-        <span style={{ font: '600 13px/1 var(--font-ui)', color: 'var(--fg-primary)' }}>{displayLabel}</span>
-        <span style={{ font: '400 12px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>{summarizeValue(value)}</span>
-        {redactedCount > 0 && (
-          <span aria-label={`${redactedCount} redacted values`} style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--warning)', flexShrink: 0 }} />
-        )}
-        <span style={{ marginLeft: 'auto', flexShrink: 0 }}>
-          <InlineCopyButton
-            copyId={`${path}-json`}
-            copiedId={copiedId}
-            value={serializeConfigValue(value)}
-            onCopy={onCopy}
-            style={{ opacity: hover || copiedId === `${path}-json` ? 1 : 0, transition: 'opacity var(--dur-fast)' }}
+        <button
+          type="button"
+          onClick={() => setOpen((c) => !c)}
+          aria-expanded={expanded}
+          // Search force-expands every match, so the toggle has nothing to do.
+          disabled={searchActive}
+          title={searchActive ? 'Expanded while a filter is active' : undefined}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            flex: 1,
+            minWidth: 0,
+            minHeight: 30,
+            padding: '4px 4px',
+            textAlign: 'left',
+            border: 'none',
+            background: 'transparent',
+            cursor: searchActive ? 'default' : 'pointer',
+            borderRadius: 'var(--radius-sm)',
+          }}
+        >
+          <Icon
+            name="chevron-right"
+            size={14}
+            color="var(--fg-muted)"
+            style={{ transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform var(--dur-fast)', flexShrink: 0 }}
           />
-        </span>
-      </button>
+          <span style={{ font: '600 13px/1.3 var(--font-mono)', color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayLabel}</span>
+          <span style={{ font: '400 12px/1 var(--font-ui)', color: 'var(--fg-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{summarizeValue(value)}</span>
+          {redactedCount > 0 && (
+            <span
+              role="img"
+              aria-label={`${redactedCount} redacted ${redactedCount === 1 ? 'value' : 'values'}`}
+              title={`${redactedCount} redacted ${redactedCount === 1 ? 'value' : 'values'}`}
+              style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--warning)', flexShrink: 0 }}
+            />
+          )}
+        </button>
+        <InlineCopyButton
+          label={`Copy ${displayLabel} as JSON`}
+          value={() => serializeConfigValue(value)}
+          visible={revealed}
+        />
+      </div>
 
       {expanded && (
         <div style={{ marginLeft: 8, paddingLeft: 12, borderLeft: '1px solid var(--border-subtle)' }}>
@@ -241,42 +265,20 @@ function CollectionValue({ label, value, depth, path, searchActive, openDepth, c
           {!isArrayValue && primitiveEntries.length > 0 && (
             <div>
               {primitiveEntries.map(([key, item]) => (
-                <PrimitiveField key={key} label={key} value={item} path={`${path}.${key}`} copiedId={copiedId} onCopy={onCopy} />
+                <PrimitiveField key={key} label={key} value={item} />
               ))}
             </div>
           )}
 
           {chips && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '6px 4px' }}>
-              {value.map((item, index) => {
-                const textValue = formatPrimitiveValue(item as ConfigJsonPrimitive)
-                const redacted = isRedactedValue(item)
-                const chipCopied = copiedId === `${path}[${index}]`
-                return (
-                  <button
-                    key={`${path}-${index}`}
-                    type="button"
-                    onClick={() => onCopy(`${path}[${index}]`, textValue)}
-                    title="Click to copy"
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 4,
-                      maxWidth: '100%',
-                      padding: '2px 8px',
-                      font: '400 12px/1.4 var(--font-mono)',
-                      color: redacted ? 'var(--warning)' : 'var(--fg-secondary)',
-                      background: redacted ? 'var(--warning-soft)' : 'var(--ink-750)',
-                      border: `1px solid ${redacted ? 'var(--border-subtle)' : 'var(--border-default)'}`,
-                      borderRadius: 'var(--radius-sm)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{textValue}</span>
-                    {chipCopied && <Icon name="check" size={12} color="var(--success)" />}
-                  </button>
-                )
-              })}
+              {value.map((item, index) => (
+                <CopyChip
+                  key={`${path}-${index}`}
+                  text={formatPrimitiveValue(item as ConfigJsonPrimitive)}
+                  redacted={isRedactedValue(item)}
+                />
+              ))}
             </div>
           )}
 
@@ -291,8 +293,6 @@ function CollectionValue({ label, value, depth, path, searchActive, openDepth, c
                   path={key.startsWith('[') ? `${path}${key}` : `${path}.${key}`}
                   searchActive={searchActive}
                   openDepth={openDepth}
-                  copiedId={copiedId}
-                  onCopy={onCopy}
                 />
               ))}
             </div>
@@ -314,34 +314,30 @@ function EmptyLeaf({ label }: { label: string }) {
 interface PrimitiveFieldProps {
   label: string
   value: ConfigJsonPrimitive
-  path: string
-  copiedId: string | null
-  onCopy: (copyId: string, value: string) => void
 }
 
-function PrimitiveField({ label, value, path, copiedId, onCopy }: PrimitiveFieldProps) {
-  const [hover, setHover] = useState(false)
+function PrimitiveField({ label, value }: PrimitiveFieldProps) {
+  const { hover, revealed, rowProps } = useRowReveal()
   const redacted = isRedactedValue(value)
-  const displayLabel = formatDisplayLabel(label)
+  const displayLabel = label
   const formattedValue = formatPrimitiveValue(value)
   const valueColor = primitiveValueColor(value, redacted)
 
   return (
     <div
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+      {...rowProps}
       style={{
         display: 'flex',
         alignItems: 'center',
         gap: 12,
         minHeight: 30,
-        padding: '4px 4px',
+        padding: '2px 0 2px 4px',
         borderBottom: '1px solid var(--border-subtle)',
         background: hover ? 'var(--ink-750)' : 'transparent',
         borderRadius: 'var(--radius-sm)',
       }}
     >
-      <span style={{ flexShrink: 0, font: '400 13px/1.4 var(--font-mono)', color: 'var(--fg-secondary)' }}>{displayLabel}</span>
+      <span style={{ flex: '0 1 auto', maxWidth: '45%', font: '400 13px/1.4 var(--font-mono)', color: 'var(--fg-secondary)', overflowWrap: 'anywhere' }}>{displayLabel}</span>
       <span
         style={{
           minWidth: 0,
@@ -349,20 +345,19 @@ function PrimitiveField({ label, value, path, copiedId, onCopy }: PrimitiveField
           font: '400 13px/1.4 var(--font-mono)',
           color: valueColor,
           overflowWrap: 'anywhere',
-          background: redacted ? 'var(--warning-soft)' : 'transparent',
-          borderRadius: redacted ? 2 : 0,
-          padding: redacted ? '0 4px' : 0,
         }}
       >
-        {formattedValue}
+        <span
+          style={{
+            background: redacted ? 'var(--warning-soft)' : 'transparent',
+            borderRadius: redacted ? 2 : 0,
+            padding: redacted ? '0 4px' : 0,
+          }}
+        >
+          {formattedValue}
+        </span>
       </span>
-      <InlineCopyButton
-        copyId={path}
-        copiedId={copiedId}
-        value={formattedValue}
-        onCopy={onCopy}
-        style={{ opacity: hover || copiedId === path ? 1 : 0, transition: 'opacity var(--dur-fast)' }}
-      />
+      <InlineCopyButton label={`Copy ${displayLabel} value`} value={formattedValue} visible={revealed} />
     </div>
   )
 }

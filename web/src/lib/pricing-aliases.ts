@@ -153,29 +153,34 @@ export function formatPricingProvider(providerId: string): string {
 }
 
 /**
- * Rebuild target drafts after a refresh or a single-row mutation.
+ * Carry unsaved target selections across a refresh or a single-row mutation.
  *
- * Saved targets are authoritative for the rows they cover, but a user may have
- * selected targets for several rows before saving any of them: replacing the
- * whole draft map would silently discard that work. Unsaved selections are kept
- * unless the server now reports the same target for that row.
+ * A draft exists only for a row whose selection differs from what is saved, so
+ * the map holds exactly the user's pending work. A refresh — the periodic one,
+ * the one after another row was saved, the one a window refocus triggers —
+ * must not discard it: only two things retire a draft, the row's own mutation
+ * settling (`settledKeys`) and the server now reporting the very target the
+ * draft chose.
  */
 export function mergePricingAliasDrafts(
   currentDrafts: Record<string, PricingTargetRef>,
   aliases: PricingAlias[],
   settledKeys: string[] = [],
 ): Record<string, PricingTargetRef> {
-  const next: Record<string, PricingTargetRef> = {}
   const settled = new Set(settledKeys)
-
-  for (const [key, target] of Object.entries(currentDrafts)) {
-    if (!settled.has(key) && target.model_id !== '') next[key] = target
-  }
+  const saved = new Map<string, PricingTargetRef>()
   for (const alias of aliases) {
-    next[pricingAliasRowKey(alias.source_id, alias.provider_id, alias.model_id)] = {
+    saved.set(pricingAliasRowKey(alias.source_id, alias.provider_id, alias.model_id), {
       source_id: alias.target_source_id,
       model_id: alias.target_model_id,
-    }
+    })
+  }
+
+  const next: Record<string, PricingTargetRef> = {}
+  for (const [key, target] of Object.entries(currentDrafts)) {
+    if (settled.has(key) || target.model_id === '') continue
+    if (samePricingTarget(saved.get(key) ?? null, target)) continue
+    next[key] = target
   }
   return next
 }

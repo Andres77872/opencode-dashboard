@@ -56,18 +56,20 @@ export function SectionNav({ projections, selectedKey, onSelect, searchActive, h
 
   if (horizontal) {
     return (
-      <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4 }}>
+      <nav aria-label="Config sections" style={{ display: 'flex', gap: 6, overflowX: 'auto', padding: '2px 2px 6px' }}>
         {entries.map((entry) => (
           <NavPill key={entry.key} entry={entry} active={entry.key === selectedKey} onSelect={onSelect} />
         ))}
-      </div>
+      </nav>
     )
   }
 
   return (
     <Card
       pad={6}
-      style={{ position: 'sticky', top: 12, maxHeight: 'calc(100vh - 96px)', overflowY: 'auto' }}
+      // Sticks under the app chrome while the tree scrolls; the height is the
+      // viewport minus that chrome and the gap above and below the rail.
+      style={{ position: 'sticky', top: 12, maxHeight: 'calc(100dvh - var(--topbar-height) - var(--filterbar-height) - 24px)', overflowY: 'auto' }}
     >
       <div
         style={{
@@ -80,9 +82,11 @@ export function SectionNav({ projections, selectedKey, onSelect, searchActive, h
       >
         Sections
       </div>
-      {entries.map((entry) => (
-        <NavRow key={entry.key} entry={entry} active={entry.key === selectedKey} onSelect={onSelect} />
-      ))}
+      <nav aria-label="Config sections">
+        {entries.map((entry) => (
+          <NavRow key={entry.key} entry={entry} active={entry.key === selectedKey} onSelect={onSelect} />
+        ))}
+      </nav>
     </Card>
   )
 }
@@ -127,7 +131,7 @@ function NavRow({ entry, active, onSelect }: { entry: NavEntry; active: boolean;
         {entry.label}
       </span>
       {entry.redacted && (
-        <span aria-label="Contains redacted values" style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--warning)', flexShrink: 0 }} />
+        <span role="img" aria-label="Contains redacted values" title="Contains redacted values" style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--warning)', flexShrink: 0 }} />
       )}
       <span
         style={{
@@ -168,7 +172,7 @@ function NavPill({ entry, active, onSelect }: { entry: NavEntry; active: boolean
       }}
     >
       {entry.label}
-      {entry.redacted && <span style={{ width: 5, height: 5, borderRadius: 3, background: 'var(--warning)' }} />}
+      {entry.redacted && <span role="img" aria-label="Contains redacted values" style={{ width: 5, height: 5, borderRadius: 3, background: 'var(--warning)' }} />}
       <span style={{ color: 'var(--fg-muted)', fontVariantNumeric: 'tabular-nums' }}>{formatInteger(entry.count)}</span>
     </button>
   )

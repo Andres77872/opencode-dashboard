@@ -74,15 +74,15 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 
 	if hasPeriod {
 		if v2 {
-			countQuery += sessionActiveV2Clause
+			countQuery += sessionWindowV2Clause + sessionActiveV2Clause
 		} else {
-			countQuery += ` AND EXISTS (
+			countQuery += sessionWindowV1Clause + ` AND EXISTS (
 			SELECT 1 FROM ` + V1MessagesSQL + ` m
 			WHERE m.session_id = s.id
 				AND m.time_created >= ? AND m.time_created < ?
 		)`
 		}
-		countArgs = append(countArgs, startMs, endMs)
+		countArgs = append(countArgs, startMs, endMs, startMs, endMs)
 	}
 
 	var total int64
@@ -132,15 +132,15 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 
 	if hasPeriod {
 		if v2 {
-			listQuery += sessionActiveV2Clause
+			listQuery += sessionWindowV2Clause + sessionActiveV2Clause
 		} else {
-			listQuery += ` AND EXISTS (
+			listQuery += sessionWindowV1Clause + ` AND EXISTS (
 			SELECT 1 FROM ` + V1MessagesSQL + ` m2
 			WHERE m2.session_id = s.id
 				AND m2.time_created >= ? AND m2.time_created < ?
 		)`
 		}
-		listArgs = append(listArgs, startMs, endMs)
+		listArgs = append(listArgs, startMs, endMs, startMs, endMs)
 	}
 
 	listQuery += `
@@ -217,6 +217,14 @@ func SessionsWithQuery(ctx context.Context, s *store.Store, query SessionQuery) 
 		PageSize: query.PageSize,
 	}, nil
 }
+
+// sessionWindowV1Clause is the 1.x counterpart of sessionWindowV2Clause: a
+// superset pre-filter that keeps the per-session accounting subqueries of
+// V1SessionsSQL off sessions with nothing in the window.
+const sessionWindowV1Clause = ` AND s.id IN (
+			SELECT w.session_id FROM message w
+			WHERE w.time_created >= ? AND w.time_created < ?
+		)`
 
 func sessionOrderBy(sort SessionSortMode) string {
 	switch sort {

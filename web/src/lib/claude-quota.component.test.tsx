@@ -14,7 +14,7 @@ function context(openCodeEnabled: boolean): DashboardContextValue {
     sourceMetadataLoading: false, sourceMetadataError: null, selectedSourceId: 'opencode', selectedSourceInfo: sources[0],
     sourceAvailable: openCodeEnabled, sourceStateError: null,
     setSelectedSourceId: vi.fn(), lastUpdatedAt: null, isRefreshing: false, refreshNonce: 0,
-    requestRefresh: vi.fn(), setRefreshing: vi.fn(), setLastUpdatedAt: vi.fn(),
+    requestRefresh: vi.fn(), trackRefresh: () => () => {}, setLastUpdatedAt: vi.fn(),
   }
 }
 

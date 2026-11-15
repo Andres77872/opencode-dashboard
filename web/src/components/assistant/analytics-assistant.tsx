@@ -13,6 +13,8 @@ import {
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Icon } from '../vael/icon'
+import { ConfirmDialog } from '../vael/dialog'
+import { useEscapeKey } from '../vael/overlay'
 import { Markdown } from './markdown'
 import { useDashboardContext } from '../layout/dashboard-context'
 import {
@@ -20,12 +22,17 @@ import {
   getAssistantSession,
   getAssistantSessions,
   getAssistantStatus,
-  getAssistantProviders,
   putAssistantSelection,
   streamAssistantChat,
   ApiClientError,
 } from '../../lib/api'
-import { ASSISTANT_SELECTION_EVENT } from '../config/assistant-providers'
+import {
+  ASSISTANT_SELECTION_EVENT,
+  applyAssistantSelection,
+  notifyAssistantSelectionChanged,
+  reloadAssistantProviders,
+  useAssistantProviders,
+} from '../../lib/assistant-providers-store'
 import {
   clampAssistantPosition,
   clampAssistantSize,
@@ -63,7 +70,6 @@ import type {
   AssistantStatusResponse,
   AssistantStreamEvent,
   AssistantUsage,
-  AssistantProvidersResponse,
 } from '../../types/assistant'
 
 const PANEL_ID = 'analytics-assistant-panel'
@@ -257,7 +263,7 @@ function MessageFooter({ message }: { message: DisplayMessage }) {
   const calls = countToolActivities(activities)
   const specialists = activities.filter((activity) => activity.kind === 'specialist').length
   const parts = [
-	message.provider && message.model ? `${providerLabel(message.provider)} · ${message.model}` : message.model ?? '',
+    message.provider && message.model ? `${providerLabel(message.provider)} · ${message.model}` : message.model ?? '',
     message.rounds ? `${message.rounds} ${message.rounds === 1 ? 'round' : 'rounds'}` : '',
     calls ? `${calls} ${calls === 1 ? 'call' : 'calls'}` : '',
     specialists ? `${specialists} ${specialists === 1 ? 'specialist' : 'specialists'}` : '',
@@ -354,6 +360,7 @@ function SessionHistory({
   loading,
   error,
   activeSessionId,
+  deletingIds,
   onSelect,
   onDelete,
   onClose,
@@ -362,8 +369,10 @@ function SessionHistory({
   loading: boolean
   error: string | null
   activeSessionId: string | null
+  /** Conversations whose deletion is in flight; their rows are inert until it settles. */
+  deletingIds: ReadonlySet<string>
   onSelect: (id: string) => void
-  onDelete: (id: string) => void
+  onDelete: (session: AssistantChatSessionSummary) => void
   onClose: () => void
 }) {
   return (
@@ -373,35 +382,42 @@ function SessionHistory({
         <strong>Saved conversations</strong>
         <button type="button" className="analytics-assistant-history-close" onClick={onClose}>Back to chat</button>
       </div>
-      {loading && <p className="analytics-assistant-history-empty">Loading saved conversations…</p>}
-      {!loading && error && <p className="analytics-assistant-history-empty error">{error}</p>}
+      {/* An error is reported above the list instead of replacing it: one
+          failed delete must not hide every other saved conversation. */}
+      {error && <p className="analytics-assistant-history-empty error" role="alert">{error}</p>}
+      {loading && sessions.length === 0 && <p className="analytics-assistant-history-empty">Loading saved conversations…</p>}
       {!loading && !error && sessions.length === 0 && (
         <p className="analytics-assistant-history-empty">No saved conversations yet. Completed chats are saved automatically.</p>
       )}
-      {!loading && !error && sessions.length > 0 && (
-        <ul className="analytics-assistant-history-list">
-          {sessions.map((session) => (
-            <li key={session.id} className={session.id === activeSessionId ? 'active' : undefined}>
-              <button
-                type="button"
-                className="analytics-assistant-history-item"
-                onClick={() => onSelect(session.id)}
-                title={session.title}
-              >
-                <span className="analytics-assistant-history-title">{session.title}</span>
-                <span className="analytics-assistant-history-meta">{sessionMetaLine(session)}</span>
-              </button>
-              <button
-                type="button"
-                className="analytics-assistant-history-delete"
-                aria-label={`Delete conversation ${session.title}`}
-                title="Delete conversation"
-                onClick={() => onDelete(session.id)}
-              >
-                <Icon name="x" size={13} />
-              </button>
-            </li>
-          ))}
+      {sessions.length > 0 && (
+        <ul className="analytics-assistant-history-list" aria-busy={loading}>
+          {sessions.map((session) => {
+            const deleting = deletingIds.has(session.id)
+            return (
+              <li key={session.id} className={session.id === activeSessionId ? 'active' : undefined} aria-busy={deleting}>
+                <button
+                  type="button"
+                  className="analytics-assistant-history-item"
+                  onClick={() => onSelect(session.id)}
+                  disabled={deleting}
+                  title={session.title}
+                >
+                  <span className="analytics-assistant-history-title">{session.title}</span>
+                  <span className="analytics-assistant-history-meta">{deleting ? 'Deleting…' : sessionMetaLine(session)}</span>
+                </button>
+                <button
+                  type="button"
+                  className="analytics-assistant-history-delete"
+                  aria-label={`Delete conversation ${session.title}`}
+                  title="Delete conversation"
+                  disabled={deleting}
+                  onClick={() => onDelete(session)}
+                >
+                  <Icon name="trash" size={13} />
+                </button>
+              </li>
+            )
+          })}
         </ul>
       )}
     </div>
@@ -414,7 +430,9 @@ export function AnalyticsAssistant() {
   const periodState = usePeriodState()
   const { selectedSourceId } = useDashboardContext()
   const [status, setStatus] = useState<AssistantStatusResponse | null>(null)
-  const [providerData, setProviderData] = useState<AssistantProvidersResponse | null>(null)
+  // Shared with the Config section: one request serves both, and a model
+  // switched in either place shows up in the other.
+  const { data: providerData } = useAssistantProviders()
   const [preferences, setPreferences] = useState<AssistantPreferences>(() => readAssistantPreferences())
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [draft, setDraft] = useState('')
@@ -433,6 +451,9 @@ export function AnalyticsAssistant() {
   const [historySessions, setHistorySessions] = useState<AssistantChatSessionSummary[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
+  const [deleteCandidate, setDeleteCandidate] = useState<AssistantChatSessionSummary | null>(null)
+  const [deletingIds, setDeletingIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [focusInside, setFocusInside] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
   const launcherRef = useRef<HTMLButtonElement>(null)
   const privacyContinueRef = useRef<HTMLButtonElement>(null)
@@ -449,6 +470,9 @@ export function AnalyticsAssistant() {
   const messagesRef = useRef<DisplayMessage[]>([])
   const abortRef = useRef<AbortController | null>(null)
   const historyAbortRef = useRef<AbortController | null>(null)
+  // Deletions get their own controllers: sharing the history one meant that
+  // opening a conversation cancelled a delete, and a delete cancelled a load.
+  const deleteControllersRef = useRef(new Set<AbortController>())
   const pendingPromptRef = useRef<{ id: number; responseID: number; content: string } | null>(null)
   const requestIDRef = useRef(0)
   const messageIDRef = useRef(1)
@@ -487,32 +511,36 @@ export function AnalyticsAssistant() {
     }
   }, [])
 
-  const refreshProviderState = useCallback(async () => {
-    const [nextStatus, nextProviders] = await Promise.all([getAssistantStatus(), getAssistantProviders()])
-    setStatus(nextStatus)
-    setProviderData(nextProviders)
+  const refreshStatus = useCallback(async () => {
+    setStatus(await getAssistantStatus())
   }, [])
 
+  const refreshProviderState = useCallback(async () => {
+    await Promise.all([refreshStatus(), reloadAssistantProviders()])
+  }, [refreshStatus])
+
+  // The provider catalog arrives through the shared store. This event says the
+  // selection (or a provider behind it) changed, which the status — model,
+  // availability, consent text — is derived from.
   useEffect(() => {
-    const controller = new AbortController()
-    getAssistantProviders(controller.signal).then(setProviderData).catch(() => undefined)
-    const refresh = () => { void refreshProviderState().catch(() => undefined) }
+    const refresh = () => { void refreshStatus().catch(() => undefined) }
     window.addEventListener(ASSISTANT_SELECTION_EVENT, refresh)
-    return () => {
-      controller.abort()
-      window.removeEventListener(ASSISTANT_SELECTION_EVENT, refresh)
-    }
-  }, [refreshProviderState])
+    return () => window.removeEventListener(ASSISTANT_SELECTION_EVENT, refresh)
+  }, [refreshStatus])
 
   useEffect(() => {
     const timer = window.setTimeout(() => writeAssistantPreferences(preferences), 120)
     return () => window.clearTimeout(timer)
   }, [preferences])
 
-  useEffect(() => () => {
-    requestIDRef.current += 1
-    abortRef.current?.abort()
-    historyAbortRef.current?.abort()
+  useEffect(() => {
+    const deleteControllers = deleteControllersRef.current
+    return () => {
+      requestIDRef.current += 1
+      abortRef.current?.abort()
+      historyAbortRef.current?.abort()
+      for (const controller of deleteControllers) controller.abort()
+    }
   }, [])
 
   const timeContext = useMemo(() => buildAssistantTimeContext(periodState), [periodState])
@@ -642,16 +670,12 @@ export function AnalyticsAssistant() {
     list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' })
   }, [])
 
-  useEffect(() => {
-    if (!preferences.open || preferences.minimized) return
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.defaultPrevented) {
-        setPreferences((current) => ({ ...current, minimized: true }))
-      }
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [preferences.open, preferences.minimized])
+  // Escape minimizes the panel only while the panel holds focus and nothing is
+  // open above it. It is a docked, non-modal surface: a press meant for a
+  // popover, a drawer, or the page itself must not put the assistant away.
+  useEscapeKey(preferences.open && !preferences.minimized && focusInside, () => {
+    setPreferences((current) => ({ ...current, minimized: true }))
+  })
 
   const beginDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || (event.target as Element).closest('button, select, input')) return
@@ -892,9 +916,10 @@ export function AnalyticsAssistant() {
   }, [stopRequest])
 
   const removeSession = useCallback((id: string) => {
-    historyAbortRef.current?.abort()
     const controller = new AbortController()
-    historyAbortRef.current = controller
+    deleteControllersRef.current.add(controller)
+    setDeletingIds((current) => new Set([...current, id]))
+    setHistoryError(null)
     deleteAssistantSession(id, controller.signal)
       .then(() => {
         if (controller.signal.aborted) return
@@ -911,6 +936,15 @@ export function AnalyticsAssistant() {
       .catch((caught) => {
         if (controller.signal.aborted) return
         setHistoryError(caught instanceof Error ? caught.message : 'The conversation could not be deleted.')
+      })
+      .finally(() => {
+        deleteControllersRef.current.delete(controller)
+        if (controller.signal.aborted) return
+        setDeletingIds((current) => {
+          const next = new Set(current)
+          next.delete(id)
+          return next
+        })
       })
   }, [])
 
@@ -1075,9 +1109,9 @@ export function AnalyticsAssistant() {
       // The prompt is kept verbatim so a transient failure costs one click,
       // not a retyped question.
       setFailedPrompt(prompt)
-	  if (caught instanceof ApiClientError && caught.status === 409) {
-		void refreshProviderState().catch(() => undefined)
-	  }
+      if (caught instanceof ApiClientError && caught.status === 409) {
+        void refreshProviderState().catch(() => undefined)
+      }
       setError(caught instanceof Error ? caught.message : 'The analytics request failed.')
       setLiveMessage('')
     } finally {
@@ -1100,8 +1134,14 @@ export function AnalyticsAssistant() {
   const changeProviderModel = (value: string) => {
     const [providerId = '', modelId = ''] = value.split('\u0000')
     void putAssistantSelection(providerId, modelId)
-      .then(refreshProviderState)
-      .catch((caught) => setError(caught instanceof Error ? caught.message : 'Provider selection failed.'))
+      .then((selection) => {
+        // The shared catalog carries the new selection to Config; the event
+        // refreshes this panel's own status.
+        applyAssistantSelection(selection)
+        notifyAssistantSelectionChanged()
+        setError(null)
+      })
+      .catch((caught) => setError(caught instanceof Error ? caught.message : 'The model could not be changed.'))
   }
 
   if (!status || typeof document === 'undefined') return null
@@ -1197,6 +1237,10 @@ export function AnalyticsAssistant() {
       role="dialog"
       aria-modal="false"
       aria-labelledby={`${PANEL_ID}-title`}
+      onFocus={() => setFocusInside(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setFocusInside(false)
+      }}
     >
       {RESIZE_EDGES.map((edge) => (
         <div
@@ -1292,8 +1336,9 @@ export function AnalyticsAssistant() {
           loading={historyLoading}
           error={historyError}
           activeSessionId={sessionId}
+          deletingIds={deletingIds}
           onSelect={loadSession}
-          onDelete={removeSession}
+          onDelete={setDeleteCandidate}
           onClose={() => setHistoryOpen(false)}
         />
       ) : (
@@ -1386,6 +1431,19 @@ export function AnalyticsAssistant() {
           </form>
         </>
       )}
+      <ConfirmDialog
+        open={deleteCandidate !== null}
+        title="Delete this conversation?"
+        confirmLabel="Delete"
+        danger
+        onCancel={() => setDeleteCandidate(null)}
+        onConfirm={() => {
+          if (deleteCandidate && !deletingIds.has(deleteCandidate.id)) removeSession(deleteCandidate.id)
+          setDeleteCandidate(null)
+        }}
+      >
+        “{deleteCandidate?.title}” and its saved answers are removed from this machine. This cannot be undone.
+      </ConfirmDialog>
     </section>,
     document.body,
   )

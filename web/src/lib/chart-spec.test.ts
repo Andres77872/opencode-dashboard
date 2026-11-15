@@ -204,7 +204,7 @@ test('unusable input fails with a usable message instead of throwing', () => {
 })
 
 test('text from the model is scrubbed and bounded', () => {
-  assert.equal(sanitizeChartText(`a b‮c`, 40), 'a b c')
+  assert.equal(sanitizeChartText(`a\u0000b\u202ec`, 40), 'a b c')
   assert.equal(sanitizeChartText('  spaced   out  ', 40), 'spaced out')
   assert.equal(sanitizeChartText('x'.repeat(40), 10), `${'x'.repeat(9)}…`)
 
@@ -221,7 +221,8 @@ test('spec colors are ignored so the design system owns the palette', () => {
 test('values format per unit for tooltips and for axis ticks', () => {
   assert.equal(formatChartValue(null, 'tokens'), 'unknown')
   assert.equal(formatChartValue(1234567, 'tokens'), '1,234,567')
-  assert.equal(formatChartValue(0.4231, 'usd'), '$0.4231')
+  assert.equal(formatChartValue(0.4231, 'usd'), '$0.42')
+  assert.equal(formatChartValue(0.004231, 'usd'), '$0.0042')
   assert.equal(formatChartValue(12.5, 'percent'), '12.5%')
   assert.equal(formatChartValue(450, 'ms'), '450 ms')
   assert.equal(formatChartValue(90, 'seconds'), '1m 30s')

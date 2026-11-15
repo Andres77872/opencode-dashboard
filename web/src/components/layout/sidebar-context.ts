@@ -6,11 +6,8 @@ export const NAV_DRAWER_ID = 'vael-nav-drawer'
 export interface SidebarContextValue {
   /** Mobile drawer open state */
   mobileOpen: boolean
-  /** Desktop collapsed rail state */
-  collapsed: boolean
   toggleMobile: () => void
   closeMobile: () => void
-  toggleCollapsed: () => void
 }
 
 /** Shared by SidebarProvider (which owns the state) and useSidebar. It lives

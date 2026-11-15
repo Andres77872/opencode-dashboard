@@ -13,6 +13,7 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDialog,
   DataTable,
   EmptyState,
   ErrorState,
@@ -25,8 +26,10 @@ import {
 import type { BadgeTone, Column, NoticeTone } from '../vael'
 import { useDashboardContext } from '../layout/dashboard-context'
 import { PricingTargetPicker } from './pricing-target-picker'
+import { asSentence } from './text'
 import { deletePricingAlias, getPricingAliases, upsertPricingAlias } from '../../lib/api'
-import { formatInteger } from '../../lib/format'
+import { formatCount, formatInteger } from '../../lib/format'
+import { useMediaQuery } from '../../lib/use-media-query'
 import {
   filterPricingAliasRows,
   formatPricingProvider,
@@ -47,12 +50,9 @@ interface RowFeedback {
   tone: NoticeTone
   title: string
   message: string
+  /** The model the result belongs to, for when its row is no longer on screen. */
+  model?: string
 }
-
-const SCOPE_OPTIONS = [
-  { value: 'attention', label: 'Needs pricing' },
-  { value: 'all', label: 'All models' },
-]
 
 function readOnlyTargetReason(row: PricingAliasRow, targetCount: number, writable: boolean): string {
   if (!writable) return 'Alias persistence is unavailable, so targets cannot be changed.'
@@ -129,6 +129,7 @@ function mutationFeedback(action: PendingAction, status: PricingRepriceStatus, r
 
 export function PricingAliases() {
   const { refreshNonce, requestRefresh, selectedSourceId, selectedSourceInfo } = useDashboardContext()
+  const stacked = useMediaQuery('(max-width: 720px)')
   const [data, setData] = useState<PricingAliasesResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -138,12 +139,17 @@ export function PricingAliases() {
   const [drafts, setDrafts] = useState<Record<string, PricingTargetRef>>({})
   const [pendingByKey, setPendingByKey] = useState<Record<string, PendingAction>>({})
   const [feedbackByKey, setFeedbackByKey] = useState<Record<string, RowFeedback>>({})
-  const [globalFeedback, setGlobalFeedback] = useState<RowFeedback | null>(null)
+  const [removeCandidate, setRemoveCandidate] = useState<PricingAliasRow | null>(null)
   const latestFetchRequestRef = useRef(0)
   const activeFetchControllerRef = useRef<AbortController | null>(null)
   const mutationControllersRef = useRef<Set<AbortController>>(new Set())
   const selectedSourceRef = useRef(selectedSourceId)
   selectedSourceRef.current = selectedSourceId
+  // A saved alias re-prices history, so the rest of the dashboard has to
+  // refresh — but this list was just replaced by the mutation's own response
+  // and must not be fetched again by the refresh it requested.
+  const handledRef = useRef({ nonce: refreshNonce, reload: 0, source: selectedSourceId })
+  const ownRefreshRef = useRef(false)
 
   useEffect(() => {
     const mutationControllers = mutationControllersRef.current
@@ -164,10 +170,17 @@ export function PricingAliases() {
     setDrafts({})
     setPendingByKey({})
     setFeedbackByKey({})
-    setGlobalFeedback(null)
+    setRemoveCandidate(null)
   }, [selectedSourceId])
 
   useEffect(() => {
+    const handled = handledRef.current
+    const onlyNonceAdvanced = handled.nonce !== refreshNonce && handled.reload === reloadNonce && handled.source === selectedSourceId
+    handledRef.current = { nonce: refreshNonce, reload: reloadNonce, source: selectedSourceId }
+    const ownRefresh = ownRefreshRef.current
+    ownRefreshRef.current = false
+    if (onlyNonceAdvanced && ownRefresh) return
+
     const controller = new AbortController()
     const requestId = latestFetchRequestRef.current + 1
     latestFetchRequestRef.current = requestId
@@ -181,8 +194,8 @@ export function PricingAliases() {
         const next = await getPricingAliases(selectedSourceId, controller.signal)
         if (controller.signal.aborted || requestId !== latestFetchRequestRef.current) return
         setData(next)
-        // Keep unsaved target selections: a periodic refresh must not silently
-        // discard choices the user has not saved yet.
+        // Keep unsaved target selections: a refresh must not silently discard
+        // choices the user has not saved yet.
         setDrafts((current) => mergePricingAliasDrafts(current, next.aliases))
       } catch (caught) {
         if (controller.signal.aborted || requestId !== latestFetchRequestRef.current) return
@@ -210,6 +223,7 @@ export function PricingAliases() {
     [rows, scope],
   )
   const visibleRows = useMemo(() => filterPricingAliasRows(scopedRows, filter), [filter, scopedRows])
+  const visibleKeys = useMemo(() => new Set(visibleRows.map((row) => row.key)), [visibleRows])
   const targetGroups = useMemo(
     () => buildPricingTargetGroups(currentData?.catalogs ?? [], selectedSourceId),
     [currentData?.catalogs, selectedSourceId],
@@ -226,10 +240,23 @@ export function PricingAliases() {
   const rowIsEditable = (row: PricingAliasRow) => writable && row.editable && targetCount > 0
   const draftFor = (row: PricingAliasRow): PricingTargetRef | null => drafts[row.key] ?? row.target
 
-  const updateDraft = (rowKey: string, target: PricingTargetRef) => {
-    setGlobalFeedback(null)
-    setDrafts((current) => ({ ...current, [rowKey]: target }))
+  const updateDraft = (row: PricingAliasRow, target: PricingTargetRef) => {
+    setDrafts((current) => {
+      const next = { ...current }
+      // Picking the saved target again is "no change", not a pending edit.
+      if (samePricingTarget(target, row.target)) delete next[row.key]
+      else next[row.key] = target
+      return next
+    })
     setFeedbackByKey((current) => {
+      if (!(row.key in current)) return current
+      const next = { ...current }
+      delete next[row.key]
+      return next
+    })
+  }
+  const discardDraft = (rowKey: string) => {
+    setDrafts((current) => {
       if (!(rowKey in current)) return current
       const next = { ...current }
       delete next[rowKey]
@@ -247,12 +274,11 @@ export function PricingAliases() {
     const controller = new AbortController()
     mutationControllersRef.current.add(controller)
     setPendingByKey((current) => ({ ...current, [row.key]: action }))
-    setFeedbackByKey((current) => {
-      if (!(row.key in current)) return current
-      const next = { ...current }
-      delete next[row.key]
-      return next
-    })
+    // Drop this row's previous result, and results whose rows already left the
+    // list, so finished changes do not pile up above the table.
+    setFeedbackByKey((current) => Object.fromEntries(
+      Object.entries(current).filter(([key]) => key !== row.key && visibleKeys.has(key)),
+    ))
 
     try {
       const response = action === 'remove'
@@ -273,17 +299,17 @@ export function PricingAliases() {
       activeFetchControllerRef.current?.abort()
       latestFetchRequestRef.current += 1
       if (selectedSourceRef.current === row.source_id) {
-        const feedback = mutationFeedback(action, response.reprice, response.refresh_error)
+        const feedback = { ...mutationFeedback(action, response.reprice, response.refresh_error), model: row.model_id }
         setData(response)
         // Only this row's draft is settled by its own mutation; other rows keep
         // whatever the user selected but has not saved.
         setDrafts((current) => mergePricingAliasDrafts(current, response.aliases, [row.key]))
-        setGlobalFeedback(action === 'remove' && !row.detected ? feedback : null)
         setFeedbackByKey((current) => ({
           ...current,
           [row.key]: feedback,
         }))
       }
+      ownRefreshRef.current = true
       requestRefresh()
     } catch (caught) {
       if (controller.signal.aborted || selectedSourceRef.current !== row.source_id) return
@@ -291,6 +317,7 @@ export function PricingAliases() {
         tone: 'danger',
         title: action === 'remove' ? 'Alias removal failed' : 'Alias update failed',
         message: caught instanceof Error ? caught.message : 'The pricing alias request failed.',
+        model: row.model_id,
       }
       setFeedbackByKey((current) => ({
         ...current,
@@ -330,11 +357,11 @@ export function PricingAliases() {
       width: 130,
       render: (row) => row.detected ? (
         <span style={{ display: 'flex', flexDirection: 'column', gap: 3, font: '500 12px/1.2 var(--font-mono)', fontVariantNumeric: 'tabular-nums' }}>
-          <span style={{ color: 'var(--fg-secondary)' }}>{formatInteger(row.sessions)} sessions</span>
-          <span style={{ color: 'var(--fg-muted)' }}>{formatInteger(row.messages)} messages</span>
+          <span style={{ color: 'var(--fg-secondary)' }}>{formatCount(row.sessions, 'session')}</span>
+          <span style={{ color: 'var(--fg-muted)' }}>{formatCount(row.messages, 'message')}</span>
         </span>
       ) : (
-        <span style={{ color: 'var(--fg-faint)', font: '400 12px/1.3 var(--font-ui)' }}>No current detection</span>
+        <span style={{ color: 'var(--fg-faint)', font: '400 12px/1.3 var(--font-ui)' }}>Not seen in this source</span>
       ),
     },
     {
@@ -344,10 +371,10 @@ export function PricingAliases() {
       render: (row) => {
         const badge = row.alias ? aliasStateBadge(row) : { tone: resolutionTone(row), label: resolutionLabel(row) }
         const reason = row.alias
-          ? row.alias.state_reason
-          : [row.resolution_reason, row.resolution_note].filter(Boolean).join(' · ')
+          ? asSentence(row.alias.state_reason)
+          : [row.resolution_reason, row.resolution_note].map(asSentence).filter(Boolean).join(' ')
         return (
-          <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 5, minWidth: 0 }}>
+          <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 5, minWidth: 0, padding: '8px 0' }}>
             <Badge tone={badge.tone} dot={row.alias?.active}>{badge.label}</Badge>
             {reason && (
               // The full sentence lives in the tooltip so rows stay one line tall.
@@ -381,12 +408,15 @@ export function PricingAliases() {
         }
         const crossSource = Boolean(target && target.source_id !== row.source_id)
         return (
-          <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
+          <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6, padding: '8px 0' }}>
             <PricingTargetPicker
               groups={targetGroups}
               value={target}
               selectedSourceId={selectedSourceId as SourceID}
-              onChange={(next) => updateDraft(row.key, next)}
+              onChange={(next) => updateDraft(row, next)}
+              // One alias change is applied at a time; the target cannot move
+              // under a request that is already in flight.
+              disabled={anyMutationPending}
             />
             {crossSource && (
               <Badge tone="accent">Cross-source · {vendorMeta(target!.source_id).name}</Badge>
@@ -407,6 +437,7 @@ export function PricingAliases() {
         const changed = !samePricingTarget(target, row.target)
         const disableForOtherRow = anyMutationPending && !pending
         const feedback = feedbackByKey[row.key]
+        const otherRowHint = disableForOtherRow ? 'Another alias change is being applied.' : undefined
 
         return (
           <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8, padding: '7px 0', minWidth: 250 }}>
@@ -414,23 +445,33 @@ export function PricingAliases() {
               {editable && (
                 <Button
                   size="sm"
-                  variant="primary"
-                  disabled={!changed || !target || Boolean(pending) || disableForOtherRow}
+                  variant={changed || pending === 'save' ? 'primary' : 'secondary'}
+                  busy={pending === 'save'}
+                  disabled={!changed || !target || pending === 'remove' || disableForOtherRow}
+                  title={otherRowHint ?? (!target ? 'Choose a pricing target first.' : !changed ? 'The saved target is already selected.' : undefined)}
                   onClick={() => void runMutation(row, 'save')}
                 >
-                  {pending === 'save' ? (row.alias ? 'Updating…' : 'Saving…') : (row.alias ? 'Update' : 'Save')}
+                  {row.alias ? 'Update alias' : 'Save alias'}
+                </Button>
+              )}
+              {editable && changed && !pending && (
+                <Button size="sm" variant="ghost" disabled={disableForOtherRow} onClick={() => discardDraft(row.key)}>
+                  Discard
                 </Button>
               )}
               {row.alias && (
                 <Button
                   size="sm"
-                  variant="secondary"
-                  disabled={!writable || Boolean(pending) || disableForOtherRow}
-                  onClick={() => void runMutation(row, 'remove')}
+                  variant="danger"
+                  busy={pending === 'remove'}
+                  disabled={!writable || pending === 'save' || disableForOtherRow}
+                  title={otherRowHint ?? (!writable ? 'Aliases are read-only right now.' : undefined)}
+                  onClick={() => setRemoveCandidate(row)}
                 >
-                  {pending === 'remove' ? 'Removing…' : 'Remove'}
+                  Remove
                 </Button>
               )}
+              {editable && changed && !pending && <Badge tone="warning" dot>Unsaved</Badge>}
               {!editable && !row.alias && <Badge>Read-only</Badge>}
             </span>
             {feedback && (
@@ -444,41 +485,26 @@ export function PricingAliases() {
     },
   ]
 
-  const headerAction = currentData ? (
-    <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-      {loading && <Badge tone="accent" dot>Refreshing</Badge>}
-      {currentData.catalog.snapshot_id && (
-        <span title={currentData.catalog.snapshot_id}>
-          <Badge tone="accent">Snapshot {shortSnapshotID(currentData.catalog.snapshot_id)}</Badge>
-        </span>
-      )}
-      {currentData.supported && (
-        <>
-          <Badge tone={attentionCount > 0 ? 'warning' : 'neutral'}>
-            {formatInteger(attentionCount)} {attentionCount === 1 ? 'needs' : 'need'} pricing
-          </Badge>
-          <Badge>{formatInteger(currentData.aliases.length)} {currentData.aliases.length === 1 ? 'alias' : 'aliases'}</Badge>
-          <Badge>{formatInteger(targetCount)} targets · {formatInteger(targetGroups.length)} catalogs</Badge>
-        </>
-      )}
-      {currentData.supported && rows.length > 0 && (
-        <SearchInput
-          value={filter}
-          onChange={setFilter}
-          placeholder="Filter model, provider, or target…"
-          label="Filter pricing aliases by model, provider, or target"
-          width={260}
-        />
-      )}
-    </span>
-  ) : loading ? <Skeleton width={260} height={20} /> : null
+  const rowKeys = new Set(rows.map((row) => row.key))
+  const offscreenFeedback = Object.entries(feedbackByKey).filter(([key]) => !visibleKeys.has(key))
+  const dismissFeedback = (key: string) => setFeedbackByKey((current) => {
+    const next = { ...current }
+    delete next[key]
+    return next
+  })
+  const unsavedCount = rows.filter((row) => rowIsEditable(row) && !samePricingTarget(draftFor(row), row.target)).length
+  const headerAction = currentData && loading ? <Badge tone="accent" dot>Refreshing</Badge> : null
+  const scopeOptions = [
+    { value: 'attention', label: `Needs pricing (${formatInteger(attentionCount)})` },
+    { value: 'all', label: `All models (${formatInteger(rows.length)})` },
+  ]
 
   return (
     <Card
       title="Pricing aliases"
       subtitle={(
         <span style={{ display: 'block', maxWidth: 760, whiteSpace: 'normal' }}>
-          Map an observed model identifier to a bundled pricing model from any source. Aliases affect pricing only; raw model and provider grouping remains unchanged.
+          Point a model this source reports at a bundled pricing model from any catalog. An alias changes pricing only: models and providers are still grouped by what the source reported.
         </span>
       )}
       action={headerAction}
@@ -496,21 +522,37 @@ export function PricingAliases() {
           onRetry={() => setReloadNonce((value) => value + 1)}
         />
       ) : !currentData ? (
-        <EmptyState icon="git-branch" title="No pricing alias data" description={`No pricing catalog response is available for ${sourceLabel}.`} />
+        <EmptyState icon="git-branch" title="No pricing alias data" description={`${sourceLabel} returned no pricing catalog.`} />
       ) : !currentData.supported ? (
         <EmptyState
           icon="dollar"
-          title="Local pricing aliases are not used for this source"
-          description={`${sourceLabel} reports cost without a local target catalog, so this section is read-only. Pricing aliases are available only for sources whose costs are computed from bundled per-model rates.`}
+          title={`${sourceLabel} does not use pricing aliases`}
+          description={`${sourceLabel} reports its own costs, so there is nothing to re-point. Aliases apply to sources whose costs are computed from bundled per-model rates.`}
         />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {globalFeedback && (
-            <Notice tone={globalFeedback.tone} title={globalFeedback.title}>{globalFeedback.message}</Notice>
-          )}
+          {/* A saved alias usually stops "needing pricing", so its row leaves
+              the default list. Its result stays visible here instead of
+              vanishing with the row. */}
+          {offscreenFeedback.map(([key, feedback]) => (
+            <Notice
+              key={key}
+              tone={feedback.tone}
+              title={feedback.title}
+              action={<Button size="sm" variant="ghost" onClick={() => dismissFeedback(key)}>Dismiss</Button>}
+            >
+              {feedback.model && <><span style={{ fontFamily: 'var(--font-mono)' }}>{feedback.model}</span>: </>}
+              {feedback.message}
+              {scope === 'attention' && rowKeys.has(key) ? ' It is now listed under All models.' : ''}
+            </Notice>
+          ))}
           {error && (
-            <Notice tone="warning" title="Pricing aliases could not be refreshed">
-              {error} The last successfully loaded alias list remains visible.
+            <Notice
+              tone="warning"
+              title="Refresh failed — showing the last loaded aliases"
+              action={<Button size="sm" variant="secondary" onClick={() => setReloadNonce((value) => value + 1)}>Retry</Button>}
+            >
+              {error}
             </Notice>
           )}
           {!writable && (
@@ -549,17 +591,47 @@ export function PricingAliases() {
             />
           ) : (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, rowGap: 10, flexWrap: 'wrap' }}>
                 <SegmentedControl
                   value={scope}
-                  options={SCOPE_OPTIONS}
+                  options={scopeOptions}
                   onChange={(value) => setScope(value as RowScope)}
+                  ariaLabel="Which models to list"
                 />
-                <span style={{ color: 'var(--fg-faint)', font: '400 12px/1.4 var(--font-ui)' }}>
+                <span style={{ flex: '1 1 220px', minWidth: 0, color: 'var(--fg-muted)', font: '400 12px/1.4 var(--font-ui)' }}>
                   {scope === 'attention'
                     ? 'Models without usable pricing, plus aliases that are not applying.'
                     : 'Every observed model, including ones that already price correctly.'}
                 </span>
+                <SearchInput
+                  value={filter}
+                  onChange={setFilter}
+                  placeholder="Filter model, provider, or target…"
+                  label="Filter pricing aliases by model, provider, or target"
+                  width={260}
+                />
+              </div>
+              <div
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, rowGap: 4, flexWrap: 'wrap',
+                  color: 'var(--fg-muted)', font: '500 12px/1.4 var(--font-mono)', fontVariantNumeric: 'tabular-nums',
+                }}
+              >
+                <span>{formatCount(currentData.aliases.length, 'alias', 'aliases')}</span>
+                <span aria-hidden="true" style={{ color: 'var(--fg-faint)' }}>·</span>
+                <span>{formatCount(targetCount, 'target')} in {formatCount(targetGroups.length, 'catalog')}</span>
+                {currentData.catalog.snapshot_id && (
+                  <>
+                    <span aria-hidden="true" style={{ color: 'var(--fg-faint)' }}>·</span>
+                    <span title={currentData.catalog.snapshot_id}>snapshot {shortSnapshotID(currentData.catalog.snapshot_id)}</span>
+                  </>
+                )}
+                {unsavedCount > 0 && (
+                  <>
+                    <span aria-hidden="true" style={{ color: 'var(--fg-faint)' }}>·</span>
+                    <span style={{ color: 'var(--warning)' }}>{formatCount(unsavedCount, 'unsaved change')}</span>
+                  </>
+                )}
               </div>
               {visibleRows.length === 0 ? (
                 <EmptyState
@@ -572,6 +644,35 @@ export function PricingAliases() {
                     ? <Button size="sm" variant="secondary" onClick={() => setFilter('')}>Clear filter</Button>
                     : <Button size="sm" variant="secondary" onClick={() => setScope('all')}>Show all models</Button>}
                 />
+              ) : stacked ? (
+                // Five columns need ~1200px. On a phone each model becomes a
+                // labelled block instead, so the target picker and the actions
+                // are reachable without scrolling a table sideways.
+                <ul aria-label="Observed models" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {visibleRows.map((row, index) => (
+                    <li
+                      key={row.key}
+                      style={{
+                        display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0,
+                        padding: '12px 14px',
+                        background: 'var(--ink-800)',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: 'var(--radius-lg)',
+                      }}
+                    >
+                      {columns.map((column) => (
+                        <div key={column.key} style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+                          {column.key !== 'model_id' && column.key !== 'actions' && (
+                            <span style={{ font: '600 10.5px/1.2 var(--font-ui)', letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--fg-faint)' }}>
+                              {column.header}
+                            </span>
+                          )}
+                          {column.render?.(row, index)}
+                        </div>
+                      ))}
+                    </li>
+                  ))}
+                </ul>
               ) : (
                 <DataTable
                   columns={columns}
@@ -583,6 +684,22 @@ export function PricingAliases() {
           )}
         </div>
       )}
+      <ConfirmDialog
+        open={removeCandidate !== null}
+        title="Remove this pricing alias?"
+        confirmLabel="Remove alias"
+        danger
+        onCancel={() => setRemoveCandidate(null)}
+        onConfirm={() => {
+          const row = removeCandidate
+          setRemoveCandidate(null)
+          if (row) void runMutation(row, 'remove')
+        }}
+      >
+        <span style={{ fontFamily: 'var(--font-mono)' }}>{removeCandidate?.model_id}</span> goes back to its own pricing
+        {removeCandidate?.target ? <>, and stops using the rates of <span style={{ fontFamily: 'var(--font-mono)' }}>{removeCandidate.target.model_id}</span></> : null}.
+        Cached history is re-priced to match.
+      </ConfirmDialog>
     </Card>
   )
 }

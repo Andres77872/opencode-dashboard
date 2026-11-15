@@ -24,11 +24,3 @@ export function getNextSortState<SortKey extends string>(
 
   return null
 }
-
-export function getAriaSort<SortKey extends string>(current: SortState<SortKey> | null, key: SortKey) {
-  if (!current || current.key !== key) {
-    return 'none' as const
-  }
-
-  return current.direction === 'asc' ? ('ascending' as const) : ('descending' as const)
-}

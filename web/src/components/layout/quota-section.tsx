@@ -10,7 +10,7 @@ import type { ProviderQuota, QuotaWindow } from '../../types/api'
 function QuotaBar({ window: win, now }: { window: QuotaWindow; now: number }) {
   const used = clampPercent(win.used_percent)
   const countdown = win.resets_at ? formatResetCountdown(win.resets_at, now) : ''
-  const resetTitle = win.resets_at ? `resets ${new Date(win.resets_at * 1000).toLocaleString()}` : undefined
+  const resetTitle = win.resets_at ? `${Math.round(used)}% used · resets ${new Date(win.resets_at * 1000).toLocaleString()}` : `${Math.round(used)}% used`
   const label = windowLabel(win)
   return (
     <div title={resetTitle} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -33,7 +33,7 @@ function ProviderRow({ quota, now }: { quota: ProviderQuota; now: number }) {
   const asOf = quota.as_of_ms ? formatRelativeTime(new Date(quota.as_of_ms)) : null
   return (
     <div
-      title={unavailable ? quota.reason : asOf ? `as of ${asOf}` : undefined}
+      title={unavailable ? [quota.reason, quota.help].filter(Boolean).join(' — ') || undefined : asOf ? `As of ${asOf}` : undefined}
       style={{ display: 'flex', flexDirection: 'column', gap: 5, padding: '6px 11px', opacity: unavailable ? 0.55 : 1 }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -42,10 +42,12 @@ function ProviderRow({ quota, now }: { quota: ProviderQuota; now: number }) {
           {meta.label}
         </span>
         {quota.status === 'stale' && (
-          <span title="may be out of date — updates while the CLI runs" style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--warning)', flexShrink: 0 }} />
+          <span role="img" aria-label="May be out of date" title="May be out of date — updates while the CLI runs" style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--warning)', flexShrink: 0 }} />
         )}
         {unavailable ? (
-          <span style={{ font: '400 10px/1 var(--font-ui)', color: 'var(--fg-faint)' }}>not set up</span>
+          // "Not set up" only when the provider says how to set it up; any
+          // other failure (an API error, an expired plan) is just unavailable.
+          <span style={{ font: '400 10px/1 var(--font-ui)', color: 'var(--fg-faint)' }}>{quota.help ? 'Not set up' : 'Unavailable'}</span>
         ) : (
           primary ? (
             <span style={{ font: '600 11px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>
@@ -63,8 +65,8 @@ function ProviderRow({ quota, now }: { quota: ProviderQuota; now: number }) {
       {!unavailable && (quota.windows ?? []).map((win) => <QuotaBar key={win.id} window={win} now={now} />)}
       {!unavailable && quota.extra_usage && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-          <span style={{ font: '500 10px/1 var(--font-mono)', color: 'var(--fg-muted)', width: 48, flexShrink: 0 }}>extra</span>
-          <span style={{ flex: 1, font: '400 10px/1 var(--font-ui)', color: 'var(--fg-faint)' }}>balance</span>
+          <span style={{ font: '500 10px/1 var(--font-mono)', color: 'var(--fg-muted)', width: 48, flexShrink: 0 }}>Extra</span>
+          <span style={{ flex: 1, font: '400 10px/1 var(--font-ui)', color: 'var(--fg-faint)' }}>Balance</span>
           <span style={{ font: '500 10px/1 var(--font-mono)', color: 'var(--fg-secondary)' }}>{extraBalance}</span>
         </div>
       )}
@@ -72,7 +74,9 @@ function ProviderRow({ quota, now }: { quota: ProviderQuota; now: number }) {
   )
 }
 
-const stripStyle = { padding: '4px 10px 8px', borderTop: '1px solid var(--border-subtle)' } as const
+// Capped and scrollable: on a short window a long provider list would
+// otherwise push the navigation above it out of reach.
+const stripStyle = { padding: '4px 10px 8px', borderTop: '1px solid var(--border-subtle)', maxHeight: '42%', overflowY: 'auto', flexShrink: 0 } as const
 const stripHeadingStyle = {
   font: '600 10px/1 var(--font-ui)',
   letterSpacing: '0.08em',

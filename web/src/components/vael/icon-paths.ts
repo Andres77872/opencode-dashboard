@@ -27,6 +27,7 @@ export const ICON_PATHS = {
   'more-horizontal': '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>',
   'check': '<path d="M20 6L9 17l-5-5"/>',
   'x': '<path d="M18 6L6 18M6 6l12 12"/>',
+  'trash': '<path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6M10 11v6M14 11v6"/>',
   'terminal': '<path d="M4 17l6-6-6-6"/><path d="M12 19h8"/>',
   'trending-up': '<path d="M3 17l6-6 4 4 8-8"/><path d="M17 7h4v4"/>',
   'trending-down': '<path d="M3 7l6 6 4-4 8 8"/><path d="M17 17h4v-4"/>',

@@ -1,20 +1,28 @@
 /* Overview — all-sources aggregate (Vael). The Usage section can group the same
    tokens/cost/requests metrics by source or by source-scoped model. Model data
-   is loaded lazily so the default overview stays fast. Costs are never rolled
-   into a headline KPI; chart totals are only the visible stacked arithmetic. */
+   is a second, leaner request that starts once the headline numbers are in, so
+   it never delays them. Costs are never rolled into a headline KPI; chart
+   totals are only the visible stacked arithmetic. */
 import { useMemo, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
+  Button,
   Card,
+  CompositionBar,
   StatCard,
+  StatGrid,
   SectionTitle,
   DataTable,
+  KeyValueRow,
   VendorChip,
   BarRow,
   Legend,
   Donut,
+  ShareBar,
   StackedBars,
   SegmentedControl,
   Skeleton,
+  ViewSkeleton,
   ErrorState,
   Notice,
   useWidth,
@@ -30,7 +38,8 @@ import { useOverviewAll } from '../lib/use-overview-all'
 import { useOverviewModelUsage } from '../lib/use-overview-model-usage'
 import { usePeriodControls } from '../lib/use-period-controls'
 import { isIncompleteRequestAccounting, requestAccountingDisclosure } from '../lib/request-accounting'
-import { getAvgTokenTotal, getTokenBreakdownItems, getTokenTotal, type TokenBreakdownItem } from '../lib/token-breakdown'
+import { getAvgTokenTotal, getTokenBreakdownItems, getTokenTotal } from '../lib/token-breakdown'
+import { globalSearch } from '../lib/global-params'
 import {
   buildCombinedDailyTotals,
   buildModelMetricBreakdown,
@@ -41,12 +50,14 @@ import {
   type UsageGrouping,
 } from '../lib/overview-all'
 import {
+  formatAxisCurrency,
   formatCompactCurrency,
   formatCompactCurrencyWithProvenance,
   formatCompactInteger,
   formatCostProvenance,
+  formatCount,
   formatInteger,
-  formatPercentage,
+  formatShare,
   formatShortDate,
   formatShortWeekday,
   formatTokenCount,
@@ -109,11 +120,15 @@ function metricFmt(metric: TrendMetric): (v: number) => string {
 
 export function OverviewView() {
   const { requestRefresh } = useDashboardContext()
+  const navigate = useNavigate()
+  const { search } = useLocation()
   const { cacheKey } = usePeriodControls()
   const { data, loading, error } = useOverviewAll(cacheKey)
   const [grouping, setGrouping] = useState<UsageGrouping>('source')
   const [metric, setMetric] = useState<TrendMetric>('tokens')
-  const modelUsage = useOverviewModelUsage(cacheKey, grouping === 'model')
+  // Held back until the base overview is in: the model breakdown feeds the
+  // Model grouping and the Top models card, neither of which is above the fold.
+  const modelUsage = useOverviewModelUsage(cacheKey, Boolean(data))
   const [donutHover, setDonutHover] = useState<number | null>(null)
   const [chartRef, chartWidth] = useWidth(320)
 
@@ -123,7 +138,7 @@ export function OverviewView() {
     return (id?: SourceID) => (id ? map.get(id) ?? id : 'unknown')
   }, [data?.sources])
 
-  // Ignore the previous period's lazy response during the effect handoff.
+  // Ignore the previous period's response during the effect handoff.
   const currentModelUsage = modelUsage.data?.period === cacheKey ? modelUsage.data : null
   const modelBreakdown = useMemo(
     () => buildModelMetricBreakdown(currentModelUsage?.models ?? [], currentModelUsage?.trend ?? [], metric),
@@ -222,30 +237,18 @@ export function OverviewView() {
   }, [data?.sources])
 
   if (loading && !data) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-lg)', padding: 16 }}>
-              <Skeleton width={90} height={11} />
-              <Skeleton width={120} height={28} style={{ marginTop: 12 }} />
-            </div>
-          ))}
-        </div>
-        <div style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', height: 300 }} />
-      </div>
-    )
+    return <ViewSkeleton stats={5} panels={[200, 340]} label="Loading overview" />
   }
 
   if (!data) {
-    return <Card><ErrorState title="Failed to load overview" message={error ?? undefined} onRetry={requestRefresh} /></Card>
+    return <Card><ErrorState title="Overview failed to load" message={error ?? undefined} onRetry={requestRefresh} /></Card>
   }
 
   const totalTokens = getTokenTotal(data.token_distribution)
   const activeSources = data.sources.filter((s) => s.overview.sessions > 0 || s.overview.messages > 0 || s.overview.requests > 0).length
   const kimiAccounting = data.sources.find((source) => source.source_id === 'kimi_code')?.overview.request_accounting
-  const breakdown = getTokenBreakdownItems(data.token_distribution).filter((i) => i.value > 0)
-  const breakdownTotal = breakdown.reduce((s, i) => s + i.value, 0) || 1
+  const breakdown = getTokenBreakdownItems(data.token_distribution)
+  const partialSources = Array.from(new Set((data.partial_errors ?? []).map((item) => labelFor(item.source_id))))
 
   // Segments and legend rows derive from one array so hover/focus highlighting
   // remains index-aligned in both grouping modes.
@@ -265,26 +268,26 @@ export function OverviewView() {
       metric === 'cost'
         ? donutCostWithProvenance(item.value, item.costStatus, item.costProvenance)
         : donutFmt(item.value),
-    shareText: formatPercentage(item.share * 100),
+    shareText: formatShare(item.value, donutTotal),
     sub: [item.secondary, metric === 'cost' ? formatCostProvenance(item.costStatus, item.costProvenance) : null]
       .filter(Boolean)
       .join(' · ') || undefined,
   }))
-  const modelPending = grouping === 'model' && !currentModelUsage && !modelUsage.error
-  const modelUnavailable = grouping === 'model' && !currentModelUsage && Boolean(modelUsage.error)
+  const modelsPending = !currentModelUsage && !modelUsage.error
+  const modelsUnavailable = !currentModelUsage && Boolean(modelUsage.error)
+  const modelPending = grouping === 'model' && modelsPending
+  const modelUnavailable = grouping === 'model' && modelsUnavailable
   const topModelRows = currentModelUsage?.models ?? data.top_models
   let topModelsEmptyMessage: string | undefined
-  if (modelPending) {
-    topModelsEmptyMessage = 'Loading model rankings…'
-  } else if (
-    modelUnavailable ||
-    (currentModelUsage && currentModelUsage.models.length === 0 && (
-      currentModelUsage.errors.length > 0 || currentModelUsage.partialErrors.some((item) => item.dimension === 'models')
-    ))
-  ) {
-    topModelsEmptyMessage = 'Model rankings unavailable.'
-  } else if (!currentModelUsage && data.top_models.length === 0 && data.total.requests > 0) {
-    topModelsEmptyMessage = 'Select Model in Usage to load rankings.'
+  if (topModelRows.length === 0) {
+    if (modelsPending) {
+      topModelsEmptyMessage = 'Loading model rankings…'
+    } else if (
+      modelsUnavailable ||
+      (currentModelUsage && (currentModelUsage.errors.length > 0 || currentModelUsage.partialErrors.some((item) => item.dimension === 'models')))
+    ) {
+      topModelsEmptyMessage = 'Model rankings are unavailable right now.'
+    }
   }
 
   const sourceCols: Column<SourceOverview>[] = [
@@ -304,20 +307,26 @@ export function OverviewView() {
       header: 'Token share',
       numeric: true,
       width: 130,
-      render: (s) => (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-          <span style={{ width: 48, height: 6, borderRadius: 3, background: 'var(--ink-700)', overflow: 'hidden' }}>
-            <span style={{ display: 'block', width: `${Math.round(s.token_share * 100)}%`, height: '100%', background: vendorMeta(s.source_id).color }} />
-          </span>
-          <span style={{ width: 34, textAlign: 'right' }}>{Math.round(s.token_share * 100)}%</span>
-        </span>
-      ),
+      render: (s) => <ShareBar share={s.token_share} color={vendorMeta(s.source_id).color} />,
     },
   ]
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {error && <Notice tone="warning" title="Overview partially loaded">{error}</Notice>}
+      {error && (
+        <Notice
+          tone="warning"
+          title="Couldn't refresh the overview"
+          action={<Button size="sm" variant="secondary" iconLeft="refresh" onClick={requestRefresh}>Retry</Button>}
+        >
+          Showing the last loaded data. {error}
+        </Notice>
+      )}
+      {partialSources.length > 0 && (
+        <Notice tone="warning" title="Some breakdowns are incomplete">
+          Models, projects, tools or the daily trend could not be loaded for {partialSources.join(', ')}. Totals for those sources are unaffected.
+        </Notice>
+      )}
       {grouping === 'model' && modelUsage.error && (
         <Notice tone="warning" title="Model usage could not be loaded">{modelUsage.error}</Notice>
       )}
@@ -345,47 +354,48 @@ export function OverviewView() {
       )}
 
       {/* KPI row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-        <StatCard accent label="Tokens" value={formatTokenCount(totalTokens)} title={formatInteger(totalTokens)} hint={`${formatCompactInteger(getAvgTokenTotal(data.tokens_per_message))} / message`} spark={tokenSpark} sparkLabels={sparkLabels} sparkFmt={formatTokenCount} />
-        <StatCard label="Sessions" value={formatInteger(data.total.sessions)} hint={`${data.total.days} active days`} spark={sessionSpark} sparkLabels={sparkLabels} sparkFmt={formatInteger} />
-        <StatCard label="Messages" value={formatInteger(data.total.messages)} hint={`${data.messages_per_session.toFixed(1)} / session`} spark={messageSpark} sparkLabels={sparkLabels} sparkFmt={formatCompactInteger} />
-        <StatCard label="Requests" value={formatInteger(data.total.requests)} hint="outbound assistant/API attempts" spark={requestSpark} sparkLabels={sparkLabels} sparkFmt={formatCompactInteger} />
-        <StatCard label="Sources active" value={`${activeSources} / ${data.sources.length}`} hint="with activity in range" />
-      </div>
+      <StatGrid>
+        <StatCard accent label="Tokens" value={formatTokenCount(totalTokens)} title={formatInteger(totalTokens)} hint={`${formatCompactInteger(getAvgTokenTotal(data.tokens_per_message))} per message`} spark={tokenSpark} sparkLabels={sparkLabels} sparkFmt={formatTokenCount} />
+        <StatCard label="Sessions" value={formatInteger(data.total.sessions)} hint={formatCount(data.total.days, 'active day')} spark={sessionSpark} sparkLabels={sparkLabels} sparkFmt={formatInteger} />
+        <StatCard label="Messages" value={formatInteger(data.total.messages)} hint={`${data.messages_per_session.toFixed(1)} per session`} spark={messageSpark} sparkLabels={sparkLabels} sparkFmt={formatCompactInteger} />
+        <StatCard label="Requests" value={formatInteger(data.total.requests)} hint="API calls made by agents" spark={requestSpark} sparkLabels={sparkLabels} sparkFmt={formatCompactInteger} />
+        <StatCard label="Active sources" value={`${activeSources} of ${data.sources.length}`} hint="With activity in this range" />
+      </StatGrid>
 
       {/* Provider quotas — live subscription usage, independent of the period filter */}
       <QuotasSection />
 
       {/* Usage — grouping and metric switches drive both charts in sync. */}
       <div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0, flexWrap: 'wrap' }}>
-            <h2 style={{ margin: 0, font: '600 15px/1.2 var(--font-ui)', color: 'var(--fg-primary)' }}>Usage</h2>
-            <span style={{ font: '400 12px/1.3 var(--font-ui)', color: 'var(--fg-muted)' }}>Tokens, cost &amp; {groupedRequestCopy.noun} grouped by {GROUPING_NOUN[grouping]}</span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-            <SegmentedControl
-              size="sm"
-              options={GROUPING_OPTS}
-              value={grouping}
-              ariaLabel="Group usage by"
-              onChange={(next) => {
-                setDonutHover(null)
-                setGrouping(next)
-              }}
-            />
-            <SegmentedControl
-              size="sm"
-              options={METRIC_VALUES.map((value) => ({ value, label: usageMetricCopy(value, grouping).label }))}
-              value={metric}
-              ariaLabel="Usage metric"
-              onChange={(next) => {
-                setDonutHover(null)
-                setMetric(next)
-              }}
-            />
-          </div>
-        </div>
+        <SectionTitle
+          sub={`Tokens, cost and ${groupedRequestCopy.noun} by ${GROUPING_NOUN[grouping]}`}
+          action={
+            <>
+              <SegmentedControl
+                size="sm"
+                options={GROUPING_OPTS}
+                value={grouping}
+                ariaLabel="Group usage by"
+                onChange={(next) => {
+                  setDonutHover(null)
+                  setGrouping(next)
+                }}
+              />
+              <SegmentedControl
+                size="sm"
+                options={METRIC_VALUES.map((value) => ({ value, label: usageMetricCopy(value, grouping).label }))}
+                value={metric}
+                ariaLabel="Usage metric"
+                onChange={(next) => {
+                  setDonutHover(null)
+                  setMetric(next)
+                }}
+              />
+            </>
+          }
+        >
+          Usage
+        </SectionTitle>
 
         {metricCopy.explanation && (
           <p role="note" style={{ margin: '-2px 0 12px', font: '400 12px/1.4 var(--font-ui)', color: 'var(--fg-muted)' }}>
@@ -397,9 +407,9 @@ export function OverviewView() {
           <Card title="Usage over time" subtitle={`Per ${GROUPING_NOUN[grouping]}, stacked`}>
             <div ref={chartRef} style={{ minWidth: 0, overflowX: 'auto' }}>
               {modelPending ? (
-                <Skeleton width="100%" height={240} />
+                <Skeleton width="100%" height={300} />
               ) : modelUnavailable ? (
-                <div style={{ minHeight: 240 }}>
+                <div style={{ minHeight: 300 }}>
                   <ErrorState title="Model trend unavailable" message={modelUsage.error ?? undefined} onRetry={requestRefresh} />
                 </div>
               ) : stackedDays.length > 0 && stackedKeys.length > 0 ? (
@@ -407,15 +417,17 @@ export function OverviewView() {
                   days={stackedDays}
                   keys={stackedKeys}
                   width={Math.max(280, chartWidth)}
-                  height={240}
+                  height={300}
                   valueFmt={metricFmt(metric)}
+                  axisFmt={metric === 'cost' ? formatAxisCurrency : undefined}
                   totalValueFmt={aggregateCostNeedsQualifier ? (value) => `≈ ${formatCompactCurrency(value)}` : undefined}
                   label={metricCopy.label}
                   showTotal
+                  totalLine={false}
                   ariaLabel={`${metricCopy.label} usage over time grouped by ${GROUPING_NOUN[grouping]}. Series: ${stackedKeys.map((key) => key.short).join(', ')}.`}
                 />
               ) : (
-                <div style={{ height: 240, display: 'flex', alignItems: 'center', justifyContent: 'center', font: '400 13px/1.4 var(--font-ui)', color: 'var(--fg-muted)', textAlign: 'center' }}>No {GROUPING_NOUN[grouping]} trend data for this range.</div>
+                <div style={{ height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', font: '400 13px/1.4 var(--font-ui)', color: 'var(--fg-muted)', textAlign: 'center' }}>No activity to chart in this range.</div>
               )}
             </div>
             {!modelPending && !modelUnavailable && stackedKeys.length > 0 && (
@@ -430,7 +442,7 @@ export function OverviewView() {
               {modelPending ? (
                 <Skeleton width={180} height={180} />
               ) : modelUnavailable ? (
-                <div style={{ height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--danger)', font: '400 13px/1.4 var(--font-ui)', textAlign: 'center' }}>Model distribution unavailable.</div>
+                <div style={{ height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--fg-muted)', font: '400 13px/1.4 var(--font-ui)', textAlign: 'center' }}>The model breakdown is unavailable right now.</div>
               ) : donutSegments.length > 0 ? (
                 <Donut
                   segments={donutSegments}
@@ -440,10 +452,10 @@ export function OverviewView() {
                   centerBottom={metricCopy.noun}
                   activeIndex={donutHover}
                   onHoverIndex={setDonutHover}
-                  ariaLabel={`${metricCopy.label} share by ${GROUPING_NOUN[grouping]}. ${donutItems.map((item) => `${item.label}: ${formatPercentage(item.share * 100)}`).join(', ')}.`}
+                  ariaLabel={`${metricCopy.label} share by ${GROUPING_NOUN[grouping]}. ${donutItems.map((item) => `${item.label}: ${formatShare(item.value, donutTotal)}`).join(', ')}.`}
                 />
               ) : (
-                <div style={{ height: 180, display: 'flex', alignItems: 'center', color: 'var(--fg-muted)', font: '400 13px/1 var(--font-ui)' }}>No {metricCopy.noun} data.</div>
+                <div style={{ height: 180, display: 'flex', alignItems: 'center', color: 'var(--fg-muted)', font: '400 13px/1 var(--font-ui)' }}>No {metricCopy.noun} in this range.</div>
               )}
               {!modelPending && !modelUnavailable && donutSegments.length > 0 && (
                 <div style={{ width: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -494,28 +506,30 @@ export function OverviewView() {
 
       {/* Token breakdown + efficiency */}
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1.4fr_1fr]">
-        <Card title="Token composition" subtitle="Combined token mix across sources">
-          <CompositionBar items={breakdown} total={breakdownTotal} />
-          <div style={{ marginTop: 14 }}>
-            <Legend items={breakdown.map((i) => ({ label: i.label, color: i.color, value: formatTokenCount(i.value) }))} />
-          </div>
+        <Card title="Token composition" subtitle="Where the tokens went, across every source">
+          <CompositionBar items={breakdown} format={formatTokenCount} ariaLabel="Token composition" />
         </Card>
 
-        <Card title="Throughput" subtitle="Per-message / per-session ratios">
+        <Card title="Averages" subtitle="Per session and per message">
           <div>
-            <Ratio label="Messages / session" value={data.messages_per_session.toFixed(1)} />
-            <Ratio label="Tokens / message" value={formatCompactInteger(getAvgTokenTotal(data.tokens_per_message))} />
-            <Ratio label="Input / message" value={formatCompactInteger(Math.round(data.tokens_per_message.input))} />
-            <Ratio label="Output / message" value={formatCompactInteger(Math.round(data.tokens_per_message.output))} />
-            <Ratio label="Reasoning / message" value={formatCompactInteger(Math.round(data.tokens_per_message.reasoning))} last />
+            <KeyValueRow label="Messages per session" value={data.messages_per_session.toFixed(1)} />
+            <KeyValueRow label="Tokens per message" value={formatCompactInteger(getAvgTokenTotal(data.tokens_per_message))} />
+            <KeyValueRow label="Input per message" value={formatCompactInteger(Math.round(data.tokens_per_message.input))} />
+            <KeyValueRow label="Output per message" value={formatCompactInteger(Math.round(data.tokens_per_message.output))} />
+            <KeyValueRow label="Reasoning per message" value={formatCompactInteger(Math.round(data.tokens_per_message.reasoning))} last />
           </div>
         </Card>
       </div>
 
-      {/* Per-source usage table */}
+      {/* Per-source usage table — each row opens that source's daily view. */}
       <div>
-        <SectionTitle sub="Costs are reported per source and never combined.">Usage by source</SectionTitle>
-        <DataTable columns={sourceCols} rows={data.sources} rowKey={(s) => s.source_id} />
+        <SectionTitle sub="Costs stay separate per source. Select a row to open that source.">Usage by source</SectionTitle>
+        <DataTable
+          columns={sourceCols}
+          rows={data.sources}
+          rowKey={(s) => s.source_id}
+          onRowClick={(s) => navigate({ pathname: '/daily', search: globalSearch(search, { source: s.source_id }) })}
+        />
       </div>
 
       {/* Top signals */}
@@ -528,69 +542,6 @@ export function OverviewView() {
         <TopProjects projects={data.top_projects} labelFor={labelFor} />
         <TopTools tools={data.top_tools} labelFor={labelFor} />
       </div>
-    </div>
-  )
-}
-
-/* Horizontal stacked composition bar with per-segment hover (label · value · %). */
-function CompositionBar({ items, total }: { items: TokenBreakdownItem[]; total: number }) {
-  const [hov, setHov] = useState<number | null>(null)
-  const it = hov != null && items[hov] ? items[hov] : null
-  let before = 0
-  if (it) for (let i = 0; i < (hov as number); i++) before += items[i].value / total
-  const center = it ? (before + it.value / total / 2) * 100 : 0
-  return (
-    <div style={{ position: 'relative' }}>
-      <div style={{ display: 'flex', height: 12, borderRadius: 6, overflow: 'hidden', background: 'var(--ink-700)' }}>
-        {items.map((i, idx) => (
-          <div
-            key={i.key}
-            onMouseEnter={() => setHov(idx)}
-            onMouseLeave={() => setHov(null)}
-            style={{
-              width: `${(i.value / total) * 100}%`,
-              background: i.color,
-              opacity: hov == null || hov === idx ? 1 : 0.4,
-              transition: 'opacity var(--dur-fast) var(--ease-out)',
-            }}
-          />
-        ))}
-      </div>
-      {it && (
-        <div
-          style={{
-            position: 'absolute',
-            bottom: '100%',
-            left: `${center}%`,
-            transform: 'translateX(-50%)',
-            marginBottom: 8,
-            pointerEvents: 'none',
-            background: 'var(--ink-700)',
-            border: '1px solid var(--border-strong)',
-            borderRadius: 'var(--radius-md)',
-            boxShadow: 'var(--shadow-lg)',
-            padding: '8px 10px',
-            whiteSpace: 'nowrap',
-            zIndex: 5,
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-            <span style={{ width: 8, height: 8, borderRadius: 2, background: it.color }} />
-            <span style={{ font: '400 12px/1 var(--font-ui)', color: 'var(--fg-secondary)', flex: 1 }}>{it.label}</span>
-            <span style={{ font: '600 12px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{formatTokenCount(it.value)}</span>
-          </div>
-          <div style={{ font: '600 11px/1 var(--font-ui)', color: 'var(--fg-muted)', marginTop: 5, textAlign: 'right' }}>{formatPercentage((it.value / total) * 100)} of total</div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function Ratio({ label, value, last }: { label: string; value: string; last?: boolean }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}>
-      <span style={{ font: '400 13px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>{label}</span>
-      <span style={{ font: '600 13px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{value}</span>
     </div>
   )
 }
@@ -622,7 +573,7 @@ function TopProjects({ projects, labelFor }: { projects: ProjectEntry[]; labelFo
       ) : (
         top.map((p) => {
           const v = getTokenTotal(p.tokens)
-          return <BarRow key={p.project_id} label={p.project_name} value={formatTokenCount(v)} rawValue={v} max={max} color="var(--cat-3)" sub={`${formatInteger(p.sessions)} sessions · ${labelFor(p.source_id)}`} />
+          return <BarRow key={`${p.source_id}/${p.project_id}`} label={p.project_name} value={formatTokenCount(v)} rawValue={v} max={max} color="var(--cat-3)" sub={`${formatCount(p.sessions, 'session')} · ${labelFor(p.source_id)}`} />
         })
       )}
     </Card>
@@ -638,13 +589,13 @@ function TopTools({ tools, labelFor }: { tools: ToolEntry[]; labelFor: (id?: Sou
         <Empty />
       ) : (
         top.map((t) => (
-          <BarRow key={`${t.source_id}/${t.name}`} label={t.name} value={formatCompactInteger(t.invocations)} rawValue={t.invocations} max={max} color="var(--cat-2)" sub={`${formatInteger(t.sessions)} sessions · ${labelFor(t.source_id)}`} />
+          <BarRow key={`${t.source_id}/${t.name}`} label={t.name} value={formatCompactInteger(t.invocations)} rawValue={t.invocations} max={max} color="var(--cat-2)" sub={`${formatCount(t.sessions, 'session')} · ${labelFor(t.source_id)}`} />
         ))
       )}
     </Card>
   )
 }
 
-function Empty({ message = 'No data in range.' }: { message?: string }) {
+function Empty({ message = 'Nothing recorded in this range.' }: { message?: string }) {
   return <div style={{ padding: '24px 0', textAlign: 'center', font: '400 13px/1.4 var(--font-ui)', color: 'var(--fg-muted)' }}>{message}</div>
 }

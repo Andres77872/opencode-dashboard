@@ -1,4 +1,4 @@
-/* Vael DataTable — generic, sortable, hover rows, sticky header.
+/* Vael DataTable — generic, sortable, hover rows.
    Ported from the Vael ui_kit and typed for arbitrary row shapes. */
 import { useState } from 'react'
 import type { ReactNode } from 'react'
@@ -30,15 +30,18 @@ export interface DataTableProps<T> {
   onSort?: (key: string) => void
   onRowClick?: (row: T, index: number) => void
   dense?: boolean
+  /** Drop the table's own frame, for a table that fills a `<Card flush>` (which already draws one). */
+  bare?: boolean
   rowKey?: (row: T, index: number) => string | number
 }
 
-/** Generic data table — column defs with custom renderers, sortable sticky header, hover + clickable rows, dense mode. @category Data */
-export function DataTable<T>({ columns, rows, sort, onSort, onRowClick, dense, rowKey = (_r, i) => i }: DataTableProps<T>) {
+/** Generic data table — column defs with custom renderers, sortable header, hover + clickable rows, dense mode. @category Data */
+export function DataTable<T>({ columns, rows, sort, onSort, onRowClick, dense, bare = false, rowKey = (_r, i) => i }: DataTableProps<T>) {
   const [hover, setHover] = useState(-1)
   const rh = dense ? 38 : 44
+  const frame = bare ? undefined : { border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', background: 'var(--ink-800)' }
   return (
-    <div style={{ width: '100%', overflowX: 'auto', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', background: 'var(--ink-800)' }}>
+    <div style={{ width: '100%', overflowX: 'auto', ...frame }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ background: 'var(--ink-750)' }}>
@@ -66,8 +69,6 @@ export function DataTable<T>({ columns, rows, sort, onSort, onRowClick, dense, r
                   }
                   tabIndex={sortable ? 0 : undefined}
                   style={{
-                    position: 'sticky',
-                    top: 0,
                     textAlign: alignR ? 'right' : c.align || 'left',
                     padding: '0 14px',
                     height: 38,
@@ -85,7 +86,7 @@ export function DataTable<T>({ columns, rows, sort, onSort, onRowClick, dense, r
                 >
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, justifyContent: alignR ? 'flex-end' : 'flex-start', width: '100%' }}>
                     {c.header}
-                    {active && <Icon name={sort!.dir === 'asc' ? 'arrow-up' : 'chevron-down'} size={12} color="var(--accent)" />}
+                    {active && <Icon name={sort!.dir === 'asc' ? 'arrow-up' : 'arrow-down'} size={12} color="var(--accent)" />}
                   </span>
                 </th>
               )

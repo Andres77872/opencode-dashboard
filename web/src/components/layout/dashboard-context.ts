@@ -7,7 +7,12 @@ export interface DashboardContextValue {
   isRefreshing: boolean
   refreshNonce: number
   requestRefresh: () => void
-  setRefreshing: (value: boolean) => void
+  /**
+   * Registers an in-flight data request with the global "refreshing"
+   * indicator and returns its release callback (safe to call more than once).
+   * The indicator stays on until every registered request has released.
+   */
+  trackRefresh: () => () => void
   setLastUpdatedAt: (value: Date | null) => void
   updateSourceMetadata?: (metadata: SourceListResponse) => void
   sourceMetadata: SourceListResponse | null

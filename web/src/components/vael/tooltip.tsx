@@ -30,7 +30,7 @@ export function Tooltip({ content, children, side = 'top' }: TooltipProps) {
           style={{
             position: 'absolute',
             ...pos,
-            zIndex: 70,
+            zIndex: 'var(--z-tooltip)',
             pointerEvents: 'none',
             background: 'var(--ink-700)',
             border: '1px solid var(--border-strong)',

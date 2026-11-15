@@ -1,5 +1,5 @@
 /* Vael atoms — DeltaChip, Badge, VendorChip, Avatar, Legend, SourceStack,
-   BarRow, Sparkline. Ported from the Vael ui_kit (inline styles + CSS vars). */
+   ShareBar, BarRow, Sparkline. Ported from the Vael ui_kit (inline styles + CSS vars). */
 import { useId, useState } from 'react'
 import type { CSSProperties, MouseEvent, ReactNode } from 'react'
 import type { SourceID } from '../../types/api'
@@ -102,7 +102,7 @@ export function VendorChip({ id, label = true, size = 22 }: VendorChipProps) {
           alignItems: 'center',
           justifyContent: 'center',
           font: '700 10px/1 var(--font-mono)',
-          color: '#07101f',
+          color: 'var(--fg-on-accent)',
           flexShrink: 0,
         }}
       >
@@ -192,6 +192,27 @@ export function SourceStack({ sources = [], width = 120, height = 7, showTrack =
   )
 }
 
+export interface ShareBarProps {
+  /** Fraction of the whole, 0–1. Values outside the range are clamped. */
+  share: number
+  color?: string
+  width?: number
+}
+
+/** Table-cell share meter — a short proportional bar followed by the rounded percentage. @category Atoms */
+export function ShareBar({ share, color = 'var(--accent)', width = 48 }: ShareBarProps) {
+  const pct = Math.max(0, Math.min(1, Number.isFinite(share) ? share : 0)) * 100
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+      <span aria-hidden="true" style={{ width, height: 6, borderRadius: 3, background: 'var(--ink-700)', overflow: 'hidden', flexShrink: 0 }}>
+        {/* A sliver stays visible for any non-zero share so "1%" is not an empty track. */}
+        <span style={{ display: 'block', width: `${pct > 0 ? Math.max(4, pct) : 0}%`, height: '100%', background: color, borderRadius: 3 }} />
+      </span>
+      <span style={{ width: 34, textAlign: 'right' }}>{pct > 0 && pct < 1 ? '<1%' : `${Math.round(pct)}%`}</span>
+    </span>
+  )
+}
+
 export interface BarRowProps {
   label: ReactNode
   value: string
@@ -199,24 +220,20 @@ export interface BarRowProps {
   rawValue: number
   color?: string
   sub?: ReactNode
-  onClick?: () => void
 }
 
 /** Label + mono value + proportional bar row, for top-N breakdown lists. @category Atoms */
-export function BarRow({ label, value, max, rawValue, color = 'var(--accent)', sub, onClick }: BarRowProps) {
+export function BarRow({ label, value, max, rawValue, color = 'var(--accent)', sub }: BarRowProps) {
   return (
-    <div
-      onClick={onClick}
-      style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '2px 12px', padding: '9px 0', cursor: onClick ? 'pointer' : 'default' }}
-    >
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '2px 12px', padding: '9px 0' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-        <span style={{ font: '500 13px/1 var(--font-ui)', color: 'var(--fg-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+        <span title={typeof label === 'string' ? label : undefined} style={{ font: '500 13px/1.2 var(--font-ui)', color: 'var(--fg-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
       </div>
-      <span style={{ font: '600 13px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{value}</span>
+      <span style={{ font: '600 13px/1.2 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{value}</span>
       <div style={{ gridColumn: '1 / -1', height: 6, borderRadius: 3, background: 'var(--ink-700)', overflow: 'hidden', marginTop: 2 }}>
         <div style={{ width: `${Math.max(2, (max ? rawValue / max : 0) * 100)}%`, height: '100%', background: color, borderRadius: 3 }} />
       </div>
-      {sub && <div style={{ gridColumn: '1 / -1', font: '400 11px/1 var(--font-ui)', color: 'var(--fg-faint)', marginTop: 4 }}>{sub}</div>}
+      {sub && <div style={{ gridColumn: '1 / -1', font: '400 11px/1.2 var(--font-ui)', color: 'var(--fg-muted)', marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sub}</div>}
     </div>
   )
 }

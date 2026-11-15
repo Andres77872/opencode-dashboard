@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestAssistantProviderCRUDSelectionAndSecretSafety(t *testing.T) {
@@ -152,5 +154,51 @@ func TestAssistantProviderKeyDoesNotFollowBaseURLToAnotherHost(t *testing.T) {
 	updated, err = update(UpdateAssistantProviderInput{BaseURL: str("https://fourth.example/v1")})
 	if err != nil || updated.BaseURL != "https://fourth.example/v1" {
 		t.Fatalf("keyless provider move: %#v err=%v", updated, err)
+	}
+}
+
+// The Config page asks for the provider list from two components at once.
+// Listing used to query each provider's details while its cursor was still
+// open, so every caller held one pooled connection and waited for another;
+// two concurrent callers exhausted the pool and blocked each other forever,
+// taking every other settings read down with them.
+func TestListAssistantProvidersDoesNotDeadlockThePool(t *testing.T) {
+	store := openTestStore(t)
+	setup := context.Background()
+	for _, name := range []string{"One", "Two", "Three"} {
+		if _, err := store.CreateAssistantProvider(setup, CreateAssistantProviderInput{Name: name, BaseURL: "https://" + strings.ToLower(name) + ".example.com/v1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(setup, 10*time.Second)
+	defer cancel()
+	const callers = 16
+	errs := make(chan error, callers)
+	var start, done sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < callers; i++ {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait()
+			for round := 0; round < 20; round++ {
+				providers, err := store.ListAssistantProviders(ctx)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if len(providers) != 3 {
+					errs <- errors.New("unexpected provider count")
+					return
+				}
+			}
+		}()
+	}
+	start.Done()
+	done.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent listing failed (a deadline here means the pool deadlocked): %v", err)
 	}
 }

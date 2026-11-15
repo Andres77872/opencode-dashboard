@@ -311,6 +311,13 @@ func (s *Source) currentDiagnostics(ctx context.Context) (source.SourceDiagnosti
 
 	disc := discoverSessions(ctx, s.opts.KimiHome)
 	if !disc.available {
+		// An interrupted scan says nothing about the source: keep what was known.
+		if ctx.Err() != nil {
+			if lastDiag.Status != "" {
+				return lastDiag, lastAvailable
+			}
+			return disc.diagnostics, false
+		}
 		s.setLastDiagnostics(disc.diagnostics, false)
 		return disc.diagnostics, false
 	}
@@ -495,6 +502,9 @@ func (s *Source) loadSessionSnapshot(ctx context.Context, id string) (*snapshot,
 	defer cancel()
 	disc := discoverSessions(ctx, s.opts.KimiHome)
 	if !disc.available {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
 		return nil, false, source.UnavailableSourceError{ID: source.SourceKimiCode, Reason: disc.diagnostics.Reason}
 	}
 	for _, item := range disc.sessions {

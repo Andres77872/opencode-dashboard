@@ -5,12 +5,23 @@ const compactIntegerFormatter = new Intl.NumberFormat('en-US', {
   notation: 'compact',
   maximumFractionDigits: 1,
 })
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 6,
-})
+// Money is shown at the precision a reader can act on: cents from a dollar
+// up, and two significant digits below that, so a fraction-of-a-cent request
+// cost does not collapse to $0.00 while a column of small amounts stays even
+// ($0.32, $0.031, $0.0012). The exact six-decimal figure stays available
+// through formatCurrencyExact for tooltips.
+const MIN_CURRENCY_DIGITS = 2
+const MAX_CURRENCY_DIGITS = 6
+const currencyFormatters = [2, 3, 4, 5, 6].map(
+  (digits) =>
+    new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: MIN_CURRENCY_DIGITS,
+      maximumFractionDigits: digits,
+    }),
+)
+const exactCurrencyFormatter = currencyFormatters[MAX_CURRENCY_DIGITS - MIN_CURRENCY_DIGITS]
 const compactCurrencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
@@ -70,11 +81,28 @@ export function formatCompactInteger(value: number) {
   return compactIntegerFormatter.format(value)
 }
 
+function currencyFormatterFor(value: number): Intl.NumberFormat {
+  const magnitude = Math.abs(value)
+  if (magnitude === 0 || magnitude >= 1) return currencyFormatters[0]
+  // Decimals needed to show two significant digits of a sub-dollar amount.
+  const digits = Math.ceil(-Math.log10(magnitude)) + 1
+  const clamped = Math.min(MAX_CURRENCY_DIGITS, Math.max(MIN_CURRENCY_DIGITS, digits))
+  return currencyFormatters[clamped - MIN_CURRENCY_DIGITS]
+}
+
 export function formatCurrency(value: number) {
   if (value == null || !Number.isFinite(value)) {
-    return currencyFormatter.format(0)
+    return currencyFormatters[0].format(0)
   }
-  return currencyFormatter.format(value)
+  return currencyFormatterFor(value).format(value)
+}
+
+/** Full stored precision (up to six decimals), for tooltips and audits. */
+export function formatCurrencyExact(value: number) {
+  if (value == null || !Number.isFinite(value)) {
+    return exactCurrencyFormatter.format(0)
+  }
+  return exactCurrencyFormatter.format(value)
 }
 
 export function formatCompactCurrency(value: number) {
@@ -88,12 +116,39 @@ export function formatCompactCurrency(value: number) {
   return compactCurrencyFormatter.format(value)
 }
 
+const thousandsCurrencyFormatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 2 })
+const wholeDollarFormatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+
+/**
+ * Money for a chart axis, which has room for about seven characters:
+ * "$1,250.00" would lose its leading digits. Amounts from a thousand up are
+ * shortened ("$1.25K") and round hundreds drop their cents ("$500"), which is
+ * what axis ticks are.
+ */
+export function formatAxisCurrency(value: number) {
+  if (value == null || !Number.isFinite(value)) return formatCurrency(0)
+  const magnitude = Math.abs(value)
+  if (magnitude >= 1000) return thousandsCurrencyFormatter.format(value)
+  if (magnitude >= 100 && Number.isInteger(value)) return wholeDollarFormatter.format(value)
+  return formatCurrency(value)
+}
+
 export function getCostStatus(status?: CostStatus, provenance?: CostProvenance): CostStatus | undefined {
   return status ?? provenance?.status
 }
 
 export function isMissingCost(status?: CostStatus, provenance?: CostProvenance): boolean {
   return getCostStatus(status, provenance) === 'missing'
+}
+
+/**
+ * The label for a spend figure: "Est. cost" when the amount is an estimate
+ * (API-equivalent or approximate pricing), "Cost" otherwise. One wording for
+ * every stat card, column header and metric toggle.
+ */
+export function getCostLabel(status?: CostStatus, provenance?: CostProvenance) {
+  const effectiveStatus = getCostStatus(status, provenance)
+  return effectiveStatus === 'approximate' || effectiveStatus === 'estimated_api_equivalent' ? 'Est. cost' : 'Cost'
 }
 
 export function formatCurrencyWithProvenance(value: number, status?: CostStatus, provenance?: CostProvenance) {
@@ -180,14 +235,14 @@ export function formatPercentage(value: number) {
 
 export function formatRelativeTime(value: Date | null) {
   if (!value) {
-    return 'Awaiting first sync'
+    return 'never'
   }
 
   const deltaMs = Date.now() - value.getTime()
   const deltaSeconds = Math.max(0, Math.round(deltaMs / 1000))
 
   if (deltaSeconds < 10) {
-    return 'Just now'
+    return 'just now'
   }
 
   if (deltaSeconds < 60) {
@@ -214,4 +269,36 @@ export function safeDivide(numerator: number, denominator: number) {
   }
 
   return numerator / denominator
+}
+
+/** "1 session" / "3 sessions" — counts are formatted, the noun agrees. */
+export function formatCount(count: number, singular: string, plural = `${singular}s`) {
+  return `${formatInteger(count)} ${count === 1 ? singular : plural}`
+}
+
+/** Elapsed time between two instants as "3d 4h" / "2h 30m" / "4m 12s" / "9s". */
+export function formatDuration(start: string | number | Date, end: string | number | Date) {
+  const ms = new Date(end).getTime() - new Date(start).getTime()
+  if (!Number.isFinite(ms)) return '—'
+  const total = Math.max(0, Math.round(ms / 1000))
+  const days = Math.floor(total / 86400)
+  const hours = Math.floor((total % 86400) / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m ${total % 60}s`
+  return `${total}s`
+}
+
+/** Leading characters of an opaque id for display. Pair it with the full id in a `title`. */
+export function formatShortId(id: string, length = 12) {
+  return id.length > length ? `${id.slice(0, length)}…` : id
+}
+
+/** A part's share of a whole: "42%", "<1%" for a non-zero sliver, "—" when there is no whole. */
+export function formatShare(part: number, whole: number) {
+  if (!(whole > 0)) return '—'
+  const percent = (part / whole) * 100
+  if (percent > 0 && percent < 1) return '<1%'
+  return `${Math.round(percent)}%`
 }

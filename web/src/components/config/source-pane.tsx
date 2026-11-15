@@ -31,11 +31,15 @@ export interface SourcePaneProps {
   doc: ConfigDocument
   /** Normalized filter query; '' when inactive. */
   searchQuery: string
-  copiedId: string | null
-  onCopy: (copyId: string, value: string) => void
 }
 
-export function SourcePane({ doc, searchQuery, copiedId, onCopy }: SourcePaneProps) {
+// The source scrolls inside its card so the sticky line-number gutter and the
+// horizontal scrollbar stay reachable. Its height is what is left of the
+// viewport under the app chrome and the card header, never less than a
+// readable minimum on short screens.
+const SOURCE_MAX_HEIGHT = 'max(320px, calc(100dvh - var(--topbar-height) - var(--filterbar-height) - 150px))'
+
+export function SourcePane({ doc, searchQuery }: SourcePaneProps) {
   const tokenLines = useMemo(() => highlightSource(doc.raw, doc.format), [doc.raw, doc.format])
   const rawLines = useMemo(() => doc.raw.split('\n'), [doc.raw])
   const matches = useMemo(() => {
@@ -45,14 +49,14 @@ export function SourcePane({ doc, searchQuery, copiedId, onCopy }: SourcePanePro
   const matchCount = useMemo(() => (matches ? matches.filter(Boolean).length : 0), [matches])
 
   const subtitle = doc.rawSynthesized
-    ? 'Re-serialized from the structured payload (original file text unavailable).'
-    : 'Original redacted file text.'
+    ? 'Rebuilt from the parsed values — the original file text is unavailable.'
+    : 'The file as written, with secrets redacted.'
 
   return (
     <Card
       title={`${FORMAT_LABELS[doc.format]} source`}
       subtitle={
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <span>{subtitle}</span>
           {matches && (
             <span style={{ color: matchCount > 0 ? 'var(--accent)' : 'var(--fg-muted)', fontVariantNumeric: 'tabular-nums' }}>
@@ -61,15 +65,18 @@ export function SourcePane({ doc, searchQuery, copiedId, onCopy }: SourcePanePro
           )}
         </span>
       }
-      action={<CopyButton copyId="source-copy" copiedId={copiedId} label="Copy file" value={doc.raw} onCopy={onCopy} />}
-      pad={0}
+      action={<CopyButton label="Copy file" value={doc.raw} />}
+      flush
     >
       <div
+        // Focusable so the keyboard can scroll a file wider or taller than the pane.
+        tabIndex={0}
+        role="region"
+        aria-label={`${FORMAT_LABELS[doc.format]} source`}
         style={{
           overflow: 'auto',
           background: 'var(--ink-850)',
-          maxHeight: 'calc(100vh - 280px)',
-          borderRadius: '0 0 var(--radius-xl) var(--radius-xl)',
+          maxHeight: SOURCE_MAX_HEIGHT,
         }}
       >
         <div style={{ font: '400 12.5px/1.75 var(--font-mono)', minWidth: 'max-content', padding: '6px 0' }}>

@@ -100,7 +100,7 @@ export function PricingTargetPicker({ groups, value, selectedSourceId, onChange,
   const cursor = activeIndex < flat.length ? activeIndex : 0
 
   useEffect(() => {
-    listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' })
+    listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView?.({ block: 'nearest' })
   }, [cursor, visibleGroups])
 
   const commit = (option: PricingTargetOption, close: () => void) => {
@@ -121,13 +121,40 @@ export function PricingTargetPicker({ groups, value, selectedSourceId, onChange,
       )
     : <span style={{ color: 'var(--fg-muted)' }}>Choose a pricing target</span>
 
-  if (disabled) {
-    return (
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: 'var(--fg-faint)', font: '400 12px/1.4 var(--font-ui)' }}>
-        {triggerLabel}
-      </span>
-    )
-  }
+  // One trigger for both states: a disabled picker keeps its box, so rows do
+  // not reflow when a save starts and every picker is briefly locked.
+  const renderTrigger = (open: boolean, toggle?: () => void) => (
+    <button
+      type="button"
+      onClick={toggle}
+      disabled={!toggle}
+      aria-label={selected ? `Pricing target: ${selected.model_id}` : 'Choose a pricing target'}
+      aria-haspopup="listbox"
+      aria-expanded={open}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
+        width: 260,
+        minHeight: 32,
+        padding: '5px 9px',
+        background: open ? 'var(--ink-700)' : 'var(--ink-750)',
+        border: `1px solid ${open ? 'var(--border-accent)' : 'var(--border-default)'}`,
+        borderRadius: 'var(--radius-md)',
+        cursor: toggle ? 'pointer' : 'not-allowed',
+        opacity: toggle ? 1 : 0.6,
+        font: '500 13px/1.3 var(--font-ui)',
+        color: 'var(--fg-primary)',
+        textAlign: 'left',
+      }}
+    >
+      {triggerLabel}
+      <Icon name="chevron-down" size={14} color="var(--fg-muted)" style={{ flexShrink: 0, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform var(--dur-fast)' }} />
+    </button>
+  )
+
+  if (disabled) return renderTrigger(false)
 
   return (
     <Popover
@@ -140,33 +167,7 @@ export function PricingTargetPicker({ groups, value, selectedSourceId, onChange,
         setActiveIndex(Math.max(0, flat.findIndex((option) => selected && pricingTargetOptionKey(option) === pricingTargetOptionKey(selected))))
         requestAnimationFrame(() => searchRef.current?.focus())
       }}
-      trigger={(open, toggle) => (
-        <button
-          type="button"
-          onClick={toggle}
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 8,
-            width: 260,
-            minHeight: 32,
-            padding: '5px 9px',
-            background: open ? 'var(--ink-700)' : 'var(--ink-750)',
-            border: `1px solid ${open ? 'var(--border-accent)' : 'var(--border-default)'}`,
-            borderRadius: 'var(--radius-md)',
-            cursor: 'pointer',
-            font: '500 13px/1.3 var(--font-ui)',
-            color: 'var(--fg-primary)',
-            textAlign: 'left',
-          }}
-        >
-          {triggerLabel}
-          <Icon name="chevron-down" size={14} color="var(--fg-muted)" style={{ flexShrink: 0, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform var(--dur-fast)' }} />
-        </button>
-      )}
+      trigger={(open, toggle) => renderTrigger(open, toggle)}
     >
       {(close) => (
           <div
@@ -201,17 +202,7 @@ export function PricingTargetPicker({ groups, value, selectedSourceId, onChange,
               }}
               placeholder="Search models across all sources…"
               aria-label="Search pricing targets across all sources"
-              style={{
-                width: '100%',
-                height: 32,
-                padding: '0 10px',
-                background: 'var(--ink-800)',
-                border: '1px solid var(--border-default)',
-                borderRadius: 'var(--radius-md)',
-                color: 'var(--fg-primary)',
-                font: '400 13px/1 var(--font-ui)',
-                outline: 'none',
-              }}
+              className="vael-input"
             />
             <div ref={listRef} role="listbox" aria-label="Pricing targets" style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 320, overflowY: 'auto' }}>
               {visibleGroups.length === 0 ? (

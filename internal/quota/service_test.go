@@ -88,6 +88,31 @@ func TestServiceQuotasSlowProviderIsBounded(t *testing.T) {
 	}
 }
 
+// ctxErrProvider reports whatever error its context already carries, the way a
+// real provider's HTTP call or directory scan would when it is canceled.
+type ctxErrProvider struct{}
+
+func (ctxErrProvider) quota(ctx context.Context) ProviderQuota {
+	if err := ctx.Err(); err != nil {
+		return ProviderQuota{Provider: ProviderCodex, Status: StatusUnavailable, Reason: err.Error()}
+	}
+	return ProviderQuota{Provider: ProviderCodex, Status: StatusOK}
+}
+
+// A page that navigates away cancels its request. Provider results are
+// memoized and shared, so that cancellation must not reach the lookup, or the
+// next caller is served "unavailable: context canceled" until the cache expires.
+func TestServiceQuotasIgnoreCallerCancellation(t *testing.T) {
+	svc := &Service{now: time.Now, timeout: time.Second, providers: []provider{ctxErrProvider{}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got := svc.Quotas(ctx)
+	if got.Providers[0].Status != StatusOK {
+		t.Fatalf("status = %q (%s), want ok despite the canceled request", got.Providers[0].Status, got.Providers[0].Reason)
+	}
+}
+
 func TestServiceQuotasHonorsProviderTimeoutOverride(t *testing.T) {
 	observed := make(chan time.Duration, 1)
 	overrideProvider := &timeoutOverrideTestProvider{timeout: 500 * time.Millisecond, observed: observed}

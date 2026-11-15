@@ -11,6 +11,7 @@ export {
   Avatar,
   Legend,
   SourceStack,
+  ShareBar,
   BarRow,
   Sparkline,
   RSpark,
@@ -22,13 +23,14 @@ export {
   type SourceStackItem,
 } from './atoms'
 
-export { Card, StatCard, SectionTitle, type CardProps, type StatCardProps } from './card'
+export { Card, StatCard, StatGrid, SectionTitle, KeyValueRow, type CardProps, type StatCardProps } from './card'
 
 export {
   Button,
   IconButton,
   SegmentedControl,
   Popover,
+  PickerButton,
   MenuItem,
   Select,
   SearchInput,
@@ -56,7 +58,13 @@ export {
 
 export { useWidth, niceMax } from './chart-utils'
 
+export { CompositionBar, type CompositionItem } from './composition-bar'
+export { Pagination, type PaginationProps } from './pagination'
+export { Field, TextField, Switch, type FieldProps, type TextFieldProps, type SwitchProps } from './forms'
+export { ConfirmDialog, type ConfirmDialogProps } from './dialog'
+export { useEscapeKey, useFocusTrap } from './overlay'
+
 export { Drawer, type DrawerProps } from './drawer'
 export { Tabs, type TabItem } from './tabs'
 export { Tooltip, type TooltipSide } from './tooltip'
-export { Skeleton, EmptyState, ErrorState, Notice, type NoticeTone } from './feedback'
+export { Skeleton, ViewSkeleton, EmptyState, ErrorState, Notice, type NoticeTone } from './feedback'

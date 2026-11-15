@@ -26,10 +26,11 @@ a:hover { color: var(--accent-hover); }
 
 /* Tabular figures everywhere numbers matter, opt-in via .vael-tnum / mono */
 
+/* The ring follows each element's own corner radius; forcing one here squared
+   off pills and round buttons the moment they took focus. */
 :focus-visible {
   outline: none;
   box-shadow: var(--ring-focus);
-  border-radius: var(--radius-sm);
 }
 
 /* Thin, dark scrollbars to match the chrome */

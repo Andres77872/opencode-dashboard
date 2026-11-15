@@ -18,31 +18,31 @@ const TOKEN_BREAKDOWN_CONFIG: Array<{
   {
     key: 'input',
     label: 'Input',
-    color: 'var(--color-chart-1)',
+    color: 'var(--cat-1)',
     getValue: (tokens) => tokens.input,
   },
   {
     key: 'cache-read',
     label: 'Cache read',
-    color: 'var(--color-chart-2)',
+    color: 'var(--cat-2)',
     getValue: (tokens) => tokens.cache.read,
   },
   {
     key: 'output',
     label: 'Output',
-    color: 'var(--color-chart-3)',
+    color: 'var(--cat-3)',
     getValue: (tokens) => tokens.output,
   },
   {
     key: 'reasoning',
     label: 'Reasoning',
-    color: 'var(--color-chart-4)',
+    color: 'var(--cat-4)',
     getValue: (tokens) => tokens.reasoning,
   },
   {
     key: 'cache-write',
     label: 'Cache write',
-    color: 'var(--color-chart-5)',
+    color: 'var(--cat-5)',
     getValue: (tokens) => tokens.cache.write,
   },
 ]

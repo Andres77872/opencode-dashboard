@@ -1,21 +1,25 @@
 /* Models — per-source model comparison (Vael). Single source (selectedSourceId).
    Costs use the *WithProvenance helpers and are never summed across sources.
    No fabricated deltas/trends: the API exposes none per model, so KPI deltas and
-   per-row sparklines are omitted. Share bars reflect the selected metric. */
+   per-row sparklines are omitted. The table ranks by the selected metric; a row
+   opens that model's token mix and averages. */
 import { useMemo, useState } from 'react'
 import {
-  Card,
-  StatCard,
-  SectionTitle,
-  DataTable,
-  VendorChip,
-  Badge,
   Button,
+  Card,
+  CompositionBar,
+  DataTable,
+  Drawer,
+  EmptyState,
+  ErrorState,
+  KeyValueRow,
+  Notice,
   SearchInput,
   SegmentedControl,
-  Skeleton,
-  ErrorState,
-  EmptyState,
+  ShareBar,
+  StatCard,
+  StatGrid,
+  ViewSkeleton,
   vendorMeta,
   type Column,
   type SortSpec,
@@ -25,41 +29,43 @@ import { usePeriodControls, useResetOnChange } from '../lib/use-period-controls'
 import { usePeriodResource } from '../lib/use-period-resource'
 import { getModels } from '../lib/api'
 import {
-  formatCompactInteger,
-  formatCurrencyWithProvenance,
   formatCompactCurrencyWithProvenance,
+  formatCompactInteger,
+  formatCostProvenance,
+  formatCount,
+  formatCurrencyExact,
+  formatCurrencyWithProvenance,
   formatInteger,
-  formatPercentage,
+  formatShare,
   formatTokenCount,
+  getCostLabel,
   getCostStatus,
+  isMissingCost,
   safeDivide,
 } from '../lib/format'
+import { isTranscriptSource } from '../lib/message-display'
 import { getNextSortState, type SortState } from '../lib/table-sort'
-import { getAvgTokenTotal, getTokenTotal } from '../lib/token-breakdown'
-import type { AvgTokenStats, ModelEntry, SourceID } from '../types/api'
+import { getAvgTokenTotal, getTokenBreakdownItems, getTokenTotal } from '../lib/token-breakdown'
+import type { AvgTokenStats, ModelEntry } from '../types/api'
 
-// ── Metric model (inlined from models-metrics.ts) ──────────────────
-type ModelsMetric = 'cost' | 'sessions' | 'messages' | 'tokens'
+type ModelsMetric = 'cost' | 'tokens' | 'sessions' | 'messages'
 
-const METRIC_OPTS: { value: ModelsMetric; label: string }[] = [
-  { value: 'cost', label: 'Cost' },
-  { value: 'sessions', label: 'Sessions' },
-  { value: 'messages', label: 'Messages' },
-  { value: 'tokens', label: 'Tokens' },
-]
+const METRIC_ORDER: ModelsMetric[] = ['cost', 'tokens', 'sessions', 'messages']
 
-const METRIC_META: Record<ModelsMetric, { shareLabel: string; description: string }> = {
-  cost: { shareLabel: 'Cost share', description: 'Share bars show how much each model contributes to total spend.' },
-  sessions: { shareLabel: 'Session share', description: 'Share bars show how many coding sessions each model touched.' },
-  messages: { shareLabel: 'Message share', description: 'Share bars show assistant response volume per model. One API request may produce multiple messages.' },
-  tokens: { shareLabel: 'Token share', description: 'Share bars show cumulative input, output, reasoning, and cache tokens per model.' },
+const METRIC_META: Record<Exclude<ModelsMetric, 'cost'>, { label: string; shareLabel: string; description: string }> = {
+  tokens: { label: 'Tokens', shareLabel: 'Token share', description: 'Ranked by input, output, reasoning and cache tokens combined.' },
+  // Sessions overlap between models, so this is a share of appearances, not of distinct sessions.
+  sessions: { label: 'Sessions', shareLabel: 'Session share', description: 'Ranked by sessions each model appeared in. A session that used several models counts once for each.' },
+  messages: { label: 'Messages', shareLabel: 'Message share', description: 'Ranked by assistant messages. One request can produce several messages.' },
 }
 
 interface ModelRow extends ModelEntry {
+  key: string
   totalTokens: number
   avgCostPerMessage: number
   metricValue: number
-  metricShare: number // 0..100
+  /** Share of the selected metric across every model in range, 0–1. */
+  metricShare: number
 }
 
 function metricValueOf(model: ModelEntry, totalTokens: number, metric: ModelsMetric): number {
@@ -83,7 +89,10 @@ function providerLabel(model: ModelEntry): string {
   return model.provider_id || 'Unknown provider'
 }
 
-// Sort keys map to the visible columns + share.
+function hasKnownCost(model: ModelEntry): boolean {
+  return getCostStatus(model.cost_status, model.cost_provenance) !== 'missing' && (model.cost_provenance?.missing_count ?? 0) === 0
+}
+
 type SortKey = 'model' | 'sessions' | 'messages' | 'tokens' | 'cost' | 'avgCostPerMessage' | 'share'
 
 const DEFAULT_SORT_DIR: Record<SortKey, 'asc' | 'desc'> = {
@@ -96,7 +105,8 @@ const DEFAULT_SORT_DIR: Record<SortKey, 'asc' | 'desc'> = {
   share: 'desc',
 }
 
-const DEFAULT_SORT: SortState<SortKey> = { key: 'cost', direction: 'desc' }
+// The table is a ranking by the selected metric until a column is chosen.
+const DEFAULT_SORT: SortState<SortKey> = { key: 'share', direction: 'desc' }
 
 /**
  * Orders two rows for `key`.
@@ -104,8 +114,7 @@ const DEFAULT_SORT: SortState<SortKey> = { key: 'cost', direction: 'desc' }
  * INVARIANT: the order returned here must match DEFAULT_SORT_DIR[key], because
  * the caller multiplies by +1 exactly when the active direction equals that
  * default (and by -1 otherwise). A comparator that disagrees with its own
- * default renders both directions inverted relative to the header arrow — which
- * is what `avgCostPerMessage` (default 'asc') did while comparing descending.
+ * default renders both directions inverted relative to the header arrow.
  */
 function compareRows(key: SortKey, a: ModelRow, b: ModelRow): number {
   switch (key) {
@@ -121,22 +130,12 @@ function compareRows(key: SortKey, a: ModelRow, b: ModelRow): number {
       return b.messages - a.messages
     case 'tokens':
       return b.totalTokens - a.totalTokens
-    case 'share':
-      return b.metricShare - a.metricShare
     case 'cost':
-    default:
       return b.cost - a.cost
+    case 'share':
+    default:
+      return b.metricValue - a.metricValue
   }
-}
-
-function getEmptyWindowCopy(period: string, sourceLabel: string, sourceId: SourceID): string {
-  if (sourceId === 'claude_code' || sourceId === 'kimi_code' || sourceId === 'qwen_code') {
-    return `No ${sourceLabel} assistant model usage was found in readable local transcripts for this window.`
-  }
-  if (period === 'all') {
-    return `All historic ${sourceLabel} stretches from the first recorded activity day through today when data exists.`
-  }
-  return `No ${sourceLabel} model usage recorded in the selected period. Models appear when assistant messages with model metadata exist.`
 }
 
 export function ModelsView() {
@@ -144,45 +143,36 @@ export function ModelsView() {
   const [sortState, setSortState] = useState<SortState<SortKey> | null>(null)
   const [metric, setMetric] = useState<ModelsMetric>('cost')
   const [filter, setFilter] = useState('')
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
 
   const { cacheKey } = usePeriodControls()
-  // Sort, metric, and filter describe a result set that no longer exists once the
-  // period or source changes, so drop them.
+  // Sort, metric, filter and the open model describe a result set that no
+  // longer exists once the period or source changes, so drop them.
   useResetOnChange(`${cacheKey}::${selectedSourceId}`, () => {
     setSortState(null)
     setMetric('cost')
     setFilter('')
+    setSelectedKey(null)
   })
-  const { data, loading, error } = usePeriodResource(getModels, cacheKey)
+  const { data, loading, error } = usePeriodResource(getModels, cacheKey, { cacheId: 'models' })
   const sourceLabel = selectedSourceInfo?.label ?? vendorMeta(selectedSourceId).name
+  const shareColor = vendorMeta(selectedSourceId).color
 
   const summary = useMemo(() => {
     if (!data) return null
 
-    const totalCost = data.models.reduce((acc, m) => acc + m.cost, 0)
-    const totalMessages = data.models.reduce((acc, m) => acc + m.messages, 0)
-    const totalSessions = data.models.reduce((acc, m) => acc + m.sessions, 0)
-    const totalTokens = data.models.reduce((acc, m) => acc + getTokenTotal(m.tokens), 0)
-
     const base = data.models.map((model) => {
-      const mTok = getTokenTotal(model.tokens)
+      const totalTokens = getTokenTotal(model.tokens)
       return {
         ...model,
-        totalTokens: mTok,
+        key: `${model.provider_id}:${model.model_id}`,
+        totalTokens,
         avgCostPerMessage: safeDivide(model.cost, model.messages),
+        metricValue: metricValueOf(model, totalTokens, metric),
       }
     })
-
-    const totalMetricValue = base.reduce((acc, r) => acc + metricValueOf(r, r.totalTokens, metric), 0)
-
-    const rows: ModelRow[] = base.map((r) => {
-      const metricValue = metricValueOf(r, r.totalTokens, metric)
-      return {
-        ...r,
-        metricValue,
-        metricShare: safeDivide(metricValue, totalMetricValue) * 100,
-      }
-    })
+    const totalMetricValue = base.reduce((acc, row) => acc + row.metricValue, 0)
+    const rows: ModelRow[] = base.map((row) => ({ ...row, metricShare: safeDivide(row.metricValue, totalMetricValue) }))
 
     const effective = sortState ?? DEFAULT_SORT
     const mult = effective.direction === DEFAULT_SORT_DIR[effective.key] ? 1 : -1
@@ -193,81 +183,53 @@ export function ModelsView() {
       return modelLabel(a).localeCompare(modelLabel(b))
     })
 
-    const costLeader = rows.reduce<ModelRow | null>((best, r) => (!best || r.cost > best.cost ? r : best), null)
-    const usageLeader = rows.reduce<ModelRow | null>((best, r) => (!best || r.messages > best.messages ? r : best), null)
-    const efficiencyLeader = rows
-      .filter((r) => r.messages > 0 && getCostStatus(r.cost_status, r.cost_provenance) !== 'missing' && (r.cost_provenance?.missing_count ?? 0) === 0)
-      .reduce<ModelRow | null>((best, r) => (!best || r.avgCostPerMessage < best.avgCostPerMessage ? r : best), null)
-
-    const advancedRow = sorted.find((r) => r.avg_tokens_per_message || r.avg_tokens_per_session) ?? null
+    const leaderBy = (pick: (row: ModelRow) => number) =>
+      rows.reduce<ModelRow | null>((best, row) => (pick(row) > 0 && (!best || pick(row) > pick(best)) ? row : best), null)
+    const priced = rows.filter((row) => row.messages > 0 && hasKnownCost(row))
 
     return {
       rows: sorted,
-      totalCost,
-      totalMessages,
-      totalSessions,
-      totalTokens,
-      maxMetric: Math.max(1, ...rows.map((r) => r.metricValue)),
+      totalCost: rows.reduce((acc, row) => acc + row.cost, 0),
+      totalMessages: rows.reduce((acc, row) => acc + row.messages, 0),
+      totalTokens: rows.reduce((acc, row) => acc + row.totalTokens, 0),
+      providers: new Set(rows.map((row) => row.provider_id)).size,
       empty: rows.length === 0,
-      costLeader,
-      usageLeader,
-      efficiencyLeader,
-      advancedRow,
+      costLeader: leaderBy((row) => row.cost),
+      usageLeader: leaderBy((row) => row.messages),
+      efficiencyLeader: priced.reduce<ModelRow | null>((best, row) => (!best || row.avgCostPerMessage < best.avgCostPerMessage ? row : best), null),
     }
   }, [data, sortState, metric])
 
   // Matches the TUI's `/` filter, which matches on model *or* provider. Narrows
-  // the table only: the leader cards, KPIs, and per-row shares stay relative to
+  // the table only: the highlights, KPIs, and per-row shares stay relative to
   // every model in the range.
   const visibleRows = useMemo(() => {
     const rows = summary?.rows ?? []
     const needle = filter.trim().toLowerCase()
     if (!needle) return rows
-    return rows.filter(
-      (row) => modelLabel(row).toLowerCase().includes(needle) || providerLabel(row).toLowerCase().includes(needle),
-    )
+    return rows.filter((row) => modelLabel(row).toLowerCase().includes(needle) || providerLabel(row).toLowerCase().includes(needle))
   }, [summary?.rows, filter])
 
-  const sortSpec: SortSpec | null = useMemo(() => {
-    const s = sortState ?? DEFAULT_SORT
-    return { key: s.key, dir: s.direction }
-  }, [sortState])
-
-  const handleSort = (key: string) => {
-    setSortState((current) => getNextSortState(current, key as SortKey, DEFAULT_SORT_DIR[key as SortKey]))
-  }
-
-  const handleMetricChange = (next: ModelsMetric) => {
-    setMetric(next)
-    setSortState(null) // reset sort to default on metric change
-  }
-
-  if (loading && !data) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-lg)', padding: 16 }}>
-              <Skeleton width={90} height={11} />
-              <Skeleton width={120} height={28} style={{ marginTop: 12 }} />
-            </div>
-          ))}
-        </div>
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', height: 140 }} />
-          ))}
-        </div>
-        <div style={{ background: 'var(--ink-800)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-xl)', height: 320 }} />
-      </div>
-    )
-  }
-
   if (!data || !summary) {
+    if (loading) return <ViewSkeleton stats={5} panels={[110, 360]} label="Loading models" />
     return <Card><ErrorState title="Models failed to load" message={error ?? undefined} onRetry={requestRefresh} /></Card>
   }
 
-  const meta = METRIC_META[metric]
+  const costLabel = getCostLabel(data.cost_status, data.cost_provenance)
+  const metricLabel = metric === 'cost' ? costLabel : METRIC_META[metric].label
+  const shareLabel = metric === 'cost' ? 'Cost share' : METRIC_META[metric].shareLabel
+  const description = metric === 'cost' ? 'Ranked by cost. Open a model for its token mix and averages.' : METRIC_META[metric].description
+  const metricOptions = METRIC_ORDER.map((value) => ({ value, label: value === 'cost' ? costLabel : METRIC_META[value].label }))
+
+  const effectiveSort = sortState ?? DEFAULT_SORT
+  const sortSpec: SortSpec = { key: effectiveSort.key, dir: effectiveSort.direction }
+  const handleSort = (key: string) => {
+    const sortKey = key as SortKey
+    // Start from the sort on screen, so the first click on the active column reverses it.
+    setSortState((current) => getNextSortState(current ?? DEFAULT_SORT, sortKey, DEFAULT_SORT_DIR[sortKey]))
+  }
+
+  const selected = selectedKey ? summary.rows.find((row) => row.key === selectedKey) ?? null : null
 
   const cols: Column<ModelRow>[] = [
     {
@@ -275,161 +237,145 @@ export function ModelsView() {
       header: 'Model',
       sortable: true,
       render: (m) => (
-        <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-          <span style={{ font: '600 13px/1 var(--font-mono)', color: 'var(--fg-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{modelLabel(m)}</span>
-          <span style={{ font: '400 11px/1 var(--font-ui)', color: 'var(--fg-faint)' }}>{providerLabel(m)}</span>
+        <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 3, minWidth: 0, maxWidth: 340 }}>
+          <span title={modelLabel(m)} style={{ font: '600 13px/1.2 var(--font-mono)', color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{modelLabel(m)}</span>
+          <span style={{ font: '400 11px/1.2 var(--font-ui)', color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{providerLabel(m)}</span>
         </span>
       ),
     },
-    {
-      key: 'source',
-      header: 'Source',
-      render: (m) => <VendorChip id={m.source_id ?? selectedSourceId} />,
-    },
-    { key: 'sessions', header: 'Sessions', numeric: true, sortable: true, render: (m) => formatCompactInteger(m.sessions) },
+    { key: 'sessions', header: 'Sessions', numeric: true, sortable: true, render: (m) => <span title={formatCount(m.sessions, 'session')}>{formatCompactInteger(m.sessions)}</span> },
     {
       key: 'messages',
       header: 'Messages',
       numeric: true,
       sortable: true,
-      render: (m) => <span title={`${formatInteger(m.messages)} assistant messages`}>{formatCompactInteger(m.messages)}</span>,
+      render: (m) => <span title={formatCount(m.messages, 'assistant message')}>{formatCompactInteger(m.messages)}</span>,
     },
     {
       key: 'tokens',
       header: 'Tokens',
       numeric: true,
       sortable: true,
-      render: (m) => <span title={formatInteger(m.totalTokens)}>{formatTokenCount(m.totalTokens)}</span>,
+      render: (m) => <span title={`${formatInteger(m.totalTokens)} tokens`}>{formatTokenCount(m.totalTokens)}</span>,
     },
     {
       key: 'cost',
-      header: 'Est. cost',
+      header: costLabel,
       numeric: true,
       sortable: true,
-      render: (m) => formatCompactCurrencyWithProvenance(m.cost, m.cost_status, m.cost_provenance),
+      render: (m) => (
+        <span title={isMissingCost(m.cost_status, m.cost_provenance) ? undefined : formatCurrencyExact(m.cost)}>
+          {formatCompactCurrencyWithProvenance(m.cost, m.cost_status, m.cost_provenance)}
+        </span>
+      ),
     },
     {
       key: 'avgCostPerMessage',
-      header: 'Avg / msg',
+      header: 'Cost / msg',
       numeric: true,
       sortable: true,
       render: (m) => formatCurrencyWithProvenance(m.avgCostPerMessage, m.cost_status, m.cost_provenance),
     },
     {
       key: 'share',
-      header: meta.shareLabel,
+      header: shareLabel,
       numeric: true,
       sortable: true,
       width: 150,
-      render: (m) => {
-        const pct = Math.max(m.metricValue > 0 ? 4 : 0, m.metricShare)
-        return (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-            <span style={{ width: 54, height: 6, borderRadius: 3, background: 'var(--ink-700)', overflow: 'hidden' }}>
-              <span style={{ display: 'block', width: `${Math.min(100, pct)}%`, height: '100%', background: vendorMeta(m.source_id ?? selectedSourceId).color }} />
-            </span>
-            <span style={{ width: 40, textAlign: 'right' }}>{formatPercentage(m.metricShare)}</span>
-          </span>
-        )
-      },
+      render: (m) => <ShareBar share={m.metricShare} color={shareColor} />,
     },
   ]
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {error && <Card><ErrorState title="Models failed to load" message={error} onRetry={requestRefresh} /></Card>}
+      {error && (
+        <Notice tone="warning" title="Couldn't refresh models" action={<Button size="sm" iconLeft="refresh" onClick={requestRefresh}>Retry</Button>}>
+          Showing the last loaded data. {error}
+        </Notice>
+      )}
 
-      {/* KPI row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+      <StatGrid>
         <StatCard
           accent
-          label="Tracked models"
-          value={formatInteger(summary.rows.length)}
-          hint={summary.rows.length === 1 ? 'One assistant model detected' : 'Distinct model / provider combinations'}
-        />
-        <StatCard
-          label="Total cost"
+          label={costLabel}
           value={formatCurrencyWithProvenance(summary.totalCost, data.cost_status, data.cost_provenance)}
-          title={`${formatInteger(summary.totalMessages)} assistant messages`}
-          hint={`${formatCompactInteger(summary.totalMessages)} messages in window`}
+          title={isMissingCost(data.cost_status, data.cost_provenance) ? undefined : [formatCurrencyExact(summary.totalCost), formatCostProvenance(data.cost_status, data.cost_provenance)].filter(Boolean).join(' · ')}
+          hint={(isMissingCost(data.cost_status, data.cost_provenance) ? formatCostProvenance(data.cost_status, data.cost_provenance) : null) ?? 'All models in range'}
         />
         <StatCard
-          label="Sessions touched"
-          value={formatInteger(summary.totalSessions)}
-          hint={summary.usageLeader ? `${modelLabel(summary.usageLeader)} leads volume` : 'Awaiting activity'}
+          label="Models"
+          value={formatInteger(summary.rows.length)}
+          hint={summary.empty ? 'No models in range' : `from ${formatCount(summary.providers, 'provider')}`}
         />
         <StatCard
-          label="Spend / message"
+          label="Messages"
+          value={formatCompactInteger(summary.totalMessages)}
+          title={formatCount(summary.totalMessages, 'assistant message')}
+          hint="Assistant messages"
+        />
+        <StatCard
+          label="Tokens"
+          value={formatTokenCount(summary.totalTokens)}
+          title={`${formatInteger(summary.totalTokens)} tokens`}
+          hint={`${formatTokenCount(Math.round(safeDivide(summary.totalTokens, summary.totalMessages)))} per message`}
+        />
+        <StatCard
+          label="Cost / message"
           value={formatCurrencyWithProvenance(safeDivide(summary.totalCost, summary.totalMessages), data.cost_status, data.cost_provenance)}
-          hint={summary.efficiencyLeader ? `${modelLabel(summary.efficiencyLeader)} is cheapest` : 'Not enough data yet'}
+          hint="Average across all models"
         />
-      </div>
+      </StatGrid>
 
       {summary.empty ? (
         <Card>
           <EmptyState
             icon="cpu"
-            title="No model usage in this window"
-            description={`${getEmptyWindowCopy(cacheKey, sourceLabel, selectedSourceId)} Once data exists, models are ranked by cost with message volume, token load, and per-message spend.`}
+            title="No model usage in this range"
+            description={
+              isTranscriptSource(selectedSourceInfo)
+                ? `No ${sourceLabel} model usage was found in local transcripts for this range.`
+                : `${sourceLabel} recorded no assistant messages with model information in this range.`
+            }
           />
         </Card>
       ) : (
         <>
-          {/* Leaders */}
-          <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
-            <LeaderCard
-              eyebrow="Highest cost model"
-              title={summary.costLeader ? modelLabel(summary.costLeader) : 'No data'}
-              rows={[
-                { label: 'Provider', value: summary.costLeader ? providerLabel(summary.costLeader) : '—' },
-                { label: 'Cost share', value: summary.costLeader ? formatPercentage(safeDivide(summary.costLeader.cost, summary.totalCost) * 100) : '0%' },
-                {
-                  label: 'Total cost',
-                  value: summary.costLeader
-                    ? formatCurrencyWithProvenance(summary.costLeader.cost, summary.costLeader.cost_status, summary.costLeader.cost_provenance)
-                    : 'Unknown',
-                },
-              ]}
-            />
-            <LeaderCard
-              eyebrow="Most used model"
-              title={summary.usageLeader ? modelLabel(summary.usageLeader) : 'No data'}
-              rows={[
-                { label: 'Messages', value: summary.usageLeader ? formatInteger(summary.usageLeader.messages) : '0', title: summary.usageLeader ? `${formatInteger(summary.usageLeader.messages)} assistant messages` : undefined },
-                { label: 'Sessions', value: summary.usageLeader ? formatInteger(summary.usageLeader.sessions) : '0' },
-                { label: 'Total tokens', value: summary.usageLeader ? formatTokenCount(summary.usageLeader.totalTokens) : '0', title: summary.usageLeader ? formatInteger(summary.usageLeader.totalTokens) : undefined },
-              ]}
-            />
-            <LeaderCard
-              eyebrow="Best cost / message"
-              title={summary.efficiencyLeader ? modelLabel(summary.efficiencyLeader) : 'Insufficient data'}
-              rows={[
-                {
-                  label: 'Cost per message',
-                  value: summary.efficiencyLeader
-                    ? formatCurrencyWithProvenance(summary.efficiencyLeader.avgCostPerMessage, summary.efficiencyLeader.cost_status, summary.efficiencyLeader.cost_provenance)
-                    : 'Unknown',
-                },
-                { label: 'Provider', value: summary.efficiencyLeader ? providerLabel(summary.efficiencyLeader) : '—' },
-                {
-                  label: 'Messages sampled',
-                  value: summary.efficiencyLeader ? formatInteger(summary.efficiencyLeader.messages) : '0',
-                },
-              ]}
-            />
-          </div>
+          <Card flush>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 1, background: 'var(--border-subtle)' }}>
+              <Highlight
+                label="Highest cost"
+                model={summary.costLeader}
+                value={summary.costLeader ? formatCurrencyWithProvenance(summary.costLeader.cost, summary.costLeader.cost_status, summary.costLeader.cost_provenance) : '—'}
+                detail={summary.costLeader ? `${formatShare(summary.costLeader.cost, summary.totalCost)} of total cost` : 'No cost recorded in this range'}
+                onOpen={setSelectedKey}
+              />
+              <Highlight
+                label="Most used"
+                model={summary.usageLeader}
+                value={summary.usageLeader ? formatCompactInteger(summary.usageLeader.messages) : '—'}
+                detail={summary.usageLeader ? `messages · ${formatShare(summary.usageLeader.messages, summary.totalMessages)} of all` : 'No messages in this range'}
+                onOpen={setSelectedKey}
+              />
+              <Highlight
+                label="Lowest cost per message"
+                model={summary.efficiencyLeader}
+                value={summary.efficiencyLeader ? formatCurrencyWithProvenance(summary.efficiencyLeader.avgCostPerMessage, summary.efficiencyLeader.cost_status, summary.efficiencyLeader.cost_provenance) : '—'}
+                detail={summary.efficiencyLeader ? `over ${formatCount(summary.efficiencyLeader.messages, 'message')}` : 'Needs a model with a known cost'}
+                onOpen={setSelectedKey}
+              />
+            </div>
+          </Card>
 
-          {/* Ranking table */}
           <Card
-            title="Model usage ranking"
-            subtitle={meta.description}
-            pad={0}
+            flush
+            title="Model ranking"
+            subtitle={description}
             action={
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <Badge>{meta.shareLabel}</Badge>
-                <SearchInput value={filter} onChange={setFilter} placeholder="Filter models…" label="Filter models" width={200} />
-                <SegmentedControl size="sm" options={METRIC_OPTS} value={metric} onChange={handleMetricChange} />
-              </span>
+              <>
+                {/* 180 is the input's own minimum: a wider basis makes the header wrap the controls while there is still room. */}
+                <SearchInput value={filter} onChange={setFilter} placeholder="Filter models…" label="Filter models by name or provider" width={220} />
+                <SegmentedControl size="sm" ariaLabel="Rank by" options={metricOptions} value={metric} onChange={setMetric} />
+              </>
             }
           >
             {visibleRows.length === 0 ? (
@@ -437,78 +383,87 @@ export function ModelsView() {
                 icon="search"
                 title="No models match this filter"
                 description={`No model or provider name contains “${filter.trim()}”.`}
-                action={<Button size="sm" variant="secondary" onClick={() => setFilter('')}>Clear filter</Button>}
+                action={<Button size="sm" onClick={() => setFilter('')}>Clear filter</Button>}
               />
             ) : (
               <DataTable
+                bare
                 columns={cols}
                 rows={visibleRows}
                 sort={sortSpec}
                 onSort={handleSort}
-                rowKey={(m) => `${m.provider_id}:${m.model_id}`}
+                onRowClick={(m) => setSelectedKey(m.key)}
+                rowKey={(m) => m.key}
               />
             )}
           </Card>
-
-          {/* Advanced disclosure — only when avg-token stats are present */}
-          {summary.advancedRow && (summary.advancedRow.avg_tokens_per_message || summary.advancedRow.avg_tokens_per_session) && (
-            <details>
-              <summary style={{ cursor: 'pointer', font: '600 13px/1 var(--font-ui)', color: 'var(--fg-muted)', padding: '8px 0' }}>
-                Advanced — token averages ({modelLabel(summary.advancedRow)})
-              </summary>
-              <div style={{ marginTop: 8 }}>
-                <SectionTitle sub="Per-message and per-session token averages for the top-ranked model with metadata.">
-                  Token averages
-                </SectionTitle>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {summary.advancedRow.avg_tokens_per_message && (
-                    <AvgTokenCard title="Avg per message" stats={summary.advancedRow.avg_tokens_per_message} />
-                  )}
-                  {summary.advancedRow.avg_tokens_per_session && (
-                    <AvgTokenCard title="Avg per session" stats={summary.advancedRow.avg_tokens_per_session} />
-                  )}
-                </div>
-              </div>
-            </details>
-          )}
         </>
       )}
+
+      <Drawer
+        open={selected !== null}
+        onClose={() => setSelectedKey(null)}
+        title={selected ? modelLabel(selected) : undefined}
+        subtitle={selected ? providerLabel(selected) : undefined}
+      >
+        {selected && <ModelDetail model={selected} costLabel={costLabel} metricLabel={metricLabel} />}
+      </Drawer>
     </div>
   )
 }
 
-interface LeaderRow {
-  label: string
-  value: string
-  title?: string
-}
+const EYEBROW = { font: '600 10px/1 var(--font-ui)', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--fg-muted)' } as const
 
-function LeaderCard({ eyebrow, title, rows }: { eyebrow: string; title: string; rows: LeaderRow[] }) {
+function Highlight({ label, model, value, detail, onOpen }: { label: string; model: ModelRow | null; value: string; detail: string; onOpen: (key: string) => void }) {
   return (
-    <Card eyebrow={eyebrow} title={title}>
-      <div style={{ display: 'flex', flexDirection: 'column' }}>
-        {rows.map((r, i) => (
-          <div
-            key={r.label}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-              padding: '10px 0',
-              borderBottom: i < rows.length - 1 ? '1px solid var(--border-subtle)' : 'none',
-            }}
-          >
-            <span style={{ font: '400 13px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>{r.label}</span>
-            <span title={r.title} style={{ font: '600 13px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{r.value}</span>
-          </div>
-        ))}
+    <div style={{ minWidth: 0, padding: '14px 16px', background: 'var(--ink-800)' }}>
+      <div style={EYEBROW}>{label}</div>
+      {model ? (
+        <button
+          type="button"
+          onClick={() => onOpen(model.key)}
+          title={`${modelLabel(model)} · ${providerLabel(model)}`}
+          style={{ display: 'block', maxWidth: '100%', marginTop: 8, padding: 0, background: 'none', border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer', font: '600 14px/1.3 var(--font-mono)', color: 'var(--fg-primary)', textAlign: 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+        >
+          {modelLabel(model)}
+        </button>
+      ) : (
+        <div style={{ marginTop: 8, font: '600 14px/1.3 var(--font-ui)', color: 'var(--fg-muted)' }}>No model yet</div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '2px 8px', marginTop: 8 }}>
+        <span style={{ font: '600 18px/1.2 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{value}</span>
+        <span style={{ font: '400 12px/1.3 var(--font-ui)', color: 'var(--fg-muted)' }}>{detail}</span>
       </div>
-    </Card>
+    </div>
   )
 }
 
-function AvgTokenCard({ title, stats }: { title: string; stats: AvgTokenStats }) {
+function ModelDetail({ model, costLabel, metricLabel }: { model: ModelRow; costLabel: string; metricLabel: string }) {
+  const provenance = formatCostProvenance(model.cost_status, model.cost_provenance)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Card title="Usage" bodyStyle={{ padding: '2px 16px' }}>
+        <KeyValueRow label={costLabel} value={formatCurrencyWithProvenance(model.cost, model.cost_status, model.cost_provenance)} title={isMissingCost(model.cost_status, model.cost_provenance) ? undefined : formatCurrencyExact(model.cost)} />
+        <KeyValueRow label="Cost per message" value={formatCurrencyWithProvenance(model.avgCostPerMessage, model.cost_status, model.cost_provenance)} />
+        <KeyValueRow label="Assistant messages" value={formatInteger(model.messages)} />
+        <KeyValueRow label="Sessions" value={formatInteger(model.sessions)} />
+        <KeyValueRow label="Tokens" value={formatTokenCount(model.totalTokens)} title={`${formatInteger(model.totalTokens)} tokens`} />
+        <KeyValueRow label={`Share of ${metricLabel.toLowerCase()}`} value={formatShare(model.metricShare, 1)} last />
+      </Card>
+
+      {provenance && <div style={{ font: '400 12px/1.5 var(--font-ui)', color: 'var(--fg-muted)', overflowWrap: 'anywhere' }}>Cost basis: {provenance.replace(/\.$/, '')}.</div>}
+
+      <Card title="Token mix" pad={14}>
+        <CompositionBar items={getTokenBreakdownItems(model.tokens)} format={formatTokenCount} ariaLabel="Token mix" />
+      </Card>
+
+      {model.avg_tokens_per_message && <AverageTokens title="Average tokens per message" stats={model.avg_tokens_per_message} />}
+      {model.avg_tokens_per_session && <AverageTokens title="Average tokens per session" stats={model.avg_tokens_per_session} />}
+    </div>
+  )
+}
+
+function AverageTokens({ title, stats }: { title: string; stats: AvgTokenStats }) {
   const items: { label: string; value: number }[] = [
     { label: 'Input', value: stats.input },
     { label: 'Output', value: stats.output },
@@ -517,25 +472,10 @@ function AvgTokenCard({ title, stats }: { title: string; stats: AvgTokenStats })
     { label: 'Cache write', value: stats.cache_write },
   ]
   return (
-    <Card title={title} subtitle={`${formatTokenCount(getAvgTokenTotal(stats))} total`}>
-      <div style={{ display: 'flex', flexDirection: 'column' }}>
-        {items.map((it, i) => (
-          <div
-            key={it.label}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-              padding: '8px 0',
-              borderBottom: i < items.length - 1 ? '1px solid var(--border-subtle)' : 'none',
-            }}
-          >
-            <span style={{ font: '400 13px/1 var(--font-ui)', color: 'var(--fg-muted)' }}>{it.label}</span>
-            <span style={{ font: '600 13px/1 var(--font-mono)', color: 'var(--fg-primary)', fontVariantNumeric: 'tabular-nums' }}>{formatTokenCount(it.value)}</span>
-          </div>
-        ))}
-      </div>
+    <Card title={title} subtitle={`${formatTokenCount(Math.round(getAvgTokenTotal(stats)))} in total`} bodyStyle={{ padding: '2px 16px' }}>
+      {items.map((item, i) => (
+        <KeyValueRow key={item.label} label={item.label} value={formatTokenCount(Math.round(item.value))} last={i === items.length - 1} />
+      ))}
     </Card>
   )
 }

@@ -321,6 +321,13 @@ func (s *Source) currentDiagnostics(ctx context.Context) (source.SourceDiagnosti
 
 	disc := discoverTranscripts(ctx, s.opts.CodexHome)
 	if !disc.available {
+		// An interrupted scan says nothing about the source: keep what was known.
+		if ctx.Err() != nil {
+			if lastDiag.Status != "" {
+				return lastDiag, lastAvailable
+			}
+			return disc.diagnostics, false
+		}
 		s.setLastDiagnostics(disc.diagnostics, false)
 		return disc.diagnostics, false
 	}
@@ -367,6 +374,11 @@ func (s *Source) loadSnapshot(ctx context.Context) (*snapshot, error) {
 			if s.generation != generation {
 				s.mu.Unlock()
 				continue
+			}
+			// An interrupted scan says nothing about the source itself.
+			if err := ctx.Err(); err != nil {
+				s.mu.Unlock()
+				return nil, err
 			}
 			s.lastDiag = disc.diagnostics
 			s.lastStatus = false
@@ -510,6 +522,11 @@ loadAttempts:
 			if s.generation != generation {
 				s.mu.Unlock()
 				continue
+			}
+			// An interrupted scan says nothing about the source itself.
+			if err := ctx.Err(); err != nil {
+				s.mu.Unlock()
+				return nil, err
 			}
 			s.lastDiag = disc.diagnostics
 			s.lastStatus = false
@@ -752,6 +769,9 @@ func (s *Source) loadThreadSnapshot(ctx context.Context, id string, bySession bo
 
 	disc := discoverTranscripts(ctx, s.opts.CodexHome)
 	if !disc.available {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
 		s.setLastDiagnostics(disc.diagnostics, false)
 		return nil, false, source.UnavailableSourceError{ID: source.SourceCodex, Reason: disc.diagnostics.Reason}
 	}

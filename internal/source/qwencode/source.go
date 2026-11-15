@@ -311,6 +311,13 @@ func (s *Source) currentDiagnostics(ctx context.Context) (source.SourceDiagnosti
 
 	disc := discoverData(ctx, s.opts.QwenHome)
 	if !disc.available {
+		// An interrupted scan says nothing about the source: keep what was known.
+		if ctx.Err() != nil {
+			if lastDiag.Status != "" {
+				return lastDiag, lastAvailable
+			}
+			return disc.diagnostics, false
+		}
 		s.setLastDiagnostics(disc.diagnostics, false)
 		return disc.diagnostics, false
 	}
@@ -363,6 +370,11 @@ func (s *Source) loadSnapshot(ctx context.Context) (*snapshot, error) {
 			if s.generation != generation {
 				s.mu.Unlock()
 				continue
+			}
+			// An interrupted scan says nothing about the source itself.
+			if err := ctx.Err(); err != nil {
+				s.mu.Unlock()
+				return nil, err
 			}
 			s.lastDiag = disc.diagnostics
 			s.lastStatus = false
@@ -427,6 +439,11 @@ func (s *Source) loadBoundedSnapshot(ctx context.Context, from time.Time) (*snap
 			if s.generation != generation {
 				s.mu.Unlock()
 				continue
+			}
+			// An interrupted scan says nothing about the source itself.
+			if err := ctx.Err(); err != nil {
+				s.mu.Unlock()
+				return nil, err
 			}
 			s.lastDiag = disc.diagnostics
 			s.lastStatus = false
@@ -494,6 +511,9 @@ func (s *Source) loadSessionSnapshot(ctx context.Context, id string) (*snapshot,
 	defer cancel()
 	disc := discoverData(ctx, s.opts.QwenHome)
 	if !disc.available {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
 		return nil, false, source.UnavailableSourceError{ID: source.SourceQwenCode, Reason: disc.diagnostics.Reason}
 	}
 	for _, item := range disc.chats {

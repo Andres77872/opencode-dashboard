@@ -358,6 +358,18 @@ var sessionsListV2Query = `
 	WHERE (? = '' OR LOWER(COALESCE(s.title, '')) LIKE LOWER(?) OR LOWER(COALESCE(p.name, p.worktree, '')) LIKE LOWER(?))
 `
 
+// sessionWindowV2Clause narrows the session scan to sessions with any row in
+// [?, ?). It selects a superset of sessionActiveV2Clause, so it never changes
+// a result; it exists so the planner reaches sessions through this
+// uncorrelated, index-backed list instead of scanning every session. Without
+// it each session in the database pays the visibility and accounting
+// subqueries of V2SessionsSQL before its window is even looked at, which
+// costs the same half second for a two-hour window as for all of history.
+var sessionWindowV2Clause = ` AND s.id IN (
+		SELECT w.session_id FROM session_message w
+		WHERE w.time_created >= ? AND w.time_created < ?
+	)`
+
 // sessionActiveV2Clause restricts sessions (alias s) to those with a counted
 // message in [?, ?).
 var sessionActiveV2Clause = ` AND EXISTS (

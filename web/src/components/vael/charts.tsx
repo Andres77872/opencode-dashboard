@@ -12,6 +12,11 @@ export interface AreaSeries {
   fmt?: (v: number) => string
 }
 
+/** Horizontal room one x-axis date label needs, in px. */
+const AXIS_LABEL_WIDTH = 56
+/** The same for a stacked bar's shorter label. */
+const BAR_LABEL_WIDTH = 40
+
 export interface AreaChartProps {
   labels: string[]
   series: AreaSeries[]
@@ -38,6 +43,9 @@ export function AreaChart({ labels = [], series = [], width = 600, height = 220,
   const x = (i: number) => padL + (n <= 1 ? 0 : (i / (n - 1)) * iw)
   const y = (v: number) => padT + ih - (v / max) * ih
   const ticks = 4
+  // A date label needs about 56px. Thin them to what the plot can hold, so a
+  // phone-width chart is not a row of overlapping dates.
+  const labelEvery = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(iw / AXIS_LABEL_WIDTH))))
 
   const onMove = (e: MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect()
@@ -60,8 +68,10 @@ export function AreaChart({ labels = [], series = [], width = 600, height = 220,
           )
         })}
         {labels.map((l, i) =>
-          n <= 12 || i % Math.ceil(n / 7) === 0 ? (
-            <text key={i} x={x(i)} y={H - 7} textAnchor="middle" fontFamily="var(--font-mono)" fontSize="10" fill="var(--fg-faint)">{l}</text>
+          i % labelEvery === 0 ? (
+            // The last point sits on the right edge: a centred label there
+            // would be cut in half, so it is anchored to end at the point.
+            <text key={i} x={x(i)} y={H - 7} textAnchor={n > 1 && i === n - 1 ? 'end' : 'middle'} fontFamily="var(--font-mono)" fontSize="10" fill="var(--fg-faint)">{l}</text>
           ) : null,
         )}
         {series.map((s, si) => {
@@ -137,21 +147,28 @@ export interface StackedBarsProps {
   width?: number
   height?: number
   valueFmt?: (v: number) => string
+  /** Formatter for the y-axis ticks, which have room for about seven
+      characters. Defaults to valueFmt. */
+  axisFmt?: (v: number) => string
   /** Optional formatter for the combined Total tooltip row. This lets callers
       qualify a heterogeneous aggregate without changing individual segments. */
   totalValueFmt?: (v: number) => string
   /** Metric name shown as an uppercase eyebrow in the hover tooltip (e.g. "Tokens"),
       so it's always clear which metric the bars represent. */
   label?: string
-  /** Overlay a combined-total trend line and a Total tooltip row. The Total is the
-      per-day sum of the stacked segments on screen; shown for every metric. */
+  /** Add a Total row to the tooltip: the per-day sum of the stacked segments on
+      screen, shown for every metric. */
   showTotal?: boolean
+  /** Also draw the totals as a trend line over the bars. Off by default: the
+      top of each stack already is the total, so the line reads as an extra,
+      unexplained series. */
+  totalLine?: boolean
   /** Concise screen-reader description of the plotted dimensions and metric. */
   ariaLabel?: string
 }
 
-/** Per-day stacked bars (one segment per source) with total trend line and hover breakdown tooltip. @category Charts */
-export function StackedBars({ days = [], keys = [], width = 600, height = 220, valueFmt = (v) => String(v), totalValueFmt = valueFmt, label, showTotal = true, ariaLabel }: StackedBarsProps) {
+/** Per-day stacked bars (one segment per source) with a hover breakdown tooltip and an optional total trend line. @category Charts */
+export function StackedBars({ days = [], keys = [], width = 600, height = 220, valueFmt = (v) => String(v), axisFmt = valueFmt, totalValueFmt = valueFmt, label, showTotal = true, totalLine = false, ariaLabel }: StackedBarsProps) {
   const [hi, setHi] = useState(-1)
   const padL = 48
   const padR = 14
@@ -167,6 +184,9 @@ export function StackedBars({ days = [], keys = [], width = 600, height = 220, v
   const bw = Math.max(3, slot - gap)
   const y = (v: number) => padT + ih - (v / max) * ih
   const ticks = 4
+  // Bar labels are the short tail of the key ("14", "09:00"); keep as many as
+  // fit without touching.
+  const labelEvery = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(iw / BAR_LABEL_WIDTH))))
 
   const onMove = (e: MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect()
@@ -190,7 +210,7 @@ export function StackedBars({ days = [], keys = [], width = 600, height = 220, v
           return (
             <g key={i}>
               <line x1={padL} x2={width - padR} y1={y(v)} y2={y(v)} stroke="var(--border-subtle)" />
-              <text x={padL - 8} y={y(v) + 3.5} textAnchor="end" fontFamily="var(--font-mono)" fontSize="10" fill="var(--fg-faint)">{valueFmt(v)}</text>
+              <text x={padL - 8} y={y(v) + 3.5} textAnchor="end" fontFamily="var(--font-mono)" fontSize="10" fill="var(--fg-faint)">{axisFmt(v)}</text>
             </g>
           )
         })}
@@ -226,13 +246,13 @@ export function StackedBars({ days = [], keys = [], width = 600, height = 220, v
                   />
                 )
               })}
-              {(n <= 14 || i % Math.ceil(n / 8) === 0) && (
+              {i % labelEvery === 0 && (
                 <text x={cx + bw / 2} y={height - 7} textAnchor="middle" fontFamily="var(--font-mono)" fontSize="10" fill="var(--fg-faint)">{d.key.split(' ').slice(-1)[0]}</text>
               )}
             </g>
           )
         })}
-        {showTotal && n > 1 && (
+        {totalLine && n > 1 && (
           <path
             d={totals.map((t, i) => `${i ? 'L' : 'M'}${(padL + (i + 0.5) * slot).toFixed(1)} ${y(t).toFixed(1)}`).join(' ')}
             fill="none"
@@ -244,7 +264,7 @@ export function StackedBars({ days = [], keys = [], width = 600, height = 220, v
             style={{ pointerEvents: 'none' }}
           />
         )}
-        {showTotal && n > 1 && hi >= 0 && (
+        {totalLine && n > 1 && hi >= 0 && (
           <circle cx={padL + (hi + 0.5) * slot} cy={y(totals[hi])} r={3} fill="var(--ink-900)" stroke="var(--fg-secondary)" strokeWidth={1.5} style={{ pointerEvents: 'none' }} />
         )}
       </svg>

@@ -1,9 +1,10 @@
 /* Vael Drawer — a lightweight right-side slide-over (replaces Radix Sheet).
    Used for message / project drill-down detail. */
-import { useEffect } from 'react'
+import { useEffect, useId, useRef } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Icon } from './icon'
+import { IconButton } from './controls'
+import { useEscapeKey, useFocusTrap } from './overlay'
 
 export interface DrawerProps {
   open: boolean
@@ -14,33 +15,38 @@ export interface DrawerProps {
   children: ReactNode
 }
 
-/** Right-side slide-over panel with scrim, header, and scrollable body; Escape or scrim click closes. @category Overlays */
+/** Right-side slide-over panel with scrim, header, and scrollable body; Escape or scrim click closes, and focus stays inside while open. @category Overlays */
 export function Drawer({ open, onClose, title, subtitle, width = 560, children }: DrawerProps) {
+  const panelRef = useRef<HTMLElement>(null)
+  const titleId = useId()
+
+  useEscapeKey(open, onClose)
+  useFocusTrap(open, panelRef)
+
   useEffect(() => {
     if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', onKey)
     const prev = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     return () => {
-      document.removeEventListener('keydown', onKey)
       document.body.style.overflow = prev
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 
   return createPortal(
-    <div style={{ position: 'fixed', inset: 0, zIndex: 80 }}>
+    <div data-vael-modal="" style={{ position: 'fixed', inset: 0, zIndex: 'var(--z-modal)' }}>
       <div
+        aria-hidden="true"
         onClick={onClose}
-        style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)', animation: 'vael-fade-rise var(--dur-base) var(--ease-out)' }}
+        style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', animation: 'vael-fade-in var(--dur-base) var(--ease-out)' }}
       />
       <aside
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
+        tabIndex={-1}
         style={{
           position: 'absolute',
           top: 0,
@@ -52,6 +58,7 @@ export function Drawer({ open, onClose, title, subtitle, width = 560, children }
           boxShadow: 'var(--shadow-xl)',
           display: 'flex',
           flexDirection: 'column',
+          outline: 'none',
           animation: 'vael-slide-in-right var(--dur-base) var(--ease-out)',
         }}
       >
@@ -62,25 +69,16 @@ export function Drawer({ open, onClose, title, subtitle, width = 560, children }
             alignItems: 'center',
             justifyContent: 'space-between',
             gap: 12,
-            height: 'var(--topbar-height)',
-            padding: '0 16px',
+            minHeight: 'var(--topbar-height)',
+            padding: '8px 12px 8px 16px',
             borderBottom: '1px solid var(--border-default)',
           }}
         >
           <div style={{ minWidth: 0 }}>
-            {title && <div style={{ font: '700 15px/1.2 var(--font-ui)', color: 'var(--fg-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</div>}
+            {title && <div id={titleId} style={{ font: '700 15px/1.2 var(--font-ui)', color: 'var(--fg-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</div>}
             {subtitle && <div style={{ font: '400 12px/1.3 var(--font-mono)', color: 'var(--fg-muted)', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{subtitle}</div>}
           </div>
-          <button
-            type="button"
-            aria-label="Close"
-            onClick={onClose}
-            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, color: 'var(--fg-muted)', background: 'transparent', border: '1px solid transparent', borderRadius: 'var(--radius-md)', cursor: 'pointer', flexShrink: 0 }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--ink-750)'; e.currentTarget.style.color = 'var(--fg-primary)' }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-muted)' }}
-          >
-            <Icon name="x" size={17} />
-          </button>
+          <IconButton name="x" label="Close" onClick={onClose} />
         </header>
         <div style={{ flex: 1, overflowY: 'auto', padding: 16, minHeight: 0 }}>{children}</div>
       </aside>

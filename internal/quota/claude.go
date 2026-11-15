@@ -182,13 +182,23 @@ type claudeProvider struct {
 	openCodeDBPath string
 	sourceEnabled  func(source.SourceID) bool
 	now            func() time.Time
+	// native caches the OpenCode Claude Agent lookup across polls; nil reads
+	// the database directly on every call.
+	native *claudeNativeReader
+}
+
+func (p *claudeProvider) nativeSnapshot(ctx context.Context) (*ClaudeSnapshot, error) {
+	if p.native != nil {
+		return p.native.latest(ctx, p.openCodeDBPath)
+	}
+	return latestOpenCodeClaudeSnapshot(ctx, p.openCodeDBPath)
 }
 
 func (p *claudeProvider) quota(ctx context.Context) ProviderQuota {
 	result := ProviderQuota{Provider: ProviderClaude, Label: "Claude Code"}
 	snap, err := ReadClaudeSnapshot(p.snapshotPath)
 	if p.openCodeDBPath != "" && (p.sourceEnabled == nil || p.sourceEnabled(source.SourceOpenCode)) {
-		native, nativeErr := latestOpenCodeClaudeSnapshot(ctx, p.openCodeDBPath)
+		native, nativeErr := p.nativeSnapshot(ctx)
 		if nativeErr == nil && native != nil {
 			if err != nil || snap == nil || (snap.FiveHour == nil && snap.SevenDay == nil) || native.SavedAtMS >= snap.SavedAtMS {
 				snap, err = native, nil
