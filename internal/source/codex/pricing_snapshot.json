@@ -1,9 +1,35 @@
 {
-  "id": "openai-codex-api-pricing-2026-10-26",
-  "retrieved_at": "2026-10-26T18:58:23Z",
+  "id": "openai-codex-api-pricing-2026-11-17",
+  "retrieved_at": "2026-11-17T18:31:05Z",
   "source": "https://developers.openai.com/api/docs/pricing",
   "currency": "USD",
   "models": {
+    "gpt-6.2-astra": {
+      "input_per_million": 8.0,
+      "cached_input_per_million": 0.4,
+      "output_per_million": 40.0,
+      "cache_write_input_per_million": 10.0,
+      "reasoning_output_billed_as": "output",
+      "long_context_threshold_input_tokens": 272000,
+      "long_context_input_multiplier": 2.0,
+      "long_context_output_multiplier": 1.5,
+      "cache_write_note": "Cache writes are billed at 1.25x the uncached input token rate for 30-minute retention",
+      "priority": {"input_per_million": 16.0, "cached_input_per_million": 0.8, "cache_write_input_per_million": 20.0, "output_per_million": 80.0},
+      "priority_long_context_supported": true
+    },
+    "gpt-6.2-sol": {
+      "input_per_million": 2.0,
+      "cached_input_per_million": 0.1,
+      "output_per_million": 10.0,
+      "cache_write_input_per_million": 2.5,
+      "reasoning_output_billed_as": "output",
+      "long_context_threshold_input_tokens": 272000,
+      "long_context_input_multiplier": 2.0,
+      "long_context_output_multiplier": 1.5,
+      "cache_write_note": "Cache writes are billed at 1.25x the uncached input token rate for 30-minute retention",
+      "priority": {"input_per_million": 4.0, "cached_input_per_million": 0.2, "cache_write_input_per_million": 5.0, "output_per_million": 20.0},
+      "priority_long_context_supported": true
+    },
     "gpt-6-astra": {
       "input_per_million": 10.0,
       "cached_input_per_million": 1.0,

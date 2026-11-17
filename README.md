@@ -171,6 +171,27 @@ The catalog's cache-write prices represent 30-minute retention. OpenAI also publ
 
 Sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), [GPT-6.1 Terra model details](https://developers.openai.com/api/docs/models/gpt-6.1-terra), [prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching), and [Codex models](https://learn.chatgpt.com/docs/models).
 
+### Codex GPT-6.2 Astra and Sol pricing
+
+The November 17, 2026 catalog adds `gpt-6.2-astra` and `gpt-6.2-sol`, released the same day. They replace GPT-6 Astra and GPT-6.1 Sol among Codex's recommended models. Before this refresh they resolved as `missing`, because named releases never borrow a sibling's rates. Published API prices are USD per million tokens; output includes reasoning tokens:
+
+| Model / context / processing tier | Input | Cached input | Cache writes, 30 minutes | Output |
+| --- | ---: | ---: | ---: | ---: |
+| `gpt-6.2-astra` up to 272K / Standard | $8 | $0.40 | $10 | $40 |
+| `gpt-6.2-astra` up to 272K / Fast | $16 | $0.80 | $20 | $80 |
+| `gpt-6.2-astra` above 272K / Standard | $16 | $0.80 | $20 | $60 |
+| `gpt-6.2-astra` above 272K / Fast | $32 | $1.60 | $40 | $120 |
+| `gpt-6.2-sol` up to 272K / Standard | $2 | $0.10 | $2.50 | $10 |
+| `gpt-6.2-sol` up to 272K / Fast | $4 | $0.20 | $5 | $20 |
+| `gpt-6.2-sol` above 272K / Standard | $4 | $0.20 | $5 | $15 |
+| `gpt-6.2-sol` above 272K / Fast | $8 | $0.40 | $10 | $30 |
+
+GPT-6.2 Astra costs 20% less than GPT-6 Astra on input, output, and cache writes, and its cached input drops from 10% to 5% of input. GPT-6.2 Sol keeps GPT-6.1 Sol's rates. Above 272K raw input, the whole request bills at 2x input/cache rates and 1.5x output. OpenAI publishes long-context Fast rates, so Fast requests above 272K stay priced. The `gpt-6-astra` and `gpt-6.1-sol` rows are unchanged and remain for existing rollouts.
+
+OpenAI publishes no Flex rates for either GPT-6.2 model; Flex requests stay `missing` rather than being priced from a guessed 0.5x multiplier. The catalog also does not model Ultrafast (3x Standard through February 28, 2027, then 6x), Batch, the discounted background completion windows (30% or 40% below Standard), 12-hour cache-write retention, or the 10% data-residency uplift. As with other Codex models, these are API-equivalent estimates, not ChatGPT credit usage or actual billed spend. Changing the snapshot ID triggers historical repricing, so earlier GPT-6.2 requests acquire estimates after the cache rebuilds.
+
+Sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing), [GPT-6.2 Astra model details](https://developers.openai.com/api/docs/models/gpt-6.2-astra), [GPT-6.2 Sol model details](https://developers.openai.com/api/docs/models/gpt-6.2-sol), [Using GPT-6.2](https://developers.openai.com/api/docs/guides/latest-model), [API changelog](https://developers.openai.com/api/docs/changelog), and [Codex models](https://learn.chatgpt.com/docs/models).
+
 ### Claude model pricing catalog
 
 The `anthropic-bundled-2026-11-09` catalog adds Claude Fable 5.2, released November 9, 2026 as `claude-fable-5-2`. It retains Claude Fable 5.1, Claude Opus 5.5, Claude Sonnet 5.5, Claude Haiku 5.5, and the limited-availability Claude Mythos 5 and 5.1 from earlier refreshes. Prices are USD per million tokens:
@@ -267,7 +288,7 @@ Computed and estimated costs come from pinned, dated catalogs compiled into the 
 | Source | Snapshot ID | Retrieved | Models |
 |--------|-------------|-----------|--------|
 | Claude Code | `anthropic-bundled-2026-11-09` | 2026-11-09 | 28 |
-| Codex | `openai-codex-api-pricing-2026-10-26` | 2026-10-26 | 20 |
+| Codex | `openai-codex-api-pricing-2026-11-17` | 2026-11-17 | 22 |
 | Kimi Code | `kimi-api-pricing-2026-07-16` | 2026-07-16 | 5 |
 | Qwen Code | `qwen-modelstudio-pricing-2026-08-02` | 2026-08-02 | 6 |
 | Antigravity | `gemini-standard-api-pricing-2026-10-14` | 2026-10-14 | 2 |

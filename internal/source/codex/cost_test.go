@@ -145,6 +145,8 @@ func TestBundledCodexPricingCoversCurrentModels(t *testing.T) {
 		model    string
 		wantCost float64
 	}{
+		{model: "gpt-6.2-astra", wantCost: 98.4},
+		{model: "gpt-6.2-sol", wantCost: 24.6},
 		{model: "gpt-6-astra", wantCost: 123.5},
 		{model: "gpt-6.1-sol", wantCost: 24.6},
 		{model: "gpt-6.1-terra", wantCost: 12.3},
@@ -188,6 +190,9 @@ func TestBundledCodexPricingCoversPriorityAndFlexTiers(t *testing.T) {
 		flexCost      float64
 		flexSupported bool
 	}{
+		// OpenAI publishes no Flex rates for the GPT-6.2 models.
+		{model: "gpt-6.2-astra", priorityCost: 196.8},
+		{model: "gpt-6.2-sol", priorityCost: 49.2},
 		{model: "gpt-6-astra", priorityCost: 247, flexCost: 61.75, flexSupported: true},
 		{model: "gpt-6.1-sol", priorityCost: 49.2, flexCost: 12.3, flexSupported: true},
 		{model: "gpt-6.1-terra", priorityCost: 24.6, flexCost: 6.15, flexSupported: true},
@@ -256,6 +261,8 @@ func TestCodexLongContextRulesByModel(t *testing.T) {
 		model          string
 		wantMultiplier bool
 	}{
+		{model: "gpt-6.2-astra", wantMultiplier: true},
+		{model: "gpt-6.2-sol", wantMultiplier: true},
 		{model: "gpt-6-astra", wantMultiplier: true},
 		{model: "gpt-6.1-sol", wantMultiplier: true},
 		{model: "gpt-6.1-terra", wantMultiplier: true},

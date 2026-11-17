@@ -11,7 +11,7 @@ func TestBundledAstraCatalogAndResolution(t *testing.T) {
 	src := New(Options{})
 	ctx := testContext(t)
 	catalog := src.PricingCatalog(ctx)
-	if catalog.SnapshotID != "openai-codex-api-pricing-2026-10-26" || catalog.Currency != "USD" {
+	if catalog.SnapshotID != "openai-codex-api-pricing-2026-11-17" || catalog.Currency != "USD" {
 		t.Fatalf("catalog metadata = %#v", catalog)
 	}
 	found := false
@@ -95,6 +95,8 @@ func TestGPT6RolloutUsesPerRequestContextAndProcessingTier(t *testing.T) {
 		id                      string
 		fastLong, standardShort float64
 	}{
+		{id: "gpt-6.2-astra", fastLong: 4.72, standardShort: 0.00924},
+		{id: "gpt-6.2-sol", fastLong: 1.18, standardShort: 0.00231},
 		{id: "gpt-6-astra", fastLong: 6.3, standardShort: 0.0116},
 		{id: "gpt-6.1-terra", fastLong: 0.59, standardShort: 0.001155},
 	} {
@@ -122,7 +124,7 @@ func TestGPT6RolloutUsesPerRequestContextAndProcessingTier(t *testing.T) {
 				if entry.ModelID != model.id || entry.ProcessingMode != tc.mode || entry.CostStatus != stats.CostEstimatedAPIEquivalent || !approxEqual(entry.Cost, tc.cost) {
 					t.Errorf("request %s = %#v, want %s/%s cost %v", tc.id, entry, model.id, tc.mode, tc.cost)
 				}
-				if entry.CostProvenance == nil || entry.CostProvenance.PricingSnapshotID != "openai-codex-api-pricing-2026-10-26" {
+				if entry.CostProvenance == nil || entry.CostProvenance.PricingSnapshotID != "openai-codex-api-pricing-2026-11-17" {
 					t.Errorf("request %s provenance = %#v", tc.id, entry.CostProvenance)
 				}
 			}
