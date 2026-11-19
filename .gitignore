@@ -1,6 +1,10 @@
 /opencode-dashboard
 .issue
 .idea
+.claude
+.agents
+.codex
+.aws
 build
 internal/web/dist
 

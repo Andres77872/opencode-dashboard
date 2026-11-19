@@ -51,7 +51,7 @@ Antigravity reads `conversation_summaries.db` and `conversations/*.db` under its
 
 Child agents fold into their parent session with labeled messages. Originating trajectory/step identities suppress copied usage from replayed history. Recorded generations are counted once; persisted history does not expose every retry or failed outbound attempt, so request coverage is labeled incomplete. Uncached input, cache reads/writes, response output, and thinking output are kept separate.
 
-Gemini 4 Argon and Gemini 3.8 Flash use dated, standard API-equivalent USD rates from the bundled [official pricing](https://ai.google.dev/gemini-api/docs/pricing) snapshot. These are estimates, not subscription spend or AI-credit usage; tool fees and cache storage are excluded. Unknown internal names such as `gemini-3.8-flash-tiered` remain unpriced unless explicitly mapped with a pricing alias. Gemini CLI ingestion and live Antigravity quota collection are not included.
+Gemini 4 Argon, Gemini 4 Neon, and Gemini 3.8 Flash use dated, standard API-equivalent USD rates from the bundled [official pricing](https://ai.google.dev/gemini-api/docs/pricing) snapshot. These are estimates, not subscription spend or AI-credit usage; tool fees and cache storage are excluded. Unknown internal names such as `gemini-3.8-flash-tiered` remain unpriced unless explicitly mapped with a pricing alias. Gemini CLI ingestion and live Antigravity quota collection are not included.
 
 ### OpenCode 1.x and 2.x databases
 
@@ -291,7 +291,7 @@ Computed and estimated costs come from pinned, dated catalogs compiled into the 
 | Codex | `openai-codex-api-pricing-2026-11-17` | 2026-11-17 | 22 |
 | Kimi Code | `kimi-api-pricing-2026-07-16` | 2026-07-16 | 5 |
 | Qwen Code | `qwen-modelstudio-pricing-2026-08-02` | 2026-08-02 | 6 |
-| Antigravity | `gemini-standard-api-pricing-2026-10-14` | 2026-10-14 | 2 |
+| Antigravity | `gemini-standard-api-pricing-2026-11-18` | 2026-11-18 | 3 |
 
 OpenCode has no snapshot: it records real spend, which is read as reported. A model outside its source's snapshot stays `missing` rather than being priced by a guess — see [pricing aliases](#pricing-aliases) to map one by hand.
 

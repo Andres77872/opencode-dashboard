@@ -167,6 +167,43 @@ func TestDatedPricingAndUnknownModel(t *testing.T) {
 	}
 }
 
+func TestNeonPricingFromAntigravityHistory(t *testing.T) {
+	home, summary := fixture(t)
+	addConversation(t, home, summary, "neon", "", false)
+	stamp := wireBytes(1, wireInt(1, uint64(time.Date(2026, 11, 18, 20, 0, 0, 0, time.UTC).Unix())))
+	tokens := wire(wireInt(2, 10_000), wireInt(3, 1000), wireInt(5, 20_000), wireInt(9, 250), wireInt(10, 750))
+	mutateConversation(t, home, "neon", func(db *sql.DB) {
+		response := wireBytes(1, wireBytes(19, []byte("gemini-4-neon")))
+		if _, err := db.Exec(`UPDATE gen_metadata SET data=? WHERE idx=0`, response); err != nil {
+			t.Fatal(err)
+		}
+		origin := wireBytes(20, wire(wireBytes(1, []byte("neon")), wireInt(2, 1)))
+		recorded := wire(stamp, origin, wireBytes(9, tokens))
+		if _, err := db.Exec(`UPDATE steps SET metadata=? WHERE idx=1`, recorded); err != nil {
+			t.Fatal(err)
+		}
+		fallback := wire(stamp, wireBytes(9, wire(wireInt(1, 1535), tokens)))
+		if _, err := db.Exec(`INSERT INTO steps VALUES(3,15,3,0,?)`, fallback); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	models, err := New(Options{Home: home}).Models(t.Context(), stats.PeriodQuery{Period: "all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models.Models) != 1 {
+		t.Fatalf("expected both requests to resolve to Neon, got %+v", models.Models)
+	}
+	model := models.Models[0]
+	if model.ModelID != "gemini-4-neon" || model.ProviderID != "google" || model.Messages != 2 {
+		t.Fatalf("unexpected Neon usage: %+v", model)
+	}
+	if math.Abs(model.Cost-0.096) > 1e-12 || model.CostStatus != stats.CostEstimatedAPIEquivalent {
+		t.Fatalf("Neon cost = %g (%s), want 0.096 (%s)", model.Cost, model.CostStatus, stats.CostEstimatedAPIEquivalent)
+	}
+}
+
 func TestTranscriptChunksCrossRecordBoundary(t *testing.T) {
 	home := t.TempDir()
 	chunks := filepath.Join(home, "brain", "parent", ".system_generated", "logs", "chunks", "transcript_full")

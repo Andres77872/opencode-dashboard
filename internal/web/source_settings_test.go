@@ -94,14 +94,14 @@ func TestDisabledUnavailableReferenceCatalogRemainsTargetable(t *testing.T) {
 	found := false
 	for _, c := range catalogs {
 		if c.SourceID == source.SourceAntigravity {
-			found = len(c.Models) == 2
+			found = len(c.Models) == 3
 		}
 	}
 	if !found {
 		t.Fatal("disabled reference catalog hidden")
 	}
 	target, apiErr := h.pricingAliasTargetCatalog(ctx, source.SourceAntigravity)
-	if apiErr != nil || !catalogHasTarget(target, "gemini-4-argon") {
+	if apiErr != nil || !catalogHasTarget(target, "gemini-4-argon") || !catalogHasTarget(target, "gemini-4-neon") {
 		t.Fatalf("target=%+v error=%v", target, apiErr)
 	}
 	if _, err := reg.Resolve("antigravity"); err == nil {

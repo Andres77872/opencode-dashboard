@@ -434,6 +434,8 @@ func (s *Source) readConversation(ctx context.Context, path string, c conversati
 			if msg.Entry.ModelID == "" { // Pinned enum fallback only for verified values.
 				model, _ := decodeProto(usage)
 				switch model.integer(1) {
+				case 1535:
+					msg.Entry.ModelID = "gemini-4-neon"
 				case 1417:
 					msg.Entry.ModelID = "gemini-4-argon"
 				case 1322:
